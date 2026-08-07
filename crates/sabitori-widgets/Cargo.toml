@@ -1,0 +1,12 @@
+[package]
+name = "sabitori-widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sabitori-core.workspace = true
+sabitori-style.workspace = true
+sabitori-anim.workspace = true
+sabitori-input.workspace = true
+web-time.workspace = true

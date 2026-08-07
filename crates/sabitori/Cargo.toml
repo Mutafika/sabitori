@@ -1,0 +1,132 @@
+[package]
+name = "sabitori"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sabitori-core.workspace = true
+sabitori-gpu.workspace = true
+sabitori-style.workspace = true
+sabitori-layout.workspace = true
+sabitori-anim.workspace = true
+sabitori-widgets.workspace = true
+sabitori-text.workspace = true
+sabitori-scene.workspace = true
+sabitori-input.workspace = true
+sabitori-window.workspace = true
+sabitori-net.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+winit.workspace = true
+web-time.workspace = true
+log.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+console_error_panic_hook.workspace = true
+console_log.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true }
+objc2-app-kit = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true }
+objc2-ui-kit = { workspace = true }
+
+# wgpu is only needed by SceneApp examples (custom render_scene passes).
+# sabitori-markdown drives the live-render demo in the sabitori_home example.
+[dev-dependencies]
+wgpu.workspace = true
+sabitori-markdown.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+
+[[example]]
+name = "scene_ui"
+path = "../../examples/scene_ui.rs"
+
+[[example]]
+name = "hello"
+path = "../../examples/hello.rs"
+
+[[example]]
+name = "layout"
+path = "../../examples/layout.rs"
+
+[[example]]
+name = "text"
+path = "../../examples/text.rs"
+
+[[example]]
+name = "anim"
+path = "../../examples/anim.rs"
+
+[[example]]
+name = "filer"
+path = "../../examples/filer.rs"
+
+[[example]]
+name = "showcase"
+path = "../../examples/showcase.rs"
+
+[[example]]
+name = "gpu_flex"
+path = "../../examples/gpu_flex.rs"
+
+[[example]]
+name = "effects"
+path = "../../examples/effects.rs"
+
+[[example]]
+name = "declarative"
+path = "../../examples/declarative.rs"
+
+[[example]]
+name = "tui_demo"
+path = "../../examples/tui_demo.rs"
+
+[[example]]
+name = "tui_gallery"
+path = "../../examples/tui_gallery.rs"
+
+[[example]]
+name = "cad_widgets"
+path = "../../examples/cad_widgets.rs"
+
+[[example]]
+name = "landing"
+path = "../../examples/landing.rs"
+
+[[example]]
+name = "landing_flow"
+path = "../../examples/landing_flow.rs"
+
+[[example]]
+name = "landing_gravity"
+path = "../../examples/landing_gravity.rs"
+
+[[example]]
+name = "landing_site"
+path = "../../examples/landing_site.rs"
+
+[[example]]
+name = "sabitori_home"
+path = "../../examples/sabitori_home.rs"
+
+[[example]]
+name = "landing_particles"
+path = "../../examples/landing_particles.rs"
+
+[[example]]
+name = "measure_headless"
+path = "../../examples/measure_headless.rs"

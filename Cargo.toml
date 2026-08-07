@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sabitori-core",
+    "crates/sabitori-gpu",
+    "crates/sabitori-style",
+    "crates/sabitori-layout",
+    "crates/sabitori-scene",
+    "crates/sabitori-input",
+    "crates/sabitori-anim",
+    "crates/sabitori-text",
+    "crates/sabitori-widgets",
+    "crates/sabitori-window",
+    "crates/sabitori-markdown",
+    "crates/sabitori-net",
+    "crates/sabitori",
+]
+
+[workspace.package]
+version = "0.3.13"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# GPU
+wgpu = { version = "24", features = ["webgl"] }
+winit = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Math
+glam = "0.29"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+
+# Async
+pollster = "0.4"
+
+# WASM
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+console_log = "1"
+log = "0.4"
+
+# Internal crates
+sabitori-core = { path = "crates/sabitori-core" }
+sabitori-gpu = { path = "crates/sabitori-gpu" }
+sabitori-style = { path = "crates/sabitori-style" }
+sabitori-layout = { path = "crates/sabitori-layout" }
+sabitori-scene = { path = "crates/sabitori-scene" }
+sabitori-input = { path = "crates/sabitori-input" }
+sabitori-anim = { path = "crates/sabitori-anim" }
+sabitori-widgets = { path = "crates/sabitori-widgets" }
+sabitori-text = { path = "crates/sabitori-text" }
+sabitori-window = { path = "crates/sabitori-window" }
+sabitori-markdown = { path = "crates/sabitori-markdown" }
+sabitori-net = { path = "crates/sabitori-net" }
+slotmap = "1"
+taffy = "0.7"
+cosmic-text = "0.12"
+etagere = "0.2"
+web-time = "1"
+
+# macOS native
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSURL", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSDragging", "NSPasteboard", "NSView", "NSImage", "NSWindow", "NSResponder", "NSEvent", "NSApplication"] }
+# iOS native (software keyboard via hidden UITextField — see sabitori/src/ios_keyboard.rs)
+objc2-ui-kit = { version = "0.3", features = ["UIView", "UIResponder", "UIControl", "UITextField"] }

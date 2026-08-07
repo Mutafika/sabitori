@@ -1,0 +1,8 @@
+[package]
+name = "sabitori-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sabitori-core.workspace = true

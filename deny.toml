@@ -1,0 +1,38 @@
+# cargo-deny configuration for Sabitori
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Run with:   cargo deny check
+# Goal: catch any AGPL / GPL / strong-copyleft dependency before it
+# silently infects the workspace, since Sabitori is MIT-licensed.
+
+[graph]
+all-features = false
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # paste 1.0.15 — unmaintained, pulled in transitively via wgpu-hal → metal.
+    # No fix available upstream until metal migrates off paste.
+    { id = "RUSTSEC-2024-0436", reason = "transitive via wgpu-hal/metal; no upstream fix yet" },
+]
