@@ -660,6 +660,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         if !self.app.decorations() {
             attrs = attrs.with_decorations(false);
         }
+        // macOS: 非アクティブ窓の**初回クリックを content に渡す**。 winit 既定は
+        // false で、 他窓（Finder / ブラウザ等）から戻った 1 クリック目が「窓を前面に
+        // 出すだけ」で吸われる。 ダッシュボード系は他アプリと行き来しながら操作するので、
+        // これが無いと「ボタンを押しても効かない（実は毎回 1 クリック目が死ぬ）」に見える。
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs.with_accepts_first_mouse(true);
+        }
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
 
         // Platform-specific post-creation configuration. winit doesn't
