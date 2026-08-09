@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-08-10
+
 修飾キーつきのポインタ操作（⇧+クリック = 選択に足す／外す、⌥+ドラッグ = 複製）が
 `DeclarativeApp` の上で書けるようになった版。値は runtime が既に握っていたのに、
 façade が落としていた 2 箇所を塞ぐ。
@@ -1051,7 +1053,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.13...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/Mutafika/sabitori/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/Mutafika/sabitori/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/Mutafika/sabitori/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/Mutafika/sabitori/compare/v0.3.10...v0.3.11
