@@ -15,6 +15,52 @@
 
 ## [Unreleased]
 
+修飾キーつきのポインタ操作（⇧+クリック = 選択に足す／外す、⌥+ドラッグ = 複製）が
+`DeclarativeApp` の上で書けるようになった版。値は runtime が既に握っていたのに、
+façade が落としていた 2 箇所を塞ぐ。
+
+同じ組織の別アプリ（bamiri）は winit のイベントループを自前で持っているので同じことが
+できていた。差は「情報が無い」ことではなく「`DeclarativeApp` に乗ると届かない」ことだった。
+
+### Fixed
+- **キーの解放がアプリに届かない**
+  ([#1](https://github.com/Mutafika/sabitori/issues/1))。`DeclarativeApp` の
+  `WindowEvent::KeyboardInput` が `ElementState::Pressed` で絞っていたため、
+  `InputEvent::KeyInput { pressed: false, .. }` が一度も発行されていなかった。
+
+  ⇧単独の押下は `Key::Shift` として届くのに離したことが分からないので、アプリ側で
+  「押しっぱなし」を保持すると**二度と落ちない**。⇧を押している間だけオルソ、のような
+  モードが成立しなかった。押下・解放の両方を転送するようにした。
+
+  副作用（コピー・選択解除・フォーカス移動・文字入力）は従来どおり**押下でだけ**走る。
+  解放でも走らせると、⇧を離しただけで選択が消える別のバグになる。
+
+### Added
+- **`InputEvent::PointerPressed` / `PointerReleased` に `modifiers` が載った**
+  ([#1](https://github.com/Mutafika/sabitori/issues/1))。押した**瞬間**に握られていた
+  修飾キーが読める。
+
+  ```rust
+  InputEvent::PointerPressed { position, modifiers, .. } => {
+      if modifiers.shift { self.toggle_at(*position) } else { self.select_at(*position) }
+  }
+  ```
+
+  押下時の状態が無いと、アプリは `KeyInput` を自前で追って状態機械を持つしかなく、
+  それは上の解放イベントが来て初めて成立する。ポインタ操作にはこちらが素直。
+
+  `PointerReleased` の値は押下時と違いうる（押してから⇧を足す／離す）ので、
+  `PointerPressed` の値を使い回さないこと。3 ランタイム（`DeclarativeApp` /
+  `SceneApp` / `SabitoriApp`）とも、既に保持している修飾キー状態から埋めている。
+
+  ⚠️ **破壊的変更**: この 2 variant を**構築**しているコード、および全フィールドを
+  列挙して `match` しているコードは修正が要る（`..` で受けているなら無傷）。
+
+### Changed
+- `DeclarativeApp` のキーボード処理を `AppState::handle_key_input` に切り出した。
+  winit 依存が `WindowEvent::KeyboardInput` の数行だけになり、押下／解放の
+  ルーティングをヘッドレスのテストで検査できるようになった。
+
 ## [0.3.13] - 2026-08-07
 
 **下流が v0.3.12 に対してビルドできない**のを直した緊急版。`0.2` 系では通っていた

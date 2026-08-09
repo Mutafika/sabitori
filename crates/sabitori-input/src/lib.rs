@@ -103,6 +103,11 @@ pub enum InputEvent {
         kind: PointerKind,
         position: Point,
         button: Option<MouseButton>,
+        /// 押した**瞬間**に握られていた修飾キー。⇧+クリック = 選択に足す／外す、
+        /// ⌥+ドラッグ = 複製、のような修飾つきポインタ操作は、押下時の状態が
+        /// 分からないと書けない。`KeyInput` を自前で追って状態を持つ手もあるが、
+        /// 値は runtime が既に握っているので載せて配る方が素直。
+        modifiers: Modifiers,
     },
     /// Pointer released (mouse button up, touch end, pen up).
     PointerReleased {
@@ -110,6 +115,9 @@ pub enum InputEvent {
         kind: PointerKind,
         position: Point,
         button: Option<MouseButton>,
+        /// 離した瞬間の修飾キー。押下時と違う場合がある（押してから⇧を足す/離す）
+        /// ので、`PointerPressed` の値をそのまま使い回さないこと。
+        modifiers: Modifiers,
     },
     /// Pointer interaction cancelled (system gesture, touch cancelled by OS, etc).
     PointerCancelled {

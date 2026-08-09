@@ -893,6 +893,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     kind: PointerKind::Mouse,
                     position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
                     button: Some(InputMouseButton::Left),
+                    modifiers: self.modifiers,
                 });
                 if let Some(ref build) = self.last_build {
                     let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
@@ -992,6 +993,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     kind: PointerKind::Mouse,
                     position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
                     button: Some(InputMouseButton::Left),
+                    modifiers: self.modifiers,
                 });
                 // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
                 self.selecting = false;
@@ -1067,12 +1069,14 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         kind: PointerKind::Mouse,
                         position,
                         button: Some(InputMouseButton::Middle),
+                        modifiers: self.modifiers,
                     },
                     winit::event::ElementState::Released => InputEvent::PointerReleased {
                         id: MOUSE_POINTER_ID,
                         kind: PointerKind::Mouse,
                         position,
                         button: Some(InputMouseButton::Middle),
+                        modifiers: self.modifiers,
                     },
                 };
                 self.app.on_input(&ev);
@@ -1130,6 +1134,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Moved => {
@@ -1147,6 +1152,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Cancelled => {
@@ -1412,106 +1418,18 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 };
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == winit::event::ElementState::Pressed {
-                    // winit → Key の変換は sabitori_window::keymap に集約している
-                    // （3 ランタイム共通）。対応が無い名前付きキーは Other として
-                    // 届ける — 修飾キー単独押下を「何か押された」として観測する
-                    // 既存の挙動（下の選択解除ロジックが Other に依存）を保つため。
-                    let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
-                        .unwrap_or(Key::Other);
-                    // Cmd+C (macOS) / Ctrl+C (other): copy selected text to clipboard.
-                    // 文字選択中 (= self.selection が Some) ならグローバル捕捉して
-                    // focused element の input route には流さない。 macOS では meta
-                    // (Cmd) を見る、 他 platform は ctrl。
-                    let copy_modifier = if cfg!(target_os = "macos") {
-                        self.modifiers.meta
-                    } else {
-                        self.modifiers.ctrl
-                    };
-                    let is_copy = key == Key::C && copy_modifier;
-                    if is_copy {
-                        if let Some(text) = self.selected_text() {
-                            #[cfg(target_os = "macos")]
-                            crate::macos_drag::copy_text_to_clipboard(&text);
-                            #[cfg(not(target_os = "macos"))]
-                            { let _ = text; /* TODO: linux/wasm clipboard */ }
-                        }
-                    }
-                    // Any key other than the copy shortcut dismisses the
-                    // selection — typing, pasting (Cmd+V), Enter, navigation all
-                    // end it, like a terminal/editor. Without this the highlight
-                    // persists after a paste and re-paints over the new text (it
-                    // looks like you're stuck in "selection mode"). Bare modifier
-                    // presses map to `Key::Other`, which must NOT clear: holding
-                    // Cmd to then press C would otherwise wipe the selection
-                    // before the copy above can read it.
-                    if !is_copy && key != Key::Other {
-                        self.selection = None;
-                    }
-                    // Escape clears focus
-                    if key == Key::Escape {
-                        self.focused_id = None;
-                    }
-                    // Tab / Shift+Tab moves focus between focusable elements
-                    if key == Key::Tab {
-                        if let Some(ref build) = self.last_build {
-                            let focusable_ids: Vec<String> = build.hit_regions.iter()
-                                .rev() // hit_regions are front-to-back; reverse for document order
-                                .filter(|r| r.focusable && r.id.is_some())
-                                .map(|r| r.id.clone().unwrap())
-                                .collect();
-                            if !focusable_ids.is_empty() {
-                                let current_idx = self.focused_id.as_ref()
-                                    .and_then(|id| focusable_ids.iter().position(|f| f == id));
-                                let next = if self.modifiers.shift {
-                                    // Shift+Tab: go backwards
-                                    match current_idx {
-                                        Some(0) | None => focusable_ids.len() - 1,
-                                        Some(i) => i - 1,
-                                    }
-                                } else {
-                                    // Tab: go forwards
-                                    match current_idx {
-                                        Some(i) if i + 1 < focusable_ids.len() => i + 1,
-                                        _ => 0,
-                                    }
-                                };
-                                self.focused_id = Some(focusable_ids[next].clone());
-                            }
-                        }
-                    }
-                    // Escape / Tab moved focus → refresh the capture snapshot
-                    // before the event reaches the app.
-                    if key == Key::Escape || key == Key::Tab {
-                        self.push_ui_capture();
-                    }
-                    // Route to focused element first, then to app
-                    let key_event = InputEvent::KeyInput {
-                        key,
-                        pressed: true,
-                        modifiers: self.modifiers,
-                    };
-                    let handled_by_focus = if key != Key::Tab && key != Key::Escape {
-                        if let Some(ref id) = self.focused_id {
-                            self.app.on_focused_input(id, &key_event)
-                        } else { false }
-                    } else { false };
-                    if !handled_by_focus {
-                        self.app.on_input(&key_event);
-                    }
-                    // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の
-                    // 抑制、Alt を通すか等）は keymap::char_inputs に集約している。
-                    // ここはルーティングだけ。
-                    for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
-                        let char_event = InputEvent::CharInput(ch);
-                        let handled = if let Some(ref id) = self.focused_id {
-                            self.app.on_focused_input(id, &char_event)
-                        } else { false };
-                        if !handled {
-                            self.app.on_input(&char_event);
-                        }
-                    }
-                }
+                // winit → Key の変換は sabitori_window::keymap に集約している
+                // （3 ランタイム共通）。対応が無い名前付きキーは Other として
+                // 届ける — 修飾キー単独押下を「何か押された」として観測する
+                // 既存の挙動（選択解除ロジックが Other に依存）を保つため。
+                let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
+                    .unwrap_or(Key::Other);
+                let pressed = event.state == winit::event::ElementState::Pressed;
+                // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の
+                // 抑制、Alt を通すか等）は keymap::char_inputs に集約している。
+                // 解放時は空を返すので、本体側の分岐と二重には効かない。
+                let chars = sabitori_window::keymap::char_inputs(&event, self.modifiers);
+                self.handle_key_input(key, pressed, chars);
             }
             WindowEvent::Ime(ime_event) => {
                 let event = match &ime_event {
@@ -2186,6 +2104,119 @@ impl<A: DeclarativeApp> AppState<A> {
         }
     }
 
+    /// `WindowEvent::KeyboardInput` の本体を winit から剥がしたもの。 `chars` は
+    /// `keymap::char_inputs` が解決済みの文字（解放時は空）。
+    ///
+    /// 押下・解放の**両方**で呼ばれ、`KeyInput` もその両方を発行する。押下だけを
+    /// 配っていた頃は、⇧の押下は届くのに解放が来ないので、アプリ側で「押しっぱなし」
+    /// を保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような修飾つき
+    /// 操作が書けない）。副作用は `if pressed` の中に閉じてある。
+    fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
+        // 副作用（コピー・選択解除・フォーカス移動・文字入力）は押下でだけ
+        // 起こす。解放でも走らせると、⇧を離しただけで選択が消えるといった
+        // 挙動になる。アプリへの KeyInput 転送だけが押下・解放の両方。
+        if pressed {
+            // Cmd+C (macOS) / Ctrl+C (other): copy selected text to clipboard.
+            // 文字選択中 (= self.selection が Some) ならグローバル捕捉して
+            // focused element の input route には流さない。 macOS では meta
+            // (Cmd) を見る、 他 platform は ctrl。
+            let copy_modifier = if cfg!(target_os = "macos") {
+                self.modifiers.meta
+            } else {
+                self.modifiers.ctrl
+            };
+            let is_copy = key == Key::C && copy_modifier;
+            if is_copy {
+                if let Some(text) = self.selected_text() {
+                    #[cfg(target_os = "macos")]
+                    crate::macos_drag::copy_text_to_clipboard(&text);
+                    #[cfg(not(target_os = "macos"))]
+                    { let _ = text; /* TODO: linux/wasm clipboard */ }
+                }
+            }
+            // Any key other than the copy shortcut dismisses the
+            // selection — typing, pasting (Cmd+V), Enter, navigation all
+            // end it, like a terminal/editor. Without this the highlight
+            // persists after a paste and re-paints over the new text (it
+            // looks like you're stuck in "selection mode"). Bare modifier
+            // presses map to `Key::Other`, which must NOT clear: holding
+            // Cmd to then press C would otherwise wipe the selection
+            // before the copy above can read it.
+            if !is_copy && key != Key::Other {
+                self.selection = None;
+            }
+            // Escape clears focus
+            if key == Key::Escape {
+                self.focused_id = None;
+            }
+            // Tab / Shift+Tab moves focus between focusable elements
+            if key == Key::Tab {
+                if let Some(ref build) = self.last_build {
+                    let focusable_ids: Vec<String> = build.hit_regions.iter()
+                        .rev() // hit_regions are front-to-back; reverse for document order
+                        .filter(|r| r.focusable && r.id.is_some())
+                        .map(|r| r.id.clone().unwrap())
+                        .collect();
+                    if !focusable_ids.is_empty() {
+                        let current_idx = self.focused_id.as_ref()
+                            .and_then(|id| focusable_ids.iter().position(|f| f == id));
+                        let next = if self.modifiers.shift {
+                            // Shift+Tab: go backwards
+                            match current_idx {
+                                Some(0) | None => focusable_ids.len() - 1,
+                                Some(i) => i - 1,
+                            }
+                        } else {
+                            // Tab: go forwards
+                            match current_idx {
+                                Some(i) if i + 1 < focusable_ids.len() => i + 1,
+                                _ => 0,
+                            }
+                        };
+                        self.focused_id = Some(focusable_ids[next].clone());
+                    }
+                }
+            }
+            // Escape / Tab moved focus → refresh the capture snapshot
+            // before the event reaches the app.
+            if key == Key::Escape || key == Key::Tab {
+                self.push_ui_capture();
+            }
+        }
+        // Route to focused element first, then to app.
+        //
+        // 押下・解放の**両方**を発行する。押下だけを配っていた頃は、
+        // ⇧の押下は届くのに解放が来ないので、アプリ側で「押しっぱなし」を
+        // 保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような
+        // 修飾つき操作が作れない）。副作用は上の `if pressed` に閉じてある。
+        let key_event = InputEvent::KeyInput {
+            key,
+            pressed,
+            modifiers: self.modifiers,
+        };
+        let handled_by_focus = if key != Key::Tab && key != Key::Escape {
+            if let Some(ref id) = self.focused_id {
+                self.app.on_focused_input(id, &key_event)
+            } else { false }
+        } else { false };
+        if !handled_by_focus {
+            self.app.on_input(&key_event);
+        }
+        if pressed {
+            // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の
+            // 抑制、Alt を通すか等）は keymap::char_inputs に集約している。
+            // ここはルーティングだけ。
+            for ch in chars {
+                let char_event = InputEvent::CharInput(ch);
+                let handled = if let Some(ref id) = self.focused_id {
+                    self.app.on_focused_input(id, &char_event)
+                } else { false };
+                if !handled {
+                    self.app.on_input(&char_event);
+                }
+            }
+        }
+    }
     /// `self.text_layouts` を走査して mouse 座標に最も近い (text_idx, byte_offset)
     /// を返す。 hit_regions の hit 判定で取れなかった「テキスト本文上のクリック」
     /// で selection を始めるのに使う。 戻り値 None = どの text 要素にも近くない
@@ -3104,6 +3135,10 @@ mod frame_tests {
         probes: Vec<String>,
         /// `probe_positions` as of the most recent `on_build`.
         probed: std::collections::HashMap<String, f32>,
+        /// `on_input` で受けたキーイベントを (key, pressed, shift) で順に記録する。
+        keys: Vec<(Key, bool, bool)>,
+        /// `on_input` で受けた文字。
+        chars: Vec<char>,
     }
 
     impl DeclarativeApp for RecordingApp {
@@ -3120,6 +3155,17 @@ mod frame_tests {
 
         fn build_probes(&self) -> Vec<String> {
             self.probes.clone()
+        }
+
+        fn on_input(&mut self, event: &InputEvent) -> bool {
+            match event {
+                InputEvent::KeyInput { key, pressed, modifiers } => {
+                    self.keys.push((*key, *pressed, modifiers.shift));
+                }
+                InputEvent::CharInput(ch) => self.chars.push(*ch),
+                _ => {}
+            }
+            false
         }
 
         fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
@@ -3365,6 +3411,70 @@ mod frame_tests {
         });
         let frame = state.build_frame(400.0, 300.0, &StubMeasure);
         assert!(frame.overlay_build.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // キー入力のルーティング
+    // -----------------------------------------------------------------
+
+    /// 本題の回帰: 解放が届かないと、アプリは「⇧を押している間」を持てない。
+    /// 押下だけを配っていた頃は、押しっぱなしフラグが二度と落ちなかった。
+    #[test]
+    fn key_release_reaches_the_app() {
+        let mut state = AppState::new(RecordingApp::default());
+
+        state.modifiers = Modifiers { shift: true, ..Default::default() };
+        state.handle_key_input(Key::Shift, true, Vec::new());
+        state.modifiers = Modifiers::default();
+        state.handle_key_input(Key::Shift, false, Vec::new());
+
+        assert_eq!(
+            state.app.keys,
+            vec![(Key::Shift, true, true), (Key::Shift, false, false)],
+            "押下と解放が両方、その時点の修飾キー付きで届くこと"
+        );
+    }
+
+    /// 解放は「アプリへ転送する」だけ。副作用（選択解除・文字入力）まで走らせると、
+    /// ⇧を離しただけで選択が消えるといった別のバグになる。
+    #[test]
+    fn key_release_has_no_side_effects() {
+        let mut state = AppState::new(RecordingApp::default());
+        state.selection = Some(TextSelection {
+            anchor: (0, 0),
+            head: (0, 3),
+            anchor_content: "abc".into(),
+            head_content: "abc".into(),
+        });
+
+        // 解放は選択を消さない。chars を渡しても文字入力にはならない
+        // （実際の呼び出し側でも char_inputs は解放時に空を返す）。
+        state.handle_key_input(Key::A, false, vec!['a']);
+        assert!(state.selection.is_some(), "解放で選択が消えてはいけない");
+        assert!(state.app.chars.is_empty(), "解放で文字が入ってはいけない");
+
+        // 押下は従来どおり選択を解除し、文字を流す。
+        state.handle_key_input(Key::A, true, vec!['a']);
+        assert!(state.selection.is_none(), "押下は選択を解除する");
+        assert_eq!(state.app.chars, vec!['a']);
+    }
+
+    /// 修飾キー単独押下は `Key::Other` に落ちることがあり、それは選択を消さない
+    /// （⌘を押してから C、が選択を先に消してしまうため）。解放でも同じ。
+    #[test]
+    fn bare_modifier_does_not_clear_the_selection() {
+        let mut state = AppState::new(RecordingApp::default());
+        state.selection = Some(TextSelection {
+            anchor: (0, 0),
+            head: (0, 3),
+            anchor_content: "abc".into(),
+            head_content: "abc".into(),
+        });
+
+        state.handle_key_input(Key::Other, true, Vec::new());
+        assert!(state.selection.is_some());
+        state.handle_key_input(Key::Other, false, Vec::new());
+        assert!(state.selection.is_some());
     }
 }
 

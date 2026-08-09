@@ -28,16 +28,37 @@ fn pointer_events_are_constructible_through_the_facade() {
             kind: PointerKind::Mouse,
             position: at,
             button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
         },
         InputEvent::PointerReleased {
             id: 7 as PointerId,
             kind: PointerKind::Touch,
             position: at,
             button: None,
+            modifiers: Modifiers::default(),
         },
         InputEvent::PointerCancelled { id: 8, kind: PointerKind::Pen },
     ];
     assert_eq!(events.len(), 4);
+}
+
+/// ⇧+クリック（選択に足す／外す）が下流で書けること。押下**時点**の修飾キーが
+/// イベントに載っていないと、アプリは `KeyInput` を自前で追って押下状態を保持する
+/// しかなく、それは解放イベントが来て初めて成立する。
+#[test]
+fn pointer_press_carries_the_modifiers_held_at_that_moment() {
+    let ev = InputEvent::PointerPressed {
+        id: MOUSE_POINTER_ID,
+        kind: PointerKind::Mouse,
+        position: Point::new(10.0, 20.0),
+        button: Some(MouseButton::Left),
+        modifiers: Modifiers { shift: true, ..Default::default() },
+    };
+    let shift_click = matches!(
+        ev,
+        InputEvent::PointerPressed { modifiers: Modifiers { shift: true, .. }, .. }
+    );
+    assert!(shift_click, "押下イベントから⇧が読めない");
 }
 
 /// `PointerState` は re-export されているが、 `find` の戻り値と `upsert` の引数は
