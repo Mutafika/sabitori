@@ -420,12 +420,14 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             kind: PointerKind::Mouse,
                             position: pos,
                             button: Some(sabi_btn),
+                            modifiers: self.modifiers,
                         },
                         winit::event::ElementState::Released => InputEvent::PointerReleased {
                             id: MOUSE_POINTER_ID,
                             kind: PointerKind::Mouse,
                             position: pos,
                             button: Some(sabi_btn),
+                            modifiers: self.modifiers,
                         },
                     };
                     self.app.on_input(&event);
@@ -561,6 +563,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Moved => {
@@ -578,6 +581,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Cancelled => {

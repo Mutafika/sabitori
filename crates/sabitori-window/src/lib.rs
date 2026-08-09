@@ -190,6 +190,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Mouse,
                             position: pos,
                             button: Some(btn),
+                            modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                         });
                     }
                     ElementState::Released => {
@@ -213,6 +214,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Mouse,
                             position: pos,
                             button: Some(btn),
+                            modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                         });
                         if btn == MouseButton::Left
                             && self.primary_input == PrimaryInput::Mouse
@@ -252,6 +254,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                         });
                     }
                     TouchPhase::Moved => {
@@ -274,6 +277,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
+                            modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                         });
                         // Release ownership when the last finger lifts.
                         if self.primary_input == PrimaryInput::Touch
@@ -762,6 +766,7 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
                 kind,
                 position,
                 button,
+                ..
             } => {
                 let is_primary =
                     button == Some(MouseButton::Left) || kind != PointerKind::Mouse;
@@ -785,6 +790,7 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
                 kind: _,
                 position,
                 button,
+                ..
             } => {
                 let is_primary = button == Some(MouseButton::Left) || button.is_none();
                 if !is_primary {
