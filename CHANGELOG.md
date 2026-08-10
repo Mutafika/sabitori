@@ -15,6 +15,23 @@
 
 ## [Unreleased]
 
+v0.3.15 で入れた `scale` の取りこぼしを 2 件塞いだ版。どちらも「画面 px と
+レイアウト px を混ぜた」形の取り違えで、scale が 1.0 のままなら踏まない。
+
+### Fixed
+- **scale されたコンテナのクリップ枠が余計に食い込む。** クリップの content box を
+  出すとき、`rect` は画面 px なのに padding を**素の px のまま引いて**いた。
+  0.5 に縮んだ 100px・padding 10px のコンテナなら、正しくは `50 - 5*2 = 40` の枠が
+  `50 - 10*2 = 30` になり、中身が余計に欠ける。padding も scale してから引くようにした。
+
+- **scale 下でスクロールのクランプが壊れる。** `ScrollMeasure` の `content_*` は
+  taffy のレイアウト px、`scroll_y` もレイアウト px なのに、`viewport_*` だけを
+  画面 px で報告していた。縮んだパネルの中のスクロールが「まだ余地があるのに止まる」
+  形になる。viewport もレイアウト px に揃えた。
+
+  どちらも `.scaled()` か、hover / press の scale（**v0.3.15 から `button()` が既定で
+  持つ**）が効いている要素の中でだけ起きる。
+
 ## [0.3.15] - 2026-08-10
 
 押下の手応えが出る版。`.active()` / `.pressable()` が `DeclarativeApp` の上で
