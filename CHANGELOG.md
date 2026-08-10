@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-08-10
+
 v0.3.15 で入れた `scale` の取りこぼしを 2 件塞いだ版。どちらも「画面 px と
 レイアウト px を混ぜた」形の取り違えで、scale が 1.0 のままなら踏まない。
 
@@ -1128,7 +1130,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.15...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.16...HEAD
+[0.3.16]: https://github.com/Mutafika/sabitori/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/Mutafika/sabitori/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/Mutafika/sabitori/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/Mutafika/sabitori/compare/v0.3.12...v0.3.13
