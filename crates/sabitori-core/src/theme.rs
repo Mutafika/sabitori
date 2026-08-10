@@ -117,3 +117,103 @@ impl Default for AppTheme {
         Self::midnight()
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG AA: 本文 4.5、大きい文字と UI 部品 3.0。
+    const AA_TEXT: f32 = 4.5;
+    const AA_UI: f32 = 3.0;
+
+    fn presets() -> Vec<(&'static str, AppTheme)> {
+        vec![
+            ("midnight", AppTheme::midnight()),
+            ("tokyo_night", AppTheme::tokyo_night()),
+            ("catppuccin", AppTheme::catppuccin()),
+            ("nord", AppTheme::nord()),
+            ("dracula", AppTheme::dracula()),
+        ]
+    }
+
+    /// 主文字はどのプリセットのどの地の上でも本文コントラストを満たすこと。
+    ///
+    /// プリセットは 5 つあり、切り替えは 1 行で済む。読めなくなる組み合わせが
+    /// 混ざっても、実際に切り替えて目で見るまで誰も気付かない — その検査を
+    /// toolkit 側で持つ、というのが #7 の趣旨。
+    #[test]
+    fn primary_text_is_readable_on_every_surface_of_every_preset() {
+        for (name, t) in presets() {
+            for (label, bg) in [
+                ("bg", t.bg),
+                ("surface", t.surface),
+                ("elevated", t.elevated),
+                ("hover_bg", t.hover_bg),
+                ("select_bg", t.select_bg),
+            ] {
+                let r = t.text_primary.contrast_ratio(bg);
+                assert!(
+                    r >= AA_TEXT,
+                    "{name}: text_primary が {label} の上で {r:.2}:1（本文には {AA_TEXT} 要る）"
+                );
+            }
+        }
+    }
+
+    /// 副文字は素の地・面の上では本文コントラストを満たすこと。
+    #[test]
+    fn secondary_text_is_readable_on_the_plain_surfaces() {
+        for (name, t) in presets() {
+            for (label, bg) in [("bg", t.bg), ("surface", t.surface)] {
+                let r = t.text_secondary.contrast_ratio(bg);
+                assert!(
+                    r >= AA_TEXT,
+                    "{name}: text_secondary が {label} の上で {r:.2}:1"
+                );
+            }
+        }
+    }
+
+    /// **既知の弱点**: 選択行の上の副文字は、5 つ中 4 つで本文コントラストに届かない。
+    ///
+    /// | preset | text_secondary / select_bg |
+    /// |---|---|
+    /// | midnight | 3.86 |
+    /// | tokyo_night | 3.68 |
+    /// | catppuccin | 3.35 |
+    /// | dracula | 3.83 |
+    /// | nord | 5.46 |
+    ///
+    /// パレットを動かすとアプリの見た目が変わるので、ここでは**現状を固定するだけ**に
+    /// して、UI 部品の下限 (3.0) を割らないことを保証する。4.5 に上げるかどうかは
+    /// パレット側の判断で、`select_bg` を暗くするか `text_secondary` を明るくするか。
+    /// 上げる時はこの下限を `AA_TEXT` に差し替える。
+    #[test]
+    fn secondary_text_on_selection_holds_at_least_the_ui_floor() {
+        for (name, t) in presets() {
+            let r = t.text_secondary.contrast_ratio(t.select_bg);
+            assert!(
+                r >= AA_UI,
+                "{name}: text_secondary が select_bg の上で {r:.2}:1（UI 下限 {AA_UI} を割った）"
+            );
+        }
+    }
+
+    /// status 色は「地の上に置かれる印」なので UI 部品の下限で見る。
+    /// nord の error は 3.05 で、ここも余裕が無い。
+    #[test]
+    fn status_colors_clear_the_ui_floor_on_the_base_background() {
+        for (name, t) in presets() {
+            for (label, c) in [
+                ("primary", t.primary),
+                ("success", t.success),
+                ("warning", t.warning),
+                ("error", t.error),
+            ] {
+                let r = c.contrast_ratio(t.bg);
+                assert!(r >= AA_UI, "{name}: {label} が bg の上で {r:.2}:1");
+            }
+        }
+    }
+}
