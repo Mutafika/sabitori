@@ -944,7 +944,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 let app_overlay = self.app.overlay_view(&ctx);
                 let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
                     sabitori_core::tooltip_popup(
-                        &text, tx, ty,
+                        &text, tx, ty, w, h,
                         sabitori_core::Color::new(0.15, 0.15, 0.18, 0.95),
                         sabitori_core::Color::new(0.9, 0.9, 0.9, 1.0),
                         sabitori_core::Color::new(0.3, 0.3, 0.35, 0.8),
