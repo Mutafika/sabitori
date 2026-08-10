@@ -448,20 +448,64 @@ pub fn scroll_container(
 // Tooltip popup
 // ---------------------------------------------------------------------------
 
-/// Render a tooltip popup element at the given position.
+/// Render a tooltip popup element for a cursor at `(x, y)`.
 ///
-/// The tooltip appears above the cursor position with a small offset.
-/// Text width is estimated from the content length.
-pub fn tooltip_popup(text_str: &str, x: f32, y: f32, bg: Color, text_color: Color, border: Color) -> Element {
+/// 既定はカーソルの**右下**。矢印カーソルはホットスポットが先端 (左上) で本体が
+/// 右下へ伸びるので、真下に少しずらすだけだと矢印が箱の上辺に乗り、`p_px(8)` の
+/// 内側にある**文頭が矢印の真下に隠れる** — いちばん読みたい所が読めなくなる。
+/// 当たり判定ぶん (14, 20) 逃がすのが各 OS の慣行で、それに合わせてある。
+///
+/// `viewport_w` / `viewport_h` は窓の論理寸法。はみ出す側では位置を返す:
+/// 右が足りなければ左へずらし、下が足りなければカーソルの**上**へ回す。
+/// tooltip は見えなければ意味が無い部類なので、画面外に伸ばさない。
+///
+/// 幅と高さは内容から**推定**する (`context_menu` の `est_h` と同じ粗さ)。実測は
+/// レイアウト後にしか出ないが、位置はレイアウト前に決める必要があるため。推定は
+/// 多め側に倒してあるので、返す判断は早めに出る。
+pub fn tooltip_popup(
+    text_str: &str,
+    x: f32,
+    y: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    bg: Color,
+    text_color: Color,
+    border: Color,
+) -> Element {
     // 幅は文字数(char)基準で推定し max_w でクランプ → 超過は折返す。`len()` は byte 数で
-    // JP は 3 倍になるため、長い snippet tooltip が数千 px の帯になっていた。高さは内容に追従。
+    // JP は 3 倍になるため、長い snippet tooltip が数千 px の帯になっていた。
     let chars = text_str.chars().count() as f32;
     let max_w = 360.0;
     let est_w = (chars * 12.5 + 20.0).min(max_w);
+
+    // 高さの推定: 折返し後の行数 × 行送り + 上下 padding。font_size 12 の
+    // line_height 1.5 = 18pt、padding は上下 8 ずつ。
+    let inner_w = (est_w - 16.0).max(1.0);
+    let lines = (chars * 12.5 / inner_w).ceil().max(1.0);
+    let est_h = lines * 18.0 + 16.0;
+
+    // カーソルの当たり判定ぶん逃がす。
+    const OFF_X: f32 = 14.0;
+    const OFF_Y: f32 = 20.0;
+    // 窓の縁からの余白 (context_menu と同じ 8)。
+    const EDGE: f32 = 8.0;
+
+    // 横: 右にはみ出すならカーソルの左側へ回す。それでも入らなければ縁で止める。
+    let tx = if x + OFF_X + est_w + EDGE <= viewport_w {
+        x + OFF_X
+    } else {
+        (x - OFF_X - est_w).max(EDGE).min((viewport_w - est_w - EDGE).max(0.0))
+    };
+    // 縦: 下にはみ出すならカーソルの上へ回す。上にも入らなければ縁で止める。
+    let ty = if y + OFF_Y + est_h + EDGE <= viewport_h {
+        y + OFF_Y
+    } else {
+        (y - OFF_Y - est_h).max(EDGE).min((viewport_h - est_h - EDGE).max(0.0))
+    };
+
     div()
         .w(Px(est_w))
-        .mt(Px(y + 14.0)).ml(Px(x))
-        .absolute()
+        .pos(tx, ty)
         .bg(bg).rounded_px(6.0).border(1.0, border)
         .shadow_sm(Color::new(0.0, 0.0, 0.0, 0.3))
         .flex_col().p_px(8.0)
@@ -469,7 +513,7 @@ pub fn tooltip_popup(text_str: &str, x: f32, y: f32, bg: Color, text_color: Colo
             .font_size(12.0)
             .line_height(1.5)
             .color(text_color)
-            .w(Px((est_w - 16.0).max(1.0)))])
+            .w(Px(inner_w))])
 }
 
 // ---------------------------------------------------------------------------
@@ -564,4 +608,102 @@ pub fn context_menu_item(
             text(&item.label).mono().font_size(14.0).color(fg).shrink(0.0),
             text(&item.shortcut).mono().font_size(14.0).color(text_dim.with_alpha(0.4)).shrink(0.0),
         ])
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+    use crate::build::build_tree;
+    use crate::Rect;
+
+    const VW: f32 = 800.0;
+    const VH: f32 = 600.0;
+
+    /// tooltip を実際にレイアウトして、箱の矩形を返す。
+    /// runtime と同じく、窓いっぱいの overlay 根の中に置く。
+    fn box_at(text_str: &str, x: f32, y: f32, vw: f32, vh: f32) -> Rect {
+        let root = div().w(Px(vw)).h(Px(vh)).children([tooltip_popup(
+            text_str,
+            x,
+            y,
+            vw,
+            vh,
+            Color::BLACK,
+            Color::WHITE,
+            Color::BLACK,
+        )]);
+        let result = build_tree(&root, vw, vh);
+        // 最初の rect は根 (bg 無しなので出ない) を除いた tooltip の箱。
+        result
+            .render_list
+            .rects()
+            .map(|d| d.rect)
+            .find(|r| r.size.width > 0.0 && r.size.height > 0.0)
+            .expect("tooltip の箱が出ていない")
+    }
+
+    /// 本題の回帰: 箱がカーソルの当たり判定を外していること。
+    ///
+    /// 矢印はホットスポットが先端で本体が右下へ伸びる。真下に少しずらすだけだと
+    /// 矢印が箱の上辺に乗り、`p_px(8)` の内側にある文頭が隠れる。
+    #[test]
+    fn the_box_clears_the_cursor_hotspot() {
+        let r = box_at("説明", 100.0, 100.0, VW, VH);
+        assert!(r.origin.x > 100.0, "箱の左辺がカーソルの右にあること: {}", r.origin.x);
+        assert!(r.origin.y > 100.0, "箱の上辺がカーソルの下にあること: {}", r.origin.y);
+        // 文頭 (padding 8 の内側) が矢印の本体から外れていること。
+        assert!(
+            r.origin.x + 8.0 > 100.0 + 12.0,
+            "文頭が矢印の真下にある: {}",
+            r.origin.x + 8.0
+        );
+    }
+
+    /// 右端でホバーしても箱が窓の外へ伸びないこと。
+    /// `est_w` は最大 360pt あるので、クランプが無いと確実にはみ出す。
+    #[test]
+    fn the_box_stays_inside_the_right_edge() {
+        let long = "これは折り返しが要るくらい長い説明文で、右端でホバーされる";
+        let r = box_at(long, VW - 20.0, 100.0, VW, VH);
+        assert!(
+            r.origin.x + r.size.width <= VW,
+            "右へはみ出した: 右辺 {} > 窓幅 {VW}",
+            r.origin.x + r.size.width
+        );
+        assert!(r.origin.x >= 0.0, "左へ突き抜けた: {}", r.origin.x);
+    }
+
+    /// 下端でホバーしたらカーソルの上へ回すこと。
+    #[test]
+    fn the_box_flips_above_the_cursor_at_the_bottom_edge() {
+        let cursor_y = VH - 10.0;
+        let r = box_at("説明", 100.0, cursor_y, VW, VH);
+        assert!(
+            r.origin.y < cursor_y,
+            "下端なのに下へ出している: 上辺 {} / カーソル {cursor_y}",
+            r.origin.y
+        );
+        assert!(
+            r.origin.y + r.size.height <= VH,
+            "下へはみ出した: 下辺 {}",
+            r.origin.y + r.size.height
+        );
+    }
+
+    /// 窓が箱より小さくても、負の位置には行かないこと。
+    #[test]
+    fn a_viewport_too_small_still_clamps_to_the_edge() {
+        let r = box_at("とても長い説明文がここに入る", 10.0, 10.0, 120.0, 60.0);
+        assert!(r.origin.x >= 0.0, "x が負: {}", r.origin.x);
+        assert!(r.origin.y >= 0.0, "y が負: {}", r.origin.y);
+    }
+
+    /// 余裕がある場所では素直に右下。返す判定が過敏だと、画面の真ん中でも
+    /// 上に出たりして落ち着かない。
+    #[test]
+    fn plenty_of_room_keeps_it_below_right() {
+        let r = box_at("短い", 300.0, 300.0, VW, VH);
+        assert_eq!(r.origin.x, 314.0);
+        assert_eq!(r.origin.y, 320.0);
+    }
 }
