@@ -15,6 +15,32 @@
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-08-11
+
+Windows でリンクが通るようになった版。
+
+### Fixed
+- **Windows (MSVC) で `sabitori-widgets` を含む実行ファイルがリンクできない**
+  ([#11](https://github.com/Mutafika/sabitori/pull/11))。
+
+  ```
+  error LNK2019: unresolved external symbol localtime_s
+    referenced in function sabitori_widgets::file_browser::format_modified
+  ```
+
+  `file_browser::local_utc_offset` の Windows 分岐が `time` / `localtime_s` /
+  `_mkgmtime` を `extern "C"` で名指していた。**この 3 つは UCRT が輸出している
+  関数ではない** — `<time.h>` の中で `__inline` ラッパとして定義されていて、
+  `_USE_32BIT_TIME_T` に応じて 32/64bit 版へ振り分けているだけ。C から呼ぶと
+  ラッパが呼び出し側に展開されるので通るが、Rust から名指すとリンカが一度も
+  生成されていないシンボルを探しに行って落ちる。
+
+  輸出されている `_time64` / `_localtime64_s` / `_mkgmtime64` を名指すようにした。
+  接尾辞を明示したので、`time_t` が下で使っている `i64` に固定される副次効果もある。
+
+  **リンク時にしか出ない**ので Mac と Linux のビルドは緑のまま通る。そのため、
+  Windows 分岐の綴りをソースから検査するテストを足してある（どのホストでも走る）。
+
 ## [0.3.18] - 2026-08-10
 
 tooltip がカーソルと重ならなくなり、窓の外へ伸びなくなった版。
@@ -1205,7 +1231,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.18...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.19...HEAD
+[0.3.19]: https://github.com/Mutafika/sabitori/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/Mutafika/sabitori/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/Mutafika/sabitori/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/Mutafika/sabitori/compare/v0.3.15...v0.3.16
