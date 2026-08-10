@@ -162,8 +162,15 @@ impl Color {
     ///
     /// アルファは見ない。半透明の色の輝度は地と合成するまで決まらないので、
     /// 先に [`Color::over`] で潰すこと。
+    ///
+    /// 成分は `[0, 1]` に丸めてから計算する。バネ補間は行き過ぎる（`Animated` は
+    /// overshoot する）ので、アニメーション中の色は一時的に範囲外の成分を持ちうる。
+    /// 画面に出るのは丸めた後の色（[`Color::to_srgb8`] と同じ）なので、輝度もそちらに
+    /// 合わせる — でないと比が 21 を超えて、返り値の範囲が doc と食い違う。
     pub fn luminance(self) -> f32 {
-        0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
+        0.2126 * self.r.clamp(0.0, 1.0)
+            + 0.7152 * self.g.clamp(0.0, 1.0)
+            + 0.0722 * self.b.clamp(0.0, 1.0)
     }
 
     /// 2 色のコントラスト比 `[1.0, 21.0]`。WCAG 2.x の
@@ -349,6 +356,21 @@ mod tests {
         // 同じ色同士は 1:1。
         let c = Color::from_hex("#7aa2f7");
         assert!((c.contrast_ratio(c) - 1.0).abs() < 1e-6);
+    }
+
+    /// 範囲外の成分でも比は `[1, 21]` に収まること。
+    ///
+    /// バネ補間は行き過ぎるので、アニメーション中の色は一時的に 1.0 を超えた成分を
+    /// 持ちうる。丸めずに計算すると比が 31 まで出て、返り値の範囲が doc と食い違う。
+    #[test]
+    fn out_of_range_components_are_clamped_like_the_screen_does() {
+        let hot = Color::new(1.5, 1.5, 1.5, 1.0);
+        assert!((hot.luminance() - 1.0).abs() < 1e-6);
+        assert!((hot.contrast_ratio(Color::BLACK) - 21.0).abs() < 1e-4);
+
+        let cold = Color::new(-0.3, -0.3, -0.3, 1.0);
+        assert!((cold.luminance() - 0.0).abs() < 1e-6);
+        assert!((cold.contrast_ratio(Color::WHITE) - 21.0).abs() < 1e-4);
     }
 
     /// **本題**: `Color` は linear 保持なので、輝度にガンマ戻しを挟んではいけない。
