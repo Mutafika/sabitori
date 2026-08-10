@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-08-10
+
 押下の手応えが出る版。`.active()` / `.pressable()` が `DeclarativeApp` の上で
 黙って無視されていたのを直し、その過程で「誰にも読まれていなかった」`scale` を
 描画経路に通した。
@@ -1109,7 +1111,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.15...HEAD
+[0.3.15]: https://github.com/Mutafika/sabitori/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/Mutafika/sabitori/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/Mutafika/sabitori/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/Mutafika/sabitori/compare/v0.3.11...v0.3.12
