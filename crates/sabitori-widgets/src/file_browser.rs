@@ -181,15 +181,24 @@ fn local_utc_offset() -> i64 {
 /// Windows: `struct tm` has no `tm_gmtoff`, so derive the offset by taking the
 /// local broken-down time and re-interpreting it as UTC — the difference from
 /// the real timestamp is the offset east of UTC.
+///
+/// Every name here carries its `64` suffix on purpose. The plain spellings
+/// (`time`, `localtime_s`, `_mkgmtime`) are not functions the UCRT exports —
+/// `<time.h>` defines them as `__inline` wrappers that pick the 32- or 64-bit
+/// variant according to `_USE_32BIT_TIME_T`. C code links because the wrapper
+/// is compiled into the caller; naming them from Rust asks the linker for a
+/// symbol that was never emitted, and the build dies with
+/// `LNK2019: unresolved external symbol localtime_s`. Suffixed names are the
+/// real exports, and they also pin `time_t` to the `i64` used below.
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 fn local_utc_offset() -> i64 {
     unsafe extern "C" {
-        fn time(t: *mut i64) -> i64;
-        /// MSVC: `errno_t localtime_s(struct tm* dest, const time_t* src)`
+        fn _time64(t: *mut i64) -> i64;
+        /// MSVC: `errno_t _localtime64_s(struct tm* dest, const __time64_t* src)`
         /// (destination first — the argument order differs from C11 Annex K).
-        fn localtime_s(result: *mut win_tm, t: *const i64) -> i32;
+        fn _localtime64_s(result: *mut win_tm, t: *const i64) -> i32;
         /// Interprets the fields as UTC (the inverse of `gmtime`).
-        fn _mkgmtime(tm: *mut win_tm) -> i64;
+        fn _mkgmtime64(tm: *mut win_tm) -> i64;
     }
     #[repr(C)]
     struct win_tm {
@@ -199,18 +208,18 @@ fn local_utc_offset() -> i64 {
     }
     unsafe {
         let mut now: i64 = 0;
-        time(&mut now);
+        _time64(&mut now);
         let mut tm = std::mem::zeroed::<win_tm>();
-        if localtime_s(&mut tm, &now) != 0 {
+        if _localtime64_s(&mut tm, &now) != 0 {
             return 0;
         }
-        // `localtime_s` sets `tm_isdst > 0` during DST. We want these fields read
-        // as a plain wall clock — UTC has no DST — and `_mkgmtime`'s handling of
-        // `tm_isdst` is not clearly specified. Zeroing it removes the ambiguity:
-        // a no-op if the field is ignored, and it prevents a spurious one-hour
-        // correction if it is not. Only observable in DST regions.
+        // `_localtime64_s` sets `tm_isdst > 0` during DST. We want these fields
+        // read as a plain wall clock — UTC has no DST — and `_mkgmtime64`'s
+        // handling of `tm_isdst` is not clearly specified. Zeroing it removes the
+        // ambiguity: a no-op if the field is ignored, and it prevents a spurious
+        // one-hour correction if it is not. Only observable in DST regions.
         tm.tm_isdst = 0;
-        let as_utc = _mkgmtime(&mut tm);
+        let as_utc = _mkgmtime64(&mut tm);
         if as_utc == -1 {
             return 0;
         }
@@ -334,6 +343,35 @@ mod tests {
         );
         // Every zone in the IANA database is a whole number of minutes.
         assert_eq!(off % 60, 0, "offset {off}s is not a whole number of minutes");
+    }
+
+    /// The Windows branch cannot be link-tested from any other host, and it
+    /// fails at *link* time rather than compile time — so a Mac or Linux build
+    /// stays green while Windows dies with
+    /// `LNK2019: unresolved external symbol localtime_s`. The cause is that the
+    /// UCRT exports `_time64` / `_localtime64_s` / `_mkgmtime64`; the plain
+    /// spellings are `__inline` wrappers living in `<time.h>`, which C callers
+    /// compile into themselves and Rust cannot. Reading our own source is the
+    /// only check that runs on every host.
+    #[test]
+    fn the_windows_branch_names_only_exported_crt_symbols() {
+        let src = include_str!("file_browser.rs");
+        let start = src
+            .find(r#"#[cfg(all(not(target_arch = "wasm32"), windows))]"#)
+            .expect("the Windows local_utc_offset lost its cfg attribute");
+        let rest = &src[start + 1..];
+        let end = rest.find("#[cfg(").map(|i| start + 1 + i).unwrap_or(src.len());
+        let block = &src[start..end];
+
+        for exported in ["fn _time64(", "fn _localtime64_s(", "fn _mkgmtime64("] {
+            assert!(block.contains(exported), "the Windows branch stopped declaring `{exported}`");
+        }
+        for inline_only in ["fn time(", "fn localtime_s(", "fn _mkgmtime("] {
+            assert!(
+                !block.contains(inline_only),
+                "`{inline_only}` is a <time.h> inline, not a UCRT export — Windows will not link"
+            );
+        }
     }
 
     /// Guards the sign convention explicitly (east of UTC is positive), which is
