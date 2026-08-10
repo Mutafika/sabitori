@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-08-10
+
 tooltip がカーソルと重ならなくなり、窓の外へ伸びなくなった版。
 
 ### Fixed
@@ -1203,7 +1205,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.17...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.18...HEAD
+[0.3.18]: https://github.com/Mutafika/sabitori/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/Mutafika/sabitori/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/Mutafika/sabitori/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/Mutafika/sabitori/compare/v0.3.14...v0.3.15
