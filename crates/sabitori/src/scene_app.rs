@@ -112,93 +112,58 @@ struct SceneAppState<A: SceneApp> {
 }
 
 impl<A: SceneApp> SceneAppState<A> {
+    /// ポインタ直下のホバー / tooltip / cursor を引き直し、変化をアプリへ通知する。
+    /// 解決そのものは [`crate::runtime_shared::resolve_hover`] — declarative と
+    /// 同じ関数を呼ぶ。
     fn update_hover(&mut self) {
-        // Hover lookup (closest hoverable region) and cursor lookup are
-        // independent: a non-hoverable region can still declare a cursor
-        // (e.g. a text input asking for `Cursor::Text`). Mirrors the
-        // declarative `AppState::update_hover`.
-        let (new_hovered, hover_cursor, tooltip_text) = if let Some(ref build) = self.last_build {
-            let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-            let hover_match = build.hit_regions.iter()
-                .find(|r| r.hoverable && r.rect.contains(pt));
-            let (hovered, tooltip) = match hover_match {
-                Some(r) => (r.id.clone(), r.tooltip.clone()),
-                None => (None, None),
-            };
-            let cursor = build.hit_regions.iter()
-                .find(|r| r.cursor.is_some() && r.rect.contains(pt))
-                .and_then(|r| r.cursor);
-            (hovered, cursor, tooltip)
-        } else {
-            (None, None, None)
-        };
-        // Feed the tooltip hover-delay state machine (same as declarative).
-        {
-            let id_ref = new_hovered.as_deref();
-            let tt_ref = tooltip_text.as_deref();
-            self.tooltip_state.on_hover_change(id_ref, tt_ref, self.mouse_x, self.mouse_y);
+        let hit = self
+            .last_build
+            .as_ref()
+            .map(|b| crate::runtime_shared::resolve_hover(b, self.mouse_x, self.mouse_y))
+            .unwrap_or_default();
+        // 本文中リンクの上書きは declarative 側にしかない (こちらにテキスト選択層が
+        // 無いため)。 それ以外は同じ経路を通る。
+        self.tooltip_state.on_hover_change(
+            hit.hovered_id.as_deref(),
+            hit.tooltip.as_deref(),
+            self.mouse_x,
+            self.mouse_y,
+        );
+        if self.hovered_id != hit.hovered_id {
+            self.app.on_hover_change(hit.hovered_id.as_deref());
         }
-        if self.hovered_id != new_hovered {
-            self.app.on_hover_change(new_hovered.as_deref());
-        }
-        self.hovered_id = new_hovered;
-        self.apply_cursor(hover_cursor);
+        self.hovered_id = hit.hovered_id;
+        self.apply_cursor(hit.cursor);
         self.push_ui_capture();
     }
 
-    /// Push the resolved cursor preference to the OS via winit. `None`
-    /// resolves to the platform arrow. Deduped against `last_cursor` so we
-    /// don't fire `set_cursor` on every pointer-move. Ported verbatim from
-    /// the declarative `AppState` so both runtimes map cursors identically.
+    /// 解決した cursor を OS へ送る。 実体は
+    /// [`crate::runtime_shared::apply_cursor`] — declarative と同じ関数を呼ぶので、
+    /// 2 ランタイムの cursor 解決は定義上一致する（かつては "ported verbatim" の
+    /// 複製で、一致は口約束だった）。
     fn apply_cursor(&mut self, cursor: Option<sabitori_core::Cursor>) {
-        let resolved = cursor.unwrap_or(sabitori_core::Cursor::Default);
-        if self.last_cursor == Some(resolved) {
-            return;
-        }
-        self.last_cursor = Some(resolved);
-        if let Some(window) = self.window.as_ref() {
-            let icon = match resolved {
-                sabitori_core::Cursor::Default => winit::window::CursorIcon::Default,
-                sabitori_core::Cursor::Pointer => winit::window::CursorIcon::Pointer,
-                sabitori_core::Cursor::Text => winit::window::CursorIcon::Text,
-                sabitori_core::Cursor::Crosshair => winit::window::CursorIcon::Crosshair,
-                sabitori_core::Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
-                sabitori_core::Cursor::ResizeEw => winit::window::CursorIcon::EwResize,
-            };
-            window.set_cursor(icon);
-        }
+        crate::runtime_shared::apply_cursor(self.window.as_ref(), &mut self.last_cursor, cursor);
     }
 
-    /// 座標の下にある、id を持つ最前面の hit region の id。押下対象の解決に使う。
-    /// declarative の `AppState::hit_id_at` と同じ引き方。
+    /// 押下対象の解決。 実体は [`crate::runtime_shared::hit_id_at`]。
     fn hit_id_at(&self, x: f32, y: f32) -> Option<String> {
         let build = self.last_build.as_ref()?;
-        let pt = sabitori_core::Point::new(x, y);
-        build
-            .hit_regions
-            .iter()
-            .find(|r| r.clickable && r.id.is_some() && r.rect.contains(pt))
-            .and_then(|r| r.id.clone())
+        crate::runtime_shared::hit_id_at(build, x, y)
     }
 
     /// Recompute the [`UiCapture`] snapshot and push it to the app when it
     /// changed. SceneApp hosts gate their camera / scene input on this —
     /// the egui `wants_pointer_input()` / `wants_keyboard_input()` pattern.
     fn push_ui_capture(&mut self) {
-        let wants_pointer = self
-            .last_build
-            .as_ref()
-            .map(|b| b.wants_pointer(self.mouse_x, self.mouse_y))
-            .unwrap_or(false)
-            || self.drag_manager.is_active();
-        let capture = UiCapture {
-            wants_pointer,
-            wants_keyboard: self.focused_id.is_some(),
-        };
-        if capture != self.last_capture {
-            self.last_capture = capture;
-            self.app.on_ui_capture(capture);
-        }
+        crate::runtime_shared::push_ui_capture(
+            self.last_build.as_ref(),
+            self.mouse_x,
+            self.mouse_y,
+            self.drag_manager.is_active(),
+            self.focused_id.is_some(),
+            &mut self.last_capture,
+            &mut self.app,
+        );
     }
 
     fn winit_to_sabi_button(button: winit::event::MouseButton) -> Option<SabiMouseButton> {

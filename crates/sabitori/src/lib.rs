@@ -27,6 +27,8 @@ pub use sabitori_window::{SabitoriApp, EmbeddedRunner, run};
 pub mod bridge;
 pub mod declarative;
 pub mod scroll_sync;
+// 2 ランタイム (declarative / scene) が共有するポインタ解決。 crate 内部専用。
+mod runtime_shared;
 pub mod slider_sync;
 pub mod image_runtime;
 pub(crate) mod input_router;
