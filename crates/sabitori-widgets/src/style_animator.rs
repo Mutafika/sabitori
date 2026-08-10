@@ -94,17 +94,33 @@ impl StyleAnimator {
         Self { states: HashMap::new() }
     }
 
-    /// Update animation targets based on current hover state.
-    /// Walk the element tree, and for each element with transitions + hover_style,
-    /// set the animated values to either the hover style or the base style.
-    pub fn update(&mut self, element: &Element, hovered_id: &Option<String>) {
-        self.update_recursive(element, hovered_id);
+    /// Update animation targets based on the current hover / press state.
+    /// Walk the element tree, and for each element with transitions, set the
+    /// animated values to the active style, the hover style, or the base style.
+    ///
+    /// Press wins over hover — the same precedence `NodeStyle::effective_style`
+    /// uses. Without `pressed_id` an element with transitions could never show
+    /// its `active_style` at all, which is how `button()` (transitions by
+    /// default) ended up with no press feedback.
+    pub fn update(
+        &mut self,
+        element: &Element,
+        hovered_id: &Option<String>,
+        pressed_id: &Option<String>,
+    ) {
+        self.update_recursive(element, hovered_id, pressed_id);
     }
 
-    fn update_recursive(&mut self, element: &Element, hovered_id: &Option<String>) {
+    fn update_recursive(
+        &mut self,
+        element: &Element,
+        hovered_id: &Option<String>,
+        pressed_id: &Option<String>,
+    ) {
         if let Some(ref id) = element.id {
             if !element.transitions.is_empty() {
                 let is_hovered = hovered_id.as_deref() == Some(id.as_str());
+                let is_pressed = pressed_id.as_deref() == Some(id.as_str());
                 let spring = spring_from_transitions(element);
 
                 let entry = self.states.entry(id.clone()).or_insert_with(|| {
@@ -118,16 +134,19 @@ impl StyleAnimator {
                     }
                 });
 
-                if is_hovered {
-                    if let Some(ref hover) = element.hover_style {
-                        // Set targets to hover values (or base if not overridden)
-                        entry.bg.set_target(hover.background.unwrap_or(element.style.background));
-                        entry.border_color.set_target(hover.border_color.unwrap_or(element.style.border_color));
-                        entry.color.set_target(hover.color.unwrap_or(element.style.color));
-                        entry.opacity.set_target(hover.opacity.unwrap_or(element.style.opacity));
-                        entry.border_width.set_target(hover.border_width.unwrap_or(element.style.border_width));
-                        entry.font_size.set_target(hover.font_size.unwrap_or(element.style.font_size));
-                    }
+                // 押下 → hover → 素、の順に効く方を選ぶ。押下中でも active_style が
+                // 無ければ hover へ落ちるので、hover だけ書いた要素の挙動は不変。
+                let state = if is_pressed { element.active_style.as_ref() } else { None }
+                    .or(if is_hovered { element.hover_style.as_ref() } else { None });
+
+                if let Some(st) = state {
+                    // Set targets to the state's values (or base if not overridden)
+                    entry.bg.set_target(st.background.unwrap_or(element.style.background));
+                    entry.border_color.set_target(st.border_color.unwrap_or(element.style.border_color));
+                    entry.color.set_target(st.color.unwrap_or(element.style.color));
+                    entry.opacity.set_target(st.opacity.unwrap_or(element.style.opacity));
+                    entry.border_width.set_target(st.border_width.unwrap_or(element.style.border_width));
+                    entry.font_size.set_target(st.font_size.unwrap_or(element.style.font_size));
                 } else {
                     // Return to base style
                     entry.bg.set_target(element.style.background);
@@ -140,7 +159,7 @@ impl StyleAnimator {
             }
         }
         for child in &element.children {
-            self.update_recursive(child, hovered_id);
+            self.update_recursive(child, hovered_id, pressed_id);
         }
     }
 

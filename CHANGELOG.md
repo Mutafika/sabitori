@@ -15,6 +15,62 @@
 
 ## [Unreleased]
 
+押下の手応えが出る版。`.active()` / `.pressable()` が `DeclarativeApp` の上で
+黙って無視されていたのを直し、その過程で「誰にも読まれていなかった」`scale` を
+描画経路に通した。
+
+### Fixed
+- **`.active()` / `.pressable()` が `DeclarativeApp` で効かない**
+  ([#3](https://github.com/Mutafika/sabitori/issues/3))。runtime に押されている要素を
+  追う状態が無く、`Element::active_style` を読む所が declarative 経路に一つも
+  無かった。コンパイルは通り hover は効くので、**押下だけが黙って無視される**
+  — 消費側からは「書き方を間違えた」のか「効かない」のか区別が付かなかった。
+
+  `pressed_id` を持ち、押下でカーソル下の要素を覚え、解放・キャンセル・ウィンドウ外
+  への離脱で消す。`active_style` は hover の**後**に畳むので押下が hover に勝つ
+  （`NodeStyle::effective_style` と同じ規約）。タッチでも同じく効く。
+
+- **`StateStyle::scale` が誰にも読まれていなかった**
+  ([#3](https://github.com/Mutafika/sabitori/issues/3))。`ElementStyle` に `scale`
+  フィールドが無く、declarative でも scene でも参照されていなかったため、
+  `.hover(|s| s.scale(1.1))` も `.active(|s| s.scale(0.95))` も無反応だった。
+
+  つまり `pressable()`（中身が `scale` + hover bg）は **cursor と hover の bg しか
+  効いていなかった**。押下状態を追うだけでは issue の例は動かないままなので、
+  併せて塞いだ。
+
+- **`apply_hover_styles` が `StateStyle` の半分を落としていた**。`scale` /
+  `translate_x` / `translate_y` / `gap` / `width` / `height` / `padding` が畳まれず、
+  15 フィールド中 7 つが declarative 経路では死んでいた。全フィールドを畳むようにした。
+  レイアウトを変えるフィールドも扱えるのは、畳みが build の前に走るため。
+
+### Added
+- **`ElementStyle::scale`（と `Element::scaled()`）** — 要素の**中心**を軸にした
+  視覚のみの拡大縮小。CSS の `transform: scale()` と同じく**レイアウトはやり直さない**
+  ので、押されたボタンが縮んでも隣の行は動かない。
+
+  subtree 全部に乗る（子の位置・寸法、文字サイズ、角丸、線幅、影、polyline の点）。
+  **hit region も一緒に変換される**ので、見えている場所と押せる場所がずれない。
+  `opacity` と同じく乗算で継承する。
+
+### Changed
+- **`button()` が既定で押し込みの手応えを持つようになった。** hover で 1.02、
+  押下で 0.96 に scale する。色に触らないのは、正しい hover 色がパレット依存で、
+  `.accent()` を付けたボタンと決め打ちの色が喧嘩するため。`.hover()` / `.active()`
+  を書けば丸ごと上書きされる。
+
+  ⚠️ **既存アプリの button の見た目が変わる**（今まで無反応だったものが動く）。
+
+- `hover` / `active` の畳み込みを `sabitori_core::element::apply_state_styles` に
+  一本化した。`DeclarativeApp` と `SceneApp` が同じ関数を呼ぶので、どちらの
+  ランタイムで動かしても状態解決が一致する（`SceneApp` 側は "ported verbatim" の
+  複製を持っていて、放っておくと片方だけ直って乖離する形だった）。
+  呼び出し元ゼロで `scale` を落としていた `StateStyle::apply_to` も同じ実体に寄せた。
+
+- `StyleAnimator::update` が `pressed_id` を受け取るようになった。transitions を
+  持つ要素（`button()` は既定で持つ）でも `active_style` が効く。
+  ⚠️ **破壊的変更**: 引数が 1 つ増えている。
+
 ## [0.3.14] - 2026-08-10
 
 修飾キーつきのポインタ操作（⇧+クリック = 選択に足す／外す、⌥+ドラッグ = 複製）が

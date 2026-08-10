@@ -278,6 +278,7 @@ fn build_tree_impl(
         &mut element_counter,
         false,
         false,
+        1.0,
         None,
         probes,
         &mut probe_positions,
@@ -523,20 +524,36 @@ fn emit_commands(
     // `user-select: none` の継承状態。 ある要素で `.no_select()` が立つと、 そこから
     // 下の TextDraw が全部 `no_select` になる (CSS の `user-select` と同じ継承)。
     parent_no_select: bool,
+    // 祖先が課した視覚 scale の累積 (根は 1.0)。 レイアウト空間の px を画面 px に
+    // 直す係数で、 opacity と同じく乗算で下りていく。
+    parent_scale: f32,
     parent_clip: Option<Rect>,
     probes: &std::collections::HashSet<String>,
     probe_positions: &mut std::collections::HashMap<String, f32>,
 ) {
     let layout = taffy.layout(taffy_node).expect("Missing layout");
     let style = &element.style;
+    // `scale` cascades multiplicatively like opacity: `parent_scale` is what
+    // ancestors already imposed, `scale` adds this element's own on top and is
+    // what everything *inside* it (children, text, radii, borders) is drawn at.
+    // Layout is never redone — taffy measured everything at 1.0, so scaling is
+    // a pure post-layout transform and siblings never move (the whole point of
+    // a press affordance: the button shrinks, the row does not reflow).
+    let scale = parent_scale * style.scale;
     // `translate_x/y` are visual-only offsets applied AFTER taffy layout —
     // they shift the rendered rect + hit region without telling taffy, so
     // sibling layout stays put while a hover spring "pulls" or "lifts"
     // this element. Children inherit the shifted origin via abs_x/abs_y.
-    let abs_x = parent_x + layout.location.x + style.translate_x;
-    let abs_y = parent_y + layout.location.y + style.translate_y;
-    let w = layout.size.width;
-    let h = layout.size.height;
+    // Layout-space offsets arrive in unscaled px, so the *inherited* factor
+    // converts them to screen px; this element's own factor is not in play yet.
+    let slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
+    let slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    let w = layout.size.width * scale;
+    let h = layout.size.height * scale;
+    // Own scale pivots on the element's center — growing on hover must not
+    // shift the top-left corner, or a 1.1 hover would visibly slide the widget.
+    let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
+    let abs_y = slot_y + (layout.size.height * parent_scale - h) * 0.5;
     // Opacity cascades multiplicatively: a parent at 0.4 with a child at
     // 0.8 produces an effective 0.32 — matching CSS / SwiftUI / every
     // other tree-based UI system. Without this, fading a popup panel
@@ -581,7 +598,7 @@ fn emit_commands(
                     taffy, child_elem, child_taffy,
                     abs_x, abs_y, effective_opacity, render_list, overlay_list,
                     hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
-                    no_select,
+                    no_select, scale,
                     parent_clip,
                     probes, probe_positions,
                 );
@@ -612,14 +629,14 @@ fn emit_commands(
 
         target.commands.push(RenderCommand::Rect(RectDraw {
             rect,
-            corner_radii: style.corner_radius,
+            corner_radii: scale_corners(style.corner_radius, scale),
             fill_color: apply_opacity(bg, effective_opacity),
             border_color: apply_opacity(style.border_color, effective_opacity),
-            border_width: style.border_width,
+            border_width: style.border_width * scale,
             shadow_color: apply_opacity(shadow_color, effective_opacity),
-            shadow_offset,
-            shadow_blur,
-            shadow_spread,
+            shadow_offset: Point::new(shadow_offset.x * scale, shadow_offset.y * scale),
+            shadow_blur: shadow_blur * scale,
+            shadow_spread: shadow_spread * scale,
             opacity: effective_opacity,
             gradient_angle: style.gradient_angle,
             gradient_end_color: apply_opacity(style.gradient_end, effective_opacity),
@@ -630,13 +647,15 @@ fn emit_commands(
     // Emit text draw for Text and Button elements
     match &element.kind {
         ElementKind::Text { content } => {
-            let padding = resolve_edges_px(&style.padding);
+            // padding はレイアウト空間の px なので、描画位置に使う前に scale する
+            // （箱だけ縮んで中の字が元の位置に残る、を防ぐ）。
+            let padding = scale_edges(resolve_edges_px(&style.padding), scale);
             target.commands.push(RenderCommand::Text(TextDraw {
                 content: content.clone(),
                 position: Point::new(abs_x + padding.0, abs_y + padding.1),
                 max_width: (w - padding.0 - padding.2).max(0.0),
                 max_height: (h - padding.1 - padding.3).max(0.0),
-                font_size: style.font_size,
+                font_size: style.font_size * scale,
                 color: apply_opacity(style.color, effective_opacity),
                 bold: style.bold,
                 monospace: style.monospace,
@@ -653,13 +672,13 @@ fn emit_commands(
         }
         ElementKind::Button { label, .. } => {
             // Button label is centered text
-            let padding = resolve_edges_px(&style.padding);
+            let padding = scale_edges(resolve_edges_px(&style.padding), scale);
             target.commands.push(RenderCommand::Text(TextDraw {
                 content: label.clone(),
                 position: Point::new(abs_x + padding.0, abs_y + padding.1),
                 max_width: (w - padding.0 - padding.2).max(0.0),
                 max_height: (h - padding.1 - padding.3).max(0.0),
-                font_size: style.font_size,
+                font_size: style.font_size * scale,
                 color: apply_opacity(style.color, effective_opacity),
                 bold: style.bold,
                 monospace: style.monospace,
@@ -681,7 +700,7 @@ fn emit_commands(
             let cx = abs_x + w * 0.5;
             let cy = abs_y + h * 0.5;
             let outer_radius = (w.min(h) * 0.5).max(0.0);
-            let inner_radius = (outer_radius - arc.thickness).max(0.0);
+            let inner_radius = (outer_radius - arc.thickness * scale).max(0.0);
             target.commands.push(RenderCommand::Ring(RingDraw {
                 center: Point::new(cx, cy),
                 outer_radius,
@@ -699,11 +718,11 @@ fn emit_commands(
                 let pts = pl
                     .points
                     .iter()
-                    .map(|(px, py)| Point::new(abs_x + *px, abs_y + *py))
+                    .map(|(px, py)| Point::new(abs_x + *px * scale, abs_y + *py * scale))
                     .collect();
                 target.commands.push(RenderCommand::Polyline(PolylineDraw {
                     points: pts,
-                    width: pl.width.max(0.0),
+                    width: (pl.width * scale).max(0.0),
                     color: apply_opacity(pl.color, effective_opacity),
                 }));
             }
@@ -713,7 +732,7 @@ fn emit_commands(
                 key: key.clone(),
                 data: data.clone(),
                 rect,
-                corner_radii: style.corner_radius,
+                corner_radii: scale_corners(style.corner_radius, scale),
                 opacity: effective_opacity,
                 object_fit: style.object_fit,
             }));
@@ -877,7 +896,7 @@ fn emit_commands(
                     if !probes.is_empty() {
                         record_probes(
                             taffy, child_elem, child_taffy,
-                            abs_x + child_offset_x, abs_y + child_offset_y,
+                            abs_x + child_offset_x * scale, abs_y + child_offset_y * scale,
                             probes, probe_positions,
                         );
                     }
@@ -887,11 +906,11 @@ fn emit_commands(
 
             emit_commands(
                 taffy, child_elem, child_taffy,
-                abs_x + child_offset_x, abs_y + child_offset_y,
+                abs_x + child_offset_x * scale, abs_y + child_offset_y * scale,
                 effective_opacity,
                 render_list, overlay_list,
                 hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
-                no_select,
+                no_select, scale,
                 child_clip,
                 probes, probe_positions,
             );
@@ -1222,6 +1241,23 @@ fn resolve_edges_px(
         dim_to_px(edges.right),
         dim_to_px(edges.bottom),
     )
+}
+
+/// 4 辺の px を一様に scale する。`resolve_edges_px` の戻り値 (left, top, right,
+/// bottom) をそのまま受ける。
+fn scale_edges(e: (f32, f32, f32, f32), scale: f32) -> (f32, f32, f32, f32) {
+    (e.0 * scale, e.1 * scale, e.2 * scale, e.3 * scale)
+}
+
+/// 角丸半径を一様に scale する。箱だけ縮んで角丸が据え置きだと、小さい箱ほど
+/// 丸が効きすぎて別の形に見える。
+fn scale_corners(c: Corners<f32>, scale: f32) -> Corners<f32> {
+    Corners {
+        top_left: c.top_left * scale,
+        top_right: c.top_right * scale,
+        bottom_right: c.bottom_right * scale,
+        bottom_left: c.bottom_left * scale,
+    }
 }
 
 fn dim_to_px(d: Dimension) -> f32 {
@@ -1649,6 +1685,178 @@ mod tests {
         assert_eq!(texts.len(), 2);
         assert!(texts[0].no_select, "sidebar");
         assert!(!texts[1].no_select, "prose は選択可能のまま");
+    }
+
+    // -----------------------------------------------------------------
+    // hover / active の畳み込み (#3)
+    // -----------------------------------------------------------------
+
+    fn folded(mut el: Element, hovered: Option<&str>, pressed: Option<&str>) -> Element {
+        crate::element::apply_state_styles(
+            &mut el,
+            &hovered.map(str::to_string),
+            &pressed.map(str::to_string),
+        );
+        el
+    }
+
+    /// 本題の回帰: `.active()` が畳まれること。押下状態を追う所が無かった頃は、
+    /// この style は誰にも読まれずに捨てられていた。
+    #[test]
+    fn active_style_is_folded_while_pressed() {
+        let el = || div().id("save").bg(Color::BLACK).active(|s| s.scale(0.95));
+
+        assert_eq!(folded(el(), None, None).style.scale, 1.0, "素のときは素通し");
+        assert_eq!(folded(el(), None, Some("save")).style.scale, 0.95);
+        assert_eq!(folded(el(), None, Some("other")).style.scale, 1.0, "他人の押下では効かない");
+    }
+
+    /// 押下は hover に勝つ (`NodeStyle::effective_style` と同じ規約)。
+    #[test]
+    fn active_wins_over_hover() {
+        let el = div()
+            .id("b")
+            .hover(|s| s.scale(1.1).bg(Color::WHITE))
+            .active(|s| s.scale(0.95));
+        let out = folded(el, Some("b"), Some("b"));
+
+        assert_eq!(out.style.scale, 0.95, "押下中は active の値");
+        assert_eq!(
+            out.style.background, Color::WHITE,
+            "active が触っていないフィールドは hover の値が残る"
+        );
+    }
+
+    /// transitions を持つ要素でも、StyleAnimator が扱わないフィールドは即時に
+    /// 効く。ここを飛ばすと `.spring_transition()` を足した瞬間に `.active()` の
+    /// scale が黙って死ぬ — 一番たちの悪い形になる。
+    #[test]
+    fn animated_elements_still_get_the_fields_the_animator_cannot_reach() {
+        let el = div()
+            .id("b")
+            .bg(Color::BLACK)
+            .spring_transition(300.0, 25.0)
+            .active(|s| s.scale(0.95).bg(Color::WHITE));
+        let out = folded(el, None, Some("b"));
+
+        assert_eq!(out.style.scale, 0.95, "scale は animator が扱わない → 即時");
+        assert_eq!(
+            out.style.background, Color::BLACK,
+            "bg は animator の担当 → ここでは触らない (補間を潰さない)"
+        );
+    }
+
+    /// レイアウトを変えるフィールドも畳める。畳みは build の前に走るので、
+    /// taffy は畳んだ後の値をそのまま測る。
+    #[test]
+    fn state_styles_can_change_layout() {
+        let el = div().id("b").w(Px(100.0)).h(Px(40.0)).active(|s| s.w(Px(120.0)));
+        let out = folded(el, None, Some("b"));
+        let result = build_tree(&out, 800.0, 600.0);
+        let region = result.hit_regions.iter().find(|r| r.id.as_deref() == Some("b")).unwrap();
+
+        assert_eq!(region.rect.size.width, 120.0);
+    }
+
+    /// `button()` は既定で押し込みの手応えを持つ — consumer が毎回組み立てないで済む。
+    #[test]
+    fn button_has_a_default_press_affordance() {
+        let b = button("OK").id("ok");
+        assert!(b.active_style.is_some(), "button に既定の active_style が無い");
+
+        let pressed = folded(button("OK").id("ok"), None, Some("ok"));
+        assert!(pressed.style.scale < 1.0, "押下で縮むこと");
+        let hovered = folded(button("OK").id("ok"), Some("ok"), None);
+        assert!(hovered.style.scale > 1.0, "hover で少し持ち上がること");
+    }
+
+    // -----------------------------------------------------------------
+    // scale — レイアウトを動かさない視覚 transform (#3)
+    // -----------------------------------------------------------------
+
+    /// scale は要素の**中心**を軸に効く。左上を軸にすると、hover で 1.1 に
+    /// なった瞬間にウィジェットが右下へずれて見える。
+    #[test]
+    fn scale_pivots_on_the_center() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).children([
+            div().w(Px(100.0)).h(Px(100.0)).bg(Color::WHITE).scaled(0.5),
+        ]);
+        let result = build_tree(&root, 800.0, 600.0);
+        let r = result.render_list.rects().next().unwrap().rect;
+
+        assert_eq!(r.size.width, 50.0);
+        assert_eq!(r.size.height, 50.0);
+        // 中心 (50, 50) は動かない → 原点は (25, 25)。
+        assert_eq!(r.origin.x, 25.0);
+        assert_eq!(r.origin.y, 25.0);
+    }
+
+    /// レイアウトはやり直さない。押されたボタンが縮んでも隣の行は動かない、が
+    /// 押下フィードバックの前提。
+    #[test]
+    fn scale_does_not_move_siblings() {
+        let scaled = div().w(Px(200.0)).flex_row().children([
+            div().w(Px(100.0)).h(Px(40.0)).bg(Color::WHITE).scaled(0.5),
+            div().w(Px(100.0)).h(Px(40.0)).bg(Color::BLACK),
+        ]);
+        let plain = div().w(Px(200.0)).flex_row().children([
+            div().w(Px(100.0)).h(Px(40.0)).bg(Color::WHITE),
+            div().w(Px(100.0)).h(Px(40.0)).bg(Color::BLACK),
+        ]);
+        let a = build_tree(&scaled, 800.0, 600.0);
+        let b = build_tree(&plain, 800.0, 600.0);
+        let sib_a = a.render_list.rects().nth(1).unwrap().rect;
+        let sib_b = b.render_list.rects().nth(1).unwrap().rect;
+
+        assert_eq!(sib_a.origin.x, sib_b.origin.x, "隣は動かない");
+        assert_eq!(sib_a.size.width, sib_b.size.width, "隣は縮まない");
+    }
+
+    /// subtree 全部に乗る — 子の位置・寸法も、文字の大きさも。箱だけ縮んで
+    /// 中身が元寸のままだと、押し込みではなく「枠が欠けた」ように見える。
+    #[test]
+    fn scale_cascades_to_children_and_text() {
+        let root = div().w(Px(200.0)).h(Px(200.0)).scaled(0.5).children([
+            div().w(Px(100.0)).h(Px(100.0)).bg(Color::WHITE).children([
+                text("x").font_size(20.0),
+            ]),
+        ]);
+        let result = build_tree(&root, 800.0, 600.0);
+
+        let child = result.render_list.rects().next().unwrap().rect;
+        assert_eq!(child.size.width, 50.0, "子も半分になる");
+        let t = result.render_list.texts().next().unwrap();
+        assert_eq!(t.font_size, 10.0, "文字も半分になる");
+    }
+
+    /// hit region も一緒に変換されること。見えている場所と押せる場所がずれると、
+    /// 縮んだボタンの縁が「押せるのに反応しない」帯になる。
+    #[test]
+    fn scale_transforms_the_hit_region() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).children([
+            div().id("btn").w(Px(100.0)).h(Px(100.0)).bg(Color::WHITE).scaled(0.5),
+        ]);
+        let result = build_tree(&root, 800.0, 600.0);
+        let region = result
+            .hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some("btn"))
+            .expect("hit region for btn");
+
+        assert_eq!(region.rect.origin.x, 25.0);
+        assert_eq!(region.rect.size.width, 50.0);
+    }
+
+    /// 既定は 1.0 = 素通し。既存アプリの見た目が 1px も動かないこと。
+    #[test]
+    fn unscaled_geometry_is_untouched() {
+        let root = div().w(Px(120.0)).h(Px(60.0)).bg(Color::WHITE).rounded_px(8.0);
+        let result = build_tree(&root, 800.0, 600.0);
+        let d = result.render_list.rects().next().unwrap();
+
+        assert_eq!(d.rect.origin.x, 0.0);
+        assert_eq!(d.rect.size.width, 120.0);
+        assert_eq!(d.corner_radii.top_left, 8.0);
     }
 
     /// button の label はコントロールのキャプションであって本文ではないので、
