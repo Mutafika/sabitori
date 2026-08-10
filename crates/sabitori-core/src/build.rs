@@ -799,8 +799,11 @@ fn emit_commands(
     let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
     let target_list = if use_overlay { &mut *overlay_list } else { &mut *render_list };
     let own_clip: Option<Rect> = if clips {
-        // Use content box (container minus padding) for clip rect
-        let padding = resolve_edges_px(&style.padding);
+        // Use content box (container minus padding) for clip rect.
+        // `rect` は画面 px なので padding も scale してから引く。素の px を引くと、
+        // 縮んだコンテナのクリップ枠だけが内側に食い込んで中身が欠ける。
+        let padding_layout = resolve_edges_px(&style.padding);
+        let padding = scale_edges(padding_layout, scale);
         let clip_rect = Rect::new(
             rect.origin.x + padding.0,
             rect.origin.y + padding.1,
@@ -827,11 +830,16 @@ fn emit_commands(
                             content_h = content_h.max(cl.location.y + cl.size.height);
                         }
                     }
+                    // viewport は content と同じ**レイアウト空間**で報告する。
+                    // content_* は taffy の値 (素の px)、scroll_y も素の px なので、
+                    // ここだけ画面 px にすると scale 下でクランプが壊れる。
                     scroll_measures.insert(id.clone(), ScrollMeasure {
                         content_width: content_w,
                         content_height: content_h,
-                        viewport_width: clip_rect.size.width,
-                        viewport_height: clip_rect.size.height,
+                        viewport_width: (layout.size.width - padding_layout.0 - padding_layout.2)
+                            .max(0.0),
+                        viewport_height: (layout.size.height - padding_layout.1 - padding_layout.3)
+                            .max(0.0),
                     });
                 }
             }
@@ -920,11 +928,13 @@ fn emit_commands(
     // Record measured content extent for scroll containers
     if is_scroll {
         if let Some(ref id) = element.id {
+            // content_* は taffy のレイアウト空間。viewport も素の px で揃える
+            // (`w` / `h` は scale 済みの画面 px なので使えない)。
             scroll_measures.insert(id.clone(), ScrollMeasure {
                 content_width: max_child_right,
                 content_height: max_child_bottom,
-                viewport_width: w,
-                viewport_height: h,
+                viewport_width: layout.size.width,
+                viewport_height: layout.size.height,
             });
         }
 
@@ -1845,6 +1855,71 @@ mod tests {
 
         assert_eq!(region.rect.origin.x, 25.0);
         assert_eq!(region.rect.size.width, 50.0);
+    }
+
+    /// scale 下でも、スクロールの採寸は**レイアウト空間**のまま報告される。
+    ///
+    /// `content_*` は taffy の値（素の px）で、`scroll_y` も素の px。viewport だけを
+    /// 画面 px にすると、縮んだパネルの中のスクロールが「まだ余地があるのに止まる」
+    /// / 「無いのに動く」形でクランプを踏み外す。
+    #[test]
+    fn scroll_measures_stay_in_layout_space_under_scale() {
+        let rows = |scale: f32| {
+            div().w(Px(200.0)).h(Px(200.0)).scaled(scale).children([
+                div()
+                    .id("pane")
+                    .w(Px(100.0))
+                    .h(Px(100.0))
+                    .overflow_scroll()
+                    .flex_col()
+                    .children(
+                        (0..10)
+                            .map(|_| div().w(Px(100.0)).h(Px(40.0)).bg(ROW_COLOR))
+                            .collect::<Vec<_>>(),
+                    ),
+            ])
+        };
+        let plain = build_tree(&rows(1.0), 800.0, 600.0);
+        let scaled = build_tree(&rows(0.5), 800.0, 600.0);
+        let a = &plain.scroll_measures["pane"];
+        let b = &scaled.scroll_measures["pane"];
+
+        assert_eq!(b.viewport_height, a.viewport_height, "viewport は scale で変わらない");
+        assert_eq!(b.content_height, a.content_height, "content も変わらない");
+        assert!(b.content_height > b.viewport_height, "採寸そのものが成立していること");
+    }
+
+    /// クリップ枠の padding も一緒に scale される。素の px を引くと、縮んだ
+    /// コンテナのクリップだけが内側に食い込んで中身が余計に欠ける。
+    #[test]
+    fn clip_inset_scales_with_the_container() {
+        let tree = |scale: f32| {
+            div().w(Px(200.0)).h(Px(200.0)).scaled(scale).children([
+                div()
+                    .w(Px(100.0))
+                    .h(Px(100.0))
+                    .p_px(10.0)
+                    .overflow_hidden()
+                    .children([div().w(Px(200.0)).h(Px(200.0)).bg(ROW_COLOR)]),
+            ])
+        };
+        let clip_of = |r: &BuildResult| {
+            r.render_list
+                .commands
+                .iter()
+                .find_map(|c| match c {
+                    RenderCommand::PushClip(rect) => Some(*rect),
+                    _ => None,
+                })
+                .expect("PushClip")
+        };
+        let plain = clip_of(&build_tree(&tree(1.0), 800.0, 600.0));
+        let scaled = clip_of(&build_tree(&tree(0.5), 800.0, 600.0));
+
+        // 素: 100 - 10*2 = 80。半分なら 50 - 5*2 = 40 でなければならない
+        // (padding を scale し忘れると 50 - 10*2 = 30 になる)。
+        assert_eq!(plain.size.width, 80.0);
+        assert_eq!(scaled.size.width, 40.0);
     }
 
     /// 既定は 1.0 = 素通し。既存アプリの見た目が 1px も動かないこと。
