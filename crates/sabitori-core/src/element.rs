@@ -323,6 +323,20 @@ pub struct ElementStyle {
     pub translate_x: f32,
     /// Visual-only Y offset. See `translate_x` for semantics.
     pub translate_y: f32,
+    /// Visual-only uniform scale about the element's **center**, applied after
+    /// layout and inherited by the whole subtree — the CSS `transform: scale()`
+    /// model. `1.0` (default) = no scaling.
+    ///
+    /// Nothing is re-laid-out: taffy still measures the element at its natural
+    /// size and siblings stay put, so a button that scales to 0.95 on press
+    /// doesn't shove the row around. Everything drawn inside scales with it —
+    /// rect geometry, corner radii, border and shadow widths, font sizes,
+    /// polyline points — and so does the hit region, which keeps the pointer
+    /// and the pixels in agreement.
+    ///
+    /// This is what `.hover(|s| s.scale(1.1))` / `.active(|s| s.scale(0.95))`
+    /// fold into.
+    pub scale: f32,
 
     // Text (inherited)
     pub color: Color,
@@ -409,6 +423,7 @@ impl Default for ElementStyle {
             rotation: 0.0,
             translate_x: 0.0,
             translate_y: 0.0,
+            scale: 1.0,
             color: Color::WHITE,
             font_size: 14.0,
             bold: false,
@@ -556,44 +571,13 @@ pub struct StateStyle {
 
 impl StateStyle {
     /// Merge this state style onto a base ElementStyle, returning a new resolved style.
+    ///
+    /// フィールドの取りこぼしを防ぐため、畳み込み自体は [`fold_state_style`] に
+    /// 一本化してある（かつて 3 箇所に同じ列挙があり、ここだけ `scale` /
+    /// `translate_*` を落としていた）。
     pub fn apply_to(&self, base: &ElementStyle) -> ElementStyle {
         let mut s = base.clone();
-        if let Some(bg) = self.background {
-            s.background = bg;
-        }
-        if let Some(bc) = self.border_color {
-            s.border_color = bc;
-        }
-        if let Some(bw) = self.border_width {
-            s.border_width = bw;
-        }
-        if let Some(ref shadow) = self.shadow {
-            s.shadow = shadow.clone();
-        }
-        if let Some(op) = self.opacity {
-            s.opacity = op;
-        }
-        if let Some(cr) = self.corner_radius {
-            s.corner_radius = cr;
-        }
-        if let Some(g) = self.gap {
-            s.gap = g;
-        }
-        if let Some(w) = self.width {
-            s.width = w;
-        }
-        if let Some(h) = self.height {
-            s.height = h;
-        }
-        if let Some(p) = self.padding {
-            s.padding = p;
-        }
-        if let Some(c) = self.color {
-            s.color = c;
-        }
-        if let Some(fs) = self.font_size {
-            s.font_size = fs;
-        }
+        fold_state_style(&mut s, self, false);
         s
     }
 }
@@ -742,6 +726,92 @@ impl std::fmt::Debug for Element {
             .field("on_hover", &self.on_hover.as_ref().map(|_| ".."))
             .finish()
     }
+}
+
+// ---------------------------------------------------------------------------
+// State style folding (hover / active)
+// ---------------------------------------------------------------------------
+
+/// Fold the hover and press state styles of a whole tree into its base styles.
+///
+/// Runs on the element tree *before* layout, so state overrides that change
+/// geometry (`width` / `height` / `padding` / `gap`) work like any other style —
+/// taffy simply measures the folded values.
+///
+/// Precedence is press over hover over base, matching
+/// `sabitori_scene::NodeStyle::effective_style`. Both are folded when both
+/// apply, so `.active()` only has to name what actually differs while pressed.
+///
+/// `animated` elements (those with `transitions`) are handled by
+/// `StyleAnimator` for the fields it interpolates; see [`fold_state_style`].
+///
+/// Both runtimes (`DeclarativeApp` and `SceneApp`) call this, so a widget
+/// resolves its states identically no matter which one is driving it.
+pub fn apply_state_styles(
+    element: &mut Element,
+    hovered_id: &Option<String>,
+    pressed_id: &Option<String>,
+) {
+    let is_hovered = element
+        .id
+        .as_deref()
+        .is_some_and(|id| hovered_id.as_deref() == Some(id));
+    let is_pressed = element
+        .id
+        .as_deref()
+        .is_some_and(|id| pressed_id.as_deref() == Some(id));
+    if is_hovered || is_pressed {
+        let animated = !element.transitions.is_empty();
+        // style と hover_style/active_style を同時に触るので、フィールド分割で
+        // 借用を割る。
+        let Element { style, hover_style, active_style, .. } = element;
+        if is_hovered {
+            if let Some(h) = hover_style.as_ref() {
+                fold_state_style(style, h, animated);
+            }
+        }
+        if is_pressed {
+            if let Some(a) = active_style.as_ref() {
+                fold_state_style(style, a, animated);
+            }
+        }
+    }
+    for child in &mut element.children {
+        apply_state_styles(child, hovered_id, pressed_id);
+    }
+}
+
+/// Fold one [`StateStyle`] into an [`ElementStyle`].
+///
+/// `animated` = この要素は `transitions` を持つので `StyleAnimator` がバネで
+/// 補間している。その場合、animator が持っているフィールドをここで即値にすると
+/// 補間を潰してしまうので飛ばす。
+///
+/// animator が扱わないフィールド（scale / translate / 角丸 / 影 / レイアウト系）は
+/// `transitions` の有無に関わらず即時に反映する — さもないと
+/// `.spring_transition()` を足した瞬間に `.active(|s| s.scale(0.95))` が黙って
+/// 効かなくなる、という一番たちの悪い形になる。
+pub fn fold_state_style(style: &mut ElementStyle, s: &StateStyle, animated: bool) {
+    // --- StyleAnimator が扱わない = 常に即時 ---
+    if let Some(v) = s.scale { style.scale = v; }
+    if let Some(v) = s.translate_x { style.translate_x = v; }
+    if let Some(v) = s.translate_y { style.translate_y = v; }
+    if let Some(v) = s.corner_radius { style.corner_radius = v; }
+    if let Some(v) = s.shadow { style.shadow = v; }
+    if let Some(v) = s.gap { style.gap = v; }
+    if let Some(v) = s.width { style.width = v; }
+    if let Some(v) = s.height { style.height = v; }
+    if let Some(v) = s.padding { style.padding = v; }
+    // --- ここから下は StyleAnimator の担当 ---
+    if animated {
+        return;
+    }
+    if let Some(v) = s.background { style.background = v; }
+    if let Some(v) = s.border_color { style.border_color = v; }
+    if let Some(v) = s.border_width { style.border_width = v; }
+    if let Some(v) = s.opacity { style.opacity = v; }
+    if let Some(v) = s.color { style.color = v; }
+    if let Some(v) = s.font_size { style.font_size = v; }
 }
 
 // ---------------------------------------------------------------------------
@@ -905,8 +975,16 @@ pub fn button(label: impl Into<String>) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
-        hover_style: None,
-        active_style: None,
+        // A button ships with the affordance built in: it lifts a little under
+        // the pointer and sinks under the press. Colors are deliberately not
+        // touched — the right hover tint depends on the app's palette, and an
+        // `.accent()` button would fight a hardcoded one. Scale is palette-free,
+        // so it reads correctly on any theme.
+        //
+        // Callers who want something else just override with `.hover()` /
+        // `.active()`; those replace these outright.
+        hover_style: Some(StateStyle { scale: Some(1.02), ..StateStyle::default() }),
+        active_style: Some(StateStyle { scale: Some(0.96), ..StateStyle::default() }),
         transitions: vec![Transition {
             property: TransitionProperty::All,
             kind: TransitionKind::default(),
@@ -1403,6 +1481,14 @@ impl Element {
     pub fn xlate(mut self, x: f32, y: f32) -> Self {
         self.style.translate_x = x;
         self.style.translate_y = y;
+        self
+    }
+
+    /// Set a visual-only uniform scale about the element's center. Layout is
+    /// unaffected (siblings stay put) and the whole subtree scales with it —
+    /// see [`ElementStyle::scale`]. `1.0` = no scaling.
+    pub fn scaled(mut self, factor: f32) -> Self {
+        self.style.scale = factor;
         self
     }
 

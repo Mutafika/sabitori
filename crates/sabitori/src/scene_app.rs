@@ -72,6 +72,9 @@ struct SceneAppState<A: SceneApp> {
     mouse_x: f32,
     mouse_y: f32,
     hovered_id: Option<String>,
+    /// 押下中の要素の id。`active_style` の畳み込みに使う。declarative の
+    /// `AppState` と同じ意味・同じ寿命（押下で入り、解放・キャンセル・離脱で消える）。
+    pressed_id: Option<String>,
     focused_id: Option<String>,
     /// Last cursor we asked winit to display, to dedup `set_cursor`. Mirrors
     /// the field of the same name in the declarative `AppState`.
@@ -166,28 +169,16 @@ impl<A: SceneApp> SceneAppState<A> {
         }
     }
 
-    /// Instantly apply `hover_style` overrides to elements that have a
-    /// hover_style but NO transitions (transitioned elements are handled by
-    /// `StyleAnimator` instead). Ported verbatim from the declarative
-    /// `AppState` so both runtimes resolve hover identically.
-    fn apply_hover_styles(element: &mut sabitori_core::Element, hovered_id: &Option<String>) {
-        if let (Some(id), Some(hover)) = (&element.id, &element.hover_style) {
-            if element.transitions.is_empty() && hovered_id.as_deref() == Some(id.as_str()) {
-                if let Some(bg) = hover.background { element.style.background = bg; }
-                if let Some(bc) = hover.border_color { element.style.border_color = bc; }
-                if let Some(bw) = hover.border_width { element.style.border_width = bw; }
-                if let Some(op) = hover.opacity { element.style.opacity = op; }
-                if let Some(cr) = hover.corner_radius { element.style.corner_radius = cr; }
-                if let Some(c) = hover.color { element.style.color = c; }
-                if let Some(fs) = hover.font_size { element.style.font_size = fs; }
-                if let Some(ref shadow) = hover.shadow {
-                    element.style.shadow = shadow.clone();
-                }
-            }
-        }
-        for child in &mut element.children {
-            Self::apply_hover_styles(child, hovered_id);
-        }
+    /// 座標の下にある、id を持つ最前面の hit region の id。押下対象の解決に使う。
+    /// declarative の `AppState::hit_id_at` と同じ引き方。
+    fn hit_id_at(&self, x: f32, y: f32) -> Option<String> {
+        let build = self.last_build.as_ref()?;
+        let pt = sabitori_core::Point::new(x, y);
+        build
+            .hit_regions
+            .iter()
+            .find(|r| r.clickable && r.id.is_some() && r.rect.contains(pt))
+            .and_then(|r| r.id.clone())
     }
 
     /// Recompute the [`UiCapture`] snapshot and push it to the app when it
@@ -382,6 +373,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     return;
                 }
                 self.hovered_id = None;
+                self.pressed_id = None;
                 // Pointer left the window mid-drag → notify + cancel.
                 if let Some((data, _source_id)) = self.drag_manager.drag_info() {
                     self.app.on_drag_out(&data);
@@ -431,6 +423,14 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         },
                     };
                     self.app.on_input(&event);
+                }
+
+                // 押下中の要素を覚える → 次フレームで active_style が畳まれる (#3)。
+                if button == winit::event::MouseButton::Left {
+                    self.pressed_id = match state {
+                        winit::event::ElementState::Pressed => self.hit_id_at(pos.x, pos.y),
+                        winit::event::ElementState::Released => None,
+                    };
                 }
 
                 // Also handle DeclarativeApp click/focus semantics
@@ -942,9 +942,13 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // the declarative `AppState` redraw path.
                 self.presence_animator.update_presence(&root);
                 self.presence_animator.apply(&mut root);
-                self.style_animator.update(&root, &self.hovered_id);
+                self.style_animator.update(&root, &self.hovered_id, &self.pressed_id);
                 self.style_animator.apply(&mut root);
-                Self::apply_hover_styles(&mut root, &self.hovered_id);
+                sabitori_core::element::apply_state_styles(
+                    &mut root,
+                    &self.hovered_id,
+                    &self.pressed_id,
+                );
 
                 // overflow_scroll コンテナを登録し、現在の offset を要素へ patch する。
                 Self::patch_scroll_offsets(&mut root, &mut self.scroll_states);
@@ -1134,6 +1138,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         mouse_x: 0.0,
         mouse_y: 0.0,
         hovered_id: None,
+        pressed_id: None,
         focused_id: None,
         last_cursor: None,
         last_ime_area: None, last_ime_allowed: true,
@@ -1180,6 +1185,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         mouse_x: 0.0,
         mouse_y: 0.0,
         hovered_id: None,
+        pressed_id: None,
         focused_id: None,
         last_cursor: None,
         last_ime_area: None, last_ime_allowed: true,

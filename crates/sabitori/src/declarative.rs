@@ -521,6 +521,11 @@ struct AppState<A: DeclarativeApp> {
     mouse_x: f32,
     mouse_y: f32,
     hovered_id: Option<String>,
+    /// 現在押されている要素の id。`active_style` (= `.active()` / `.pressable()`)
+    /// を畳むのに使う。押下で入り、解放・キャンセル・ウィンドウ外への離脱で消える。
+    /// hover と同じく「id を 1 つ持つ」だけの単純な状態で、押したまま外へ払っても
+    /// 解放まで押下表示は続く（CSS の `:active` と同じ）。
+    pressed_id: Option<String>,
     /// Last cursor we asked winit to display. Used to dedup
     /// `set_cursor` calls — flipping the cursor every frame is cheap
     /// but not free, and Apple's NSCursor swap can show up as a
@@ -868,6 +873,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     return;
                 }
                 self.hovered_id = None;
+                // ウィンドウの外へ出たら押下も解除する。 解放イベントが別ウィンドウで
+                // 起きると戻ってこないので、ここで消さないと押しっぱなしの見た目が残る。
+                self.pressed_id = None;
                 // If a drag is active, notify the app it left the window
                 if let Some((data, _source_id)) = self.drag_manager.drag_info() {
                     self.app.on_drag_out(&data);
@@ -895,6 +903,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     button: Some(InputMouseButton::Left),
                     modifiers: self.modifiers,
                 });
+                // 押下中の要素を覚える。 次のフレームの `apply_state_styles` が
+                // ここから `active_style` を畳む (#3)。 hover と同じ引き方だが、
+                // 押下対象は `clickable`（= id 付き）で見る — `.active()` は
+                // hover_style を持たない要素にも書けるため。
+                self.pressed_id = self.hit_id_at(self.mouse_x, self.mouse_y);
                 if let Some(ref build) = self.last_build {
                     let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
                     let mut focus_set = false;
@@ -995,6 +1008,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     button: Some(InputMouseButton::Left),
                     modifiers: self.modifiers,
                 });
+                self.pressed_id = None;
                 // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
                 self.selecting = false;
                 // 1 文字も範囲が無いなら (= 単なる click) 視覚 noise になるので消す。
@@ -1136,6 +1150,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             button: None,
                             modifiers: self.modifiers,
                         });
+                        self.pressed_id = self.hit_id_at(x, y);
                     }
                     winit::event::TouchPhase::Moved => {
                         self.active_touches.insert(touch.id, (x, y));
@@ -1154,6 +1169,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             button: None,
                             modifiers: self.modifiers,
                         });
+                        self.pressed_id = None;
                     }
                     winit::event::TouchPhase::Cancelled => {
                         self.active_touches.remove(&touch.id);
@@ -1161,6 +1177,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             id,
                             kind: PointerKind::Touch,
                         });
+                        self.pressed_id = None;
                     }
                 }
 
@@ -1883,6 +1900,7 @@ impl<A: DeclarativeApp> AppState<A> {
             mouse_x: 0.0,
             mouse_y: 0.0,
             hovered_id: None,
+            pressed_id: None,
             last_cursor: None,
             last_ime_area: None,
             last_ime_allowed: true,
@@ -2007,12 +2025,12 @@ impl<A: DeclarativeApp> AppState<A> {
         self.presence_animator.update_presence(&root);
         self.presence_animator.apply(&mut root);
 
-        // Apply hover styles and spring transitions:
+        // Apply hover/active styles and spring transitions:
         // 1. Elements WITH transitions → use StyleAnimator (smooth spring)
-        // 2. Elements with hover_style but NO transitions → instant apply
-        self.style_animator.update(&root, &self.hovered_id);
+        // 2. それ以外、および animator が扱わないフィールド → 即時に畳む
+        self.style_animator.update(&root, &self.hovered_id, &self.pressed_id);
         self.style_animator.apply(&mut root);
-        Self::apply_hover_styles(&mut root, &self.hovered_id);
+        sabitori_core::element::apply_state_styles(&mut root, &self.hovered_id, &self.pressed_id);
 
         // Patch scroll offsets from managed state + register new scroll containers
         crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
@@ -2673,27 +2691,17 @@ impl<A: DeclarativeApp> AppState<A> {
 
     /// Instantly apply hover_style overrides to elements that have hover_style
     /// but do NOT have transitions (those are handled by StyleAnimator instead).
-    fn apply_hover_styles(element: &mut Element, hovered_id: &Option<String>) {
-        if let (Some(id), Some(hover)) = (&element.id, &element.hover_style) {
-            // Only apply instant styles for elements WITHOUT transitions
-            if element.transitions.is_empty() {
-                if hovered_id.as_deref() == Some(id.as_str()) {
-                    if let Some(bg) = hover.background { element.style.background = bg; }
-                    if let Some(bc) = hover.border_color { element.style.border_color = bc; }
-                    if let Some(bw) = hover.border_width { element.style.border_width = bw; }
-                    if let Some(op) = hover.opacity { element.style.opacity = op; }
-                    if let Some(cr) = hover.corner_radius { element.style.corner_radius = cr; }
-                    if let Some(c) = hover.color { element.style.color = c; }
-                    if let Some(fs) = hover.font_size { element.style.font_size = fs; }
-                    if let Some(ref shadow) = hover.shadow {
-                        element.style.shadow = shadow.clone();
-                    }
-                }
-            }
-        }
-        for child in &mut element.children {
-            Self::apply_hover_styles(child, hovered_id);
-        }
+    /// 座標の下にある、 id を持つ最前面の hit region の id。 押下対象の解決に使う。
+    /// hover と違って `hoverable` では絞らない — `.active()` だけを書いた要素
+    /// (hover_style 無し) も押下対象になるべきなので、 `clickable` (= id 付き) で見る。
+    fn hit_id_at(&self, x: f32, y: f32) -> Option<String> {
+        let build = self.last_build.as_ref()?;
+        let pt = sabitori_core::Point::new(x, y);
+        build
+            .hit_regions
+            .iter()
+            .find(|r| r.clickable && r.id.is_some() && r.rect.contains(pt))
+            .and_then(|r| r.id.clone())
     }
 
     fn update_hover(&mut self) {
@@ -3411,6 +3419,68 @@ mod frame_tests {
         });
         let frame = state.build_frame(400.0, 300.0, &StubMeasure);
         assert!(frame.overlay_build.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // 押下状態 (#3)
+    // -----------------------------------------------------------------
+
+    /// 押下対象の解決 → `active_style` の畳み込み、までの配線。runtime に押下を
+    /// 追う状態が無かった頃は `.active()` がどこからも読まれず、押しても何も
+    /// 起きなかった。
+    #[test]
+    fn pressing_an_element_folds_its_active_style() {
+        let tree = || {
+            sabitori_core::div().child(
+                sabitori_core::div()
+                    .id("btn")
+                    .w(sabitori_core::Dimension::Px(100.0))
+                    .h(sabitori_core::Dimension::Px(40.0))
+                    .active(|s| s.scale(0.5)),
+            )
+        };
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(tree)),
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+
+        let idle = state.app.rects["btn"];
+        assert_eq!(idle.size.width, 100.0, "押していないので素の寸法");
+
+        // 押下対象がカーソル位置から引けること (mouse_down が使う経路)。
+        assert_eq!(state.hit_id_at(10.0, 10.0).as_deref(), Some("btn"));
+        assert_eq!(state.hit_id_at(300.0, 200.0), None, "外は掴まない");
+
+        // 押下中として組み直すと active_style が乗る。
+        state.pressed_id = Some("btn".to_string());
+        run_frame(&mut state, 400.0, 300.0);
+
+        let pressed = state.app.rects["btn"];
+        assert_eq!(pressed.size.width, 50.0, "押下で縮む");
+        assert_eq!(pressed.origin.x, 25.0, "中心を軸に縮むので原点は内側へ");
+    }
+
+    /// 他の要素を押している間は畳まれない。 押下 id の取り違えは「隣のボタンが
+    /// 凹む」形で出る。
+    #[test]
+    fn pressing_another_element_leaves_this_one_alone() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(|| {
+                sabitori_core::div().child(
+                    sabitori_core::div()
+                        .id("btn")
+                        .w(sabitori_core::Dimension::Px(100.0))
+                        .h(sabitori_core::Dimension::Px(40.0))
+                        .active(|s| s.scale(0.5)),
+                )
+            })),
+            ..Default::default()
+        });
+        state.pressed_id = Some("someone-else".to_string());
+        run_frame(&mut state, 400.0, 300.0);
+
+        assert_eq!(state.app.rects["btn"].size.width, 100.0);
     }
 
     // -----------------------------------------------------------------
