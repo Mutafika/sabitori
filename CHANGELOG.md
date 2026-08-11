@@ -15,6 +15,18 @@
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-08-11
+
+macOS で非アクティブ窓の 1 クリック目が届くようになった版。
+
+### Fixed
+- **macOS で非アクティブな窓への最初のクリックが content に届かない**。winit の
+  既定が `acceptsFirstMouse = false` なので、他アプリ（Finder 等）から戻った
+  1 クリック目が「窓を前面に出すだけ」で吸われていた。ダッシュボード系は他窓と
+  行き来しながら操作するため、「押しても効かない」として実害が出る。
+  `run_declarative` の窓生成で `WindowAttributesExtMacOS::with_accepts_first_mouse(true)`
+  を渡すようにした。
+
 ## [0.3.19] - 2026-08-11
 
 Windows でリンクが通るようになった版。
