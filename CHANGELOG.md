@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-08-12
+
 修飾キーの変化を観測できるようにした版。「⇧を押している間だけ」効かせる操作
 （直交スナップ、比率固定、追加選択）が書けるようになる。
 
@@ -1282,7 +1284,9 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.19...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.21...HEAD
+[0.3.21]: https://github.com/Mutafika/sabitori/compare/v0.3.20...v0.3.21
+[0.3.20]: https://github.com/Mutafika/sabitori/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/Mutafika/sabitori/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/Mutafika/sabitori/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/Mutafika/sabitori/compare/v0.3.16...v0.3.17
