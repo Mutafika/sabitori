@@ -22,7 +22,8 @@
 - **`InputEvent::ModifiersChanged(Modifiers)`**
   ([#12](https://github.com/Mutafika/sabitori/issues/12))。修飾キーの状態が変わった時に
   **変化後**の値が届く。ポインタが止まっていても届くので、「⇧を押した瞬間にゴム紐を
-  直交へ折る」のような、動きを伴わない切り替えもこれで書ける。
+  直交へ折る」のような、動きを伴わない切り替えもこれで書ける。3 ランタイム
+  （`DeclarativeApp` / `SceneApp` / `SabitoriApp`）すべてから配られる。
 
 - **`InputEvent::PointerMoved` に `modifiers` が載った**
   ([#12](https://github.com/Mutafika/sabitori/issues/12))。`PointerPressed` /

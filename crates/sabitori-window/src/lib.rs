@@ -439,7 +439,10 @@ impl<A: SabitoriApp> AppState<A> {
             | InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }
             | InputEvent::KeyInput { .. }
-            | InputEvent::CharInput(_) => {
+            | InputEvent::CharInput(_)
+            // 修飾キーの変化もキーボード系。 ここに入れないと下の pointer 用 match の
+            // `_ => {}` に落ちて、 app へ一度も届かない。
+            | InputEvent::ModifiersChanged(_) => {
                 self.app.on_input(&event);
                 self.needs_rebuild = true;
                 return;
@@ -733,7 +736,10 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
             | InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }
             | InputEvent::KeyInput { .. }
-            | InputEvent::CharInput(_) => {
+            | InputEvent::CharInput(_)
+            // 修飾キーの変化もキーボード系。 ここに入れないと下の pointer 用 match の
+            // `_ => {}` に落ちて、 app へ一度も届かない。
+            | InputEvent::ModifiersChanged(_) => {
                 self.app.on_input(&event);
                 self.needs_rebuild = true;
                 return;
