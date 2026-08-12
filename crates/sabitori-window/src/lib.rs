@@ -145,6 +145,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                         id: MOUSE_POINTER_ID,
                         kind: PointerKind::Mouse,
                         position: pos,
+                        modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                     });
                 }
             }
@@ -268,6 +269,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             id,
                             kind: PointerKind::Touch,
                             position: pos,
+                            modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
                         });
                     }
                     TouchPhase::Ended => {
@@ -312,6 +314,10 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
             // Track modifier keys
             WindowEvent::ModifiersChanged(mods) => {
                 self.winit_modifiers = mods.state();
+                // 変化後の値をアプリへ配る (3 ランタイム共通)。
+                self.process_event(InputEvent::ModifiersChanged(
+                    keymap::modifiers_from_winit(self.winit_modifiers),
+                ));
             }
 
             // IME events
@@ -736,7 +742,7 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
         }
 
         match event {
-            InputEvent::PointerMoved { id, kind, position } => {
+            InputEvent::PointerMoved { id, kind, position, .. } => {
                 if kind == PointerKind::Mouse {
                     self.pointer.mouse_position = position;
                     self.pointer.inside_window = true;

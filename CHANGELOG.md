@@ -15,6 +15,44 @@
 
 ## [Unreleased]
 
+修飾キーの変化を観測できるようにした版。「⇧を押している間だけ」効かせる操作
+（直交スナップ、比率固定、追加選択）が書けるようになる。
+
+### Added
+- **`InputEvent::ModifiersChanged(Modifiers)`**
+  ([#12](https://github.com/Mutafika/sabitori/issues/12))。修飾キーの状態が変わった時に
+  **変化後**の値が届く。ポインタが止まっていても届くので、「⇧を押した瞬間にゴム紐を
+  直交へ折る」のような、動きを伴わない切り替えもこれで書ける。
+
+- **`InputEvent::PointerMoved` に `modifiers` が載った**
+  ([#12](https://github.com/Mutafika/sabitori/issues/12))。`PointerPressed` /
+  `PointerReleased` と揃えた。動いている最中の状態が取れないと、ゴム紐が追従している
+  間に効かない。
+
+### Fixed
+- **`DeclarativeApp` / `SceneApp` がマウス移動で `PointerMoved` を出していなかった。**
+  `InputEvent::PointerMoved` の doc は "For mouse, fires for both hover and drag" と
+  言っているのに、この 2 ランタイムは**タッチ分しか出していなかった**（`SabitoriApp`
+  は出していた）。マウスの移動でも出すようにした。
+
+  これが無いと、上の `modifiers` を `PointerMoved` に載せてもマウス操作では一度も
+  届かない — 仕組みだけ足しても症状が消えない形だった。
+
+### Changed
+- **`InputEvent::KeyInput.modifiers` は修飾キー自身のイベントでは「変化前」の値**
+  である旨を doc に明記した。macOS の winit は `flagsChanged:` で `KeyboardInput` を
+  先に、`ModifiersChanged` を後に積む（`platform_impl/macos/view.rs` の
+  `update_modifiers` で確認）ので、⇧の押下イベントは `shift: false` を、解放イベントは
+  `shift: true` を載せて届く。**挙動は変えていない** — 直すには winit のキュー順に
+  手を入れる必要があり、`ModifiersChanged` を見る方が素直なため。
+
+  修飾キー**以外**のキーでは正しい値が載る（マウスイベントも同様に正しい。winit が
+  `update_modifiers` を先に呼ぶため）。
+
+  ⚠️ **破壊的変更**: `PointerMoved` に `modifiers` が増え、`InputEvent` に variant が
+  1 つ増えた。構築側と、全 variant / 全フィールドを列挙している `match` は修正が要る
+  （`..` や `_ =>` で受けているなら無傷）。
+
 ## [0.3.20] - 2026-08-11
 
 macOS で非アクティブ窓の 1 クリック目が届くようになった版。

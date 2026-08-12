@@ -95,6 +95,10 @@ pub enum InputEvent {
         id: PointerId,
         kind: PointerKind,
         position: Point,
+        /// 動いている**その瞬間**の修飾キー。⇧を押しっぱなしでドラッグする類
+        /// (直交スナップ、比率固定、追加選択) は、動いている最中の状態が要る。
+        /// 次にクリックするまで分からないのでは、ゴム紐が追従している間に効かない。
+        modifiers: Modifiers,
     },
     /// Pointer pressed (mouse button down, touch begin, pen down).
     /// `button` is `Some` only for mouse; `None` for touch/pen primary contact.
@@ -141,8 +145,26 @@ pub enum InputEvent {
     KeyInput {
         key: Key,
         pressed: bool,
+        /// ⚠️ **修飾キー自身のイベントでは「変化前」の値**。
+        ///
+        /// macOS の winit は `flagsChanged:` で `KeyboardInput` を先に、
+        /// `ModifiersChanged` を後に積む。runtime が修飾キー状態を更新するのは
+        /// 後者なので、⇧の押下イベントは `shift: false` を、解放イベントは
+        /// `shift: true` を載せて届く。
+        ///
+        /// 修飾キー**以外**のキー (文字キー等) では正しい値が載る。修飾キーの
+        /// 変化そのものを観測したいなら [`InputEvent::ModifiersChanged`] を見ること。
         modifiers: Modifiers,
     },
+    /// 修飾キーの状態が変わった。載っているのは**変化後**の値。
+    ///
+    /// 修飾キーの押下/解放を観測する唯一の確実な口。[`InputEvent::KeyInput`] の
+    /// `modifiers` は修飾キー自身のイベントでは変化前を指すし、`Key` は `Shift`
+    /// 以外の修飾キーを `Key::Other` に潰すので、そちらからは状態を組み立て直せない。
+    ///
+    /// ポインタが止まっていても届くので、「⇧を押した瞬間にゴム紐を直交へ折る」
+    /// のような、動きを伴わない切り替えもこれで書ける。
+    ModifiersChanged(Modifiers),
     /// A Unicode character was received (non-IME path).
     CharInput(char),
 }

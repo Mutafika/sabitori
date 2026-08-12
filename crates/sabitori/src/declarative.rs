@@ -844,6 +844,18 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 }
                 self.update_hover();
                 self.app.on_pointer_move(self.mouse_x, self.mouse_y);
+                // マウスの移動も `PointerMoved` として配る。 `InputEvent::PointerMoved`
+                // の doc は "For mouse, fires for both hover and drag" と言っているのに、
+                // このランタイムは touch 分しか出していなかった (`SabitoriApp` は出す)。
+                // `on_pointer_move` は座標しか渡さないので、 修飾キーを見るには
+                // こちらが要る — ⇧ドラッグの直交スナップのような「押している間だけ」の
+                // 操作は、 動いている最中の状態が取れないと書けない。
+                self.app.on_input(&InputEvent::PointerMoved {
+                    id: MOUSE_POINTER_ID,
+                    kind: PointerKind::Mouse,
+                    position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+                    modifiers: self.modifiers,
+                });
                 self.drag_manager.on_move(self.mouse_x, self.mouse_y);
                 // text selection drag: button held + selecting=true なら head を更新。
                 // hit_test_text が None でも head は前の値を保持 (= 端の text 上で
@@ -1167,6 +1179,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             id,
                             kind: PointerKind::Touch,
                             position: pos,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Ended => {
@@ -1436,12 +1449,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 let state = mods.state();
-                self.modifiers = Modifiers {
+                self.set_modifiers(Modifiers {
                     shift: state.shift_key(),
                     ctrl: state.control_key(),
                     alt: state.alt_key(),
                     meta: state.super_key(),
-                };
+                });
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // winit → Key の変換は sabitori_window::keymap に集約している
@@ -2698,6 +2711,18 @@ impl<A: DeclarativeApp> AppState<A> {
         None
     }
 
+    /// 修飾キーの状態を更新し、**変化後**の値をアプリへ配る。
+    ///
+    /// 状態を先に書き換えてから配るのが要点。`KeyInput` に載る `self.modifiers` は
+    /// 修飾キー自身のイベントでは変化前を指す — macOS の winit は `flagsChanged:` で
+    /// `KeyboardInput` を先に、`ModifiersChanged` を後に積むためで、⇧の押下イベントは
+    /// `shift: false` を、解放イベントは `shift: true` を載せて届く。
+    /// [`InputEvent::ModifiersChanged`] だけが変化そのものを正しく伝える。
+    fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.modifiers = modifiers;
+        self.app.on_input(&InputEvent::ModifiersChanged(modifiers));
+    }
+
     /// 押下対象の解決。 実体は [`crate::runtime_shared::hit_id_at`]。
     fn hit_id_at(&self, x: f32, y: f32) -> Option<String> {
         let build = self.last_build.as_ref()?;
@@ -3113,6 +3138,10 @@ mod frame_tests {
         keys: Vec<(Key, bool, bool)>,
         /// `on_input` で受けた文字。
         chars: Vec<char>,
+        /// `on_input` で受けた `ModifiersChanged` の値を順に記録する。
+        modifier_changes: Vec<Modifiers>,
+        /// `on_input` で受けた `PointerMoved` を (kind, x, shift) で記録する。
+        moves: Vec<(PointerKind, f32, bool)>,
     }
 
     impl DeclarativeApp for RecordingApp {
@@ -3137,6 +3166,10 @@ mod frame_tests {
                     self.keys.push((*key, *pressed, modifiers.shift));
                 }
                 InputEvent::CharInput(ch) => self.chars.push(*ch),
+                InputEvent::ModifiersChanged(m) => self.modifier_changes.push(*m),
+                InputEvent::PointerMoved { kind, position, modifiers, .. } => {
+                    self.moves.push((*kind, position.x, modifiers.shift));
+                }
                 _ => {}
             }
             false
@@ -3447,6 +3480,38 @@ mod frame_tests {
         run_frame(&mut state, 400.0, 300.0);
 
         assert_eq!(state.app.rects["btn"].size.width, 100.0);
+    }
+
+    // -----------------------------------------------------------------
+    // 修飾キーの観測 (#12)
+    // -----------------------------------------------------------------
+
+    /// 本題の回帰: 修飾キーの変化が**変化後**の値でアプリに届くこと。
+    ///
+    /// `KeyInput` に載る値は修飾キー自身のイベントでは変化前を指す（winit が
+    /// macOS で `KeyboardInput` を先に、`ModifiersChanged` を後に積むため）。
+    /// この口だけが「⇧が今どうなったか」を正しく伝える。
+    #[test]
+    fn modifier_changes_are_delivered_with_the_new_value() {
+        let mut state = AppState::new(RecordingApp::default());
+
+        state.set_modifiers(Modifiers { shift: true, ..Default::default() });
+        state.set_modifiers(Modifiers::default());
+
+        let seen: Vec<bool> = state.app.modifier_changes.iter().map(|m| m.shift).collect();
+        assert_eq!(seen, vec![true, false], "押下→解放が変化後の値で届くこと");
+    }
+
+    /// 配る前に runtime 自身の状態が更新されていること。順が逆だと、アプリが
+    /// `on_input` の中で `ctx.shift_held` 相当を読んだ時に食い違う。
+    #[test]
+    fn the_runtime_state_is_updated_before_dispatch() {
+        let mut state = AppState::new(RecordingApp::default());
+        state.set_modifiers(Modifiers { alt: true, ..Default::default() });
+
+        assert!(state.modifiers.alt, "runtime の状態も新しい値になっていること");
+        assert_eq!(state.app.modifier_changes.len(), 1);
+        assert!(state.app.modifier_changes[0].alt);
     }
 
     // -----------------------------------------------------------------

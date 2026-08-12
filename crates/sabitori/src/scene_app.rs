@@ -329,6 +329,14 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
                 self.update_hover();
                 self.app.on_pointer_move(self.mouse_x, self.mouse_y);
+                // マウスの移動も `PointerMoved` として配る (declarative と同じ)。
+                // enum の doc が約束している mouse 分を、このランタイムも出す。
+                self.app.on_input(&InputEvent::PointerMoved {
+                    id: MOUSE_POINTER_ID,
+                    kind: PointerKind::Mouse,
+                    position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+                    modifiers: self.modifiers,
+                });
                 // Promote a pending drag past the slop / update the active drag.
                 self.drag_manager.on_move(self.mouse_x, self.mouse_y);
             }
@@ -537,6 +545,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             id,
                             kind: PointerKind::Touch,
                             position: pos,
+                            modifiers: self.modifiers,
                         });
                     }
                     winit::event::TouchPhase::Ended => {
@@ -712,6 +721,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         modifiers: self.modifiers,
                     });
                 }
+                // 変化後の値をアプリへ配る (3 ランタイム共通)。 上の Shift 立ち上がり
+                // 合成と違い、 全修飾キーの押下・解放をどちらも観測できる。
+                self.app.on_input(&InputEvent::ModifiersChanged(self.modifiers));
             }
 
             WindowEvent::KeyboardInput { event, .. } => {

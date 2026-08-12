@@ -22,7 +22,12 @@ use sabitori::{
 fn pointer_events_are_constructible_through_the_facade() {
     let at = Point::new(1.0, 2.0);
     let events = [
-        InputEvent::PointerMoved { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at },
+        InputEvent::PointerMoved {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: at,
+            modifiers: Modifiers::default(),
+        },
         InputEvent::PointerPressed {
             id: MOUSE_POINTER_ID,
             kind: PointerKind::Mouse,
@@ -95,4 +100,16 @@ fn keyboard_and_state_types_are_reachable() {
 
     let s = InteractionState { hovered: true, pressed: false, focused: true };
     assert!(s.hovered && s.focused);
+}
+
+/// 修飾キーの変化を観測する口。`KeyInput` の modifiers は修飾キー自身のイベントでは
+/// 変化前を指すので、⇧の押下/解放を追うにはこちらが要る。
+#[test]
+fn modifier_changes_are_observable_through_the_facade() {
+    let ev = InputEvent::ModifiersChanged(Modifiers { shift: true, ..Default::default() });
+    let shift_went_down = matches!(
+        ev,
+        InputEvent::ModifiersChanged(Modifiers { shift: true, .. })
+    );
+    assert!(shift_went_down, "修飾キーの変化が読めない");
 }
