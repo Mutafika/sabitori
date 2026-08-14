@@ -15,6 +15,36 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`desired_focus()` が `Harness` からは一度も適用されなかった**
+  ([#28](https://github.com/Mutafika/sabitori/issues/28))。反映の 5 行が
+  declarative ランタイムの `about_to_wait` と `scene_app` の `RedrawRequested`
+  に**手で 2 回**書かれていて、`AppState` には入っていなかった。そのため
+  `desired_focus` を実装したアプリをテストに載せると、**フォーカスは一度も動かない**。
+  実機では動くのでテストだけが落ちる。しかも `h.focused_id()` は `None` のままで
+  `unrouted_text_inputs()` にも出ない（フォーカス中の欄が無いので「行き場を失った欄」
+  ですらない）ため、**何が起きていないのかがテスト側から見えなかった**。
+
+  回避するにはテストで `h.click(<欄の id>)` を挟むしかないが、それは
+  `desired_focus` を通らない経路なので、そのテストは実機の挙動を検証していない。
+  つまり**この API を検証する手段が無かった**。
+
+  判断を `runtime_shared::apply_desired_focus` に 1 本化し、3 経路
+  （declarative / scene_app / `Harness`）が同じ実装を通るようにした。
+  [#19](https://github.com/Mutafika/sabitori/issues/19) で `advance` を括り出したのと
+  同じ穴が、その 1 行下に取り残されていた形。
+
+  適用位置も動いた。以前は「tick の直後」だったが、いまは `build_frame` の頭
+  （と `advance` の中）なので、**掴んだその同じフレームの `ctx.focused` にもう出ている**。
+  ポップアップが開いた最初の描画からフォーカス枠が光る。
+
+- **`Harness` の `capture()` がツリーの変化に追随しなかった**。`wants_pointer` は
+  「いまのマウス位置の下に UI があるか」なので、マウスが動かなくても**ツリーが変われば
+  答えが変わる**（パネルを閉じた瞬間がそれ）。ランタイムは毎 tick 押し直していたが
+  `Harness` にその経路が無く、消費側は古い答えを見ていた。上と同じ形の穴で、上を
+  直す過程で見つかった。`commit_build` の直後に押し直すようにしたので、3 経路とも揃う。
+
 ## [0.5.0] - 2026-08-14
 
 CSS にあって sabitori に無かったものを埋めた版。前半はレイアウト（grid ほか）、

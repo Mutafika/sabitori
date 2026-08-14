@@ -123,6 +123,36 @@ pub(crate) fn ui_capture(
     UiCapture { wants_pointer, wants_keyboard: focused }
 }
 
+/// アプリが主張するフォーカス ([`DeclarativeApp::desired_focus`]) を
+/// `focused_id` へ当てる。 実際に変わったら `true`。
+///
+/// ポップアップが「開いた最初のフレームで中の入力欄を掴む」ための経路で、
+/// ユーザーが先にクリックしなくても打てるようにする。 `Some` を返し続ける
+/// 限り毎フレーム主張し直すので、 他所へフォーカスが移っても引き戻る。
+///
+/// ## なぜ関数に括り出すか
+///
+/// [#28](https://github.com/Mutafika/sabitori/issues/28) — この 5 行は
+/// declarative ランタイムの `about_to_wait` と `scene_app` の
+/// `RedrawRequested` に**手で 2 回**書かれていて、
+/// [`testing::Harness`](crate::testing::Harness) にはどちらも無かった。
+/// つまり `desired_focus` を使うアプリは、 **テストすると必ず
+/// 「フォーカスが入らない」ように見える**。 実機では動くのに。 #19 で
+/// `advance` を括り出したのと同じ穴が、 1 行下に残っていた形。
+pub(crate) fn apply_desired_focus<A: DeclarativeApp>(
+    app: &A,
+    focused_id: &mut Option<String>,
+) -> bool {
+    let Some(desired) = app.desired_focus() else {
+        return false;
+    };
+    if focused_id.as_deref() == Some(desired.as_str()) {
+        return false;
+    }
+    *focused_id = Some(desired);
+    true
+}
+
 /// [`ui_capture`] を算出し、 前回から変わっていればアプリへ通知する。
 pub(crate) fn push_ui_capture<A: DeclarativeApp>(
     build: Option<&BuildResult>,
