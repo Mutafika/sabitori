@@ -104,6 +104,23 @@
   増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
   作れる（返さないと**変換候補が画面左上に出る**）。
 
+- **`on_input` の戻り値が効くようになった（既定動作の抑止）**
+  ([#18](https://github.com/Mutafika/sabitori/issues/18))。doc は "Return true if
+  handled" と言っていたのに、**呼び出し 15 箇所すべてが戻り値を捨てていた**。
+  `true` を返しても Tab のフォーカス移動も Escape のフォーカス解除も走る、という
+  状態で、独自キーバインドを持つアプリが書けなかった。
+
+  `true` を返すと止まるもの:
+  - Tab / Shift+Tab のフォーカス移動
+  - Escape のフォーカス解除
+  - Cmd/Ctrl+C による選択テキストのコピー
+  - 「コピー以外のキーで選択を解除する」挙動
+
+  ⚠️ **配信順が変わった。** 既定動作を抑止するには、アプリが先に見る必要がある。
+  そのため Tab / Escape を `on_input` で受け取った時点では**まだフォーカスが
+  動いていない**（以前は動いた後だった）。移動後の状態は直後の `on_ui_capture`
+  で届く。フォーカス移動後の状態を `on_input` の中で読んでいたコードは要確認。
+
 - **キャレットの点滅を `TextInputState` に寄せた**
   ([#16](https://github.com/Mutafika/sabitori/issues/16))。点滅を
   `FocusManager` / `TextInputState` / `TextInput` が別々に数えていて、どれを見れば

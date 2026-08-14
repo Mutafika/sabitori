@@ -237,7 +237,33 @@ pub trait DeclarativeApp {
     /// Called when mouse forward button is pressed.
     fn on_navigate_forward(&mut self) {}
 
-    /// Called for keyboard input. Return true if handled.
+    /// Called for input events. Return `true` if the event was consumed.
+    ///
+    /// # `true` を返すと何が止まるか
+    ///
+    /// ランタイムはこのイベントに対する**既定動作を行わない**。 キー押下の場合、
+    /// 具体的には次が止まる:
+    ///
+    /// - Tab / Shift+Tab のフォーカス移動
+    /// - Escape のフォーカス解除
+    /// - Cmd/Ctrl+C による選択テキストのコピー
+    /// - 「コピー以外のキーで選択を解除する」挙動
+    ///
+    /// 独自のキーバインドを持つアプリ (Tab を補完に使う、 Escape を自前の
+    /// モーダル閉じに使う、 など) はこれで既定動作を抑止する。
+    ///
+    /// 配信はフォーカス中の要素が先で、 [`Self::on_focused_input`] が `true` を
+    /// 返した場合はここには来ない (その場合も既定動作は止まる)。 ただし
+    /// Tab / Escape はフォーカス操作そのものなので `on_focused_input` を経由せず、
+    /// 直接ここに来る。
+    ///
+    /// 0.4.0 より前はこの戻り値をどこも読んでいなかった。 doc は "Return true if
+    /// handled" と言っているのに `true` を返しても既定動作が走る、 という状態
+    /// だった (issue #18)。
+    ///
+    /// ポインタ系イベントの既定動作 (クリック判定・ホバー・管理スクロール) は
+    /// 現状これでは止められない。 どのランタイムがどの種別を配るかは
+    /// [`input_delivery`] を参照。
     fn on_input(&mut self, _event: &InputEvent) -> bool { false }
 
     /// Called when a focused text input receives a character/key/IME event.
@@ -2192,14 +2218,35 @@ impl<A: DeclarativeApp> AppState<A> {
     /// を保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような修飾つき
     /// 操作が書けない）。副作用は `if pressed` の中に閉じてある。
     fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
-        // 副作用（コピー・選択解除・フォーカス移動・文字入力）は押下でだけ
-        // 起こす。解放でも走らせると、⇧を離しただけで選択が消えるといった
-        // 挙動になる。アプリへの KeyInput 転送だけが押下・解放の両方。
-        if pressed {
+        // 配る順が要点: **アプリが先、既定動作があと**。
+        //
+        // 以前は既定動作 (コピー・選択解除・フォーカス移動) を先に実行してから
+        // イベントを配っていて、 `on_input` の戻り値もどこでも読んでいなかった。
+        // doc は "Return true if handled" と言っているのに、 `true` を返しても
+        // 既定動作はそのまま走る — 契約が嘘になっていた (issue #18)。
+        // アプリが独自キーバインドを持てるよう、 消費されたら既定動作を止める。
+        let key_event = InputEvent::KeyInput {
+            key,
+            pressed,
+            modifiers: self.modifiers,
+        };
+
+        // フォーカス中の要素 → アプリ の順。 Tab / Escape は「フォーカス操作
+        // そのもの」なので、 フィールドには渡さない (テキスト欄が Tab を食べて
+        // しまうと移動できなくなる)。
+        let handled_by_focus = if key != Key::Tab && key != Key::Escape {
+            if let Some(ref id) = self.focused_id {
+                self.app.on_focused_input(id, &key_event)
+            } else { false }
+        } else { false };
+        // 押下・解放の**両方**を配る。押下だけを配っていた頃は、⇧の押下は届くのに
+        // 解放が来ないので、アプリ側で「押しっぱなし」を保持すると二度と落ちなかった。
+        let handled = handled_by_focus || self.app.on_input(&key_event);
+
+        // 既定動作は押下のみ、 かつ誰も消費しなかったときだけ。 解放でも走らせると
+        // ⇧を離しただけで選択が消える、といった挙動になる。
+        if pressed && !handled {
             // Cmd+C (macOS) / Ctrl+C (other): copy selected text to clipboard.
-            // 文字選択中 (= self.selection が Some) ならグローバル捕捉して
-            // focused element の input route には流さない。 macOS では meta
-            // (Cmd) を見る、 他 platform は ctrl。
             let copy_modifier = if cfg!(target_os = "macos") {
                 self.modifiers.meta
             } else {
@@ -2257,30 +2304,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                 }
             }
-            // Escape / Tab moved focus → refresh the capture snapshot
-            // before the event reaches the app.
+            // Escape / Tab がフォーカスを動かしたら capture を撮り直す。
+            // 配信より後になったので、 アプリはこの frame の `on_input` では
+            // 移動前の状態を見る。 移動後は直後の `on_ui_capture` で届く。
             if key == Key::Escape || key == Key::Tab {
                 self.push_ui_capture();
             }
-        }
-        // Route to focused element first, then to app.
-        //
-        // 押下・解放の**両方**を発行する。押下だけを配っていた頃は、
-        // ⇧の押下は届くのに解放が来ないので、アプリ側で「押しっぱなし」を
-        // 保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような
-        // 修飾つき操作が作れない）。副作用は上の `if pressed` に閉じてある。
-        let key_event = InputEvent::KeyInput {
-            key,
-            pressed,
-            modifiers: self.modifiers,
-        };
-        let handled_by_focus = if key != Key::Tab && key != Key::Escape {
-            if let Some(ref id) = self.focused_id {
-                self.app.on_focused_input(id, &key_event)
-            } else { false }
-        } else { false };
-        if !handled_by_focus {
-            self.app.on_input(&key_event);
         }
         if pressed {
             // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の
@@ -3195,6 +3224,8 @@ mod frame_tests {
         /// `view()` の中で `ctx.caret_x(..)` を呼んだ結果。 `view` は `&self` なので
         /// `Cell` 越しに書く。
         measured_caret: std::cell::Cell<f32>,
+        /// `on_input` で常に `true` を返す (= 全イベントを消費する)。
+        consume_all: bool,
         /// `view()` に渡された `ctx` が計測器を持っていたか。
         ///
         /// 値だけでは配線漏れを検出できない — StubMeasure (1 文字 = font_size*0.5) と
@@ -3238,7 +3269,7 @@ mod frame_tests {
                 }
                 _ => {}
             }
-            false
+            self.consume_all
         }
 
         fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
@@ -3638,6 +3669,84 @@ mod frame_tests {
         assert!(state.selection.is_some());
         state.handle_key_input(Key::Other, false, Vec::new());
         assert!(state.selection.is_some());
+    }
+
+    /// フォーカス可能な 2 要素を持つツリー。 Tab 移動の観測用。
+    fn two_focusables() -> Element {
+        sabitori_core::div().flex_col().children([
+            sabitori_core::div()
+                .id("a")
+                .w(sabitori_core::Dimension::Px(100.0))
+                .h(sabitori_core::Dimension::Px(30.0))
+                .focusable(),
+            sabitori_core::div()
+                .id("b")
+                .w(sabitori_core::Dimension::Px(100.0))
+                .h(sabitori_core::Dimension::Px(30.0))
+                .focusable(),
+        ])
+    }
+
+    /// 前提: 消費しなければ Tab はフォーカスを動かす。 下のテストの対照。
+    #[test]
+    fn tab_moves_focus_when_the_app_does_not_consume_it() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+
+        state.handle_key_input(Key::Tab, true, Vec::new());
+        assert!(state.focused_id.is_some(), "Tab でフォーカスが入る");
+    }
+
+    /// **issue #18 の回帰テスト.** `on_input` が `true` を返したら、 ランタイムの
+    /// 既定動作 (Tab のフォーカス移動) を行わないこと。
+    ///
+    /// doc は "Return true if handled" と言っていたのに、 0.4.0 より前は戻り値を
+    /// どの呼び出し箇所でも読んでいなかった。 Tab を補完に使うアプリのように、
+    /// 既定動作を奪いたいケースが書けなかった。
+    #[test]
+    fn consuming_tab_prevents_the_runtime_from_moving_focus() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            consume_all: true,
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+
+        state.handle_key_input(Key::Tab, true, Vec::new());
+
+        assert_eq!(
+            state.focused_id, None,
+            "アプリが消費したのにランタイムがフォーカスを動かした"
+        );
+        // イベント自体は届いていること (消費 = 届かない、ではない)。
+        assert!(
+            state.app.keys.iter().any(|(k, pressed, _)| *k == Key::Tab && *pressed),
+            "消費するアプリにもイベントは届く"
+        );
+    }
+
+    /// **issue #18 の回帰テスト.** Escape のフォーカス解除も抑止できること。
+    /// 自前のモーダルを Escape で閉じたいアプリ向け。
+    #[test]
+    fn consuming_escape_keeps_the_current_focus() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            consume_all: true,
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+        state.focused_id = Some("a".to_string());
+
+        state.handle_key_input(Key::Escape, true, Vec::new());
+
+        assert_eq!(
+            state.focused_id.as_deref(),
+            Some("a"),
+            "アプリが消費したのにフォーカスが外れた"
+        );
     }
 
     /// **issue #15 の回帰テスト.** `view()` の中で実フォント計測が使えること。

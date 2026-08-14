@@ -718,36 +718,41 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // （3 ランタイム共通）。対応が無い名前付きキーは Other として届ける。
                     let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
                         .unwrap_or(Key::Other);
-                    if key == Key::Escape {
+                    let key_event = InputEvent::KeyInput {
+                        key,
+                        pressed: true,
+                        modifiers: self.modifiers,
+                    };
+                    // 配る順は declarative と同じ: **アプリが先、既定動作があと**。
+                    // 消費されたら既定動作 (Escape のフォーカス解除) を行わない
+                    // (issue #18)。 Escape はフォーカス操作そのものなので
+                    // `on_focused_input` は経由しない。
+                    let fid = self.focused_id.clone();
+                    let handled_by_focus = if key != Key::Escape {
+                        match fid.as_ref() {
+                            Some(f) => self.app.on_focused_input(f, &key_event),
+                            None => false,
+                        }
+                    } else {
+                        false
+                    };
+                    let handled = handled_by_focus || self.app.on_input(&key_event);
+
+                    if !handled && key == Key::Escape {
                         self.focused_id = None;
                         self.push_ui_capture();
                     }
-                    // focused要素があればon_focused_inputへルーティング
-                    if let Some(ref fid) = self.focused_id {
-                        let key_event = InputEvent::KeyInput {
-                            key,
-                            pressed: true,
-                            modifiers: self.modifiers,
+
+                    // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
+                    // 挿入され、Cmd+C の "c" も漏れていた。判定は keymap に集約。
+                    for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
+                        let char_event = InputEvent::CharInput(ch);
+                        let consumed = match fid.as_ref() {
+                            Some(f) => self.app.on_focused_input(f, &char_event),
+                            None => false,
                         };
-                        if !self.app.on_focused_input(fid, &key_event) {
-                            self.app.on_input(&key_event);
-                        }
-                        // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
-                        // 挿入され、Cmd+C の "c" も漏れていた。判定は keymap に集約。
-                        for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
-                            let char_event = InputEvent::CharInput(ch);
-                            if !self.app.on_focused_input(fid, &char_event) {
-                                self.app.on_input(&char_event);
-                            }
-                        }
-                    } else {
-                        self.app.on_input(&InputEvent::KeyInput {
-                            key,
-                            pressed: true,
-                            modifiers: self.modifiers,
-                        });
-                        for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
-                            self.app.on_input(&InputEvent::CharInput(ch));
+                        if !consumed {
+                            self.app.on_input(&char_event);
                         }
                     }
                 }
