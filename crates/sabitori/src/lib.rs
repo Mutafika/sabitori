@@ -19,9 +19,28 @@ pub use sabitori_anim::{
 pub use sabitori_scene::{NodeId, NodeStyle, NodeTree, UiNode};
 pub use sabitori_text::{rotate_glyphs, GlyphInstance, TextRenderer, TextShaper, FONT_SIZE_QUANTUM};
 pub use sabitori_widgets::*;
+// レイアウト系の型は **core (`Element` が使う方)** をファサードの正とする。
+//
+// core の `element` と style の `props` は、 同じ名前の型を 9 個ずつ**別々に**
+// 定義している (AlignItems / BoxShadow / Dimension / EdgeDimensions /
+// FlexDirection / FlexWrap / JustifyContent / Overflow / Position)。 かつては
+// ファサードが style 側だけを名前付きで出していたので、 `sabitori::Overflow` を
+// import して `div().overflow(..)` に渡すと
+//   expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+// という、 名前が同じに見えるのに型が違うエラーになった。 素直な import が
+// 通らない状態だったので、 `Element` に渡せる方を無印にした。
+pub use sabitori_core::element::{
+    AlignItems, BoxShadow, EdgeDimensions, FlexDirection, FlexWrap, JustifyContent, Overflow,
+    Position,
+};
+// style 側は `StyleProps` (YAML テーマ / retained な style 記述) 用。 名前が
+// ぶつかるものは `Style` 接頭辞で分ける。
 pub use sabitori_style::{
-    AlignItems, BoxShadow, Dimension, DimensionExt, Display, EdgeDimensions, Fill, FlexDirection,
-    FlexWrap, JustifyContent, Overflow, Position, StyleProps, Theme,
+    AlignItems as StyleAlignItems, BoxShadow as StyleBoxShadow, Dimension as StyleDimension,
+    DimensionExt as StyleDimensionExt, Display, EdgeDimensions as StyleEdgeDimensions, Fill,
+    FlexDirection as StyleFlexDirection, FlexWrap as StyleFlexWrap,
+    JustifyContent as StyleJustifyContent, Overflow as StyleOverflow, Position as StylePosition,
+    StyleProps, Theme,
 };
 pub use sabitori_window::{SabitoriApp, EmbeddedRunner, run};
 
@@ -34,6 +53,8 @@ pub mod slider_sync;
 pub mod image_runtime;
 pub(crate) mod input_router;
 pub mod scene_app;
+/// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
+pub mod testing;
 #[cfg(target_os = "macos")]
 pub mod macos_drag;
 #[cfg(target_os = "macos")]

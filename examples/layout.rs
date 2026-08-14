@@ -1,7 +1,12 @@
 use sabitori::{
-    AlignItems, Color, Corners, Dimension, DimensionExt, Display, EdgeDimensions,
-    FlexDirection, FlexWrap, JustifyContent, LayoutEngine, LayoutNodeId, NodeId, NodeStyle,
-    NodeTree, Overflow, Point, Rect, RectInstance, SabitoriApp, StyleProps, Theme,
+    Color, Corners, Display,
+    // StyleProps 系のレイアウト型は Style 接頭辞つき (Element 用の同名型と区別する)。
+    StyleAlignItems as AlignItems, StyleDimension as Dimension,
+    StyleDimensionExt as DimensionExt, StyleEdgeDimensions as EdgeDimensions,
+    StyleFlexDirection as FlexDirection, StyleFlexWrap as FlexWrap,
+    StyleJustifyContent as JustifyContent, StyleOverflow as Overflow,
+    LayoutEngine, LayoutNodeId, NodeId, NodeStyle,
+    NodeTree, Point, Rect, RectInstance, SabitoriApp, StyleProps, Theme,
 };
 
 /// Demonstrates Taffy layout: a header, scrollable card grid, and status bar.

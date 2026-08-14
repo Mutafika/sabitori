@@ -104,6 +104,60 @@
   増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
   作れる（返さないと**変換候補が画面左上に出る**）。
 
+- **`sabitori::testing` — アプリの回帰テストを窓も GPU も無しで書ける**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19))。
+
+  ```rust
+  let mut h = Harness::new(MyApp::default(), 800.0, 600.0);
+  h.frame();
+  h.click("save");
+  assert!(h.app().saved);
+  ```
+
+  ランタイムはヘッドレスでフレームを回せる作りだったのに、その入口が
+  `#[cfg(test)]` の中に閉じていた。実際 #1 / #3 / #12 / #14 は**全部「人間が手で
+  動かして気づいた」**で見つかっている。いずれも見た目に異常が出ない
+  「黙って効かない」タイプで、手動確認では見落としやすい。
+
+  `frame` / `click` / `click_at` / `press_at` / `release` / `key` / `text` /
+  `scroll` / `move_to` と、`app` / `capture` / `focused_id` / `rect_of` /
+  `visible_ids` / `scroll_y`。テキスト計測はスタブ（1 文字 = `font_size * 0.5`）
+  なので、ピクセル値そのものの assert には向かない。
+
+  そのために winit の match に埋まっていたポインタ処理を
+  `press_primary` / `release_primary` に切り出した。
+
+- **`TextInputState` が `Default` を実装した**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19))。アプリの state 構造体に
+  `#[derive(Default)]` を付けたままテキスト欄を持てなかった。ハーネスの使用感を
+  外から確かめている最中に判明。
+
+### Changed（破壊的・続き）
+- **ファサードのレイアウト型を `Element` 側に揃えた**
+  ([#24](https://github.com/Mutafika/sabitori/issues/24))。
+
+  `sabitori-core::element` と `sabitori-style::props` が**同じ名前の型を 9 個
+  別々に定義**していて（`AlignItems` / `BoxShadow` / `Dimension` /
+  `EdgeDimensions` / `FlexDirection` / `FlexWrap` / `JustifyContent` /
+  `Overflow` / `Position`）、ファサードは style 側だけを名前付きで出していた。
+  結果:
+
+  ```rust
+  use sabitori::{div, Overflow};
+  div().overflow(Overflow::Scroll);
+  // error: expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+  ```
+
+  **エラーの 2 つの名前がほぼ同じに見える**ので、踏むとコンパイラを疑うレベルで
+  混乱する。`sabitori::Px` は core 側、`sabitori::Dimension::Px` は style 側という
+  食い違いもあった。
+
+  `Element` に渡せる方（core）を無印にし、style 側は `StyleOverflow` /
+  `StyleDimension` のように `Style` 接頭辞つきにした。`StyleProps` を直に組んで
+  いるコードは接頭辞つきの名前に置き換えること（`examples/layout.rs` が実例）。
+
+  型が 2 つある事実自体は残っているので、根治は #24 で追う。
+
 - **`SceneApp` だけ IME の届き方が違った**
   ([#22](https://github.com/Mutafika/sabitori/issues/22))。`ImeEnabled` を
   組み立てておらず、preedit / commit も `on_focused_input` にしか渡していなかった。

@@ -22,6 +22,11 @@ impl PreeditState {
 }
 
 /// State of a text input field.
+///
+/// `Default` はプレースホルダ無しの空欄。 アプリの state 構造体に
+/// `#[derive(Default)]` を付けたまま持てるようにしてある — 無いと、 テキスト欄を
+/// 1 つ足しただけで `Default` を手書きする羽目になる (issue #19 の使用感確認で判明)。
+#[derive(Default)]
 pub struct TextInputState {
     pub text: String,
     pub cursor_pos: usize,
