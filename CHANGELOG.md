@@ -51,7 +51,35 @@
   事実として宣言に書き出したうえで
   [#22](https://github.com/Mutafika/sabitori/issues/22) に切り出した。
 
+- **`ViewContext` に実フォント計測を追加**
+  ([#15](https://github.com/Mutafika/sabitori/issues/15))。
+
+  ```rust
+  ctx.caret_x(&self.input.text, self.input.cursor_pos, 14.0, false) // キャレットの x 位置
+  ctx.text_width("ラベル", 14.0, false)                             // 1 行の幅
+  ctx.measure(text, size, bold, monospace, family)                  // 太字・書体指定つき
+  ```
+
+  それまで `view()` の中でアプリが触れる計測手段は `ViewContext::mono_advance`
+  （等幅 1 セルぶんの送り）**だけ**だった。等幅なら `index * mono_advance` で
+  キャレット位置を出せるが、**プロポーショナル書体では計算する方法が存在しなかった**。
+  `sabitori_core::forms::text_input` が `cursor_pos_px` を受け取って無視していたのは、
+  呼び出し側が正しい値を作れなかったから。
+
+  `caret_x` は `byte_offset` が文字境界の途中でも panic せず、直前の境界まで戻る
+  （日本語のテキスト欄はカーソルが 3 バイト単位で動くので、1 バイトのずれで落ちる
+  API では使えない）。
+
+  精度の注記: 実装は `text[..byte_offset]` を単独で整形して幅を取る。合字やカーニングが
+  境界をまたぐ場合、全体を整形してクラスタ送りを足すのとは 1px 未満ずれ得る。
+
 ### Changed（破壊的）
+- **`ViewContext` にライフタイム引数が付いた** (`ViewContext<'a>`)
+  ([#15](https://github.com/Mutafika/sabitori/issues/15))。計測器を借用で持つため。
+  `fn view(&self, ctx: &ViewContext) -> Element` はライフタイム省略で通るので、
+  **既存の実装は書き換え不要**。`ViewContext` を構造体フィールドに保持している場合
+  だけ `ViewContext<'_>` の記述が要る。
+
 - **`.overflow_scroll()` と `.scroll_offset(x, y)` を削除し、`.scroll(id)` と
   `.scroll_manual(x, y)` に分けた**
   ([#14](https://github.com/Mutafika/sabitori/issues/14))。

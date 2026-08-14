@@ -2075,6 +2075,10 @@ impl<A: DeclarativeApp> AppState<A> {
             presence: self.presence_animator.all_progress(),
             images: Some(self.image_ctx.clone()),
             mono_advance,
+            // 実フォント計測をアプリに渡す。 これが無いとキャレット位置を
+            // 計算する手段が無く、 等幅以外のテキスト欄にカーソルを置けない
+            // (issue #15)。
+            measurer: Some(measurer),
         };
         // Build main UI tree
         let mut root = self.app.view(&ctx);
@@ -2900,31 +2904,38 @@ impl<A: DeclarativeApp> AppState<A> {
             .size
             .width
             / 1000.0;
-        let ctx = ViewContext {
-            width: w,
-            height: h,
-            hovered: None,
-            focused: None,
-            mouse_x: 0.0,
-            mouse_y: 0.0,
-            shift_held: false,
-            cmd_held: false,
-            scroll_states: std::collections::HashMap::new(),
-            tooltip: None,
-            drag: None,
-            theme: self.app.theme(),
-            presence: std::collections::HashMap::new(),
-            images: Some(self.image_ctx.clone()),
-            mono_advance,
-        };
-        let root = self.app.view_for(&extra.key, &ctx);
-        let build_result = {
+        // 計測器を先に作り、 `ViewContext` に差してから view を呼ぶ。 以前は
+        // view のあとで作っていたが、 それだとアプリが実フォント計測に触れない
+        // (issue #15)。 `extra.text_renderer` の可変借用を後段の
+        // `UiDrawLists::extract` に返すため、 ブロックで閉じる。
+        let (root, build_result) = {
             let measurer = crate::bridge::TextRendererMeasurer::new(
                 &mut extra.text_renderer,
                 &extra.measure_cache,
             );
-            build_tree_measured(&root, w, h, &measurer)
+            let ctx = ViewContext {
+                width: w,
+                height: h,
+                hovered: None,
+                focused: None,
+                mouse_x: 0.0,
+                mouse_y: 0.0,
+                shift_held: false,
+                cmd_held: false,
+                scroll_states: std::collections::HashMap::new(),
+                tooltip: None,
+                drag: None,
+                theme: self.app.theme(),
+                presence: std::collections::HashMap::new(),
+                images: Some(self.image_ctx.clone()),
+                mono_advance,
+                measurer: Some(&measurer),
+            };
+            let root = self.app.view_for(&extra.key, &ctx);
+            let built = build_tree_measured(&root, w, h, &measurer);
+            (root, built)
         };
+        let _ = &root;
 
         let (rects, lists) =
             UiDrawLists::extract(&build_result.render_list, &mut extra.text_renderer);
@@ -3181,10 +3192,23 @@ mod frame_tests {
         /// `on_input` に届いた全イベントの種別。 `input_delivery` の宣言と
         /// 実挙動を突き合わせるのに使う。
         received: Vec<InputEventKind>,
+        /// `view()` の中で `ctx.caret_x(..)` を呼んだ結果。 `view` は `&self` なので
+        /// `Cell` 越しに書く。
+        measured_caret: std::cell::Cell<f32>,
+        /// `view()` に渡された `ctx` が計測器を持っていたか。
+        ///
+        /// 値だけでは配線漏れを検出できない — StubMeasure (1 文字 = font_size*0.5) と
+        /// `mono_advance` フォールバックは同じ答えを返すので、 `measurer: None` でも
+        /// caret の値は一致してしまう。 有無そのものを見る必要がある。
+        measurer_present: std::cell::Cell<bool>,
     }
 
     impl DeclarativeApp for RecordingApp {
         fn view(&self, _ctx: &ViewContext) -> Element {
+            // 実フォント計測がアプリまで届いているかを毎フレーム記録する。
+            self.measurer_present.set(_ctx.measurer.is_some());
+            self.measured_caret
+                .set(_ctx.caret_x("abcd", 2, 20.0, false));
             match &self.tree {
                 Some(build) => build(),
                 None => sabitori_core::div(),
@@ -3614,6 +3638,34 @@ mod frame_tests {
         assert!(state.selection.is_some());
         state.handle_key_input(Key::Other, false, Vec::new());
         assert!(state.selection.is_some());
+    }
+
+    /// **issue #15 の回帰テスト.** `view()` の中で実フォント計測が使えること。
+    ///
+    /// これが無いとキャレットの x 位置を計算する手段が無く、 等幅以外のテキスト欄に
+    /// カーソルを置けない。 `ViewContext::mono_advance` (等幅 1 セルぶんの送り) が
+    /// 唯一の計測手段だった頃は、 プロポーショナル書体では原理的に書けなかった。
+    ///
+    /// ランタイムが `measurer` を差し忘れると `None` へのフォールバック
+    /// (mono_advance からの概算) に落ちるので、 **StubMeasure の値と一致するか**で
+    /// 「概算ではなく本物が来ている」ことまで見る。
+    #[test]
+    fn view_can_measure_text_with_the_real_measurer() {
+        let mut state = AppState::new(RecordingApp::default());
+        run_frame(&mut state, 800.0, 600.0);
+
+        // 配線そのもの。 値の比較では検出できない (下の注記参照)。
+        assert!(
+            state.app.measurer_present.get(),
+            "ランタイムが ViewContext に計測器を差していない"
+        );
+        // 計測の中身。 StubMeasure は 1 文字 = font_size * 0.5 なので "ab" @ 20px = 20.0。
+        //
+        // 注意: この値だけでは配線漏れを検出できない。 StubMeasure から導かれる
+        // `mono_advance` は 0.5 で、 計測器なしのフォールバック
+        // (chars * mono_advance * font_size) と答えが一致するため。 上の
+        // `measurer_present` が本命で、 こちらは計算そのものの確認。
+        assert_eq!(state.app.measured_caret.get(), 20.0);
     }
 
     /// `input_delivery` の宣言が、 実際にランタイムを回したときの挙動と一致すること。

@@ -850,6 +850,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         .size
                         .width
                         / 1000.0;
+                // 計測器は `ViewContext` に差すので、 view を呼ぶ前に作る。
+                let measurer = TextRendererMeasurer::new(&mut tr, &self.measure_cache);
                 // 管理スクロール状態を ViewContext へ（アプリが scroll_states を読めるように）。
                 let scroll_info: std::collections::HashMap<String, sabitori_core::ScrollInfo> =
                     self.scroll_states
@@ -896,6 +898,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // can still use `image(key, data)` with their own cache.
                     images: None,
                     mono_advance,
+                    // 実フォント計測をアプリに渡す (issue #15)。 計測器は下の
+                    // `build_tree_measured` でも使い回す。
+                    measurer: Some(&measurer),
                 };
 
                 let mut root = self.app.view(&ctx);
@@ -917,10 +922,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // declarative と同じ関数を呼ぶ — 以前はこのファイルに逐語コピーが
                 // あり、片方だけ直す事故の温床になっていた (issue #14 / #17)。
                 crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
-                let mut build_result = {
-                    let measurer = TextRendererMeasurer::new(&mut tr, &self.measure_cache);
-                    build_tree_measured(&root, w, h, &measurer)
-                };
+                let mut build_result = build_tree_measured(&root, w, h, &measurer);
                 // 測定したスクロール範囲(viewport/content)を管理状態へ反映 → 次フレームの
                 // ホイールが正しい上限でクランプされる（コンテンツ高がここで確定）。
                 crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
