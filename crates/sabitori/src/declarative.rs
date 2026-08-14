@@ -535,6 +535,9 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
         | InputEventKind::CharInput => Delivery::ToApp,
 
         InputEventKind::ModifiersChanged => Delivery::ToApp,
+
+        // Cmd/Ctrl+V を捕まえてクリップボードを読み、 1 イベントとして配る。
+        InputEventKind::Paste => Delivery::ToApp,
     }
 }
 
@@ -2262,19 +2265,29 @@ impl<A: DeclarativeApp> AppState<A> {
         // 既定動作は押下のみ、 かつ誰も消費しなかったときだけ。 解放でも走らせると
         // ⇧を離しただけで選択が消える、といった挙動になる。
         if pressed && !handled {
-            // Cmd+C (macOS) / Ctrl+C (other): copy selected text to clipboard.
-            let copy_modifier = if cfg!(target_os = "macos") {
-                self.modifiers.meta
-            } else {
-                self.modifiers.ctrl
-            };
-            let is_copy = key == Key::C && copy_modifier;
+            // Cmd+C (macOS) / Ctrl+C (other): 選択テキストをクリップボードへ。
+            // 0.4.0 より前は macOS 専用 (pbcopy サブプロセス) で、 他は
+            // `let _ = text;` と捨てていた (issue #20)。
+            let is_copy = crate::clipboard::is_copy_shortcut(key, self.modifiers);
             if is_copy {
                 if let Some(text) = self.selected_text() {
-                    #[cfg(target_os = "macos")]
-                    crate::macos_drag::copy_text_to_clipboard(&text);
-                    #[cfg(not(target_os = "macos"))]
-                    { let _ = text; /* TODO: linux/wasm clipboard */ }
+                    crate::clipboard::write_text(&text);
+                }
+            }
+            // Cmd+V (macOS) / Ctrl+V (other): クリップボードを読んで 1 イベントで配る。
+            //
+            // 0.4.0 より前は**ペーストの実装がどこにも無かった**。 widgets 側に
+            // 受け口のコメントだけがあり、 実際には何も届かなかった (issue #20)。
+            // `CharInput` の連打にしないのは、 消費側が undo の単位や IME の状態と
+            // 噛み合わせられなくなるため。
+            if crate::clipboard::is_paste_shortcut(key, self.modifiers) {
+                if let Some(text) = crate::clipboard::read_text() {
+                    let ev = InputEvent::Paste { text };
+                    crate::runtime_shared::dispatch(
+                        &mut self.app,
+                        self.focused_id.as_deref(),
+                        &ev,
+                    );
                 }
             }
             // Any key other than the copy shortcut dismisses the

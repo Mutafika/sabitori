@@ -167,6 +167,15 @@ pub enum InputEvent {
     ModifiersChanged(Modifiers),
     /// A Unicode character was received (non-IME path).
     CharInput(char),
+    /// クリップボードから貼り付けられたテキスト。
+    ///
+    /// **1 操作 = 1 イベント**として届く。 `CharInput` の連打にしないのは、
+    /// 消費側が undo の単位や IME の状態と噛み合わせられなくなるため。
+    ///
+    /// ランタイムが Cmd+V (macOS) / Ctrl+V (他) を捕まえてクリップボードを読み、
+    /// これを発行する。 アプリ側で `Key::V` を自分で見る必要は無い。
+    /// 改行を含み得る (複数行を貼った場合) ので、 単一行の入力欄は自分で潰すこと。
+    Paste { text: String },
 }
 
 /// [`InputEvent`] からペイロードを落とした種別。
@@ -186,6 +195,7 @@ pub enum InputEventKind {
     KeyInput,
     ModifiersChanged,
     CharInput,
+    Paste,
 }
 
 impl InputEventKind {
@@ -206,6 +216,7 @@ impl InputEventKind {
         InputEventKind::KeyInput,
         InputEventKind::ModifiersChanged,
         InputEventKind::CharInput,
+        InputEventKind::Paste,
     ];
 
     /// [`Self::ALL`] 内で占めるべき位置。 `ALL` の完全性検査にだけ使うので
@@ -225,6 +236,7 @@ impl InputEventKind {
             InputEventKind::KeyInput => 8,
             InputEventKind::ModifiersChanged => 9,
             InputEventKind::CharInput => 10,
+            InputEventKind::Paste => 11,
         }
     }
 }
@@ -251,6 +263,7 @@ impl InputEvent {
             InputEvent::KeyInput { .. } => InputEventKind::KeyInput,
             InputEvent::ModifiersChanged(_) => InputEventKind::ModifiersChanged,
             InputEvent::CharInput(_) => InputEventKind::CharInput,
+            InputEvent::Paste { .. } => InputEventKind::Paste,
         }
     }
 }
@@ -410,6 +423,10 @@ mod kind_tests {
             ),
             (InputEvent::ModifiersChanged(m), InputEventKind::ModifiersChanged),
             (InputEvent::CharInput('あ'), InputEventKind::CharInput),
+            (
+                InputEvent::Paste { text: "貼り付け".into() },
+                InputEventKind::Paste,
+            ),
         ];
         for (event, expected) in cases {
             assert_eq!(event.kind(), *expected, "{event:?} の kind() が違う");

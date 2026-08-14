@@ -104,6 +104,33 @@
   増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
   作れる（返さないと**変換候補が画面左上に出る**）。
 
+- **ペーストが動くようになった / コピーが全プラットフォーム対応になった**
+  ([#20](https://github.com/Mutafika/sabitori/issues/20))。
+
+  **ペーストはどのプラットフォームにも実装が無かった。** `TextInputState` に
+  `Key::V if is_cmd` の受け口と「実際のペーストテキストは CharInput か ImeCommit
+  で届く」というコメントだけがあり、**クリップボードを読むコードが repo に
+  存在しなかった**ので何も届かなかった。コピーも macOS 専用（`pbcopy`
+  サブプロセス）で、他は `let _ = text;` と捨てていた。
+
+  - `InputEvent::Paste { text }` を追加。`CharInput` の連打ではなく **1 操作 =
+    1 イベント**（undo の単位や IME の状態と噛み合わせられるように）
+  - `sabitori::clipboard`（`read_text` / `write_text` / ショートカット判定）を
+    追加。`arboard` で macOS / Windows / Linux を 1 本に
+  - `TextInputState::on_paste` — 選択を置換し、複数行は空白に均す（単一行の欄なので）
+  - `macos_drag::copy_text_to_clipboard` を削除（`clipboard::write_text` に統合）
+
+  wasm は `navigator.clipboard` が非同期なので未対応（`read_text` は `None`）。
+
+  ⚠️ `TextInputState::on_key` は **Cmd/Ctrl+V を消費しなくなった**（`false` を
+  返す）。消費するとランタイムの既定動作＝クリップボード読みが #18 の仕組みで
+  止まり、ペーストが永久に起きない。自前のフィールド実装で `Key::V` に `true` を
+  返しているコードは同じ理由で直すこと。
+
+  この variant 追加で **#17 の仕組みが実際に発火した** — `InputEvent` に
+  `Paste` を足した瞬間、3 ランタイムすべてがコンパイルエラーで止まり、配線の
+  判断を全箇所で通ることになった。
+
 - **`sabitori::testing` — アプリの回帰テストを窓も GPU も無しで書ける**
   ([#19](https://github.com/Mutafika/sabitori/issues/19))。
 

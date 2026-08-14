@@ -72,6 +72,9 @@ cosmic-text = "0.12"
 etagere = "0.2"
 web-time = "1"
 
+# Clipboard (native only; wasm は navigator.clipboard が非同期なので別扱い)
+arboard = { version = "3", default-features = false }
+
 # macOS native
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSURL", "NSArray", "NSString"] }

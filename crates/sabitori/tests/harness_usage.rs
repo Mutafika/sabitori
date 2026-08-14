@@ -183,3 +183,30 @@ fn manual_scroll_containers_are_not_driven_by_the_harness() {
         "アプリ所有のコンテナに管理状態を作ってはいけない"
     );
 }
+
+/// ペーストがフォーカス中の欄に入ること。
+///
+/// ランタイムの Cmd/Ctrl+V は「ショートカット判定 → クリップボード読み →
+/// `Paste` 配信」の 3 段で、 ここは最後の配信を再現している。 実クリップボードは
+/// 環境依存なのでテストから外してある。
+#[test]
+fn paste_reaches_the_focused_field() {
+    let mut h = Harness::new(Form::new(0), 400.0, 400.0);
+    h.frame();
+
+    h.click("name");
+    h.paste("https://example.com/a?b=1");
+
+    assert_eq!(h.app().name.text, "https://example.com/a?b=1");
+}
+
+/// フォーカスが無ければ欄には入らない（アプリの `on_input` には届く）。
+#[test]
+fn paste_without_focus_does_not_touch_the_field() {
+    let mut h = Harness::new(Form::new(0), 400.0, 400.0);
+    h.frame();
+
+    h.paste("xyz");
+
+    assert_eq!(h.app().name.text, "");
+}

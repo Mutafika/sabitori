@@ -33,7 +33,7 @@ fn every_runtime_declares_every_kind() {
     }
     assert_eq!(
         K::ALL.len(),
-        11,
+        12,
         "種別を増減したら、 3 ランタイムの input_delivery と CHANGELOG を確認すること"
     );
 }

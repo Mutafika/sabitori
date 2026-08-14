@@ -64,6 +64,12 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
         | InputEventKind::KeyInput
         | InputEventKind::CharInput
         | InputEventKind::ModifiersChanged => Delivery::ToApp,
+
+        // このランタイムは Cmd/Ctrl+V を捕まえていないので、 自前で
+        // `inject_event` に流さない限り発生しない。
+        InputEventKind::Paste => Delivery::NotProduced(
+            "SabitoriApp はペーストのショートカットを見ていない (inject_event でなら流せる)",
+        ),
     }
 }
 
@@ -588,7 +594,8 @@ impl<A: SabitoriApp> AppState<A> {
             | InputEvent::ImeCommit { .. }
             | InputEvent::KeyInput { .. }
             | InputEvent::CharInput(_)
-            | InputEvent::ModifiersChanged(_) => {}
+            | InputEvent::ModifiersChanged(_)
+            | InputEvent::Paste { .. } => {}
         }
     }
 }
@@ -895,7 +902,8 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
             | InputEvent::ImeCommit { .. }
             | InputEvent::KeyInput { .. }
             | InputEvent::CharInput(_)
-            | InputEvent::ModifiersChanged(_) => {}
+            | InputEvent::ModifiersChanged(_)
+            | InputEvent::Paste { .. } => {}
         }
         self.needs_rebuild = true;
     }

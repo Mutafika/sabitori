@@ -148,6 +148,21 @@ impl TextInputState {
         self.insert_str(text);
     }
 
+    /// クリップボードから貼り付ける。 選択があれば置き換える。
+    ///
+    /// **改行は空白に潰す。** これは単一行の入力欄なので、 複数行を貼られたときに
+    /// 行の途中で切るより、 1 行に均す方が壊れ方が素直 (URL やパスを貼る用途では
+    /// そもそも改行が入らない)。
+    pub fn on_paste(&mut self, text: &str) {
+        self.preedit.clear();
+        self.delete_selection();
+        let flattened: String = text
+            .chars()
+            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            .collect();
+        self.insert_str(&flattened);
+    }
+
     // ── Keyboard handling ─────────────────────────────────────────
 
     /// Handle a key event. `modifiers` carries Shift/Ctrl/Alt/Meta state.
@@ -237,10 +252,18 @@ impl TextInputState {
                 self.delete_selection();
                 true
             }
-            Key::V if is_cmd => {
-                // The actual paste text will arrive via CharInput or ImeCommit.
-                true
-            }
+            // ⚠️ Cmd/Ctrl+V は **消費しない** (`false` を返す)。
+            //
+            // ペーストの実体はランタイムがクリップボードを読んで
+            // `InputEvent::Paste` として配る (issue #20)。 ここで `true` を返すと
+            // 「このキーは処理済み」 とみなされてランタイムの既定動作 (= まさに
+            // そのクリップボード読み) が止まり、 **ペーストが永久に起きない**。
+            //
+            // 0.4.0 より前はここが `true` を返し、 コメントは「実際のペースト
+            // テキストは CharInput か ImeCommit で届く」 と言っていた。 が、
+            // クリップボードを読むコードが repo に存在しなかったので何も届かず、
+            // 戻り値も誰も読んでいなかったので誰も気づかなかった。
+            Key::V if is_cmd => false,
             Key::Z if is_cmd => {
                 // Undo is not yet implemented.
                 false
@@ -416,6 +439,10 @@ impl TextInputState {
             }
             InputEvent::ImeCommit { text } => {
                 self.on_ime_commit(text);
+                true
+            }
+            InputEvent::Paste { text } => {
+                self.on_paste(text);
                 true
             }
             _ => false,
@@ -721,5 +748,75 @@ mod caret_tests {
         let s = TextInputState::new("名前を入力");
         assert!(s.is_placeholder());
         assert_eq!(s.caret_byte_offset(), 0);
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use sabitori_input::{InputEvent, Key, Modifiers};
+
+    /// 貼り付けたテキストがカーソル位置に入ること。
+    #[test]
+    fn paste_inserts_at_the_cursor() {
+        let mut s = TextInputState::new("placeholder");
+        for ch in "ab".chars() {
+            s.on_char(ch);
+        }
+        s.move_left();
+        assert!(s.on_focused_input(&InputEvent::Paste { text: "XY".into() }));
+        assert_eq!(s.text, "aXYb");
+        assert_eq!(s.cursor_pos, 3);
+    }
+
+    /// 選択があれば置き換えること。
+    #[test]
+    fn paste_replaces_the_selection() {
+        let mut s = TextInputState::new("placeholder");
+        for ch in "abcd".chars() {
+            s.on_char(ch);
+        }
+        s.select_all();
+        s.on_focused_input(&InputEvent::Paste { text: "Z".into() });
+        assert_eq!(s.text, "Z");
+    }
+
+    /// 複数行を貼っても 1 行に均されること。 単一行の欄なので、 行の途中で切るより
+    /// 空白に潰す方が壊れ方が素直。
+    #[test]
+    fn multiline_paste_is_flattened() {
+        let mut s = TextInputState::new("placeholder");
+        s.on_focused_input(&InputEvent::Paste { text: "a\r\nb\nc".into() });
+        assert_eq!(s.text, "a  b c");
+    }
+
+    /// **issue #20 の要点。** Cmd/Ctrl+V は消費してはいけない。
+    ///
+    /// 消費するとランタイムの既定動作 (= クリップボードを読んで `Paste` を配る)
+    /// が止まり、 ペーストが永久に起きない。 0.4.0 より前はここが `true` を
+    /// 返していたが、 そもそもクリップボードを読むコードが無く、 戻り値も誰も
+    /// 読んでいなかったので誰も気づかなかった。
+    #[test]
+    fn the_paste_shortcut_is_not_consumed() {
+        let mut s = TextInputState::new("placeholder");
+        let primary = if cfg!(target_os = "macos") {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        assert!(
+            !s.on_key(Key::V, primary),
+            "消費するとランタイムがクリップボードを読まなくなる"
+        );
+    }
+
+    /// 変換中に貼ったら、 未確定分は捨ててから入れること。
+    #[test]
+    fn paste_clears_an_active_preedit() {
+        let mut s = TextInputState::new("placeholder");
+        s.on_ime_preedit("にほん".into(), None);
+        s.on_focused_input(&InputEvent::Paste { text: "X".into() });
+        assert!(!s.preedit.is_active());
+        assert_eq!(s.text, "X");
     }
 }

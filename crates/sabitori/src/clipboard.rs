@@ -1,0 +1,111 @@
+//! システムクリップボードの読み書き。
+//!
+//! 0.4.0 より前は、 コピーが **macOS 専用**（`pbcopy` サブプロセス）で、
+//! **ペーストはどのプラットフォームにも実装が無かった** (issue #20)。
+//! `sabitori-widgets` の `TextInputState` には `Key::V if is_cmd` の受け口だけあり、
+//! 「実際のペーストテキストは CharInput か ImeCommit で届く」 というコメントが
+//! 付いていたが、 **クリップボードを読むコードが repo 内に存在しなかった**ので
+//! それは起こらなかった。
+//!
+//! ここは `arboard` に寄せて macOS / Windows / Linux を 1 本で扱う。
+//! wasm は `navigator.clipboard` が非同期なので別扱いが要る（未対応）。
+
+/// クリップボードのテキストを読む。 空・非テキスト・失敗はすべて `None`。
+///
+/// 呼ぶたびにハンドルを作る。 ペーストはユーザ操作の頻度なので、 ハンドルを
+/// 持ち回してライフタイムを増やすより素直。
+pub fn read_text() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut cb = arboard::Clipboard::new().ok()?;
+        let text = cb.get_text().ok()?;
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // navigator.clipboard.readText() は Promise を返すので、 この同期 API には
+        // 載らない。 wasm でのペーストは別の形（イベント経由）が要る。
+        None
+    }
+}
+
+/// クリップボードにテキストを書く。 失敗は握りつぶす（コピーできないだけで、
+/// アプリを止める理由にはならない）。
+pub fn write_text(text: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(text.to_string());
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = text;
+    }
+}
+
+/// このキー入力がペーストの要求か。 macOS は Cmd、 他は Ctrl。
+///
+/// ⇧+Insert（X11 の慣習）は見ていない。 必要なら足すこと。
+pub fn is_paste_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.meta
+    } else {
+        modifiers.ctrl
+    };
+    key == sabitori_input::Key::V && primary
+}
+
+/// このキー入力がコピーの要求か。
+pub fn is_copy_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.meta
+    } else {
+        modifiers.ctrl
+    };
+    key == sabitori_input::Key::C && primary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sabitori_input::{Key, Modifiers};
+
+    /// 修飾キー無しの V / C はショートカットではない。 打った文字が
+    /// ペースト扱いされたら、 テキスト欄に "v" が入らなくなる。
+    #[test]
+    fn bare_letters_are_not_shortcuts() {
+        let none = Modifiers::default();
+        assert!(!is_paste_shortcut(Key::V, none));
+        assert!(!is_copy_shortcut(Key::C, none));
+    }
+
+    /// プラットフォームの主修飾キーと組んだときだけ成立すること。
+    #[test]
+    fn primary_modifier_makes_them_shortcuts() {
+        let primary = if cfg!(target_os = "macos") {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        assert!(is_paste_shortcut(Key::V, primary));
+        assert!(is_copy_shortcut(Key::C, primary));
+        // 別のキーは巻き込まない。
+        assert!(!is_paste_shortcut(Key::B, primary));
+    }
+
+    /// 反対側の修飾キーでは成立しない（macOS で Ctrl+V が効いてしまう等）。
+    #[test]
+    fn the_other_modifier_does_not_trigger() {
+        let other = if cfg!(target_os = "macos") {
+            Modifiers { ctrl: true, ..Default::default() }
+        } else {
+            Modifiers { meta: true, ..Default::default() }
+        };
+        assert!(!is_paste_shortcut(Key::V, other));
+    }
+}

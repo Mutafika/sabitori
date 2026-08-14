@@ -235,6 +235,23 @@ impl<A: DeclarativeApp> Harness<A> {
         }
     }
 
+    /// ペーストされたことにする。 実際のクリップボードには触れない。
+    ///
+    /// ランタイムの Cmd/Ctrl+V ハンドラは
+    /// 「ショートカット判定 → `clipboard::read_text()` → `Paste` を配信」 の 3 段。
+    /// ここは最後の配信だけを再現する。 実クリップボードを読む部分は環境依存なので
+    /// テストからは外してある (判定部分は `clipboard` モジュールのテストが見ている)。
+    pub fn paste(&mut self, text: &str) {
+        let ev = sabitori_input::InputEvent::Paste {
+            text: text.to_string(),
+        };
+        crate::runtime_shared::dispatch(
+            &mut self.state.app,
+            self.state.focused_id.as_deref(),
+            &ev,
+        );
+    }
+
     /// 管理スクロールコンテナ（`.scroll(id)`）を動かす。 `dy` は logical px、
     /// 正が下方向。 バネの整定を待たずに値を確定させる。
     ///

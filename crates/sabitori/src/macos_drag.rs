@@ -74,27 +74,6 @@ pub fn get_mouse_position(window: &winit::window::Window) -> Option<(f32, f32)> 
     }
 }
 
-/// Plain text を macOS system clipboard (NSPasteboard general) に書き込む。
-/// 実装は subprocess `pbcopy` 経由 — `copy_paths_to_clipboard` と同じパターン。
-/// NSPasteboard 直叩きにすると objc2 ボイラープレートが嵩むのに対し、 pbcopy は
-/// macOS shipped 1 行で済む。 失敗は no-op (= silent ignore、 clipboard 書込み
-/// 失敗で app crash させるほどではない)。
-pub fn copy_text_to_clipboard(text: &str) {
-    use std::process::{Command, Stdio};
-    use std::io::Write;
-    if let Ok(mut child) = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        if let Some(ref mut stdin) = child.stdin {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
 /// Copy file paths to the macOS system clipboard.
 pub fn copy_paths_to_clipboard(paths: &[&Path]) {
     if paths.is_empty() { return; }

@@ -75,7 +75,8 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
         | InputEventKind::ImeCommit
         | InputEventKind::KeyInput
         | InputEventKind::CharInput
-        | InputEventKind::ModifiersChanged => Delivery::ToApp,
+        | InputEventKind::ModifiersChanged
+        | InputEventKind::Paste => Delivery::ToApp,
     }
 }
 
@@ -734,6 +735,19 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     if !handled && key == Key::Escape {
                         self.focused_id = None;
                         self.push_ui_capture();
+                    }
+
+                    // Cmd/Ctrl+V: クリップボードを読んで 1 イベントで配る (issue #20)。
+                    // declarative と同じ扱い。
+                    if !handled && crate::clipboard::is_paste_shortcut(key, self.modifiers) {
+                        if let Some(text) = crate::clipboard::read_text() {
+                            let ev = InputEvent::Paste { text };
+                            crate::runtime_shared::dispatch(
+                                &mut self.app,
+                                self.focused_id.as_deref(),
+                                &ev,
+                            );
+                        }
                     }
 
                     // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
