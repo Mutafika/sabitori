@@ -55,10 +55,10 @@ pub trait SceneApp: DeclarativeApp {
 
 /// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
 ///
-/// [`crate::declarative::input_delivery`] と見比べること。 **同じ
-/// `DeclarativeApp` を実装していても届き方が違う種別がある。**
-/// この差は設計されたものではなく、 配線が 1 つずつ手で書かれた結果そうなった
-/// もので、 issue #22 で解消予定。 それまでは事実として宣言しておく。
+/// [`crate::declarative::input_delivery`] と見比べること。 IME の届き方が
+/// declarative と違っていた (`ImeEnabled` を組み立てない / preedit・commit が
+/// フォーカス限定) が、 issue #22 で揃えた。 現在の差は `PointerLeft` の扱いだけで、
+/// これは両ランタイムとも同じ (`on_cursor_left` で伝える)。
 pub fn input_delivery(kind: InputEventKind) -> Delivery {
     match kind {
         InputEventKind::PointerMoved
@@ -70,17 +70,10 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
             Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
         }
 
-        // ⚠️ declarative と違う: このランタイムは `Ime::Enabled` を
-        // `InputEvent` に変換していない。
-        InputEventKind::ImeEnabled => Delivery::NotProduced(
-            "未配線 — declarative では届くが SceneApp では組み立てていない (issue #22)",
-        ),
-
-        // ⚠️ declarative と違う: フォーカス中の要素が無いと**どこにも届かない**。
-        // declarative は `on_focused_input` が消費しなければ `on_input` へ落とす。
-        InputEventKind::ImePreedit | InputEventKind::ImeCommit => Delivery::FocusedOnly,
-
-        InputEventKind::KeyInput
+        InputEventKind::ImeEnabled
+        | InputEventKind::ImePreedit
+        | InputEventKind::ImeCommit
+        | InputEventKind::KeyInput
         | InputEventKind::CharInput
         | InputEventKind::ModifiersChanged => Delivery::ToApp,
     }
@@ -759,22 +752,32 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             }
 
             WindowEvent::Ime(ime_event) => {
-                if let Some(ref fid) = self.focused_id {
-                    match ime_event {
-                        winit::event::Ime::Preedit(text, cursor) => {
-                            self.app.on_focused_input(fid, &InputEvent::ImePreedit {
-                                text,
-                                cursor,
-                            });
-                        }
-                        winit::event::Ime::Commit(text) => {
-                            self.app.on_focused_input(fid, &InputEvent::ImeCommit {
-                                text: text.clone(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
+                // declarative と同じ形。 以前はここが
+                //   `if let Some(fid) = focused_id { on_focused_input(..) }`
+                // だけで、 (a) `Ime::Enabled` を組み立てず、 (b) `on_input` への
+                // フォールバックも無かった。 その結果フォーカス中の要素が無いと
+                // 変換中の文字がどこにも届かず、 ターミナルのような
+                // 「フォーカス要素は無いが IME 入力は受ける」 アプリが
+                // SceneApp では書けなかった (issue #22)。
+                let event = match &ime_event {
+                    winit::event::Ime::Preedit(text, cursor) => InputEvent::ImePreedit {
+                        text: text.clone(),
+                        cursor: cursor.map(|(s, e)| (s, e)),
+                    },
+                    winit::event::Ime::Commit(text) => InputEvent::ImeCommit {
+                        text: text.clone(),
+                    },
+                    winit::event::Ime::Enabled => InputEvent::ImeEnabled,
+                    // `Ime::Disabled` に対応する InputEvent がまだ無い。
+                    // 受け手 (FocusManager::on_ime_disabled) はいるので、
+                    // variant を足すのは別 issue で。
+                    winit::event::Ime::Disabled => return,
+                };
+                crate::runtime_shared::dispatch(
+                    &mut self.app,
+                    self.focused_id.as_deref(),
+                    &event,
+                );
             }
 
             WindowEvent::RedrawRequested => {

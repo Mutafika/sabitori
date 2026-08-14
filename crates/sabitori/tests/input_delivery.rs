@@ -9,9 +9,15 @@
 //!
 //! 1. 表が「全種別ぶん引ける」ことの確認 (網羅マッチなので当然だが、 将来
 //!    誰かが `_` 腕を足したらここが意味を持つ)
-//! 2. **既知の乖離を固定する** — declarative と scene_app で届き方が違う種別を
-//!    明示的に assert しておき、 issue #22 で揃えたときに必ずここが落ちるようにする。
-//!    差が「いつの間にか消えた / 増えた」 のを検出する口。
+//! 2. **ランタイム間の一致を固定する** — declarative と scene_app は同じ
+//!    `DeclarativeApp` を実装させる以上、 届き方も揃っていなければならない。
+//!    差が「いつの間にか増えた」 のを検出する口。
+//!
+//! ⚠️ **限界**: ここが比べているのは宣言どうしで、 宣言と実装のズレは見ていない。
+//! declarative については `frame_tests::declared_delivery_matches_reality` が
+//! ヘッドレスで駆動して実挙動と突き合わせているが、 scene_app と
+//! sabitori-window は窓が要るので同じことができていない。 ヘッドレス駆動を
+//! 公開 API にする issue #19 が入ったら、 残りもそこで見ること。
 
 use sabitori::{Delivery, InputEventKind as K};
 
@@ -74,37 +80,24 @@ fn sabitori_window_keeps_all_pointer_events_internal() {
     }
 }
 
-/// **既知の乖離。** declarative と scene_app は同じ `DeclarativeApp` を実装させる
-/// のに、 IME の届き方が違う。 設計ではなく配線漏れなので issue #22 で揃える予定。
-/// 揃えたらこのテストは落ちる — それが正しい。
+/// declarative と scene_app は、 同じ `DeclarativeApp` を実装させる以上、
+/// **同じ種別が同じ届き方をしなければならない**。
+///
+/// かつては IME だけ食い違っていた (issue #22): scene_app は `ImeEnabled` を
+/// 組み立てず、 preedit / commit も `on_focused_input` にしか渡さなかったので、
+/// フォーカス中の要素が無いと変換中の文字がどこにも届かなかった。 ターミナルの
+/// ような「フォーカス要素は無いが IME 入力は受ける」 アプリが SceneApp では
+/// 書けない、 という形で表に出る。
+///
+/// 揃えたので、 ここでは全種別の一致を固定する。 意図的に差を付けるなら、
+/// その理由をこのテストに書いてから外すこと。
 #[test]
-fn known_ime_divergence_between_declarative_and_scene_app() {
-    // IME 有効化: declarative は届く / scene_app は組み立てていない。
-    assert_eq!(
-        sabitori::declarative::input_delivery(K::ImeEnabled),
-        Delivery::ToApp,
-    );
-    assert!(
-        matches!(
-            sabitori::scene_app::input_delivery(K::ImeEnabled),
-            Delivery::NotProduced(_)
-        ),
-        "scene_app が ImeEnabled を配るようになったなら #22 が解消済み。 \
-         このテストを消して CHANGELOG に書くこと"
-    );
-
-    // preedit / commit: declarative は on_focused_input が消費しなければ on_input へ
-    // 落とすが、 scene_app はフォーカス中の要素が無いとどこにも届かない。
-    for kind in [K::ImePreedit, K::ImeCommit] {
+fn declarative_and_scene_app_deliver_alike() {
+    for kind in K::ALL {
         assert_eq!(
-            sabitori::declarative::input_delivery(kind),
-            Delivery::ToApp,
-            "declarative: {kind:?}"
-        );
-        assert_eq!(
-            sabitori::scene_app::input_delivery(kind),
-            Delivery::FocusedOnly,
-            "scene_app: {kind:?}"
+            sabitori::declarative::input_delivery(*kind),
+            sabitori::scene_app::input_delivery(*kind),
+            "{kind:?} の届き方が 2 ランタイムで食い違っている"
         );
     }
 }

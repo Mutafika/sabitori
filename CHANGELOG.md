@@ -104,6 +104,18 @@
   増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
   作れる（返さないと**変換候補が画面左上に出る**）。
 
+- **`SceneApp` だけ IME の届き方が違った**
+  ([#22](https://github.com/Mutafika/sabitori/issues/22))。`ImeEnabled` を
+  組み立てておらず、preedit / commit も `on_focused_input` にしか渡していなかった。
+  **フォーカス中の要素が無いと変換中の文字がどこにも届かない**ので、ターミナルの
+  ような「フォーカス要素は無いが IME 入力は受ける」アプリが `SceneApp` では
+  書けなかった。`DeclarativeApp` と同じ形に揃えた。
+
+  この差は #17 で入れた配信表が炙り出したもので、揃えたことで
+  `known_ime_divergence_between_declarative_and_scene_app` が**設計どおり落ちた**
+  （差が消えたことに気づくための仕掛け）。2 ランタイムの全種別一致を固定する
+  テストに差し替えてある。
+
 - **`on_input` の戻り値が効くようになった（既定動作の抑止）**
   ([#18](https://github.com/Mutafika/sabitori/issues/18))。doc は "Return true if
   handled" と言っていたのに、**呼び出し 15 箇所すべてが戻り値を捨てていた**。
