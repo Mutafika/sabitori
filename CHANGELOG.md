@@ -15,6 +15,14 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-15
+
+`desired_focus` を「テストできる」状態にした版。
+
+`0.5.0` が潰したのと同じ形 —「宣言は通るが実際には届かない」— が、
+ランタイムと `Harness` の境目に残っていた。実機で動く経路とテストが通る経路が
+別々に書かれていると、片方だけが正しいことに誰も気づけない。
+
 ### Fixed
 
 - **`desired_focus()` が `Harness` からは一度も適用されなかった**
@@ -2094,7 +2102,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Mutafika/sabitori/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Mutafika/sabitori/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Mutafika/sabitori/compare/v0.3.21...v0.4.0
 [0.3.21]: https://github.com/Mutafika/sabitori/compare/v0.3.20...v0.3.21
