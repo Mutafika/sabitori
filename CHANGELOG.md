@@ -104,6 +104,23 @@
   増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
   作れる（返さないと**変換候補が画面左上に出る**）。
 
+- **アクセシビリティの意味層**（`Role` / `label` / `heading`）
+  ([#21](https://github.com/Mutafika/sabitori/issues/21))。
+
+  ```rust
+  div().role(Role::Button).label("閉じる").on_click(|| {})
+  div().heading(2).label("設定")
+  ```
+
+  `HitRegion` に `role` / `label` / `heading_level` が載り、**役割やラベルだけを
+  持つ要素**（クリックもフォーカスもしない見出しや画像）も `hit_regions` に出る
+  ようになった。`button()` と `text_input` は既定で役割を名乗る。
+
+  ⚠️ **これだけでは VoiceOver / NVDA からはまだ空の窓に見える。** `accesskit`
+  への接続は入っていない（#25）。残りは `accesskit_winit` のアダプタの
+  ライフサイクル依存で、スクリーンリーダの実機確認なしに「入った」と言えないため
+  意味層で区切った。素材（id / 矩形 / role / label / focusable）はここで揃っている。
+
 - **ペーストが動くようになった / コピーが全プラットフォーム対応になった**
   ([#20](https://github.com/Mutafika/sabitori/issues/20))。
 

@@ -570,6 +570,11 @@ pub fn text_input(
     div()
         .id(id)
         .focusable()
+        // 支援技術から「テキスト入力」として見えるように (issue #21)。
+        // 名前は placeholder から取る — 空欄のときに何を入れる欄なのか
+        // 分かるのは placeholder だけなので。
+        .role(sabitori_core::element::Role::TextInput)
+        .label(input.placeholder.clone())
         .w_full()
         .p_px(style.padding)
         .bg(style.bg)

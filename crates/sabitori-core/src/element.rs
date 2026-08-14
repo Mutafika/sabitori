@@ -262,6 +262,58 @@ pub struct LinkRange {
     pub color: Color,
 }
 
+/// 支援技術に伝える、 この要素の役割。
+///
+/// GPU で全部自前描画している以上、 OS から見ると窓の中身はただのピクセルで、
+/// VoiceOver / NVDA / Narrator からは**完全に空の窓**に見える (issue #21)。
+/// ネイティブウィジェットを使うツールキットと違い、 「何もしなければそこそこ動く」
+/// という逃げ道が無い。 役割とラベルを構造として書けるようにするのが第一歩。
+///
+/// 値は ARIA / accesskit の role にほぼ対応する。 迷ったら [`Role::Group`]
+/// (意味を持たない入れ物) にしておくこと — 嘘の役割は無いより悪い。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Role {
+    /// 意味を持たない入れ物。 レイアウトのためだけの `div` はこれ。
+    #[default]
+    Group,
+    /// 押すと何かが起きるもの。
+    Button,
+    /// 別の場所へ移動するもの。
+    Link,
+    /// 単一行のテキスト入力。
+    TextInput,
+    /// 複数行のテキスト入力。
+    TextArea,
+    /// on/off の切り替え。
+    Checkbox,
+    /// 排他選択の 1 つ。
+    Radio,
+    /// 値を連続的に変えるつまみ。
+    Slider,
+    /// 選択肢を開くもの。
+    ComboBox,
+    /// 見出し。 階層は [`Element::heading_level`] で示す。
+    Heading,
+    /// 読み上げ対象の本文テキスト。
+    Text,
+    /// 画像。 内容は [`Element::label`] で説明する (alt テキスト相当)。
+    Image,
+    /// 一覧の入れ物。
+    List,
+    /// 一覧の 1 項目。
+    ListItem,
+    /// タブの並び。
+    TabList,
+    /// タブ 1 枚。
+    Tab,
+    /// モーダルなどの前面領域。
+    Dialog,
+    /// 進捗表示。
+    ProgressBar,
+    /// 区切り線。
+    Separator,
+}
+
 /// スクロール位置を誰が持つか。 `overflow` が [`Overflow::Scroll`] のときだけ意味がある。
 ///
 /// sabitori のスクロールには最初から 2 つのモデルがあったが、 データ上は区別が無く、
@@ -621,6 +673,17 @@ pub struct Element {
     pub on_hover: Option<EventHandler>,
     /// Whether this element can receive focus.
     pub focusable: bool,
+    /// 支援技術に伝える役割。 `None` は「意味を持たない入れ物」(= [`Role::Group`])。
+    /// [`Element::role`] で設定する。
+    pub role: Option<Role>,
+    /// 支援技術が読み上げる名前 (ARIA の `aria-label` 相当)。
+    ///
+    /// 中の文字がそのまま名前になる場合 (ボタンのラベル等) は不要。 アイコンだけの
+    /// ボタンや画像のように、 **見た目からは名前が取れない**ものに付ける。
+    /// [`Element::label`] で設定する。
+    pub label: Option<String>,
+    /// 見出しの階層 (1 が最上位)。 [`Role::Heading`] のときだけ意味がある。
+    pub heading_level: Option<u8>,
     /// Style overrides when hovered.
     pub hover_style: Option<StateStyle>,
     /// Style overrides when pressed/active.
@@ -852,6 +915,9 @@ pub fn div() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        role: None,
+        label: None,
+        heading_level: None,
         hover_style: None,
         active_style: None,
         transitions: Vec::new(),
@@ -875,6 +941,9 @@ pub fn text(content: impl Into<String>) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        role: None,
+        label: None,
+        heading_level: None,
         hover_style: None,
         active_style: None,
         transitions: Vec::new(),
@@ -907,6 +976,9 @@ pub fn polyline() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        role: None,
+        label: None,
+        heading_level: None,
         hover_style: None,
         active_style: None,
         transitions: Vec::new(),
@@ -946,6 +1018,9 @@ pub fn arc() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        role: None,
+        label: None,
+        heading_level: None,
         hover_style: None,
         active_style: None,
         transitions: Vec::new(),
@@ -969,6 +1044,9 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        role: None,
+        label: None,
+        heading_level: None,
         hover_style: None,
         active_style: None,
         transitions: Vec::new(),
@@ -999,6 +1077,12 @@ pub fn button(label: impl Into<String>) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        // ボタンは既定で役割を名乗る。 支援技術から「押せるもの」として見える
+        // かどうかを、 呼び出し側が毎回書かないで済むように (issue #21)。
+        // 名前は中のラベルから取れるので `label` は None のまま。
+        role: Some(Role::Button),
+        label: None,
+        heading_level: None,
         // A button ships with the affordance built in: it lifts a little under
         // the pointer and sinks under the press. Colors are deliberately not
         // touched — the right hover tint depends on the app's palette, and an
@@ -1826,6 +1910,34 @@ impl Element {
     /// Set hover handler.
     pub fn on_hover(mut self, handler: impl FnMut() + 'static) -> Self {
         self.on_hover = Some(Box::new(handler));
+        self
+    }
+
+    /// 支援技術に伝える役割を設定する。
+    ///
+    /// ```ignore
+    /// div().role(Role::Button).label("閉じる").on_click(|| {})
+    /// ```
+    ///
+    /// 嘘の役割は無いより悪い。 迷ったら設定しない ([`Role::Group`] 扱い)。
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = Some(role);
+        self
+    }
+
+    /// 支援技術が読み上げる名前を設定する (ARIA の `aria-label` 相当)。
+    ///
+    /// 中の文字がそのまま名前になるなら不要。 **アイコンだけのボタンや画像**の
+    /// ように見た目から名前が取れないものに付ける。
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// 見出しにする。 `level` は 1 が最上位。
+    pub fn heading(mut self, level: u8) -> Self {
+        self.role = Some(Role::Heading);
+        self.heading_level = Some(level);
         self
     }
 

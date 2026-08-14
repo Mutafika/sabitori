@@ -61,6 +61,13 @@ pub struct HitRegion {
     /// Cursor preference (set via `.cursor(...)`). `None` means
     /// "no opinion" — runtime falls back to platform default.
     pub cursor: Option<Cursor>,
+    /// 支援技術に伝える役割 (`.role(..)`)。 `None` は意味を持たない入れ物。
+    pub role: Option<crate::element::Role>,
+    /// 支援技術が読み上げる名前 (`.label(..)`)。 アイコンだけのボタンや画像など、
+    /// 見た目から名前が取れないものに付く。
+    pub label: Option<String>,
+    /// 見出しの階層 (`.heading(n)`)。 `role` が `Heading` のときだけ意味がある。
+    pub heading_level: Option<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +766,11 @@ fn emit_commands(
 
     let clickable = element.on_click.is_some() || element.id.is_some() || element.drag_data.is_some();
     let hoverable = element.on_hover.is_some() || element.hover_style.is_some() || element.id.is_some() || element.tooltip.is_some() || element.drop_zone;
-    if clickable || hoverable || element.focusable {
+    // 役割やラベルだけを持つ要素 (クリックもフォーカスもしない見出し・画像の alt 等)
+    // も領域として出す。 支援技術に渡すには「意味を持つものが全部並んでいる」
+    // 必要があるため (issue #21)。
+    let has_semantics = element.role.is_some() || element.label.is_some();
+    if clickable || hoverable || element.focusable || has_semantics {
         let hit_rect = match parent_clip {
             Some(clip) => match rect.intersect(&clip) {
                 Some(r) => r,
@@ -786,6 +797,9 @@ fn emit_commands(
                 drag_data: element.drag_data.clone(),
                 drop_zone: element.drop_zone,
                 cursor: element.cursor,
+                role: element.role,
+                label: element.label.clone(),
+                heading_level: element.heading_level,
             };
             if use_overlay {
                 overlay_hit_regions.push(region);
@@ -2355,5 +2369,86 @@ mod container_min_size_tests {
             .find(|r| r.id.as_deref() == Some("floor"))
             .expect("the child should be laid out");
         assert_eq!(floor.rect.size.height, 300.0, "min_h(300) should beat the 100px parent");
+    }
+}
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+    use crate::element::{div, button, text, Dimension::Px, Role};
+
+    fn region<'a>(b: &'a BuildResult, id: &str) -> &'a HitRegion {
+        b.hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id} が hit_regions に居ない"))
+    }
+
+    /// 役割とラベルがビルド結果まで運ばれること。 ここに載らないと、
+    /// 支援技術に渡す層 (accesskit アダプタ) が何も組めない。
+    #[test]
+    fn role_and_label_reach_the_build() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("close")
+                .w(Px(40.0))
+                .h(Px(40.0))
+                .role(Role::Button)
+                .label("閉じる")
+                .on_click(|| {}),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+        let r = region(&b, "close");
+        assert_eq!(r.role, Some(Role::Button));
+        assert_eq!(r.label.as_deref(), Some("閉じる"));
+    }
+
+    /// **役割だけを持つ要素も領域として出ること。**
+    ///
+    /// 見出しや画像の alt はクリックもフォーカスもしない。 それらが落ちると、
+    /// 支援技術から見える内容が「押せるものだけ」になってしまう。
+    #[test]
+    fn semantics_only_elements_are_not_dropped() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).children([
+            // id も handler も focusable も無い。 役割だけ。
+            div().w(Px(200.0)).h(Px(30.0)).heading(2).label("設定"),
+            div().w(Px(200.0)).h(Px(30.0)).role(Role::Image).label("地図"),
+        ]);
+        let b = build_tree(&root, 200.0, 100.0);
+
+        let heading = b
+            .hit_regions
+            .iter()
+            .find(|r| r.role == Some(Role::Heading))
+            .expect("見出しが落ちている");
+        assert_eq!(heading.label.as_deref(), Some("設定"));
+        assert_eq!(heading.heading_level, Some(2));
+
+        assert!(
+            b.hit_regions.iter().any(|r| r.role == Some(Role::Image)),
+            "画像が落ちている"
+        );
+    }
+
+    /// `button()` は既定で役割を名乗ること。 呼び出し側が毎回書かないで済む。
+    #[test]
+    fn button_declares_its_role_by_default() {
+        let root = div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .child(button("保存").id("save"));
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(region(&b, "save").role, Some(Role::Button));
+    }
+
+    /// 役割を書いていない普通の `div` は `None` のまま。 嘘の役割を作らない。
+    #[test]
+    fn plain_containers_claim_no_role() {
+        let root = div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .child(div().id("wrap").w(Px(50.0)).h(Px(50.0)).child(text("x")));
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(region(&b, "wrap").role, None);
     }
 }
