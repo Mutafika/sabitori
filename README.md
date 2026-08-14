@@ -12,6 +12,7 @@
 ## Features
 
 - **Declarative builder API** — compose trees with `div() / text() / button() / image()`
+- **CSS-shaped layout** — flexbox *and* grid via Taffy, plus `align-self`, `align-content`, `aspect-ratio`, `z-index`, `text-align`
 - **GPU rendering** — wgpu + SDF shaders for rounded corners, borders, shadows, and gradients in a single pass
 - **WASM-first** — WebGPU preferred with WebGL2 fallback; canvas auto-binding via winit's web extension
 - **Spring physics animation** — snappy / gentle / bouncy presets + 11 easing functions + keyframes
@@ -161,6 +162,44 @@ assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 `frame()` does not advance time. Anything spring-driven — momentum scroll, `scroll_intents`, style animation — needs `tick(dt)` or `settle()`.
+
+## Layout
+
+Flexbox and grid, both backed by Taffy. If you know CSS you already know this — the names match.
+
+```rust
+// Flex
+div().flex_row().items_center().justify_between().gap(8.0)
+
+// Grid — a fixed sidebar and a body that takes the rest
+grid()
+    .grid_cols([Track::px(240.0), Track::fr(1.0)])
+    .gap(12.0)
+    .children([sidebar, body])
+
+// A header spanning every column
+grid()
+    .grid_cols(Track::repeat(3, Track::fr(1.0)))
+    .children([header.col_span(3), a, b, c])
+```
+
+`Track` is CSS `minmax(min, max)`: build one with `Track::px / pct / fr / auto / min_content / max_content / minmax`, and repeat it with `Track::repeat(n, track)`. `auto-fill` / `auto-fit` are not implemented — you pick the count.
+
+| | |
+|---|---|
+| One child opting out of the parent's alignment | `.self_start()` `.self_center()` `.self_end()` `.self_stretch()` |
+| Distributing wrapped **lines** | `.align_content(..)` on a `.wrap()` container |
+| Locking width-to-height | `.aspect(16.0 / 9.0)` |
+| Stacking order among siblings | `.z(5)` |
+| Aligning wrapped text | `.text_center()` `.text_right()` |
+
+Three of these have a precondition worth knowing before you decide they are broken:
+
+- **`.aspect()` loses to stretch.** In a `flex_col` the default `align_items: stretch` already fixes the child's width; with two sides determined there is nothing for the ratio to decide. Add `.self_start()` when you want height to drive width.
+- **`.text_center()` needs a width.** A text element sizes to its content, and content-sized boxes have no slack to align within. Inside a `flex_col` it stretches to the parent and just works; inside a `flex_row` it will not.
+- **`.z()` does not escape the parent**, exactly like a CSS stacking context. It reorders siblings — paint order *and* click order together. To lift something above the whole tree (popups, context menus) use `.overlay()`.
+
+`display: none` has no equivalent on purpose: don't emit the element. That removes its layout cost too.
 
 ## Widgets
 

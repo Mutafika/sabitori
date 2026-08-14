@@ -384,3 +384,86 @@ fn the_click_form_works_as_documented() {
     h.click("row-3");
     assert_eq!(h.app().selected, Some(3));
 }
+
+// ---------------------------------------------------------------------------
+// 「レイアウト」
+// ---------------------------------------------------------------------------
+
+/// README のレイアウト節に載っている形が、 ファサード (`sabitori::*`) 越しに
+/// そのまま通ること。 `Track` や `grid()` を root に出し忘れると、 README を
+/// 読んで書いた人が最初の 1 行で詰まる。
+struct LayoutShowcase;
+
+impl DeclarativeApp for LayoutShowcase {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        let _ = ctx;
+        let sidebar = div().id("sidebar").bg(Color::from_hex("#1a1b26"));
+        let body = div().id("body");
+        let header = div().id("header");
+        let (a, b, c) = (div().id("a"), div().id("b"), div().id("c"));
+
+        div().w(Px(800.0)).h(Px(600.0)).flex_col().children([
+            // flex
+            div().flex_row().items_center().justify_between().gap(8.0),
+            // grid — サイドバー固定 + 本文が余りを取る
+            grid()
+                .grid_cols([Track::px(240.0), Track::fr(1.0)])
+                .gap(12.0)
+                .h(Px(200.0))
+                .children([sidebar, body]),
+            // 全列にまたがる見出し行
+            grid()
+                .grid_cols(Track::repeat(3, Track::fr(1.0)))
+                .h(Px(200.0))
+                .children([header.col_span(3), a, b, c]),
+            // 表の残り
+            div().h(Px(40.0)).self_start().aspect(16.0 / 9.0),
+            div().wrap().align_content(AlignContent::Center),
+            // 完全に重なる 2 枚。 z の大きい方がクリックを取るはず。
+            div().h(Px(50.0)).children([
+                div().id("lifted").absolute().pos(0.0, 0.0).w(Px(50.0)).h(Px(50.0)).z(5),
+                div().id("beneath").absolute().pos(0.0, 0.0).w(Px(50.0)).h(Px(50.0)),
+            ]),
+            text("折り返す前提の段落").text_center(),
+            text("右揃え").text_right().italic(),
+        ])
+    }
+}
+
+/// README が「効かない」と書いている前提が、 実際にそのとおりであること。
+///
+/// 文章だけだと腐るので、 挙動の側で固定する。 ここが落ちたら README の
+/// 但し書きが嘘になっている。
+#[test]
+fn the_layout_section_compiles_and_its_caveats_hold() {
+    let mut h = Harness::new(LayoutShowcase, 800.0, 600.0);
+    h.frame();
+
+    let build = h.build();
+    let rect = |id: &str| {
+        build
+            .hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id} が居ない"))
+            .rect
+    };
+
+    // grid の 2 列が実際に 240 + 残り に割れている。 残りは gap(12) を引いた
+    // 548 — gap を fr の取り分から引かないと右端が見切れる。
+    assert_eq!(rect("sidebar").size.width, 240.0);
+    assert_eq!(rect("body").size.width, 548.0);
+
+    // col_span(3) が全幅を取る。
+    assert_eq!(rect("header").size.width, 800.0);
+
+    // z(5) を書いた要素が兄弟より手前でクリックを取る。
+    let lifted = rect("lifted");
+    assert!(
+        build
+            .hit_region_at(lifted.origin.x + 1.0, lifted.origin.y + 1.0)
+            .and_then(|r| r.id.as_deref())
+            == Some("lifted"),
+        "z(5) の要素がクリックを取れていない"
+    );
+}

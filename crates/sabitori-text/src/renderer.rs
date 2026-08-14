@@ -4,7 +4,7 @@ use sabitori_core::{Color, Typography};
 use wgpu::util::DeviceExt;
 
 use crate::atlas::GlyphAtlas;
-use crate::shaper::{quantize_font_size, resolve_family, TextShaper};
+use crate::shaper::{apply_align, quantize_font_size, resolve_family, TextShaper};
 
 /// Hit-test info for a single laid-out glyph. Pairs the glyph's logical-pixel
 /// rect with its byte range in the source string and a 0-based line index.
@@ -247,6 +247,10 @@ fn run_cache_key(
     // weight/tracking/leading change would reuse stale cached glyphs.
     typo.weight.unwrap_or(0).hash(&mut h);
     typo.letter_spacing.to_bits().hash(&mut h);
+    // 斜体と行揃えもグリフの形と位置を変えるので、 鍵に入れないと
+    // 「同じ文字列だから」で前の見た目が使い回される。
+    typo.italic.hash(&mut h);
+    (typo.align as u8).hash(&mut h);
     match typo.line_height {
         Some(m) => {
             1u8.hash(&mut h);
@@ -357,7 +361,10 @@ fn shape_run(
         family_override,
     );
     let weight = cosmic_text::Weight(typo.resolved_weight(bold));
-    let attrs = Attrs::new().family(family).weight(weight);
+    let mut attrs = Attrs::new().family(family).weight(weight);
+    if typo.italic {
+        attrs = attrs.style(cosmic_text::Style::Italic);
+    }
 
     // Reshape with line-clamp: drop trailing chars + append "…"
     // until the wrapped output fits within `max_lines`. The
@@ -367,6 +374,7 @@ fn shape_run(
     let final_text: &str = match max_lines {
         Some(n) if n > 0 => {
             buffer.set_text(ctx.font_system, text, attrs.clone(), Shaping::Advanced);
+            apply_align(&mut buffer, typo.align);
             buffer.shape_until_scroll(ctx.font_system, false);
             if buffer.layout_runs().count() <= n as usize {
                 text
@@ -399,6 +407,7 @@ fn shape_run(
                         attrs.clone(),
                         Shaping::Advanced,
                     );
+                    apply_align(&mut buffer, typo.align);
                     buffer.shape_until_scroll(ctx.font_system, false);
                     if buffer.layout_runs().count() <= n_lines || head.is_empty() {
                         break trial;
@@ -420,6 +429,7 @@ fn shape_run(
     };
     // Final shape pass with whatever the clamp logic decided on.
     buffer.set_text(ctx.font_system, final_text, attrs, Shaping::Advanced);
+    apply_align(&mut buffer, typo.align);
     buffer.shape_until_scroll(ctx.font_system, false);
 
     let mut glyphs: Vec<GlyphInstance> = Vec::new();
@@ -1107,6 +1117,7 @@ mod family_probe_tests {
 mod shaping_cache_tests {
     use super::*;
     use std::collections::HashMap;
+    use sabitori_core::element::TextAlign;
 
     struct Fixture {
         cache: HashMap<u64, ShapedRun>,
@@ -1196,6 +1207,133 @@ mod shaping_cache_tests {
         fn plain(&mut self, text: &str, x: f32, y: f32) -> (Vec<GlyphInstance>, Vec<GlyphHit>) {
             self.with_hits(text, x, y, 14.0, None, Typography::default(), false)
         }
+
+        /// 幅を与えて折り返させる版。 行揃えは `Buffer` の幅に対して効くので、
+        /// 幅を渡さない [`Fixture::with_hits`] では検証にならない。
+        fn wrapped(&mut self, text: &str, width: f32, typo: Typography) -> Vec<GlyphHit> {
+            let font_size = quantize_font_size(14.0);
+            let key = run_cache_key(text, font_size, Some(width), false, false, None, None, typo);
+            let mut ctx = ShapeCtx {
+                font_system: &mut self.font_system,
+                swash_cache: &mut self.swash_cache,
+                atlas: &mut self.atlas,
+                scale_factor: 1.0,
+                preferred_family: &self.family,
+                preferred_monospace_family: &self.mono_family,
+            };
+            ensure_shaped(
+                &mut self.cache,
+                &mut ctx,
+                key,
+                text,
+                0.0,
+                0.0,
+                font_size,
+                Some(width),
+                false,
+                false,
+                None,
+                None,
+                typo,
+            );
+            self.cache[&key].hits.clone()
+        }
+    }
+
+    /// 行の左端 (= 最初のグリフの x) を行ごとに拾う。
+    fn line_lefts(hits: &[GlyphHit]) -> Vec<f32> {
+        let mut per_line: std::collections::BTreeMap<u32, f32> = std::collections::BTreeMap::new();
+        for h in hits {
+            let e = per_line.entry(h.line_index).or_insert(f32::MAX);
+            *e = e.min(h.x);
+        }
+        per_line.into_values().collect()
+    }
+
+    const PARA: &str = "the quick brown fox jumps over the lazy dog again and again";
+
+    /// `text_align: center` が行を実際に動かすこと。 型と builder だけ足して
+    /// 描画に届いていない、 がこのリポジトリの定番の失敗なので、 グリフの
+    /// 座標で見る。
+    #[test]
+    fn centering_actually_moves_the_glyphs() {
+        let mut f = Fixture::new();
+        let start = line_lefts(&f.wrapped(PARA, 200.0, Typography::default()));
+        let centered = line_lefts(&f.wrapped(
+            PARA,
+            200.0,
+            Typography { align: TextAlign::Center, ..Typography::default() },
+        ));
+
+        assert!(start.len() >= 2, "200px に収まってしまい折り返していない");
+        assert_eq!(start.len(), centered.len(), "揃えで行数は変わらない");
+        assert!(
+            start.iter().all(|x| *x < 1.0),
+            "既定は左端に揃うはずが {start:?}"
+        );
+        assert!(
+            centered.iter().any(|x| *x > 1.0),
+            "中央揃えなのに全行が左端のまま: {centered:?}"
+        );
+    }
+
+    /// 右揃えは**行の右端**が揃うこと。 中央揃えとの区別が付かないと、
+    /// 「動いた」だけ見て通してしまう。
+    #[test]
+    fn end_alignment_lines_up_the_right_edges() {
+        let mut f = Fixture::new();
+        let hits = f.wrapped(
+            PARA,
+            200.0,
+            Typography { align: TextAlign::End, ..Typography::default() },
+        );
+
+        let mut rights: std::collections::BTreeMap<u32, f32> = std::collections::BTreeMap::new();
+        for h in &hits {
+            let e = rights.entry(h.line_index).or_insert(f32::MIN);
+            *e = e.max(h.x + h.w);
+        }
+        let rights: Vec<f32> = rights.into_values().collect();
+        assert!(rights.len() >= 2);
+        let max = rights.iter().cloned().fold(f32::MIN, f32::max);
+        let min = rights.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            max - min < 2.0,
+            "右端が {min}〜{max} に散っている — 揃っていない"
+        );
+    }
+
+    /// 斜体がキャッシュ鍵に入っていること。 入っていないと、 同じ文字列の
+    /// 直立版と斜体版が**先に来た方の見た目で両方描かれる**。
+    #[test]
+    fn italic_is_part_of_the_shaping_key() {
+        let mut f = Fixture::new();
+        f.with_hits("Roman", 0.0, 0.0, 14.0, None, Typography::default(), false);
+        assert_eq!(f.cache.len(), 1);
+        f.with_hits(
+            "Roman",
+            0.0,
+            0.0,
+            14.0,
+            None,
+            Typography { italic: true, ..Typography::default() },
+            false,
+        );
+        assert_eq!(f.cache.len(), 2, "斜体が鍵に入っていないので直立版が使い回された");
+    }
+
+    /// 行揃えも同じく鍵に入っていること。
+    #[test]
+    fn alignment_is_part_of_the_shaping_key() {
+        let mut f = Fixture::new();
+        f.wrapped(PARA, 200.0, Typography::default());
+        assert_eq!(f.cache.len(), 1);
+        f.wrapped(
+            PARA,
+            200.0,
+            Typography { align: TextAlign::Center, ..Typography::default() },
+        );
+        assert_eq!(f.cache.len(), 2, "行揃えが鍵に入っていない");
     }
 
     /// The bug this fixes: the hits path re-shaped from scratch every frame.

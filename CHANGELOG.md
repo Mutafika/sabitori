@@ -15,6 +15,94 @@
 
 ## [Unreleased]
 
+### Added
+
+CSS にあって sabitori に無かったレイアウト機能のうち、**土台が既に持っているのに
+変換層で捨てていたもの**を通した回。`0.4.0` までの「宣言はあるが届かない」潰しとは
+逆方向で、こちらは純粋な機能不足。
+
+taffy 0.7 は grid も `align-self` も `aspect-ratio` も実装済みなのに、
+`convert_to_taffy_style` が `display: Flex` を決め打ちし、対応するフィールドを
+書いていなかった。cosmic-text も `Align` と `Style::Italic` を持っていた。
+つまり**依存クレートは出来ていて、繋いでいなかった**だけ。
+
+- **grid レイアウト** — `Display::Grid`、`Track` / `TrackSize` / `GridPlacement` /
+  `GridAutoFlow`。
+
+  ```rust
+  grid()
+      .grid_cols([Track::px(240.0), Track::fr(1.0)])   // サイドバー + 本文
+      .gap(12.0)
+      .children([sidebar, main])
+
+  grid()
+      .grid_cols(Track::repeat(3, Track::fr(1.0)))
+      .children([header.col_span(3), a, b, c])
+  ```
+
+  `Track` は CSS の `minmax(min, max)` そのままの対。`Track::px` / `pct` / `fr` /
+  `auto` / `min_content` / `max_content` / `minmax` / `repeat` で作る。`fr` の下限が
+  `Auto` なのは CSS の `1fr` と同じ（中身より小さくならない）。
+
+  `auto-fill` / `auto-fit` は未対応 — 本数は呼び出し側が決める。
+
+  これが無かったので、列を揃えるレイアウトは flex の `grow` に読み替えるしかなく、
+  `TableColumn::{flex, fixed}` はその穴埋めとして存在している。
+
+- **`align_self` / `justify_self`** — `.self_start()` / `.self_center()` /
+  `.self_end()` / `.self_stretch()` / `.align_self(..)`。
+
+  親の `align_items` から**子 1 個だけ**外れられる。これが無かったので、例外に
+  したい子を別の入れ物で包んで逃がすしかなく、木が 1 段深くなっていた。
+
+- **`align_content` / `justify_items`** — 折り返した**行そのもの**の配り方。
+  `wrap()` した入れ物と grid で効く。
+
+- **`aspect_ratio`** — `.aspect(16.0 / 9.0)`。片方の辺から比でもう片方が決まる。
+
+  **交差軸が stretch だと効かない**（決まった辺が 2 つあれば比の出番が無い、CSS と
+  同じ）。`flex_col` の中で高さから幅を出したいなら `.self_start()` を併記する。
+
+- **`AlignItems::Baseline`** — フォントサイズの違う文字を横に並べたときに、箱の中心
+  ではなくベースラインで揃える。
+
+- **`text_align`** — `.text_center()` / `.text_right()` / `.text_align(..)`。
+  `TextAlign::{Start, Center, End, Justify}`。
+
+  **折り返しが起きて、かつ要素に幅があるときだけ効く。** `flex_col` の既定
+  （`align_items: stretch`）ではテキストが親幅まで伸びるのでそのまま効くが、
+  `flex_row` の中では中身なりの幅しか無く、揃える余白が生まれない。
+
+- **`italic`** — `.italic()`。face に斜体が無ければ cosmic-text が傾けて代用する。
+  和文フォントは斜体を持たないのが普通なので、日本語はほぼ合成斜体になる。
+
+- **`z_index`** — `.z(5)`。兄弟の中での重なり順で、大きいほど手前。描画順と
+  クリック順の**両方**が動く。
+
+  **同じ親を持つ兄弟の中でしか効かない**（CSS の重なり文脈と同じ）。実装は
+  「兄弟を安定ソートして部分木ごと入れ替える」で、出来上がったコマンド列を後から
+  並べ替えてはいない — `PushClip` / `PopClip` の対応が崩れ、持ち上げた子が親の
+  クリップの外に描かれてしまうため。木を飛び越えたいなら従来どおり `.overlay()`。
+
+### Changed
+
+- **`Typography` にフィールドが 2 つ増えた** (`italic` / `align`)。構造体リテラルで
+  組んでいる箇所は `..Typography::default()` を足すこと。
+- **`AlignItems` に `Baseline` が増えた**。`AlignItems` を網羅マッチしている箇所は
+  腕の追加が要る（repo 内では `sabitori-layout` が該当し、コンパイルエラーで
+  止まった）。
+- **`HitRegion::element_index` は「ペイント順」の深さ優先添字**になった。`z_index` を
+  書いた兄弟が居ると元のツリー順とずれる。
+
+### Notes
+
+**足さなかったもの**と理由:
+
+- **`display: none`** — 宣言的に組む以上「隠す」は要素を出さないことで書けて、
+  そちらの方がレイアウト計算ごと消える。`if cond { children.push(x) }`。
+- **`position: sticky`** — スクロール位置に応じた再配置が要るので、レイアウト層
+  だけでは閉じない。ランタイム側の作業。
+
 ## [0.4.0] - 2026-08-14
 
 フレームワーク全体を見直して挙げた [#14〜#22](https://github.com/Mutafika/sabitori/issues)

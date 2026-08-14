@@ -14,8 +14,9 @@
 //! ```
 
 use crate::element::{
-    AlignItems, Cursor, Dimension, Element, ElementKind, ElementStyle,
-    FlexDirection, FlexWrap, JustifyContent, Overflow, Position, Typography,
+    AlignContent, AlignItems, AlignSelf, Cursor, Dimension, Display, Element, ElementKind,
+    ElementStyle, FlexDirection, FlexWrap, GridAutoFlow, GridPlacement, JustifyContent, Overflow,
+    Position, Track, TrackSize, Typography,
 };
 use crate::Corners;
 use crate::render_list::{ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
@@ -37,7 +38,8 @@ use taffy::{
 pub struct HitRegion {
     /// Absolute bounding box.
     pub rect: Rect,
-    /// Index into the original element tree (depth-first).
+    /// Depth-first index in **paint order**. `z_index` を書いた兄弟が居ると
+    /// 元のツリー順とはずれる (奥から順に番号が振られる)。
     pub element_index: usize,
     /// Element ID (if set via `.id("name")`).
     pub id: Option<String>,
@@ -493,6 +495,25 @@ fn create_taffy_node(
 }
 
 /// Count elements in a subtree without emitting any render commands.
+/// 子を描画順 (奥→手前) に並べた添字列。 並べ替えが要らないときは `None`。
+///
+/// `z_index` は**兄弟の中でしか効かない**ので、 部分木ごと丸ごと入れ替えれば
+/// 済む。 これが安全な唯一の実装で、 出来上がったコマンド列を後から並べ替える
+/// のは `PushClip` / `PopClip` の対応が崩れるので出来ない — 持ち上げた子が
+/// 親のクリップの外に出てしまう。
+///
+/// 既定 (全員 `0`) では `None` を返して元の順序をそのまま使う。 毎フレーム
+/// 全コンテナで `Vec` を作らないため。
+fn paint_order(children: &[Element]) -> Option<Vec<usize>> {
+    if children.iter().all(|c| c.style.z_index == 0) {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..children.len()).collect();
+    // 安定ソート — 同じ z なら書いた順のまま (後ろが手前)。
+    order.sort_by_key(|&i| children[i].style.z_index);
+    Some(order)
+}
+
 /// Used to keep element_counter consistent when culling off-screen children.
 fn count_elements(element: &Element, counter: &mut usize) {
     *counter += 1;
@@ -628,7 +649,10 @@ fn emit_commands(
         // overflow: visible — children may legitimately stick out of a
         // zero-sized wrapper; still need to recurse for counter consistency.
         let taffy_children = taffy.children(taffy_node).unwrap_or_default();
-        for (i, child_elem) in element.children.iter().enumerate() {
+        let z_order = paint_order(&element.children);
+        for k in 0..element.children.len() {
+            let i = z_order.as_ref().map_or(k, |o| o[k]);
+            let child_elem = &element.children[i];
             if let Some(&child_taffy) = taffy_children.get(i) {
                 emit_commands(
                     taffy, child_elem, child_taffy,
@@ -920,7 +944,10 @@ fn emit_commands(
     let mut max_child_bottom: f32 = 0.0;
     let mut max_child_right: f32 = 0.0;
 
-    for (i, child_elem) in element.children.iter().enumerate() {
+    let z_order = paint_order(&element.children);
+    for k in 0..element.children.len() {
+        let i = z_order.as_ref().map_or(k, |o| o[k]);
+        let child_elem = &element.children[i];
         if let Some(&child_taffy) = taffy_children.get(i) {
             let child_layout = taffy.layout(child_taffy).expect("Missing child layout");
 
@@ -1162,7 +1189,10 @@ fn convert_to_taffy_style(
     };
 
     TaffyStyle {
-        display: taffy::Display::Flex,
+        display: match style.display {
+            Display::Flex => taffy::Display::Flex,
+            Display::Grid => taffy::Display::Grid,
+        },
         position: match style.position {
             Position::Relative => taffy::Position::Relative,
             Position::Absolute => taffy::Position::Absolute,
@@ -1178,12 +1208,36 @@ fn convert_to_taffy_style(
             FlexWrap::Wrap => taffy::FlexWrap::Wrap,
             FlexWrap::WrapReverse => taffy::FlexWrap::WrapReverse,
         },
-        align_items: Some(match style.align_items {
-            AlignItems::Stretch => taffy::AlignItems::Stretch,
-            AlignItems::Start => taffy::AlignItems::FlexStart,
-            AlignItems::End => taffy::AlignItems::FlexEnd,
-            AlignItems::Center => taffy::AlignItems::Center,
-        }),
+        align_items: Some(convert_align_items(style.align_items)),
+        align_self: convert_align_self(style.align_self),
+        justify_self: convert_align_self(style.justify_self),
+        align_content: style.align_content.map(convert_align_content),
+        justify_items: style.justify_items.map(convert_align_items),
+        aspect_ratio: style.aspect_ratio,
+        grid_template_columns: style
+            .grid_template_columns
+            .iter()
+            .map(|t| taffy::TrackSizingFunction::Single(convert_track(*t)))
+            .collect(),
+        grid_template_rows: style
+            .grid_template_rows
+            .iter()
+            .map(|t| taffy::TrackSizingFunction::Single(convert_track(*t)))
+            .collect(),
+        grid_auto_flow: match style.grid_auto_flow {
+            GridAutoFlow::Row => taffy::GridAutoFlow::Row,
+            GridAutoFlow::Column => taffy::GridAutoFlow::Column,
+            GridAutoFlow::RowDense => taffy::GridAutoFlow::RowDense,
+            GridAutoFlow::ColumnDense => taffy::GridAutoFlow::ColumnDense,
+        },
+        grid_column: taffy::Line {
+            start: convert_placement(style.grid_column.0),
+            end: convert_placement(style.grid_column.1),
+        },
+        grid_row: taffy::Line {
+            start: convert_placement(style.grid_row.0),
+            end: convert_placement(style.grid_row.1),
+        },
         justify_content: Some(match style.justify_content {
             JustifyContent::Start => taffy::JustifyContent::FlexStart,
             JustifyContent::End => taffy::JustifyContent::FlexEnd,
@@ -1248,6 +1302,79 @@ fn convert_to_taffy_style(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn convert_align_items(a: AlignItems) -> taffy::AlignItems {
+    match a {
+        AlignItems::Stretch => taffy::AlignItems::Stretch,
+        AlignItems::Start => taffy::AlignItems::FlexStart,
+        AlignItems::End => taffy::AlignItems::FlexEnd,
+        AlignItems::Center => taffy::AlignItems::Center,
+        AlignItems::Baseline => taffy::AlignItems::Baseline,
+    }
+}
+
+/// `Auto` は「親に従う」なので taffy には `None` を渡す — ここで
+/// `Stretch` を渡してしまうと、 親が `items_center()` でも子が全部伸びる。
+fn convert_align_self(a: AlignSelf) -> Option<taffy::AlignSelf> {
+    match a {
+        AlignSelf::Auto => None,
+        AlignSelf::Stretch => Some(taffy::AlignSelf::Stretch),
+        AlignSelf::Start => Some(taffy::AlignSelf::FlexStart),
+        AlignSelf::End => Some(taffy::AlignSelf::FlexEnd),
+        AlignSelf::Center => Some(taffy::AlignSelf::Center),
+        AlignSelf::Baseline => Some(taffy::AlignSelf::Baseline),
+    }
+}
+
+fn convert_align_content(a: AlignContent) -> taffy::AlignContent {
+    match a {
+        AlignContent::Start => taffy::AlignContent::FlexStart,
+        AlignContent::End => taffy::AlignContent::FlexEnd,
+        AlignContent::Center => taffy::AlignContent::Center,
+        AlignContent::Stretch => taffy::AlignContent::Stretch,
+        AlignContent::SpaceBetween => taffy::AlignContent::SpaceBetween,
+        AlignContent::SpaceAround => taffy::AlignContent::SpaceAround,
+        AlignContent::SpaceEvenly => taffy::AlignContent::SpaceEvenly,
+    }
+}
+
+/// [`Track`] を taffy の `minmax(min, max)` へ。
+///
+/// `Fr` は**上限にしか置けない** — taffy の `MinTrackSizingFunction` に
+/// `Fraction` が無いのは CSS の制約そのままで、 下限に `fr` は書けない。
+/// [`Track::fr`] は下限を `Auto` にするので素直に書けばここは通らないが、
+/// `TrackSize` を直に組めば通り得るので `Auto` に落として吸収する。
+fn convert_track(t: Track) -> taffy::NonRepeatedTrackSizingFunction {
+    taffy::MinMax {
+        min: match t.min {
+            TrackSize::Px(v) => taffy::MinTrackSizingFunction::Fixed(LengthPercentage::Length(v)),
+            TrackSize::Pct(v) => {
+                taffy::MinTrackSizingFunction::Fixed(LengthPercentage::Percent(v / 100.0))
+            }
+            TrackSize::Fr(_) | TrackSize::Auto => taffy::MinTrackSizingFunction::Auto,
+            TrackSize::MinContent => taffy::MinTrackSizingFunction::MinContent,
+            TrackSize::MaxContent => taffy::MinTrackSizingFunction::MaxContent,
+        },
+        max: match t.max {
+            TrackSize::Px(v) => taffy::MaxTrackSizingFunction::Fixed(LengthPercentage::Length(v)),
+            TrackSize::Pct(v) => {
+                taffy::MaxTrackSizingFunction::Fixed(LengthPercentage::Percent(v / 100.0))
+            }
+            TrackSize::Fr(v) => taffy::MaxTrackSizingFunction::Fraction(v),
+            TrackSize::Auto => taffy::MaxTrackSizingFunction::Auto,
+            TrackSize::MinContent => taffy::MaxTrackSizingFunction::MinContent,
+            TrackSize::MaxContent => taffy::MaxTrackSizingFunction::MaxContent,
+        },
+    }
+}
+
+fn convert_placement(p: GridPlacement) -> taffy::GridPlacement {
+    match p {
+        GridPlacement::Auto => taffy::GridPlacement::Auto,
+        GridPlacement::Line(i) => taffy::style_helpers::line(i),
+        GridPlacement::Span(n) => taffy::style_helpers::span(n),
+    }
+}
 
 fn convert_dimension(d: Dimension) -> taffy::Dimension {
     match d {
@@ -2527,6 +2654,419 @@ mod a11y_tests {
             b.hit_region_at(100.0, 20.0).and_then(|r| r.id.as_deref()),
             Some("inner"),
             "id を持つ手前の要素が勝つ"
+        );
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+    use crate::element::{div, grid, Dimension::Px, Track};
+
+    fn rect_of(b: &BuildResult, id: &str) -> Rect {
+        b.hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id} が hit_regions に居ない"))
+            .rect
+    }
+
+    fn cell(id: &str) -> Element {
+        div().id(id)
+    }
+
+    /// 固定 + fr の 2 列。 サイドバーと本文という、 grid が無かったせいで
+    /// flex の `grow` に読み替えていた形がそのまま書けること。
+    #[test]
+    fn a_fixed_column_and_a_flexible_one_split_the_width() {
+        let root = grid()
+            .w(Px(1000.0))
+            .h(Px(200.0))
+            .grid_cols([Track::px(240.0), Track::fr(1.0)])
+            .children([cell("side"), cell("main")]);
+        let b = build_tree(&root, 1000.0, 200.0);
+
+        let side = rect_of(&b, "side");
+        let main = rect_of(&b, "main");
+        assert_eq!(side.size.width, 240.0);
+        assert_eq!(main.size.width, 760.0, "余りは fr が全部取る");
+        assert_eq!(main.origin.x, 240.0, "2 列目は 1 列目の右から始まる");
+        // 行は 1 本しか無いので、 どちらも全高。
+        assert_eq!(side.size.height, 200.0);
+    }
+
+    /// `gap` が列の間に入り、 fr の取り分から引かれること。 ここを間違えると
+    /// 合計幅がコンテナを超えて、 一番右の列が見切れる。
+    #[test]
+    fn the_gap_is_taken_out_of_the_flexible_tracks() {
+        let root = grid()
+            .w(Px(320.0))
+            .h(Px(100.0))
+            .gap(20.0)
+            .grid_cols(Track::repeat(3, Track::fr(1.0)))
+            .children([cell("a"), cell("b"), cell("c")]);
+        let b = build_tree(&root, 320.0, 100.0);
+
+        // 320 - (20 * 2) = 280 を 3 等分。 taffy は座標を整数に丸めるので、
+        // 93.33 は 93 / 94 に散る。 1px の許容はその丸めぶん。
+        for id in ["a", "b", "c"] {
+            let r = rect_of(&b, id);
+            assert!(
+                (r.size.width - 280.0 / 3.0).abs() <= 1.0,
+                "{id} の幅が {} — gap を引いた 3 等分ではない",
+                r.size.width
+            );
+        }
+        let c = rect_of(&b, "c");
+        assert!(
+            c.origin.x + c.size.width <= 320.0 + 0.5,
+            "右端が {} でコンテナ (320) をはみ出している",
+            c.origin.x + c.size.width
+        );
+    }
+
+    /// `col_span` が実際に列をまたぐこと。 テーブル風の見出し行がこれ 1 つで
+    /// 書けるかどうかが、 grid を入れた理由の半分。
+    #[test]
+    fn col_span_covers_multiple_tracks() {
+        let root = grid()
+            .w(Px(300.0))
+            .h(Px(200.0))
+            .grid_cols(Track::repeat(3, Track::fr(1.0)))
+            .children([cell("header").col_span(3), cell("x"), cell("y"), cell("z")]);
+        let b = build_tree(&root, 300.0, 200.0);
+
+        let header = rect_of(&b, "header");
+        assert_eq!(header.size.width, 300.0, "3 列ぶん = 全幅");
+
+        // 残りは自動配置で 2 行目へ落ちる。
+        let x = rect_of(&b, "x");
+        assert_eq!(x.size.width, 100.0);
+        assert!(x.origin.y > header.origin.y, "はみ出した子は次の行に置かれる");
+    }
+
+    /// `Track::minmax(px, fr)` — 最低幅を保証しつつ余りを分ける、 レスポンシブな
+    /// カード並べの定番。 コンテナが狭いときに下限が効くこと。
+    #[test]
+    fn minmax_keeps_the_lower_bound() {
+        let root = grid()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .grid_cols(Track::repeat(3, Track::minmax(Track::px(120.0), Track::fr(1.0))))
+            .children([cell("a"), cell("b"), cell("c")]);
+        let b = build_tree(&root, 200.0, 100.0);
+
+        // 3 * 120 = 360 > 200 なので、 下限が勝ってはみ出す (CSS と同じ挙動)。
+        for id in ["a", "b", "c"] {
+            assert_eq!(rect_of(&b, id).size.width, 120.0, "{id} が下限 120px を割った");
+        }
+    }
+
+    /// 行方向の指定も効くこと。 列だけ実装して行を忘れる、 が起きていないか。
+    #[test]
+    fn rows_can_be_sized_too() {
+        let root = grid()
+            .w(Px(100.0))
+            .h(Px(300.0))
+            .grid_cols([Track::fr(1.0)])
+            .grid_rows([Track::px(50.0), Track::fr(1.0)])
+            .children([cell("top"), cell("rest")]);
+        let b = build_tree(&root, 100.0, 300.0);
+
+        assert_eq!(rect_of(&b, "top").size.height, 50.0);
+        assert_eq!(rect_of(&b, "rest").size.height, 250.0);
+        assert_eq!(rect_of(&b, "rest").origin.y, 50.0);
+    }
+}
+
+#[cfg(test)]
+mod align_tests {
+    use super::*;
+    use crate::element::{div, AlignContent, Dimension::Px};
+
+    fn rect_of(b: &BuildResult, id: &str) -> Rect {
+        b.hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id} が hit_regions に居ない"))
+            .rect
+    }
+
+    /// 親が `items_center()` でも、 `self_stretch()` を付けた子だけは伸びる。
+    ///
+    /// これが無かったので、 1 個だけ例外にしたい子を**別の入れ物で包んで
+    /// 逃がす**しかなかった。 包むと木が 1 段深くなり、 id とスクロールの
+    /// 対応もずれる。
+    #[test]
+    fn one_child_can_opt_out_of_the_parents_alignment() {
+        let root = div()
+            .w(Px(300.0))
+            .h(Px(200.0))
+            .items_center()
+            .children([
+                div().id("follows").w(Px(50.0)).h(Px(40.0)),
+                div().id("opts-out").w(Px(50.0)).self_stretch(),
+            ]);
+        let b = build_tree(&root, 300.0, 200.0);
+
+        assert_eq!(rect_of(&b, "follows").size.height, 40.0, "親に従う子は自分の高さ");
+        assert_eq!(
+            rect_of(&b, "opts-out").size.height,
+            200.0,
+            "self_stretch した子だけ全高に伸びる"
+        );
+    }
+
+    /// `self_start` / `self_end` が交差軸の端に寄せること。
+    #[test]
+    fn self_start_and_self_end_pin_to_the_edges() {
+        let root = div()
+            .w(Px(300.0))
+            .h(Px(200.0))
+            .items_center()
+            .children([
+                div().id("top").w(Px(50.0)).h(Px(40.0)).self_start(),
+                div().id("bottom").w(Px(50.0)).h(Px(40.0)).self_end(),
+            ]);
+        let b = build_tree(&root, 300.0, 200.0);
+
+        assert_eq!(rect_of(&b, "top").origin.y, 0.0);
+        assert_eq!(rect_of(&b, "bottom").origin.y, 160.0, "下端 = 200 - 40");
+    }
+
+    /// `aspect(ratio)` — 片方の辺から比でもう片方が決まること。
+    ///
+    /// **交差軸が stretch だと比は効かない。** flex_col の既定は
+    /// `align_items: stretch` で、 子の幅は親いっぱいに決められてしまう。
+    /// 決まった辺が 2 つあれば比の出番は無い (CSS と同じ)。 高さから幅を
+    /// 出したいなら stretch を外すこと — ここでは `self_start()`。
+    #[test]
+    fn aspect_ratio_derives_the_other_side() {
+        let root = div().w(Px(320.0)).h(Px(400.0)).flex_col().children([
+            div().id("wide").w(Px(320.0)).aspect(16.0 / 9.0),
+            div().id("square").h(Px(40.0)).aspect(1.0).self_start(),
+            div().id("stretched").h(Px(40.0)).aspect(1.0),
+        ]);
+        let b = build_tree(&root, 320.0, 400.0);
+
+        let wide = rect_of(&b, "wide");
+        assert!(
+            (wide.size.height - 180.0).abs() <= 1.0,
+            "320 幅の 16:9 は 180 のはずが {}",
+            wide.size.height
+        );
+        assert_eq!(rect_of(&b, "square").size.width, 40.0, "高さ 40 の 1:1 は幅 40");
+        assert_eq!(
+            rect_of(&b, "stretched").size.width,
+            320.0,
+            "stretch が幅を決めた時点で比の出番は無い"
+        );
+    }
+
+    /// 折り返した**行**が `align_content` で配られること。 これが無いと、
+    /// wrap したタグ列が上に詰まったまま縦位置を動かせない。
+    #[test]
+    fn wrapped_lines_are_distributed_by_align_content() {
+        let row = |id: &str| div().id(id).w(Px(60.0)).h(Px(20.0));
+        let make = |ac| {
+            div()
+                .w(Px(100.0))
+                .h(Px(200.0))
+                .wrap()
+                .align_content(ac)
+                .children([row("a"), row("b")])
+        };
+
+        // 幅 100 に 60px を 2 つ → 2 行に折り返す。
+        let start = build_tree(&make(AlignContent::Start), 100.0, 200.0);
+        let end = build_tree(&make(AlignContent::End), 100.0, 200.0);
+
+        assert_eq!(rect_of(&start, "a").origin.y, 0.0, "Start は上に詰まる");
+        assert!(
+            rect_of(&end, "b").origin.y > rect_of(&start, "b").origin.y,
+            "End は下に寄る"
+        );
+    }
+}
+
+#[cfg(test)]
+mod text_style_tests {
+    use super::*;
+    use crate::element::{div, text, Dimension::Px, TextAlign};
+
+    fn text_draws(b: &BuildResult) -> Vec<&TextDraw> {
+        b.render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `text_align` / `italic` が描画コマンドまで届くこと。
+    ///
+    /// builder と型だけ足して描画に繋がっていない、 がこのリポジトリの定番の
+    /// 失敗なので、 `Element` の端ではなく `RenderList` の側で見る。
+    #[test]
+    fn text_align_and_italic_reach_the_render_list() {
+        let root = div()
+            .w(Px(400.0))
+            .h(Px(100.0))
+            .flex_col()
+            .child(text("hello").text_center().italic());
+        let b = build_tree(&root, 400.0, 100.0);
+
+        let t = text_draws(&b);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].typo.align, TextAlign::Center);
+        assert!(t[0].typo.italic);
+    }
+
+    /// **揃えるには幅が要る。** flex_col の既定 (`align_items: stretch`) では
+    /// テキストが親いっぱいに伸びるので、 そのまま `text_center()` が効く。
+    ///
+    /// 逆に flex_row では中身なりの幅しか無く、 揃える余白が生まれない。
+    /// 「効かない」と言われたときに最初に疑う場所なので、 差を固定しておく。
+    #[test]
+    fn a_column_gives_text_room_to_align_but_a_row_does_not() {
+        let col = build_tree(
+            &div().w(Px(400.0)).h(Px(100.0)).flex_col().child(text("hi")),
+            400.0,
+            100.0,
+        );
+        let row = build_tree(
+            &div().w(Px(400.0)).h(Px(100.0)).flex_row().child(text("hi")),
+            400.0,
+            100.0,
+        );
+
+        let col_w = text_draws(&col)[0].max_width;
+        let row_w = text_draws(&row)[0].max_width;
+        assert_eq!(col_w, 400.0, "縦並びではテキストが親幅まで伸びる");
+        assert!(
+            row_w < 400.0,
+            "横並びでは中身なりの幅 ({row_w}) — 揃える余白が無い"
+        );
+    }
+}
+
+#[cfg(test)]
+mod z_index_tests {
+    use super::*;
+    use crate::element::{div, Dimension::Px};
+    use crate::Color;
+
+    fn painted_order(b: &BuildResult) -> Vec<Color> {
+        b.render_list.rects().map(|r| r.fill_color).collect()
+    }
+
+    const RED: Color = Color::new(1.0, 0.0, 0.0, 1.0);
+    const GREEN: Color = Color::new(0.0, 1.0, 0.0, 1.0);
+
+    /// 既定 (z 無し) では書いた順。 後ろに書いたものが手前。
+    #[test]
+    fn without_z_the_later_sibling_is_on_top() {
+        let root = div().w(Px(100.0)).h(Px(100.0)).child(
+            div().w(Px(100.0)).h(Px(100.0)).children([
+                div().id("first").w(Px(50.0)).h(Px(50.0)).bg(RED),
+                div().id("second").w(Px(50.0)).h(Px(50.0)).bg(GREEN),
+            ]),
+        );
+        let b = build_tree(&root, 100.0, 100.0);
+
+        let order = painted_order(&b);
+        assert_eq!(order, vec![RED, GREEN], "書いた順に描かれる");
+        assert_eq!(
+            b.hit_regions[0].id.as_deref(),
+            Some("second"),
+            "手前の要素が先にクリックを取る"
+        );
+    }
+
+    /// `z()` が描画順を**実際に**入れ替えること。
+    #[test]
+    fn a_higher_z_sibling_paints_last() {
+        let root = div().w(Px(100.0)).h(Px(100.0)).child(
+            div().w(Px(100.0)).h(Px(100.0)).children([
+                div().id("first").w(Px(50.0)).h(Px(50.0)).bg(RED).z(5),
+                div().id("second").w(Px(50.0)).h(Px(50.0)).bg(GREEN),
+            ]),
+        );
+        let b = build_tree(&root, 100.0, 100.0);
+
+        assert_eq!(painted_order(&b), vec![GREEN, RED], "z の大きい方が後に描かれる");
+    }
+
+    /// **描画順とクリック順が一致すること。** ここがずれると「見えている方を
+    /// 押したのに下の要素が反応する」という、 最も気づきにくい壊れ方をする。
+    #[test]
+    fn the_topmost_painted_sibling_is_also_the_one_that_gets_clicked() {
+        let overlapping = |z_first: i32| {
+            div().w(Px(100.0)).h(Px(100.0)).child(
+                div().w(Px(100.0)).h(Px(100.0)).children([
+                    // 完全に重なる 2 枚。
+                    div().id("first").absolute().pos(0.0, 0.0).w(Px(50.0)).h(Px(50.0)).z(z_first),
+                    div().id("second").absolute().pos(0.0, 0.0).w(Px(50.0)).h(Px(50.0)),
+                ]),
+            )
+        };
+
+        let normal = build_tree(&overlapping(0), 100.0, 100.0);
+        assert_eq!(
+            normal.hit_region_at(10.0, 10.0).and_then(|r| r.id.as_deref()),
+            Some("second"),
+            "z が同じなら後に書いた方"
+        );
+
+        let lifted = build_tree(&overlapping(5), 100.0, 100.0);
+        assert_eq!(
+            lifted.hit_region_at(10.0, 10.0).and_then(|r| r.id.as_deref()),
+            Some("first"),
+            "z で持ち上げた方がクリックを取る"
+        );
+    }
+
+    /// 負の値で背面へ送れること。 そして**部分木ごと**動くこと — 子だけ
+    /// 置き去りになると、 親の背面に子が浮くという壊れ方をする。
+    #[test]
+    fn a_negative_z_sends_the_whole_subtree_behind() {
+        let root = div().w(Px(100.0)).h(Px(100.0)).child(
+            div().w(Px(100.0)).h(Px(100.0)).children([
+                div()
+                    .w(Px(50.0))
+                    .h(Px(50.0))
+                    .bg(RED)
+                    .z(-1)
+                    .child(div().w(Px(10.0)).h(Px(10.0)).bg(RED)),
+                div().w(Px(50.0)).h(Px(50.0)).bg(GREEN),
+            ]),
+        );
+        let b = build_tree(&root, 100.0, 100.0);
+
+        // 赤い親 → 赤い子 → 緑。 部分木がまとまって前に出ている。
+        assert_eq!(painted_order(&b), vec![RED, RED, GREEN]);
+    }
+
+    /// `z` を書いても親は飛び越えない (CSS の重なり文脈と同じ)。 この制約は
+    /// クリップを壊さないための意図的なもので、 破れたら
+    /// `overflow_hidden` の外に描かれる要素が生まれる。
+    #[test]
+    fn z_does_not_escape_the_parent() {
+        let root = div().w(Px(100.0)).h(Px(100.0)).flex_col().children([
+            div()
+                .w(Px(100.0))
+                .h(Px(50.0))
+                .child(div().w(Px(50.0)).h(Px(50.0)).bg(RED).z(999)),
+            div().w(Px(100.0)).h(Px(50.0)).bg(GREEN),
+        ]);
+        let b = build_tree(&root, 100.0, 100.0);
+
+        assert_eq!(
+            painted_order(&b),
+            vec![RED, GREEN],
+            "z(999) でも親が先なので、 親の後に来る兄弟の下のまま"
         );
     }
 }

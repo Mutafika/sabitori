@@ -156,6 +156,7 @@ fn convert_style(props: &StyleProps) -> Style {
             AlignItems::Start => taffy::AlignItems::FlexStart,
             AlignItems::End => taffy::AlignItems::FlexEnd,
             AlignItems::Center => taffy::AlignItems::Center,
+            AlignItems::Baseline => taffy::AlignItems::Baseline,
         }),
         justify_content: Some(match props.justify_content {
             JustifyContent::Start => taffy::JustifyContent::FlexStart,

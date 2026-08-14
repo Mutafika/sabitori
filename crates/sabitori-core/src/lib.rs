@@ -25,6 +25,13 @@ pub use element::{
     AlignItems, BoxShadow, EdgeDimensions, FlexDirection, FlexWrap, JustifyContent, Overflow,
     Position,
 };
+// grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
+// `sabitori-style` にも同名の型があり、 ファサードの glob 同士がぶつかって
+// `sabitori::Display` がどちらとも決まらなくなる。 `.grid()` / `.grid_cols()` が
+// あるので、 利用側がこの型を名指しする理由も無い。
+pub use element::{
+    grid, AlignContent, AlignSelf, GridAutoFlow, GridPlacement, TextAlign, Track, TrackSize,
+};
 pub use element::{
     EasingFn, StateStyle, Transition, TransitionKind, TransitionProperty,
 };

@@ -12,6 +12,7 @@
 //! families, and a copy that drifts silently changes which glyphs get picked.
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use sabitori_core::element::TextAlign;
 use sabitori_core::{TextMetrics, Typography};
 
 /// Grid (logical px) to which font sizes are snapped before shaping/caching.
@@ -81,6 +82,30 @@ pub(crate) fn resolve_family<'a>(
         cosmic_text::Family::Name(name)
     } else {
         cosmic_text::Family::SansSerif
+    }
+}
+
+/// Apply [`TextAlign`] to every line of a shaped-to-be buffer.
+///
+/// **`set_text` の後、 `shape_until_scroll` の前**に呼ぶこと。 `set_text` は
+/// `BufferLine` を作り直すので、 先に揃えを入れても消える。 そして
+/// `set_align` はレイアウトを捨てるだけなので、 shape 済みの後に呼んでも
+/// その回の結果には効かない。
+///
+/// 揃えは `Buffer` の幅に対して効く。 幅を渡していない (= `f32::MAX`) 呼び
+/// 出しでは、 揃える相手の余白が無いので何も起きない — 要素に幅を与えろ、
+/// というのがそのまま `text_align` の前提になっている。
+pub(crate) fn apply_align(buffer: &mut cosmic_text::Buffer, align: TextAlign) {
+    let align = match align {
+        // `None` は cosmic-text の既定 (書字方向の先頭) に任せる。 `Left` を
+        // 明示すると RTL のときに逆側へ寄る。
+        TextAlign::Start => None,
+        TextAlign::Center => Some(cosmic_text::Align::Center),
+        TextAlign::End => Some(cosmic_text::Align::End),
+        TextAlign::Justify => Some(cosmic_text::Align::Justified),
+    };
+    for line in buffer.lines.iter_mut() {
+        line.set_align(align);
     }
 }
 
@@ -230,9 +255,13 @@ impl TextShaper {
             family_override,
         );
         let weight = cosmic_text::Weight(typo.resolved_weight(bold));
-        let attrs = Attrs::new().family(family).weight(weight);
+        let mut attrs = Attrs::new().family(family).weight(weight);
+        if typo.italic {
+            attrs = attrs.style(cosmic_text::Style::Italic);
+        }
 
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
+        apply_align(&mut buffer, typo.align);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut width: f32 = 0.0;

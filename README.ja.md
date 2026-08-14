@@ -12,6 +12,7 @@
 ## 特徴
 
 - **宣言的ビルダー API** — `div() / text() / button() / image()` でツリーを組み立てる
+- **CSS の形のレイアウト** — Taffy による flex と grid、`align-self` / `align-content` / `aspect-ratio` / `z-index` / `text-align`
 - **GPU レンダリング** — wgpu + SDF シェーダーで角丸 / ボーダー / 影 / グラデーションを 1 パスで描画
 - **WASM ファースト** — WebGPU 優先、WebGL2 フォールバック、winit web extension で canvas 自動バインド
 - **Spring 物理アニメーション** — snappy / gentle / bouncy プリセット + 11 種の easing + keyframe
@@ -161,6 +162,44 @@ assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 **`frame()` は時間を進めません。** 慣性スクロール・`scroll_intents`・style アニメーションなど、ばねで動くものは `tick(dt)` か `settle()` が要ります。
+
+## レイアウト
+
+flex と grid の両方が使えます。土台は Taffy で、名前は CSS に揃えてあります。
+
+```rust
+// flex
+div().flex_row().items_center().justify_between().gap(8.0)
+
+// grid — サイドバー固定 + 本文が余りを取る
+grid()
+    .grid_cols([Track::px(240.0), Track::fr(1.0)])
+    .gap(12.0)
+    .children([sidebar, body])
+
+// 全列にまたがる見出し行
+grid()
+    .grid_cols(Track::repeat(3, Track::fr(1.0)))
+    .children([header.col_span(3), a, b, c])
+```
+
+`Track` は CSS の `minmax(min, max)` そのものです。`Track::px / pct / fr / auto / min_content / max_content / minmax` で作り、`Track::repeat(n, track)` で並べます。`auto-fill` / `auto-fit` は未対応で、本数は呼び出し側が決めます。
+
+| | |
+|---|---|
+| 子 1 個だけ親の揃えから外す | `.self_start()` `.self_center()` `.self_end()` `.self_stretch()` |
+| 折り返した**行**の配り方 | `.wrap()` した入れ物に `.align_content(..)` |
+| 縦横比を固定する | `.aspect(16.0 / 9.0)` |
+| 兄弟の中での重なり順 | `.z(5)` |
+| 折り返したテキストの揃え | `.text_center()` `.text_right()` |
+
+このうち 3 つには前提があります。「効かない」と思う前にここを見てください。
+
+- **`.aspect()` は stretch に負けます。** `flex_col` の既定 (`align_items: stretch`) は子の幅を先に決めてしまうので、辺が 2 つ決まった時点で比の出番がありません。高さから幅を出したいなら `.self_start()` を併記します。
+- **`.text_center()` には幅が要ります。** テキスト要素は中身なりの大きさなので、揃える余白がそもそもありません。`flex_col` の中では親幅まで伸びるのでそのまま効きますが、`flex_row` の中では効きません。
+- **`.z()` は親を飛び越えません。** CSS の重なり文脈と同じです。効くのは兄弟の中だけで、描画順とクリック順が一緒に動きます。木を飛び越えて最前面に出したいなら (ポップアップ、コンテキストメニュー) `.overlay()` を使ってください。
+
+`display: none` は意図的に入れていません。要素を出さなければいいので、そちらの方がレイアウト計算ごと消えます。
 
 ## ウィジェット
 
