@@ -497,7 +497,7 @@ mod tests {
         let mut p = picker();
         p.on_pointer_down("pick:r", 10.0);
         p.on_pointer_up(); // edit mode
-        p.r.edit.text = "10".into();
+        p.r.edit.set_text("10");
         assert!(!p.on_pointer_down("some-other-element", 0.0));
         assert_eq!(p.r.value(), 10.0, "edit committed on click-away");
         assert_eq!(p.color().to_srgb8().0, 10);

@@ -38,7 +38,7 @@
 
 use sabitori_core::build::{BuildResult, TextMeasure};
 use sabitori_core::{Element, Size, TextMetrics, Typography};
-use sabitori_input::{Key, Modifiers};
+use sabitori_input::{InputEvent, Key, Modifiers};
 
 use crate::declarative::{AppState, DeclarativeApp, UiCapture};
 
@@ -303,6 +303,48 @@ impl<A: DeclarativeApp> Harness<A> {
         ids
     }
 
+    /// IME の変換中テキストを流す (日本語変換の途中)。
+    ///
+    /// `cursor` は `text` 内のバイト範囲で、 IME が「いまここを編集中」と伝えて
+    /// くるもの。 `None` なら末尾。 この時点では**確定していない** — 表示には
+    /// 出るが、 欄の本文 (`text()`) には入らない。
+    ///
+    /// ```ignore
+    /// h.click("name");
+    /// h.text("a");
+    /// h.ime_preedit("にほん", None);
+    /// assert_eq!(h.app().name.text(), "a");                       // 未確定
+    /// assert_eq!(h.app().name.display_text_with_preedit(), "aにほん"); // 見えている
+    /// h.ime_commit("日本");
+    /// assert_eq!(h.app().name.text(), "a日本");
+    /// ```
+    pub fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        self.dispatch_focused(InputEvent::ImePreedit { text: text.to_string(), cursor });
+    }
+
+    /// IME の確定 (変換を決定した)。 変換中の文字列が本文に入る。
+    pub fn ime_commit(&mut self, text: &str) {
+        self.dispatch_focused(InputEvent::ImeCommit { text: text.to_string() });
+    }
+
+    /// IME が有効になったことにする。
+    pub fn ime_enabled(&mut self) {
+        self.dispatch_focused(InputEvent::ImeEnabled);
+    }
+
+    /// フォーカス経路 → アプリ の順で 1 イベント配る。 ランタイム本体と同じ順序。
+    fn dispatch_focused(&mut self, event: InputEvent) {
+        if !self.state.route_to_managed(&event) {
+            let handled = match self.state.focused_id.clone() {
+                Some(id) => self.state.app.on_focused_input(&id, &event),
+                None => false,
+            };
+            if !handled {
+                self.state.app.on_input(&event);
+            }
+        }
+    }
+
     /// ペーストされたことにする。 実際のクリップボードには触れない。
     ///
     /// ランタイムの Cmd/Ctrl+V ハンドラは
@@ -310,14 +352,7 @@ impl<A: DeclarativeApp> Harness<A> {
     /// ここは最後の配信だけを再現する。 実クリップボードを読む部分は環境依存なので
     /// テストからは外してある (判定部分は `clipboard` モジュールのテストが見ている)。
     pub fn paste(&mut self, text: &str) {
-        let ev = sabitori_input::InputEvent::Paste {
-            text: text.to_string(),
-        };
-        crate::runtime_shared::dispatch(
-            &mut self.state.app,
-            self.state.focused_id.as_deref(),
-            &ev,
-        );
+        self.dispatch_focused(InputEvent::Paste { text: text.to_string() });
     }
 
     /// 管理スクロールコンテナ（`.scroll(id)`）を動かす。 `dy` は logical px、

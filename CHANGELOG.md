@@ -360,6 +360,57 @@ example・README——が古いモデルを教えたままだった。機構が�
   と `apply_scroll_measures` の複製を削除し、`declarative` と同じ
   `scroll_sync` の関数を呼ぶようにした。片方だけ直す事故の温床だった。
 
+### Changed（破壊的・テキスト入力の配線を廃止）
+
+- **`text_input` を `view()` に置くだけで動くようにした。** それが配線の全部。
+
+  0.4.0 の途中まで、 `text_input(ctx, "name", ..)` を置いても**それだけでは
+  動かなかった**。 別途 `on_focused_input` / `tick` / `ime_cursor_area` の 3 つを
+  実装して橋渡しする必要があり、 忘れると **フォーカスは入って枠も光るのに
+  打った文字がどこにも行かない**。 コンパイルは通り、 パニックもせず、 ただ何も
+  起きない。 このラウンドが潰してきたのとまったく同じ形の失敗が、 いちばん
+  よく使うウィジェットに残っていた。
+
+  ```rust
+  // これで全部。 他に書くことは無い。
+  fn view(&self, ctx: &ViewContext) -> Element {
+      text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+  }
+  ```
+
+  仕組み: `ViewContext` に登録の口 (`register_managed` /
+  [`Managed`](https://docs.rs/sabitori-core)) を足し、 `text_input` が組み立て
+  のときに自分を登録する。 ランタイムは登録された欄へ**アプリより先に**入力を
+  配り、 毎フレーム tick し、 フォーカス状態を反映し、 IME 変換候補の位置も
+  算出する。 **書き忘れる場所が存在しない。**
+
+  型消しは core 側 (`Managed` は `as_any` だけ) — 中身は widgets、 イベント型は
+  input にあり、 どちらも core に依存しているので、 core が知ると循環するため。
+
+- **`TextInputState` が共有ハンドルになった** (`Rc<RefCell<..>>`)。
+  `view(&self)` は不変借用なので、 ランタイムがそこへ書き込むには内部可変性が
+  要る。 公開フィールドはアクセサに変わる:
+
+  | 前 | 後 |
+  |---|---|
+  | `state.text` | `state.text()` / `state.set_text(..)` |
+  | `state.focused` | `state.is_focused()` |
+  | `state.cursor_pos` | `state.cursor_pos()` |
+  | `state.preedit.is_active()` | `state.is_composing()` |
+  | `state.on_focused_input(e)` / `on_char` / `on_key` | 不要 (ランタイムが呼ぶ) |
+
+  標準の操作で足りない場合は `with(..)` / `with_mut(..)` で中身
+  (`TextInputInner`) を借りられる。 `Clone` は同じ欄を指す (複製しない)。
+
+- **`Harness` に IME 操作を追加**: `ime_preedit(text, cursor)` / `ime_commit(text)` /
+  `ime_enabled()`。 日本語入力はこのフレームワークの主用途なのに、 テストから
+  変換を再現する手段が無かった。
+
+- **自作のテキスト欄には検出器が残る**。 `Role::TextInput` を名乗る要素に
+  フォーカスがあるのに打鍵を誰も消費しなかったら `log::warn!` を 1 回。
+  テストからは `Harness::unrouted_text_inputs()` で見える。 `text_input` を
+  使う限りこの状況は起きない。
+
 ### Changed（破壊的・ウィジェット層）
 
 - **`view()` から使えない retained ウィジェットを削除した**。`new(x, y, w, h)` や
@@ -470,6 +521,12 @@ example・README——が古いモデルを教えたままだった。機構が�
 
 **`Role` と `Cursor` に variant が増えた。** 下流で網羅 `match` している箇所は
 腕を足すこと。`_ =>` で受けていれば影響なし。
+
+**テキスト欄の手動配線は削除する。** `on_focused_input` / `tick` /
+`ime_cursor_area` に書いていたテキスト欄への橋渡しは不要になった。 残していても
+二重処理にはならない (登録済みの欄はランタイムが先に消費する) が、 死にコード
+なので消してよい。 `state.text` などの公開フィールドはコンパイルエラーになるので、
+上の対応表のとおりアクセサに置き換える。
 
 **`Harness` でばねを使う挙動をテストしている場合、`settle()` を足す。**
 `frame()` は時間を進めない（意図的にそうしてある——テストは決定的であるべきなので）。

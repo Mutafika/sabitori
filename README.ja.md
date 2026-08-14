@@ -97,27 +97,28 @@ let (first, count) = ctx.visible_range("file-list", ROW_H);
 
 ### 2. テキスト入力と IME
 
-**`text_input` と `TextInputState` を使うこと。** テキスト欄を自作しないでください。変換中の表示もキャレット位置も、ランタイムしか持っていない実フォント計測に依存します。
+**`view()` に `text_input` を置く。配線はこれで全部です。**
 
 ```rust
-// view()
-text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+struct App { name: TextInputState }
 
-// キーと IME をフォーカス中の欄へ配る
-fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
-    match id { "name" => self.name.on_focused_input(e), _ => false }
+impl DeclarativeApp for App {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+    }
+    fn on_click(&mut self, id: &str) {
+        if id == "save" { self.saved = Some(self.name.text()); }
+    }
 }
-
-// キャレットを点滅させる
-fn tick(&mut self, dt: f32) { self.name.tick(dt); }
-
-// OS の変換候補ウィンドウをキャレット位置に留める
-fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { … }
 ```
+
+他に書くことはありません。打鍵も IME の変換も貼り付けもキャレットの点滅もフォーカス状態も、OS の変換候補ウィンドウの位置も、全部ランタイムがやります。ウィジェットが組み立てのときに自分を `ViewContext` へ登録するからです。**`on_focused_input` も `tick` も `ime_cursor_area` も、忘れる余地がありません。**
 
 日本語変換は文字列がその場に出て、キャレットは preedit の**中**に立ちます。いま何を変換しているのかが分かるのはこれのおかげです。
 
-⚠️ **`view()` に `text_input` を置くだけでは足りません。** `on_focused_input` が無いと、クリックしてもフォーカスは入るし枠も光るのに、**打った文字はどこにも行きません**。コンパイルは通り、パニックもせず、ただ何も起きない。ランタイムは初回に警告を出しますが、テストからも見られます：
+値の読み書きはアクセサ経由です — `text()` / `set_text()` / `clear()` / `is_focused()` / `is_composing()`。状態は複製の軽い共有ハンドルで、これがあるから `view(&self)` からランタイムへ渡せます。
+
+自分でテキスト欄を作る場合（`Role::TextInput` を名乗る要素を自作する場合）は配線が自分の責任に戻ります。打った文字がどこにも行かないと、ランタイムが 1 度だけ警告します：
 
 ```rust
 assert!(h.unrouted_text_inputs().is_empty());

@@ -64,20 +64,12 @@ impl sabitori::DeclarativeApp for Form {
 
     fn on_click(&mut self, id: &str) {
         if id == "save" {
-            self.saved = Some(self.name.text.clone());
+            self.saved = Some(self.name.text());
         }
     }
 
-    fn on_focused_input(&mut self, id: &str, event: &InputEvent) -> bool {
-        match id {
-            "name" => self.name.on_focused_input(event),
-            _ => false,
-        }
-    }
-
-    fn tick(&mut self, dt: f32) {
-        self.name.tick(dt);
-    }
+    // 0.4.0 以降、 テキスト欄への配線は要らない。 `text_input(..)` を `view()`
+    // に置いた時点でランタイムが配信と tick を引き受ける。
 }
 
 /// クリックがアプリのハンドラまで届くこと。 いちばん基本の形。
@@ -103,8 +95,8 @@ fn typing_into_a_focused_field_updates_its_state() {
     h.click("name"); // focusable なのでフォーカスが入る
     h.text("abc");
 
-    assert_eq!(h.app().name.text, "abc");
-    assert_eq!(h.app().name.cursor_pos, 3);
+    assert_eq!(h.app().name.text(), "abc");
+    assert_eq!(h.app().name.cursor_pos(), 3);
 }
 
 /// 打った内容が保存に反映されること（フォーカス経路とクリック経路の合流）。
@@ -197,7 +189,7 @@ fn paste_reaches_the_focused_field() {
     h.click("name");
     h.paste("https://example.com/a?b=1");
 
-    assert_eq!(h.app().name.text, "https://example.com/a?b=1");
+    assert_eq!(h.app().name.text(), "https://example.com/a?b=1");
 }
 
 /// フォーカスが無ければ欄には入らない（アプリの `on_input` には届く）。
@@ -208,5 +200,5 @@ fn paste_without_focus_does_not_touch_the_field() {
 
     h.paste("xyz");
 
-    assert_eq!(h.app().name.text, "");
+    assert_eq!(h.app().name.text(), "");
 }

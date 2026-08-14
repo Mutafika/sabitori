@@ -172,6 +172,60 @@ pub struct ViewContext<'a> {
     ///
     /// [`TextRenderer`]: https://docs.rs/sabitori-text
     pub measurer: Option<&'a dyn build::TextMeasure>,
+    /// `view()` の最中に登録された「ランタイムに面倒を見てほしいもの」。
+    /// 直に触らず [`ViewContext::register_managed`] / [`ViewContext::take_managed`]
+    /// を使う。
+    pub managed: std::cell::RefCell<Vec<(String, std::rc::Rc<dyn Managed>)>>,
+}
+
+/// **ランタイムに配線を任せるものの目印。**
+///
+/// `view()` の中で [`ViewContext::register_managed`] に渡すと、 ランタイムが
+/// その id への入力配信・毎フレームの tick・フォーカス状態の反映を引き受ける。
+/// アプリ側に書くことは何も無い。
+///
+/// # なぜ型を消しているか
+///
+/// 中身 (テキスト欄の状態など) は `sabitori-widgets` にあり、 配信するイベント型は
+/// `sabitori-input` にある。 どちらも `sabitori-core` に依存しているので、 core が
+/// それらを知ると循環する。 そこで core は「id と、 何かのハンドル」だけを運び、
+/// **それが何であるかはランタイム (`sabitori`) が `downcast_ref` で解釈する**。
+/// core は仕組みだけを持ち、 意味を持たない。
+///
+/// # 何のためにあるか
+///
+/// 0.4.0 より前は、 `text_input(..)` を `view()` に置いてもそれだけでは動かず、
+/// `on_focused_input` / `tick` / `ime_cursor_area` を別途実装する必要があった。
+/// 忘れると **フォーカスは入って枠も光るのに打った文字がどこにも行かない**。
+/// コンパイルは通り、 パニックもせず、 ただ何も起きない。
+///
+/// 登録方式なら、 ウィジェットを置いた時点で配線が済む。 **書き忘れる場所が
+/// 存在しない。**
+pub trait Managed: std::any::Any {
+    /// ランタイムが具体型へ降ろすための口。 実装は `self` を返すだけ。
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl ViewContext<'_> {
+    /// この id の面倒をランタイムに見てもらう。 ウィジェットの実装が呼ぶ想定で、
+    /// アプリが直接呼ぶことは無い。
+    ///
+    /// 同じ id を 2 回登録した場合は後勝ち。 `view()` は毎フレーム呼ばれるので、
+    /// 登録もフレームごとにやり直される (前フレームの登録は残らない)。
+    pub fn register_managed(&self, id: impl Into<String>, target: std::rc::Rc<dyn Managed>) {
+        let id = id.into();
+        let mut list = self.managed.borrow_mut();
+        if let Some(slot) = list.iter_mut().find(|(existing, _)| *existing == id) {
+            slot.1 = target;
+        } else {
+            list.push((id, target));
+        }
+    }
+
+    /// 登録されたものを取り出す (ランタイム用)。 `view()` を呼んだ後に一度だけ。
+    pub fn take_managed(&self) -> Vec<(String, std::rc::Rc<dyn Managed>)> {
+        std::mem::take(&mut *self.managed.borrow_mut())
+    }
 }
 
 /// Scroll state snapshot for a scroll container, exposed via [`ViewContext`].
@@ -431,6 +485,7 @@ mod view_context_tests {
             images: None,
             mono_advance: 0.6,
             measurer,
+            managed: Default::default(),
         }
     }
 

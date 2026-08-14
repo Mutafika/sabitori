@@ -12,6 +12,7 @@ use sabitori_core::ViewContext;
 use sabitori_gpu::{GpuContext, GpuRenderer, RingRenderer, SceneRenderContext};
 use sabitori_input::{Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
 use sabitori_text::TextRenderer;
+use sabitori_widgets::TextInputState;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -608,6 +609,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 毎フレーム鳴らすとログが埋まるので 1 度だけにする。
     /// [`AppState::warn_if_typing_went_nowhere`] を参照。
     warned_unrouted_input: std::collections::HashSet<String>,
+    /// `view()` の中でウィジェットが登録した「面倒を見るもの」。 毎フレーム
+    /// 差し替わる。 [`AppState::adopt_managed`] を参照。
+    managed: Vec<(String, std::rc::Rc<dyn sabitori_core::Managed>)>,
     modifiers: Modifiers,
     last_viewport_w: f32,
     last_viewport_h: f32,
@@ -1427,9 +1431,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     winit::event::Ime::Enabled => InputEvent::ImeEnabled,
                     winit::event::Ime::Disabled => { return; }
                 };
-                let handled = if let Some(ref id) = self.focused_id {
-                    self.app.on_focused_input(id, &event)
-                } else { false };
+                let handled = self.route_to_managed(&event)
+                    || match self.focused_id {
+                        Some(ref id) => self.app.on_focused_input(id, &event),
+                        None => false,
+                    };
                 if !handled {
                     self.app.on_input(&event);
                 }
@@ -1474,11 +1480,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         }
                     }
                     for e in events {
-                        if let Some(ref fid) = self.focused_id {
-                            if !self.app.on_focused_input(fid, &e) {
-                                self.app.on_input(&e);
-                            }
-                        } else {
+                        let handled = self.route_to_managed(&e)
+                            || match self.focused_id {
+                                Some(ref fid) => self.app.on_focused_input(fid, &e),
+                                None => false,
+                            };
+                        if !handled {
                             self.app.on_input(&e);
                         }
                     }
@@ -1722,7 +1729,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // rect changes — so the Cocoa call doesn't fire 125×/sec. Without this,
         // winit leaves the area at the window origin and the candidate window
         // sits in the top-left.
-        let ime_area = self.app.ime_cursor_area();
+        // アプリが明示した矩形が最優先。 無ければ、 フォーカス中の登録済みテキスト欄
+        // から自動で算出する — その欄の画面矩形はレイアウト済みで `hit_regions` に
+        // あり、 キャレットの x は表示文字列を実フォントで測れば出る。 つまり
+        // ランタイムは必要な材料を全部持っている。 アプリが `ime_cursor_area` を
+        // 書かなくても、 変換候補は正しい位置に出る。
+        let ime_area = self.app.ime_cursor_area().or_else(|| self.managed_ime_area());
         if ime_area != self.last_ime_area {
             self.last_ime_area = ime_area;
             if let (Some(w), Some((x, y, cw, ch))) = (self.window.as_ref(), ime_area) {
@@ -1866,6 +1878,7 @@ impl<A: DeclarativeApp> AppState<A> {
             last_ime_allowed: true,
             focused_id: None,
             warned_unrouted_input: std::collections::HashSet::new(),
+            managed: Vec::new(),
             last_viewport_w: 0.0,
             last_viewport_h: 0.0,
             primary_input: PrimaryInput::None,
@@ -1982,6 +1995,7 @@ impl<A: DeclarativeApp> AppState<A> {
             // 計算する手段が無く、 等幅以外のテキスト欄にカーソルを置けない
             // (issue #15)。
             measurer: Some(measurer),
+            managed: Default::default(),
         };
         // Build main UI tree
         let mut root = self.app.view(&ctx);
@@ -2021,6 +2035,11 @@ impl<A: DeclarativeApp> AppState<A> {
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active
         let app_overlay = self.app.overlay_view(&ctx);
+
+        // `view()` / `overlay_view()` の中でウィジェットが登録したものを引き取る。
+        // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
+        // 書くことは何も無い (`sabitori_core::Managed` の doc を参照)。
+        self.adopt_managed(ctx.take_managed());
         let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
             sabitori_core::tooltip_popup(
                 &text, tx, ty, w, h,
@@ -2140,6 +2159,63 @@ impl<A: DeclarativeApp> AppState<A> {
         );
     }
 
+    /// `view()` が登録したものを引き取り、 **フォーカス状態をその場で反映する**。
+    ///
+    /// 反映をここでやるのは、 「フォーカスが変わった」 と 「ツリーが組み直された」
+    /// のどちらが先でも、 描画に使うフレームでは必ず一致させたいから。
+    /// アプリが `state.focused = true` を書く必要は無い。
+    pub(crate) fn adopt_managed(
+        &mut self,
+        managed: Vec<(String, std::rc::Rc<dyn sabitori_core::Managed>)>,
+    ) {
+        for (id, target) in &managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                field.set_focused(self.focused_id.as_deref() == Some(id.as_str()));
+            }
+        }
+        self.managed = managed;
+    }
+
+    /// フォーカス中の登録済みテキスト欄から、 IME 変換候補を出す矩形を作る。
+    ///
+    /// これを返さないと winit は候補位置をウィンドウ原点のままにするので、
+    /// **日本語の変換候補が画面の左上に出る**。 0.4.0 より前はアプリが
+    /// `ime_cursor_area` を実装して自分で計算する必要があり、 書かなければ
+    /// 黙って左上に出ていた。
+    ///
+    /// 欄の矩形は `hit_regions` にあり、 キャレットの x は表示文字列を実フォントで
+    /// 測れば出る。 材料はランタイムが全部持っているので、 アプリに書かせる理由が無い。
+    fn managed_ime_area(&self) -> Option<(f32, f32, f32, f32)> {
+        let id = self.focused_id.as_deref()?;
+        let field = self.managed_text_field(id)?;
+        let build = self.last_build.as_ref()?;
+        let rect = build.region_rect(id)?;
+        // キャレットの欄内オフセットは `text_input` が描くときに実フォントで
+        // 測って書き込んである。 ここは画面座標を足すだけ。
+        let (dx, caret_h) = field.caret_offset();
+        Some((rect.origin.x + dx, rect.origin.y, 1.0, caret_h.max(1.0)))
+    }
+
+    /// 登録済みのテキスト欄をフォーカス id で引く。
+    fn managed_text_field(&self, id: &str) -> Option<&TextInputState> {
+        self.managed
+            .iter()
+            .find(|(mid, _)| mid == id)
+            .and_then(|(_, t)| t.as_any().downcast_ref::<TextInputState>())
+    }
+
+    /// フォーカス中の要素が登録済みなら、 そこへイベントを流す。 消費したら `true`。
+    ///
+    /// **アプリの `on_focused_input` より先**に見る。 登録されている欄は
+    /// ランタイムの持ち物で、 アプリが二重に処理する余地を作らないため。
+    pub(crate) fn route_to_managed(&mut self, event: &InputEvent) -> bool {
+        let Some(id) = self.focused_id.clone() else { return false };
+        match self.managed_text_field(&id) {
+            Some(field) => field.handle_input(event),
+            None => false,
+        }
+    }
+
     /// 打鍵が行き場を失ったテキスト欄の id。 テストから配線漏れを assert する
     /// ための口 ([`crate::testing::Harness::unrouted_text_inputs`])。
     pub(crate) fn unrouted_text_inputs(&self) -> &std::collections::HashSet<String> {
@@ -2162,6 +2238,13 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 置き去りになるのも防ぐ。
     pub(crate) fn advance(&mut self, dt: f32) {
         self.app.tick(dt);
+        // 登録済みのテキスト欄はランタイムが進める (キャレット点滅)。
+        // アプリが `state.tick(dt)` を書く必要は無い。
+        for (_, target) in &self.managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                field.advance(dt);
+            }
+        }
         for sv in self.scroll_states.values_mut() {
             sv.tick(dt);
         }
@@ -2337,9 +2420,12 @@ impl<A: DeclarativeApp> AppState<A> {
         // そのもの」なので、 フィールドには渡さない (テキスト欄が Tab を食べて
         // しまうと移動できなくなる)。
         let handled_by_focus = if key != Key::Tab && key != Key::Escape {
-            if let Some(ref id) = self.focused_id {
-                self.app.on_focused_input(id, &key_event)
-            } else { false }
+            // 登録済みの欄が先。 id の借用と `&mut self` が重なるので clone で外す。
+            self.route_to_managed(&key_event)
+                || match self.focused_id.clone() {
+                    Some(id) => self.app.on_focused_input(&id, &key_event),
+                    None => false,
+                }
         } else { false };
         // 押下・解放の**両方**を配る。押下だけを配っていた頃は、⇧の押下は届くのに
         // 解放が来ないので、アプリ側で「押しっぱなし」を保持すると二度と落ちなかった。
@@ -2366,11 +2452,14 @@ impl<A: DeclarativeApp> AppState<A> {
             if crate::clipboard::is_paste_shortcut(key, self.modifiers) {
                 if let Some(text) = crate::clipboard::read_text() {
                     let ev = InputEvent::Paste { text };
-                    crate::runtime_shared::dispatch(
-                        &mut self.app,
-                        self.focused_id.as_deref(),
-                        &ev,
-                    );
+                    // 登録済みの欄が先。 他のイベントと同じ順序。
+                    if !self.route_to_managed(&ev) {
+                        crate::runtime_shared::dispatch(
+                            &mut self.app,
+                            self.focused_id.as_deref(),
+                            &ev,
+                        );
+                    }
                 }
             }
             // Any key other than the copy shortcut dismisses the
@@ -2429,9 +2518,12 @@ impl<A: DeclarativeApp> AppState<A> {
             // ここはルーティングだけ。
             for ch in chars {
                 let char_event = InputEvent::CharInput(ch);
-                let handled = if let Some(ref id) = self.focused_id {
-                    self.app.on_focused_input(id, &char_event)
-                } else { false };
+                // 登録済みの欄が先。 アプリが二重に処理する余地を作らない。
+                let handled = self.route_to_managed(&char_event)
+                    || match self.focused_id {
+                        Some(ref id) => self.app.on_focused_input(id, &char_event),
+                        None => false,
+                    };
                 if !handled {
                     let handled_by_app = self.app.on_input(&char_event);
                     if !handled_by_app {
@@ -3074,6 +3166,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 images: Some(self.image_ctx.clone()),
                 mono_advance,
                 measurer: Some(&measurer),
+                managed: Default::default(),
             };
             let root = self.app.view_for(&extra.key, &ctx);
             let built = build_tree_measured(&root, w, h, &measurer);

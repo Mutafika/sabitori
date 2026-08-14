@@ -2476,22 +2476,8 @@ impl DeclarativeApp for Gallery {
             self.splash_done = true;
             return true;
         }
-        // Route input to focused text input
-        if self.focused.as_deref() == Some("form-input") {
-            match event {
-                InputEvent::CharInput(ch) => { self.form_text.on_char(*ch); return true; }
-                InputEvent::KeyInput { key, pressed: true, modifiers, .. } => {
-                    if self.form_text.on_key(*key, *modifiers) { return true; }
-                }
-                InputEvent::ImePreedit { text: t, cursor } => {
-                    self.form_text.on_ime_preedit(t.clone(), *cursor); return true;
-                }
-                InputEvent::ImeCommit { text: t } => {
-                    self.form_text.on_ime_commit(t); return true;
-                }
-                _ => {}
-            }
-        }
+        // テキスト欄への配線は 0.4.0 で不要になった。 `text_input(..)` を
+        // `view()` に置いた時点でランタイムが配信する。
         if let InputEvent::CharInput(c) = event {
             match c {
                 'j' => {

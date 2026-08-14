@@ -156,28 +156,23 @@ impl FocusManager {
     }
 
     /// Current text of a field ("" when unregistered).
-    pub fn text(&self, id: &str) -> &str {
-        self.fields.get(id).map(|f| f.text.as_str()).unwrap_or("")
+    pub fn text(&self, id: &str) -> String {
+        self.fields.get(id).map(|f| f.text()).unwrap_or_default()
     }
 
     /// Replace a field's text and move the cursor to the end.
     pub fn set_text(&mut self, id: &str, text: impl Into<String>) {
-        if let Some(f) = self.fields.get_mut(id) {
-            f.text = text.into();
-            f.cursor_pos = f.text.len();
-            f.selection_start = None;
-            f.preedit.clear();
+        if let Some(f) = self.fields.get(id) {
+            f.set_text(text);
         }
     }
 
     /// Take the field's text out, leaving it empty (typical after Submit).
     pub fn take_text(&mut self, id: &str) -> String {
-        match self.fields.get_mut(id) {
+        match self.fields.get(id) {
             Some(f) => {
-                let out = std::mem::take(&mut f.text);
-                f.cursor_pos = 0;
-                f.selection_start = None;
-                f.preedit.clear();
+                let out = f.text();
+                f.clear();
                 out
             }
             None => String::new(),
@@ -225,13 +220,12 @@ impl FocusManager {
             return false;
         }
         if let Some(prev) = self.focused.take() {
-            if let Some(f) = self.fields.get_mut(&prev) {
-                f.focused = false;
-                f.preedit.clear();
+            if let Some(f) = self.fields.get(&prev) {
+                f.set_focused(false);
             }
         }
-        if let Some(f) = self.fields.get_mut(id) {
-            f.focused = true;
+        if let Some(f) = self.fields.get(id) {
+            f.set_focused(true);
         }
         self.focused = Some(id.to_string());
         self.restart_blink();
@@ -242,8 +236,7 @@ impl FocusManager {
     pub fn blur(&mut self) {
         if let Some(prev) = self.focused.take() {
             if let Some(f) = self.fields.get_mut(&prev) {
-                f.focused = false;
-                f.preedit.clear();
+                f.set_focused(false);
             }
         }
     }
@@ -321,10 +314,10 @@ impl FocusManager {
             self.focused = None;
             return FocusKeyResult::NotFocused;
         };
-        if field.on_key(key, modifiers) {
+        if field.with_mut(|i| i.on_key(key, modifiers)) {
             return FocusKeyResult::Consumed;
         }
-        if field.preedit.is_active() {
+        if field.is_composing() {
             // Mid-composition: don't interpret Enter/Tab — the IME owns them.
             return FocusKeyResult::Ignored;
         }
@@ -352,7 +345,7 @@ impl FocusManager {
         self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_char(ch);
+                f.with_mut(|i| i.on_char(ch));
                 true
             }
             None => false,
@@ -365,7 +358,7 @@ impl FocusManager {
         self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_ime_preedit(text, cursor);
+                f.with_mut(|i| i.on_ime_preedit(text, cursor));
                 true
             }
             None => false,
@@ -378,7 +371,7 @@ impl FocusManager {
         self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_ime_commit(text);
+                f.with_mut(|i| i.on_ime_commit(text));
                 true
             }
             None => false,
@@ -388,7 +381,7 @@ impl FocusManager {
     /// IME was disabled — clear any composing text.
     pub fn on_ime_disabled(&mut self) {
         if let Some(f) = self.focused_field_mut() {
-            f.preedit.clear();
+            f.with_mut(|i| i.preedit.clear());
         }
     }
 
@@ -399,7 +392,7 @@ impl FocusManager {
     fn restart_blink(&mut self) {
         if let Some(id) = self.focused.clone() {
             if let Some(f) = self.fields.get_mut(&id) {
-                f.blink = 0.0;
+                f.with_mut(|i| i.blink = 0.0);
             }
         }
     }
@@ -411,7 +404,7 @@ impl FocusManager {
     /// どれを見ればいいのか決まっていなかった (issue #16)。
     pub fn tick(&mut self, dt: f32) {
         for f in self.fields.values_mut() {
-            f.tick(dt);
+            f.advance(dt);
         }
     }
 
@@ -452,7 +445,7 @@ mod tests {
         let mut m = manager();
         assert_eq!(m.handle_press(Some("a")), FocusChange::Focused("a".into()));
         assert!(m.is_focused("a"));
-        assert!(m.field("a").unwrap().focused, "state flag synced");
+        assert!(m.field("a").unwrap().is_focused(), "state flag synced");
         assert!(m.wants_keyboard());
 
         // Same field again → unchanged.
@@ -460,7 +453,7 @@ mod tests {
 
         // Another registered field → focus moves.
         assert_eq!(m.handle_press(Some("b")), FocusChange::Focused("b".into()));
-        assert!(!m.field("a").unwrap().focused, "old field unfocused");
+        assert!(!m.field("a").unwrap().is_focused(), "old field unfocused");
 
         // Unregistered id (a button) → blur.
         assert_eq!(m.handle_press(Some("some-button")), FocusChange::Blurred);
@@ -550,7 +543,7 @@ mod tests {
         assert!(!m.on_ime_commit("壁"), "no focus → not delivered");
         m.focus("a");
         assert!(m.on_ime_preedit("かべ".into(), Some((0, 6))));
-        assert!(m.field("a").unwrap().preedit.is_active());
+        assert!(m.field("a").unwrap().is_composing());
         // Enter during composition must NOT submit.
         assert_eq!(
             m.on_key(Key::Enter, Modifiers::default()),
@@ -567,8 +560,8 @@ mod tests {
         m.focus("a");
         m.on_ime_preedit("へん".into(), None);
         m.blur();
-        assert!(!m.field("a").unwrap().focused);
-        assert!(!m.field("a").unwrap().preedit.is_active());
+        assert!(!m.field("a").unwrap().is_focused());
+        assert!(!m.field("a").unwrap().is_composing());
     }
 
     #[test]
@@ -604,7 +597,7 @@ mod tests {
         assert_eq!(m.display_text("a"), "wall-01");
         assert!(m.is_placeholder("b"));
         assert_eq!(m.display_text("b"), "field b");
-        assert_eq!(m.field("a").unwrap().cursor_pos, 7, "cursor at end");
+        assert_eq!(m.field("a").unwrap().cursor_pos(), 7, "cursor at end");
     }
 
     #[test]

@@ -183,9 +183,9 @@ impl NumericInputState {
     /// so typing replaces it — the spreadsheet/DAW convention).
     pub fn begin_edit(&mut self) {
         self.editing = true;
-        self.edit.text = self.format_value();
-        self.edit.focused = true;
-        self.edit.select_all();
+        self.edit.set_text(self.format_value());
+        self.edit.set_focused(true);
+        self.edit.with_mut(|i| i.select_all());
     }
 
     /// Parse the edit buffer, clamp, and leave edit mode.
@@ -193,8 +193,8 @@ impl NumericInputState {
     /// `false` keeps the previous value (still leaves edit mode).
     pub fn commit_edit(&mut self) -> bool {
         self.editing = false;
-        self.edit.focused = false;
-        match self.edit.text.trim().parse::<f64>() {
+        self.edit.set_focused(false);
+        match self.edit.text().trim().parse::<f64>() {
             Ok(v) if v.is_finite() => {
                 self.set_value(v);
                 true
@@ -206,8 +206,8 @@ impl NumericInputState {
     /// Leave edit mode without changing the value.
     pub fn cancel_edit(&mut self) {
         self.editing = false;
-        self.edit.focused = false;
-        self.edit.preedit.clear();
+        self.edit.set_focused(false);
+        self.edit.with_mut(|i| i.preedit.clear());
     }
 
     /// Keyboard input while editing. Returns `true` if consumed.
@@ -227,7 +227,7 @@ impl NumericInputState {
                 self.cancel_edit();
                 true
             }
-            _ => self.edit.on_key(key, modifiers),
+            _ => self.edit.with_mut(|i| i.on_key(key, modifiers)),
         }
     }
 
@@ -238,7 +238,7 @@ impl NumericInputState {
             return;
         }
         if ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | 'e' | 'E') {
-            self.edit.on_char(ch);
+            self.edit.with_mut(|i| i.on_char(ch));
         }
     }
 }
@@ -288,15 +288,15 @@ mod tests {
         n.on_pointer_move(51.0); // within slop
         assert!(n.on_pointer_up());
         assert!(n.editing);
-        assert_eq!(n.edit.text, "42.0");
-        assert!(n.edit.has_selection(), "seed text should be selected");
+        assert_eq!(n.edit.text(), "42.0");
+        assert!(n.edit.selection_range().is_some(), "seed text should be selected");
     }
 
     #[test]
     fn commit_parses_and_clamps() {
         let mut n = NumericInputState::new(5.0).with_range(0.0, 100.0);
         n.begin_edit();
-        n.edit.text = "250".into();
+        n.edit.set_text("250");
         assert!(n.commit_edit());
         assert_eq!(n.value(), 100.0);
         assert!(!n.editing);
@@ -306,7 +306,7 @@ mod tests {
     fn invalid_input_keeps_previous_value() {
         let mut n = NumericInputState::new(7.0);
         n.begin_edit();
-        n.edit.text = "abc".into();
+        n.edit.set_text("abc");
         assert!(!n.commit_edit());
         assert_eq!(n.value(), 7.0);
         assert!(!n.editing);
@@ -316,7 +316,7 @@ mod tests {
     fn escape_cancels_edit() {
         let mut n = NumericInputState::new(3.0);
         n.begin_edit();
-        n.edit.text = "999".into();
+        n.edit.set_text("999");
         assert!(n.on_key(Key::Escape, Modifiers::default()));
         assert_eq!(n.value(), 3.0);
         assert!(!n.editing);
@@ -326,7 +326,7 @@ mod tests {
     fn enter_commits_edit() {
         let mut n = NumericInputState::new(3.0).with_precision(2);
         n.begin_edit();
-        n.edit.text = "1.5".into();
+        n.edit.set_text("1.5");
         assert!(n.on_key(Key::Enter, Modifiers::default()));
         assert!((n.value() - 1.5).abs() < 1e-9);
     }
@@ -335,13 +335,13 @@ mod tests {
     fn char_filter_rejects_letters() {
         let mut n = NumericInputState::new(0.0);
         n.begin_edit();
-        n.edit.delete_selection();
-        n.edit.text.clear();
-        n.edit.cursor_pos = 0;
+        n.edit.with_mut(|i| i.delete_selection());
+        n.edit.text().clear();
+        n.edit.with_mut(|i| i.cursor_pos = 0);
         for ch in "1a2b.5x".chars() {
             n.on_char(ch);
         }
-        assert_eq!(n.edit.text, "12.5");
+        assert_eq!(n.edit.text(), "12.5");
     }
 
     #[test]

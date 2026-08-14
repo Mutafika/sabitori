@@ -457,75 +457,100 @@ fn input_style() -> TextInputStyle {
     }
 }
 
-/// `text_input` を置いただけで `on_focused_input` を実装していないアプリ。
-struct Unwired {
-    name: TextInputState,
+/// **自作の**テキスト欄。 `text_input` を使わず、 自分で `Role::TextInput` を
+/// 名乗って focusable にしただけ。 登録していないので配線はアプリの責任。
+struct HandRolled {
+    typed: String,
+    wire_it: bool,
 }
 
-impl sabitori::DeclarativeApp for Unwired {
-    fn view(&self, ctx: &ViewContext) -> Element {
-        text_input(ctx, "name", &self.name, &input_style())
+impl sabitori::DeclarativeApp for HandRolled {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        let mut el = div()
+            .id("custom")
+            .role(sabitori::Role::TextInput)
+            .label("自作の欄")
+            .w(Px(200.0))
+            .h(Px(32.0));
+        el.focusable = true;
+        el
     }
-    // on_focused_input を**わざと**実装しない。
-}
 
-/// 正しく配線したアプリ。
-struct Wired {
-    name: TextInputState,
-}
-
-impl sabitori::DeclarativeApp for Wired {
-    fn view(&self, ctx: &ViewContext) -> Element {
-        text_input(ctx, "name", &self.name, &input_style())
-    }
     fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
-        match id {
-            "name" => self.name.on_focused_input(e),
+        if !self.wire_it {
+            return false;
+        }
+        match (id, e) {
+            ("custom", InputEvent::CharInput(c)) => {
+                self.typed.push(*c);
+                true
+            }
             _ => false,
         }
     }
 }
 
-/// **配線漏れが観測できること。**
+/// **自作のテキスト欄で配線を忘れたら、 それが観測できること。**
 ///
-/// `text_input` は `view()` に置いてクリックすればフォーカスは入るし枠も光る。
-/// でも `on_focused_input` を実装していないと打った文字はどこにも行かない。
-/// コンパイルは通り、 パニックもせず、 ただ何も起きない — 0.4.0 が潰してきた
-/// のと同じ形の失敗。 構造では防げない (文字の行き先はアプリの状態なので、
-/// ランタイムが代わりに書き込めない) ので、 せめて黙らせない。
+/// `text_input` を使う限りこの状況は起きない (置いた時点で登録される) が、
+/// 自分で `Role::TextInput` を名乗る欄を作る場合は配線がアプリの責任になる。
+/// 忘れると打った文字がどこにも行かない — 黙って落とさないための検出器。
 #[test]
-fn a_text_input_with_no_handler_is_reported_not_silent() {
-    let mut h = Harness::new(Unwired { name: TextInputState::new("名前") }, 400.0, 200.0);
+fn a_hand_rolled_text_field_with_no_handler_is_reported() {
+    let mut h = Harness::new(HandRolled { typed: String::new(), wire_it: false }, 400.0, 200.0);
     h.frame();
 
-    h.click("name");
-    assert_eq!(h.focused_id(), Some("name"), "フォーカスは入る (だから気づかない)");
+    h.click("custom");
+    assert_eq!(h.focused_id(), Some("custom"), "フォーカスは入る (だから気づかない)");
 
     h.text("abc");
 
-    assert_eq!(h.app().name.text, "", "文字は入らない");
+    assert_eq!(h.app().typed, "", "文字は入らない");
     assert_eq!(
         h.unrouted_text_inputs(),
-        vec!["name"],
+        vec!["custom"],
         "そのことが観測できること"
     );
 }
 
 /// 配線してあれば何も報告されないこと (誤検知しない)。
 #[test]
-fn a_wired_text_input_reports_nothing() {
-    let mut h = Harness::new(Wired { name: TextInputState::new("名前") }, 400.0, 200.0);
+fn a_wired_hand_rolled_field_reports_nothing() {
+    let mut h = Harness::new(HandRolled { typed: String::new(), wire_it: true }, 400.0, 200.0);
     h.frame();
 
-    h.click("name");
+    h.click("custom");
     h.text("abc");
 
-    assert_eq!(h.app().name.text, "abc");
+    assert_eq!(h.app().typed, "abc");
     assert!(
         h.unrouted_text_inputs().is_empty(),
         "配線済みなら何も出ない: {:?}",
         h.unrouted_text_inputs()
     );
+}
+
+/// `text_input` を使う場合は、 何も実装しなくても報告されないこと。
+///
+/// 登録済みなのでランタイムが消費する。 詳しくは `tests/zero_wiring.rs`。
+#[test]
+fn the_builtin_text_input_never_needs_wiring() {
+    struct Bare {
+        name: TextInputState,
+    }
+    impl sabitori::DeclarativeApp for Bare {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            text_input(ctx, "name", &self.name, &input_style())
+        }
+    }
+
+    let mut h = Harness::new(Bare { name: TextInputState::new("名前") }, 400.0, 200.0);
+    h.frame();
+    h.click("name");
+    h.text("abc");
+
+    assert_eq!(h.app().name.text(), "abc", "配線ゼロで動く");
+    assert!(h.unrouted_text_inputs().is_empty());
 }
 
 /// フォーカスできるだけの要素 (ボタン等) が打鍵を無視するのは正常なので、

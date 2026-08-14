@@ -20,13 +20,9 @@ impl PreeditState {
     }
 }
 
-/// State of a text input field.
-///
-/// `Default` はプレースホルダ無しの空欄。 アプリの state 構造体に
-/// `#[derive(Default)]` を付けたまま持てるようにしてある — 無いと、 テキスト欄を
-/// 1 つ足しただけで `Default` を手書きする羽目になる (issue #19 の使用感確認で判明)。
+/// テキスト欄の中身。 [`TextInputState`] 越しにしか触れない。
 #[derive(Default)]
-pub struct TextInputState {
+pub struct TextInputInner {
     pub text: String,
     pub cursor_pos: usize,
     pub selection_start: Option<usize>,
@@ -40,10 +36,14 @@ pub struct TextInputState {
     /// `TextInputState` 単体では取れなかった。 [`text_input`] ウィジェットが
     /// 引数を増やさず自己完結するよう、 状態側に寄せてある。
     pub blink: f32,
+    /// 欄の左上からキャレットまでの `(x, height)`。 [`text_input`] が描くときに
+    /// 実フォントで測って書き込む。 ランタイムが IME 変換候補の位置を出すのに使う
+    /// ので、 アプリが `ime_cursor_area` を実装する必要が無くなる。
+    pub caret_offset: (f32, f32),
 }
 
-impl TextInputState {
-    pub fn new(placeholder: impl Into<String>) -> Self {
+impl TextInputInner {
+    fn new(placeholder: impl Into<String>) -> Self {
         Self {
             text: String::new(),
             cursor_pos: 0,
@@ -52,6 +52,7 @@ impl TextInputState {
             placeholder: placeholder.into(),
             preedit: PreeditState::default(),
             blink: 0.0,
+            caret_offset: (0.0, 0.0),
         }
     }
 
@@ -449,6 +450,209 @@ impl TextInputState {
     }
 }
 
+/// テキスト欄の状態。 アプリのフィールドに持つ。
+///
+/// # 配線は要らない
+///
+/// [`text_input`] を `view()` に置いた時点で、 **ランタイムがこの欄を面倒見ます**。
+/// キー入力も IME もペーストもここへ届き、 キャレットの点滅も進み、 フォーカス
+/// 状態も反映される。 アプリ側に書くことは何もありません。
+///
+/// ```ignore
+/// struct App { name: TextInputState }
+///
+/// impl DeclarativeApp for App {
+///     fn view(&self, ctx: &ViewContext) -> Element {
+///         text_input(ctx, "name", &self.name, &style)   // これで全部
+///     }
+///     fn on_click(&mut self, id: &str) {
+///         if id == "save" { println!("{}", self.name.text()); }
+///     }
+/// }
+/// ```
+///
+/// # なぜハンドルなのか
+///
+/// `view(&self)` は不変借用なので、 ランタイムがここへ書き込むには内部可変性が
+/// 要る。 0.4.0 より前は代わりにアプリが `on_focused_input` / `tick` /
+/// `ime_cursor_area` の 3 つを実装して橋渡ししていたが、 **忘れると
+/// フォーカスは入って枠も光るのに打った文字がどこにも行かなかった** —
+/// コンパイルは通り、 パニックもせず、 ただ何も起きない。 書き忘れる場所を
+/// 無くすために、 状態側を共有ハンドルにした。
+///
+/// [`Clone`] は中身を複製しない (同じ欄を指す)。 レイアウトの都合で複製が
+/// 要る場合も状態は 1 つのまま。
+#[derive(Clone, Default)]
+pub struct TextInputState(std::rc::Rc<std::cell::RefCell<TextInputInner>>);
+
+impl sabitori_core::Managed for TextInputState {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl std::fmt::Debug for TextInputState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInputState")
+            .field("text", &self.text())
+            .field("focused", &self.is_focused())
+            .finish()
+    }
+}
+
+impl TextInputState {
+    /// プレースホルダを決めて空の欄を作る。
+    pub fn new(placeholder: impl Into<String>) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(TextInputInner::new(
+            placeholder,
+        ))))
+    }
+
+    /// 初期値を入れて作る。 カーソルは末尾。
+    pub fn with_text(placeholder: impl Into<String>, text: impl Into<String>) -> Self {
+        let s = Self::new(placeholder);
+        s.set_text(text);
+        s
+    }
+
+    /// 中身を読む。
+    pub fn text(&self) -> String {
+        self.0.borrow().text.clone()
+    }
+
+    /// 中身を差し替える。 カーソルは末尾へ、 変換中があれば捨てる。
+    pub fn set_text(&self, text: impl Into<String>) {
+        let mut inner = self.0.borrow_mut();
+        inner.text = text.into();
+        inner.cursor_pos = inner.text.len();
+        inner.selection_start = None;
+        inner.preedit.clear();
+    }
+
+    /// 空にする。
+    pub fn clear(&self) {
+        self.set_text("");
+    }
+
+    /// 空か (プレースホルダ表示中か)。
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().text.is_empty()
+    }
+
+    /// フォーカスされているか。 **ランタイムが毎フレーム設定する**ので、
+    /// アプリから書く必要は無い。
+    pub fn is_focused(&self) -> bool {
+        self.0.borrow().focused
+    }
+
+    /// カーソルのバイト位置。
+    pub fn cursor_pos(&self) -> usize {
+        self.0.borrow().cursor_pos
+    }
+
+    /// いま IME で変換中か。
+    pub fn is_composing(&self) -> bool {
+        self.0.borrow().preedit.is_active()
+    }
+
+    /// プレースホルダ。
+    pub fn placeholder(&self) -> String {
+        self.0.borrow().placeholder.clone()
+    }
+
+    /// プレースホルダを差し替える。
+    pub fn set_placeholder(&self, placeholder: impl Into<String>) {
+        self.0.borrow_mut().placeholder = placeholder.into();
+    }
+
+    /// 中身を借りて読む。 複数の値をまとめて見たいとき用。
+    ///
+    /// **借りている間に他の `TextInputState` のメソッドを呼ばないこと** —
+    /// 同じ欄なら `RefCell` の二重借用でパニックする。
+    pub fn with<R>(&self, f: impl FnOnce(&TextInputInner) -> R) -> R {
+        f(&self.0.borrow())
+    }
+
+    /// 中身を可変で借りる。 標準の編集操作で足りないときの逃げ道。
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut TextInputInner) -> R) -> R {
+        f(&mut self.0.borrow_mut())
+    }
+
+    // ── ここから下はランタイムが呼ぶ。 アプリから呼ぶ必要は無い ──
+    //
+    // `#[doc(hidden)] pub` なのは、 ランタイムが別 crate (`sabitori`) に居て
+    // `pub(crate)` では届かないから。 doc に出さないことで「アプリ向けの API では
+    // ない」 と示している。
+
+    /// 入力イベントを流し込む。 消費したら `true`。
+    #[doc(hidden)]
+    pub fn handle_input(&self, event: &sabitori_input::InputEvent) -> bool {
+        self.0.borrow_mut().on_focused_input(event)
+    }
+
+    /// キャレット点滅を進める。
+    #[doc(hidden)]
+    pub fn advance(&self, dt: f32) {
+        self.0.borrow_mut().tick(dt);
+    }
+
+    /// フォーカス状態を反映する。 外れたら変換中を捨てる。
+    #[doc(hidden)]
+    pub fn set_focused(&self, focused: bool) {
+        let mut inner = self.0.borrow_mut();
+        if inner.focused != focused {
+            inner.focused = focused;
+            inner.blink = 0.0;
+            if !focused {
+                inner.preedit.clear();
+            }
+        }
+    }
+
+    /// 表示中の文字列 (変換中を挿し込んだもの)。 描画用。
+    pub fn display_text_with_preedit(&self) -> String {
+        self.0.borrow().display_text_with_preedit()
+    }
+
+    /// キャレットのバイト位置 (変換中なら preedit の中)。 描画用。
+    pub fn caret_byte_offset(&self) -> usize {
+        self.0.borrow().caret_byte_offset()
+    }
+
+    /// キャレットをいま描くべきか。 描画用。
+    pub fn cursor_visible(&self) -> bool {
+        self.0.borrow().cursor_visible()
+    }
+
+    /// プレースホルダ表示中か。 描画用。
+    pub fn is_placeholder(&self) -> bool {
+        self.0.borrow().is_placeholder()
+    }
+
+    /// 変換中の範囲 (表示文字列に対するバイト範囲)。 描画用。
+    pub fn preedit_underline_range(&self) -> Option<(usize, usize)> {
+        self.0.borrow().preedit_underline_range()
+    }
+
+    /// 選択範囲 (バイト)。 描画用。
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.0.borrow().selection_range()
+    }
+
+    /// 実測したキャレット位置を記録する ([`text_input`] が呼ぶ)。
+    #[doc(hidden)]
+    pub fn set_caret_offset(&self, x: f32, height: f32) {
+        self.0.borrow_mut().caret_offset = (x, height);
+    }
+
+    /// 欄の左上から見たキャレットの `(x, 高さ)`。 ランタイムが IME 候補窓の
+    /// 位置決めに使う。
+    #[doc(hidden)]
+    pub fn caret_offset(&self) -> (f32, f32) {
+        self.0.borrow().caret_offset
+    }
+}
+
 /// Visual style for the [`text_input`] widget.
 #[derive(Clone, Copy)]
 pub struct TextInputStyle {
@@ -521,6 +725,11 @@ pub fn text_input(
 ) -> sabitori_core::element::Element {
     use sabitori_core::element::{div, text, Dimension::Px};
 
+    // **ここが配線。** ランタイムにこの欄を渡すと、 以後キー・IME・ペーストが
+    // 直接ここへ届き、 点滅も進み、 フォーカス状態も反映される。 アプリ側に
+    // 書くことは何も無い (0.4.0 より前は 3 メソッドの実装が必要だった)。
+    ctx.register_managed(id, std::rc::Rc::new(input.clone()));
+
     let display = input.display_text_with_preedit();
     let showing_placeholder = input.is_placeholder();
     let color = if showing_placeholder { style.placeholder } else { style.text };
@@ -543,13 +752,16 @@ pub fn text_input(
 
     // キャレット。 表示中の文字列に対する x を実フォントで測る。 これが
     // できなかったのが issue #15 で、 そのせいで旧実装は文末固定だった。
+    let caret_x = ctx.caret_x(&display, input.caret_byte_offset(), style.font_size, false);
+    // IME 変換候補の位置決めに使う。 実フォントで測れるのはここだけなので、
+    // 描くついでに記録しておく (ランタイムはこれに欄の画面座標を足すだけ)。
+    input.set_caret_offset(
+        style.padding + caret_x,
+        style.font_size * CARET_H_RATIO,
+    );
+
     if input.cursor_visible() {
-        let x = ctx.caret_x(
-            &display,
-            input.caret_byte_offset(),
-            style.font_size,
-            false,
-        );
+        let x = caret_x;
         layers.push(
             div()
                 .absolute()
@@ -560,7 +772,7 @@ pub fn text_input(
         );
     }
 
-    let border = if input.focused {
+    let border = if input.is_focused() {
         style.focus_border.unwrap_or(style.border)
     } else {
         style.border
@@ -573,7 +785,7 @@ pub fn text_input(
         // 名前は placeholder から取る — 空欄のときに何を入れる欄なのか
         // 分かるのは placeholder だけなので。
         .role(sabitori_core::element::Role::TextInput)
-        .label(input.placeholder.clone())
+        .label(input.placeholder())
         .w_full()
         .p_px(style.padding)
         .bg(style.bg)
@@ -623,7 +835,7 @@ mod router_tests {
 
     #[test]
     fn on_focused_input_routes_char_and_ime() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         // Plain char.
         assert!(s.on_focused_input(&InputEvent::CharInput('a')));
         assert_eq!(s.text, "a");
@@ -647,7 +859,7 @@ mod caret_tests {
     /// キャレットのバイト位置が、 確定済みテキストのカーソル位置と一致すること。
     #[test]
     fn caret_offset_follows_the_cursor_in_committed_text() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.focused = true;
         for ch in "abcd".chars() {
             s.on_char(ch);
@@ -664,7 +876,7 @@ mod caret_tests {
     /// 関わらず常に文末に出ていた。 「いま何を変換しているのか」が分からない。
     #[test]
     fn caret_offset_points_inside_the_preedit() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.focused = true;
         s.on_char('a');
         // 「にほん」を変換中、 IME は 2 文字目まで編集中と伝えてくる (6 バイト)。
@@ -685,7 +897,7 @@ mod caret_tests {
     /// 消えると、 どこを編集しているか分からなくなる。
     #[test]
     fn caret_does_not_blink_while_composing() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.focused = true;
 
         // 点滅の「消えている」位相へ進める。
@@ -699,7 +911,7 @@ mod caret_tests {
     /// フォーカスが無ければキャレットは出ないし、 位相も溜まらない。
     #[test]
     fn caret_is_hidden_and_reset_without_focus() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.blink = 0.3;
         s.tick(0.5);
         assert!(!s.cursor_visible());
@@ -709,7 +921,7 @@ mod caret_tests {
     /// プレースホルダ表示中はキャレットが先頭に立つこと (末尾ではない)。
     #[test]
     fn caret_sits_at_the_start_while_showing_the_placeholder() {
-        let s = TextInputState::new("名前を入力");
+        let s = TextInputInner::new("名前を入力");
         assert!(s.is_placeholder());
         assert_eq!(s.caret_byte_offset(), 0);
     }
@@ -723,7 +935,7 @@ mod paste_tests {
     /// 貼り付けたテキストがカーソル位置に入ること。
     #[test]
     fn paste_inserts_at_the_cursor() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         for ch in "ab".chars() {
             s.on_char(ch);
         }
@@ -736,7 +948,7 @@ mod paste_tests {
     /// 選択があれば置き換えること。
     #[test]
     fn paste_replaces_the_selection() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         for ch in "abcd".chars() {
             s.on_char(ch);
         }
@@ -749,7 +961,7 @@ mod paste_tests {
     /// 空白に潰す方が壊れ方が素直。
     #[test]
     fn multiline_paste_is_flattened() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.on_focused_input(&InputEvent::Paste { text: "a\r\nb\nc".into() });
         assert_eq!(s.text, "a  b c");
     }
@@ -762,7 +974,7 @@ mod paste_tests {
     /// 読んでいなかったので誰も気づかなかった。
     #[test]
     fn the_paste_shortcut_is_not_consumed() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         let primary = if cfg!(target_os = "macos") {
             Modifiers { meta: true, ..Default::default() }
         } else {
@@ -777,7 +989,7 @@ mod paste_tests {
     /// 変換中に貼ったら、 未確定分は捨ててから入れること。
     #[test]
     fn paste_clears_an_active_preedit() {
-        let mut s = TextInputState::new("placeholder");
+        let mut s = TextInputInner::new("placeholder");
         s.on_ime_preedit("にほん".into(), None);
         s.on_focused_input(&InputEvent::Paste { text: "X".into() });
         assert!(!s.preedit.is_active());

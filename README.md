@@ -97,27 +97,28 @@ The other model is `.scroll_manual(x, y)`, where **your app** owns the offset an
 
 ### 2. Text input and the IME
 
-**Use `text_input` with a `TextInputState`.** Do not hand-roll a text field — the inline preedit and the caret position both depend on real font measurement that only the runtime has.
+**Put `text_input` in `view()`. That is the entire wiring.**
 
 ```rust
-// view()
-text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+struct App { name: TextInputState }
 
-// route keys/IME to the focused field
-fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
-    match id { "name" => self.name.on_focused_input(e), _ => false }
+impl DeclarativeApp for App {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+    }
+    fn on_click(&mut self, id: &str) {
+        if id == "save" { self.saved = Some(self.name.text()); }
+    }
 }
-
-// blink the caret
-fn tick(&mut self, dt: f32) { self.name.tick(dt); }
-
-// anchor the OS candidate window at the caret
-fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { … }
 ```
+
+Nothing else. Keystrokes, IME composition, paste, caret blink, focus state, and the position of the OS candidate window are all handled by the runtime, because the widget registers itself with the `ViewContext` when it builds. There is no `on_focused_input`, no `tick`, no `ime_cursor_area` to forget.
 
 Japanese conversion shows inline with the caret **inside** the preedit, which is how you can tell what is being converted.
 
-⚠️ **`text_input` in `view()` is not enough.** Without `on_focused_input`, clicking the field still focuses it and lights up the border, but typed characters go nowhere — it compiles, it does not panic, it just does nothing. The runtime logs a warning the first time this happens, and tests can assert on it:
+Read and write the value through accessors — `text()`, `set_text()`, `clear()`, `is_focused()`, `is_composing()`. The state is a cheap-to-clone shared handle, which is what lets `view(&self)` hand it to the runtime.
+
+If you hand-roll a text field instead (your own element declaring `Role::TextInput`), wiring is back on you — and the runtime will warn, once, when typed characters reach nothing:
 
 ```rust
 assert!(h.unrouted_text_inputs().is_empty());

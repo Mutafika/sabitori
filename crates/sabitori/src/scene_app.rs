@@ -926,6 +926,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // 実フォント計測をアプリに渡す (issue #15)。 計測器は下の
                     // `build_tree_measured` でも使い回す。
                     measurer: Some(&measurer),
+                    managed: Default::default(),
                 };
 
                 let mut root = self.app.view(&ctx);

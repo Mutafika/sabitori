@@ -121,15 +121,7 @@ impl DeclarativeApp for FourThings {
 
     fn on_click(&mut self, id: &str) {
         if id == "save" {
-            self.saved = Some(self.name.text.clone());
-        }
-    }
-
-    // 2. IME / キーはフォーカス中の欄へ
-    fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
-        match id {
-            "name" => self.name.on_focused_input(e),
-            _ => false,
+            self.saved = Some(self.name.text());
         }
     }
 
@@ -137,6 +129,9 @@ impl DeclarativeApp for FourThings {
     fn on_input(&mut self, _event: &InputEvent) -> bool {
         self.consumed_keys
     }
+
+    // テキスト入力の配線は無い。 `text_input(..)` を view() に置いた時点で
+    // ランタイムが面倒を見る (README 「テキスト入力と IME」節)。
 
     // 1. プログラム的スクロール
     fn scroll_intents(&mut self) -> Vec<(String, f32)> {
@@ -147,13 +142,6 @@ impl DeclarativeApp for FourThings {
             .collect()
     }
 
-    fn tick(&mut self, dt: f32) {
-        self.name.tick(dt);
-    }
-
-    fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> {
-        Some((0.0, 0.0, 1.0, 16.0))
-    }
 }
 
 impl FourThings {
@@ -312,4 +300,46 @@ fn frame_alone_does_not_advance_springs() {
         before,
         "時間を進めない限り位置は変わらない"
     );
+}
+
+/// README 「テキスト入力と IME」節のコードが、書いてあるとおりに動くこと。
+///
+/// 「`view()` に置く。配線はこれで全部」という記述の根拠。 他のトレイトメソッドを
+/// 1 つも実装していないアプリで、打鍵から日本語変換まで通ることを見る。
+#[test]
+fn the_text_input_section_needs_no_wiring_as_documented() {
+    struct App {
+        name: TextInputState,
+        saved: Option<String>,
+    }
+
+    impl DeclarativeApp for App {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            div().flex_col().w_full().h_full().children([
+                text_input(ctx, "name", &self.name, &FourThings::input_style()),
+                div().id("save").w(Px(80.0)).h(Px(32.0)),
+            ])
+        }
+        fn on_click(&mut self, id: &str) {
+            if id == "save" {
+                self.saved = Some(self.name.text());
+            }
+        }
+    }
+
+    let mut h = Harness::new(
+        App { name: TextInputState::new("名前"), saved: None },
+        400.0,
+        300.0,
+    );
+    h.frame();
+
+    h.click("name");
+    h.text("k");
+    h.ime_preedit("にほん", None);
+    h.ime_commit("日本");
+    h.frame();
+    h.click("save");
+
+    assert_eq!(h.app().saved.as_deref(), Some("k日本"));
 }
