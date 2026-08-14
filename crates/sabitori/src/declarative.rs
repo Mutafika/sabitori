@@ -2038,6 +2038,17 @@ impl<A: DeclarativeApp> AppState<A> {
                 sv.smooth_scroll_to(y);
             }
         }
+        // 登録済みテキスト欄からのスクロール要求 — キャレットが箱の外に出たら
+        // 追いかける。 アプリが `scroll_intents` を書く必要は無い。
+        for (_, target) in &self.managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                if let Some((sid, y)) = field.take_scroll_request() {
+                    if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                        sv.smooth_scroll_to(y);
+                    }
+                }
+            }
+        }
 
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active

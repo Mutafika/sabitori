@@ -65,6 +65,8 @@ pub struct TextInputInner {
     /// レイアウトが終わるまで決まらないので、 **前フレームの値**を使う。
     /// 幅が変わった最初の 1 フレームだけ古い幅で折り返し、 次で追いつく。
     pub measured_width: f32,
+    /// キャレットを見える位置に保つためのスクロール要求 `(ビューポート id, y)`。
+    pub scroll_request: Option<(String, f32)>,
 }
 
 /// 実測してからでないと解けない移動。 [`TextInputInner::pending`] に積まれる。
@@ -98,6 +100,7 @@ impl TextInputInner {
             pending: None,
             desired_x: None,
             measured_width: 0.0,
+            scroll_request: None,
         }
     }
 
@@ -189,6 +192,7 @@ impl TextInputInner {
     /// Clears preedit state and inserts the committed text into the buffer.
     pub fn on_ime_commit(&mut self, text: &str) {
         self.preedit.clear();
+        self.cancel_pending_click();
         self.delete_selection();
         self.insert_str(text);
     }
@@ -203,6 +207,7 @@ impl TextInputInner {
     /// ので、 `\r` が残ると行末に見えない文字が 1 個ぶら下がる。
     pub fn on_paste(&mut self, text: &str) {
         self.preedit.clear();
+        self.cancel_pending_click();
         self.delete_selection();
         let normalized: String = if self.multiline {
             text.replace("\r\n", "\n").replace('\r', "\n")
@@ -377,6 +382,10 @@ impl TextInputInner {
     /// 未解決のクリック着地点を捨てる。 [`Self::on_key`] / [`Self::on_char`] が呼ぶ。
     ///
     /// ↑↓ / Home / End の予約は捨てない — あれは今まさに積んだものなので。
+    ///
+    /// **中身が変わったときも呼ぶこと。** クリックの着地点は「そのときの文字列に
+    /// 対する座標」なので、 貼り付けや IME 確定で文字列が変わった後に解決すると、
+    /// 押した場所とは無関係な位置へ飛ぶ。
     fn cancel_pending_click(&mut self) {
         if matches!(self.pending, Some(PendingMove::ToPoint { .. })) {
             self.pending = None;
@@ -761,6 +770,21 @@ impl TextInputState {
         self.0.borrow().caret
     }
 
+    /// キャレットを見える位置に保つために、 スクロール先を要求する。
+    ///
+    /// [`text_area`] が毎フレーム計算し、 ランタイムがビューポートへ適用する。
+    /// `None` は「今のままで見えている」。
+    #[doc(hidden)]
+    pub fn take_scroll_request(&self) -> Option<(String, f32)> {
+        self.0.borrow_mut().scroll_request.take()
+    }
+
+    /// スクロール先を要求する。 [`text_area`] が呼ぶ。
+    #[doc(hidden)]
+    pub fn request_scroll(&self, id: String, y: f32) {
+        self.0.borrow_mut().scroll_request = Some((id, y));
+    }
+
     /// 直近に実測した欄の内側の幅。 [`text_area`] が折り返し幅に使う。
     #[doc(hidden)]
     pub fn measured_width(&self) -> Option<f32> {
@@ -1051,7 +1075,13 @@ fn field(
     //
     // 0.4.0 まで選択は state に持っているだけで一度も描かれていなかった —
     // Shift+→ で範囲は伸びるのに画面は何も変わらない、 という状態だった。
-    if let (Some(sel_color), Some(range)) = (style.selection, input.selection_range()) {
+    //
+    // **変換中は塗らない。** 選択範囲は確定テキストに対するバイト位置だが、
+    // ここで測る `display` には変換中の文字が割り込んでいる。 そのまま当てると
+    // 無関係な場所が塗られる。 選択自体は残す — IME の確定時に
+    // `delete_selection` で置き換わるのが正しい挙動なので。
+    let selection = if input.is_composing() { None } else { input.selection_range() };
+    if let (Some(sel_color), Some(range)) = (style.selection, selection) {
         for r in ctx.range_rects(&display, range, shape) {
             layers.insert(
                 0,
@@ -1151,12 +1181,50 @@ pub fn text_area(
     let line_h = style.font_size * TEXTAREA_LINE_HEIGHT;
     let inner = field(ctx, id, input, style, Some(wrap), TEXTAREA_LINE_HEIGHT);
 
+    let viewport_id = format!("{id}::viewport");
+    let viewport_h = line_h * visible_lines as f32 + style.padding * 2.0;
+
+    // **キャレットを見える位置に保つ。**
+    //
+    // これが無いと、 6 行めまで打った瞬間にキャレットが箱の下に消える。
+    // 「打っているのに何も見えない」という、 テキスト欄として最悪の壊れ方。
+    // 要求を state に置いて、 ランタイムがビューポートへ適用する
+    // (スクロール位置を持っているのは向こうなので)。
+    if input.is_focused() {
+        let caret = input.caret();
+        let seen = ctx.scroll_info(&viewport_id).map(|s| s.scroll_y).unwrap_or(0.0);
+        let top = caret.y;
+        let bottom = caret.y + caret.line_height.max(line_h);
+        // 上下に padding ぶんの余白を残す — 行が枠にぴったり接すると窮屈で、
+        // 次の行があるのかどうかも分からない。
+        let view_top = seen;
+        let view_bottom = seen + viewport_h - style.padding * 2.0;
+        let want = if top < view_top {
+            Some(top)
+        } else if bottom > view_bottom {
+            Some(bottom - (viewport_h - style.padding * 2.0))
+        } else {
+            None
+        };
+        if let Some(y) = want {
+            input.request_scroll(viewport_id.clone(), y.max(0.0));
+        }
+    }
+
     div()
-        .id(format!("{id}::viewport"))
+        .id(&viewport_id)
         .w_full()
-        .h(Px(line_h * visible_lines as f32 + style.padding * 2.0))
-        .scroll(format!("{id}::viewport"))
-        .child(inner)
+        .h(Px(viewport_h))
+        .scroll(&viewport_id)
+        // **`flex_col` と `shrink(0)` は両方要る。**
+        //
+        // 既定の row 方向だと交差軸が縦なので、 `align_items: stretch` が中身の
+        // 高さを箱に合わせてしまう。 中身が箱ぴったりになれば overflow は起きず、
+        // **スクロールが成立しない** — 8 行打っても 3 行ぶんに潰れて、 溢れた
+        // ぶんは黙って消える。 縦並びにして、 さらに縮まないようにして初めて
+        // 中身が本来の高さを主張する。
+        .flex_col()
+        .child(inner.shrink(0.0))
 }
 
 /// [`text_area`] の行の高さ / font_size。 単一行の欄より広く取る — 折り返した

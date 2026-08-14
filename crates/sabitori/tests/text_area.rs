@@ -267,3 +267,123 @@ fn clicking_moves_the_caret_to_the_click() {
     assert_eq!(h.app().body.caret().line, 0, "クリックでキャレットが動いていない");
     assert_eq!(h.app().body.cursor_pos(), 0);
 }
+
+/// **キャレットが箱の外に出たら追いかけること。**
+///
+/// これが無いと、 見えている行数を超えて打った瞬間にキャレットが下に消える。
+/// 「打っているのに何も見えない」という、 テキスト欄として最悪の壊れ方。
+#[test]
+fn the_view_scrolls_to_keep_the_caret_visible() {
+    struct Tall {
+        memo: TextInputState,
+    }
+    impl DeclarativeApp for Tall {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            // 3 行だけ見える欄に 8 行入れる。
+            text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 3)
+        }
+    }
+
+    let mut h = Harness::new(Tall { memo: TextInputState::new("m") }, 400.0, 300.0);
+    h.frame();
+    h.click("memo");
+    h.frame();
+    h.paste("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7");
+    h.frame();
+    h.settle();
+
+    let caret = h.app().memo.caret();
+    assert_eq!(caret.line, 7, "末尾は 8 行目のはず (貼り付けが効いていない?)");
+
+    let scrolled = h.scroll_y("memo::viewport").unwrap_or(0.0);
+    assert!(
+        scrolled > 0.0,
+        "キャレットが 3 行の箱からはみ出しているのにスクロールしていない \
+         (caret.y = {}, scroll_y = {scrolled})",
+        caret.y
+    );
+}
+
+/// 上に戻ったら、 スクロールも戻ること。 下向きだけ追いかけると、 Cmd+↑ 相当で
+/// 先頭に戻ったときに文頭が見えないままになる。
+#[test]
+fn the_view_scrolls_back_up_too() {
+    struct Tall {
+        memo: TextInputState,
+    }
+    impl DeclarativeApp for Tall {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 3)
+        }
+    }
+
+    let mut h = Harness::new(Tall { memo: TextInputState::new("m") }, 400.0, 300.0);
+    h.frame();
+    h.click("memo");
+    h.frame();
+    h.paste("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7");
+    h.frame();
+    h.settle();
+    assert!(h.scroll_y("memo::viewport").unwrap_or(0.0) > 0.0);
+
+    // 先頭まで ↑ を連打。
+    for _ in 0..10 {
+        h.key(Key::Up, Modifiers::default());
+        h.frame();
+    }
+    h.settle();
+
+    assert_eq!(h.app().memo.caret().line, 0);
+    assert!(
+        h.scroll_y("memo::viewport").unwrap_or(1.0).abs() < 1.0,
+        "先頭に戻ったのにスクロールが下のまま"
+    );
+}
+
+/// **変換中は選択を塗らないこと。**
+///
+/// 選択範囲は確定テキストに対するバイト位置だが、 描くときに測る文字列には
+/// 変換中の文字が割り込んでいる。 そのまま当てると無関係な場所が塗られる。
+/// 選択自体は残す — IME の確定時に置き換わるのが正しい挙動なので。
+#[test]
+fn the_selection_is_not_painted_while_composing() {
+    let mut h = app();
+    h.click("subject");
+    h.text("hello");
+    h.key(Key::Home, Modifiers { shift: true, ..Default::default() });
+    h.frame();
+    let with_selection = h.build().render_list.rects().count();
+
+    h.ime_preedit("にほん", None);
+    h.frame();
+    let while_composing = h.build().render_list.rects().count();
+
+    assert!(
+        while_composing < with_selection,
+        "変換中も選択が塗られている ({with_selection} → {while_composing})"
+    );
+    assert!(
+        h.app().subject.selection_range().is_some(),
+        "選択そのものは残っていること (確定時に置き換わる)"
+    );
+}
+
+/// 貼り付けが**保留中のクリックを無効にする**こと。
+///
+/// クリックの着地点は「そのときの文字列に対する座標」なので、 貼り付けで文字列が
+/// 変わった後に解決すると、 押した場所とは無関係な位置へ飛ぶ。
+#[test]
+fn a_paste_invalidates_a_pending_click() {
+    let mut h = app();
+    // フレームを挟まずに クリック → 貼り付け。 実機では間にフレームが入るが、
+    // 同じ入力バッチに 2 つ来る可能性はある。
+    h.click("body");
+    h.paste("first\nsecond");
+    h.frame();
+
+    assert_eq!(
+        h.app().body.cursor_pos(),
+        12,
+        "貼り付け後もカーソルが末尾に居ること (クリック位置に飛んでいない)"
+    );
+}

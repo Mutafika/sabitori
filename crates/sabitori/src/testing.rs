@@ -61,10 +61,19 @@ impl TextMeasure for StubMeasure {
         _max_lines: Option<u32>,
         _typo: Typography,
     ) -> TextMetrics {
+        // **折り返しは模さないが、 `\n` は数える。**
+        //
+        // 数えないと `caret_pos` (論理行を数える) と食い違い、 「キャレットは
+        // 8 行目にあるのに箱は 1 行ぶんの高さ」という、 現実には起こり得ない
+        // 状態でテストが回ってしまう。 実際それでスクロール追従のテストが
+        // 通らなかった。
+        let lines = content.split('\n');
+        let widest = lines.clone().map(|l| l.chars().count()).max().unwrap_or(0);
+        let count = content.split('\n').count().max(1);
         TextMetrics {
             size: Size {
-                width: content.chars().count() as f32 * font_size * 0.5,
-                height: font_size,
+                width: widest as f32 * font_size * 0.5,
+                height: count as f32 * font_size,
             },
             baseline: font_size * 0.8,
         }
