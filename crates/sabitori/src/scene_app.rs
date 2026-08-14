@@ -927,6 +927,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // `build_tree_measured` でも使い回す。
                     measurer: Some(&measurer),
                     managed: Default::default(),
+            actions: Default::default(),
                 };
 
                 let mut root = self.app.view(&ctx);

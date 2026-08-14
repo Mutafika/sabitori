@@ -61,7 +61,21 @@ fn main() {
 }
 ```
 
-Anything you want to interact with needs an `.id()` — that is what click, hover, focus, and scroll are keyed on.
+Anything you want to interact with needs an id — that is what click, hover, focus, and scroll are keyed on.
+
+**Write what a click does next to the element that gets clicked:**
+
+```rust
+div().click(ctx, "save", |app: &mut App| app.saved = true)
+```
+
+`click` assigns the id and registers the handler in one call, so there is no second place to keep in sync. For a list, capture the index instead of parsing it back out of the id:
+
+```rust
+div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i))
+```
+
+The older form — `.id("save")` plus a `fn on_click(&mut self, id: &str)` that matches on strings — still works and is still there for dynamic dispatch. But a typo in either string compiles fine and silently does nothing, so prefer `click`.
 
 ## The four things people get wrong
 

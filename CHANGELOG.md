@@ -360,6 +360,46 @@ example・README——が古いモデルを教えたままだった。機構が�
   と `apply_scroll_measures` の複製を削除し、`declarative` と同じ
   `scroll_sync` の関数を呼ぶようにした。片方だけ直す事故の温床だった。
 
+### Added（クリック処理をその場に書く）
+
+- **`Element::click(ctx, id, handler)`** — 押されたときにアプリをどう変えるかを、
+  押される要素のところに書く。
+
+  ```rust
+  div().click(ctx, "save", |app: &mut App| app.saved = true)
+  ```
+
+  従来は `.id("save")` を置いて `DeclarativeApp::on_click` で文字列を突き合わせて
+  いた。 id を書く場所と受ける場所が離れていて、 型が繋いでいない:
+
+  ```rust
+  fn view(..) { div().id("save") }
+  fn on_click(&mut self, id: &str) {
+      if id == "sav" { self.saved = true; }   // ← タイプミス
+  }
+  ```
+
+  **これはコンパイルが通り、 押しても何も起きない。** このラウンドで潰し続けた
+  のとまったく同じ形の失敗が、 いちばん中心の経路に残っていた。 `click` なら
+  文字列が 1 回しか出てこないので、 **食い違う場所が存在しない**。
+
+  動的な一覧では添字を**捕まえる**。 id から切り出して `parse` する必要が無い:
+
+  ```rust
+  div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i))
+  ```
+
+  仕組みはテキスト入力と同じ登録方式。 `ViewContext::register_action` に
+  `Rc<dyn Fn(&mut dyn Any)>` を積み、 ランタイムがクリック時に降ろして呼ぶ。
+  `downcast` は `click` の中だけで、 アプリ側には出てこない。
+
+  **従来の `on_click(id)` はそのまま動く** (こちらが先に走り、 その後で呼ばれる)。
+  既存のコードを書き換える必要は無い。 動的に振り分けたい場合の口としても残る。
+
+- `DeclarativeApp` に `'static` 境界が付いた。 ハンドラが `&mut dyn Any` 経由で
+  アプリ本体に降りるため。 アプリはランタイムが所有するので実質的な制約は無いが、
+  借用を持つアプリ型はコンパイルエラーになる。
+
 ### Changed（破壊的・テキスト入力の配線を廃止）
 
 - **`text_input` を `view()` に置くだけで動くようにした。** それが配線の全部。

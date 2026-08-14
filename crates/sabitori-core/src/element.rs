@@ -1922,6 +1922,75 @@ impl Element {
         self
     }
 
+    /// **押されたときにアプリをどう変えるかを、その場に書く。**
+    ///
+    /// id の割り当てとハンドラの登録を 1 回の呼び出しでやる。 だから
+    /// **食い違う場所が存在しない。**
+    ///
+    /// ```ignore
+    /// // view()
+    /// div().click(ctx, "save", |app: &mut App| app.saved = true)
+    /// ```
+    ///
+    /// # なぜこれがあるか
+    ///
+    /// もう一方の書き方は、 `.id("save")` を置いて
+    /// [`DeclarativeApp::on_click`] で文字列を突き合わせるもの:
+    ///
+    /// ```ignore
+    /// fn view(..) { div().id("save") }
+    /// fn on_click(&mut self, id: &str) {
+    ///     if id == "sav" { self.saved = true; }   // ← タイプミス
+    /// }
+    /// ```
+    ///
+    /// これは**コンパイルが通り、 押しても何も起きない**。 id を書く場所と
+    /// 受ける場所が離れていて、 型が繋いでいないため。 このラウンドで潰し続けた
+    /// のとまったく同じ形の失敗で、 いちばん中心の経路に残っていた。
+    ///
+    /// `click` なら文字列は 1 回しか出てこない。 打ち間違えても、 その要素が
+    /// その処理を持つという関係は保たれる。
+    ///
+    /// # 動的な一覧
+    ///
+    /// 添字は**捕まえる**。 id から数字を切り出して `parse` するより安全で短い。
+    ///
+    /// ```ignore
+    /// rows.push(
+    ///     div().click(ctx, format!("row-{i}"), move |app: &mut App| {
+    ///         app.selected = Some(i);
+    ///     })
+    /// );
+    /// ```
+    ///
+    /// # 型注釈
+    ///
+    /// 引数の `|app: &mut App|` は書く必要がある (どのアプリ型かはここからしか
+    /// 分からないため)。 間違った型を書けばコンパイルエラーになる。
+    ///
+    /// # 併用
+    ///
+    /// [`DeclarativeApp::on_click`] も従来どおり呼ばれる (こちらが先)。
+    /// 混在しても壊れないので、 既存のコードは触らなくてよい。
+    pub fn click<A: 'static>(
+        self,
+        ctx: &crate::ViewContext,
+        id: impl Into<String>,
+        handler: impl Fn(&mut A) + 'static,
+    ) -> Self {
+        let id = id.into();
+        ctx.register_action(
+            id.clone(),
+            std::rc::Rc::new(move |any: &mut dyn std::any::Any| {
+                // 降ろすのはここだけ。 アプリ側に `downcast` は出てこない。
+                if let Some(app) = any.downcast_mut::<A>() {
+                    handler(app);
+                }
+            }),
+        );
+        self.id(id)
+    }
+
     /// Set hover handler.
     pub fn on_hover(mut self, handler: impl FnMut() + 'static) -> Self {
         self.on_hover = Some(Box::new(handler));

@@ -343,3 +343,44 @@ fn the_text_input_section_needs_no_wiring_as_documented() {
 
     assert_eq!(h.app().saved.as_deref(), Some("k日本"));
 }
+
+/// README 冒頭の「押したら何が起きるかは、押される要素のところに書く」が
+/// 書いてあるとおりに動くこと。 一覧で添字を捕まえる形も含む。
+#[test]
+fn the_click_form_works_as_documented() {
+    struct App {
+        saved: bool,
+        selected: Option<usize>,
+    }
+    impl DeclarativeApp for App {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            let rows: Vec<Element> = (0..5)
+                .map(|i| {
+                    div()
+                        .click(ctx, format!("row-{i}"), move |app: &mut App| {
+                            app.selected = Some(i)
+                        })
+                        .w_full()
+                        .h(Px(24.0))
+                        .shrink(0.0)
+                })
+                .collect();
+            div().flex_col().w_full().h_full().children([
+                div()
+                    .click(ctx, "save", |app: &mut App| app.saved = true)
+                    .w(Px(80.0))
+                    .h(Px(32.0)),
+                div().flex_col().children(rows),
+            ])
+        }
+    }
+
+    let mut h = Harness::new(App { saved: false, selected: None }, 400.0, 400.0);
+    h.frame();
+
+    h.click("save");
+    assert!(h.app().saved);
+
+    h.click("row-3");
+    assert_eq!(h.app().selected, Some(3));
+}

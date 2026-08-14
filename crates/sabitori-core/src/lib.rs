@@ -176,6 +176,9 @@ pub struct ViewContext<'a> {
     /// 直に触らず [`ViewContext::register_managed`] / [`ViewContext::take_managed`]
     /// を使う。
     pub managed: std::cell::RefCell<Vec<(String, std::rc::Rc<dyn Managed>)>>,
+    /// `view()` の最中に [`Element::click`] が登録したクリック処理。
+    /// 直に触らず [`ViewContext::register_action`] / [`ViewContext::take_actions`] を使う。
+    pub actions: std::cell::RefCell<Vec<(String, Action)>>,
 }
 
 /// **ランタイムに配線を任せるものの目印。**
@@ -206,7 +209,30 @@ pub trait Managed: std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// クリックされたときにアプリへ加える変更。
+///
+/// 中身は `&mut A`（アプリ本体）を取るクロージャだが、 core は `A` を知らないので
+/// `&mut dyn Any` で受けて中で降ろす。 降ろす部分は [`Element::click`] が書くので、
+/// アプリ側に `downcast` は出てこない。
+pub type Action = std::rc::Rc<dyn Fn(&mut dyn std::any::Any)>;
+
 impl ViewContext<'_> {
+    /// クリック時の処理を id に結びつける。 [`Element::click`] が呼ぶ。
+    pub fn register_action(&self, id: impl Into<String>, action: Action) {
+        let id = id.into();
+        let mut list = self.actions.borrow_mut();
+        if let Some(slot) = list.iter_mut().find(|(existing, _)| *existing == id) {
+            slot.1 = action;
+        } else {
+            list.push((id, action));
+        }
+    }
+
+    /// 登録されたクリック処理を取り出す (ランタイム用)。
+    pub fn take_actions(&self) -> Vec<(String, Action)> {
+        std::mem::take(&mut *self.actions.borrow_mut())
+    }
+
     /// この id の面倒をランタイムに見てもらう。 ウィジェットの実装が呼ぶ想定で、
     /// アプリが直接呼ぶことは無い。
     ///
@@ -486,6 +512,7 @@ mod view_context_tests {
             mono_advance: 0.6,
             measurer,
             managed: Default::default(),
+            actions: Default::default(),
         }
     }
 

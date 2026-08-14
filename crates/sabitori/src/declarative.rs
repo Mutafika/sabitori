@@ -135,7 +135,10 @@ pub struct UiCapture {
     pub wants_keyboard: bool,
 }
 
-pub trait DeclarativeApp {
+/// `'static` を要求するのは、 `Element::click` で登録されたハンドラが
+/// `&mut dyn Any` 経由でアプリ本体に降りるため。 アプリはランタイムが所有して
+/// プロセス寿命まで持つので、 実質的な制約にはならない。
+pub trait DeclarativeApp: 'static {
     /// Build the UI tree. Called every frame.
     /// Use `ctx.hovered` to check which element the mouse is over.
     fn view(&self, ctx: &ViewContext) -> Element;
@@ -612,6 +615,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// `view()` の中でウィジェットが登録した「面倒を見るもの」。 毎フレーム
     /// 差し替わる。 [`AppState::adopt_managed`] を参照。
     managed: Vec<(String, std::rc::Rc<dyn sabitori_core::Managed>)>,
+    /// `Element::click` が登録したクリック処理。 毎フレーム差し替わる。
+    actions: Vec<(String, sabitori_core::Action)>,
     modifiers: Modifiers,
     last_viewport_w: f32,
     last_viewport_h: f32,
@@ -1879,6 +1884,7 @@ impl<A: DeclarativeApp> AppState<A> {
             focused_id: None,
             warned_unrouted_input: std::collections::HashSet::new(),
             managed: Vec::new(),
+            actions: Vec::new(),
             last_viewport_w: 0.0,
             last_viewport_h: 0.0,
             primary_input: PrimaryInput::None,
@@ -1996,6 +2002,7 @@ impl<A: DeclarativeApp> AppState<A> {
             // (issue #15)。
             measurer: Some(measurer),
             managed: Default::default(),
+            actions: Default::default(),
         };
         // Build main UI tree
         let mut root = self.app.view(&ctx);
@@ -2040,6 +2047,7 @@ impl<A: DeclarativeApp> AppState<A> {
         // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
         // 書くことは何も無い (`sabitori_core::Managed` の doc を参照)。
         self.adopt_managed(ctx.take_managed());
+        self.actions = ctx.take_actions();
         let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
             sabitori_core::tooltip_popup(
                 &text, tx, ty, w, h,
@@ -2196,6 +2204,27 @@ impl<A: DeclarativeApp> AppState<A> {
         Some((rect.origin.x + dx, rect.origin.y, 1.0, caret_h.max(1.0)))
     }
 
+    /// `id` に結びついたクリック処理を走らせる。 あれば `true`。
+    ///
+    /// `Element::click(ctx, id, f)` で登録されたもの。 id とハンドラが同じ
+    /// 呼び出しで書かれているので、 **文字列の食い違いが起こらない**。
+    pub(crate) fn run_action(&mut self, id: &str) -> bool {
+        // `self.app` を可変で貸すあいだ `self.actions` を借りたままにできないので、
+        // Rc を 1 つ複製して外に出す。
+        let action = self
+            .actions
+            .iter()
+            .find(|(aid, _)| aid == id)
+            .map(|(_, a)| a.clone());
+        match action {
+            Some(action) => {
+                action(&mut self.app as &mut dyn std::any::Any);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 登録済みのテキスト欄をフォーカス id で引く。
     fn managed_text_field(&self, id: &str) -> Option<&TextInputState> {
         self.managed
@@ -2284,6 +2313,9 @@ impl<A: DeclarativeApp> AppState<A> {
             let mut focus_set = false;
             let mut pending_drag: Option<(String, Option<String>)> = None;
             let mut hit_clickable_or_drag = false;
+            // クリック対象はここでは決めるだけ。 実行はループを抜けてから —
+            // ハンドラは `&mut self` を要り、 `build` を借りたままでは呼べない。
+            let mut click_target: Option<String> = None;
             for region in &build.hit_regions {
                 // 意味だけの領域 (role/label のみ) は透過する。 これを止めると
                 // 表のセルに `Role::Cell` を書いた瞬間、 行のクリックが死ぬ
@@ -2296,9 +2328,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                     // Handle click (still fires for draggable elements)
                     if region.clickable {
-                        if let Some(ref id) = region.id {
-                            self.app.on_click(id);
-                        }
+                        click_target = region.id.clone();
                         hit_clickable_or_drag = true;
                     }
                     // Check for drag data
@@ -2308,6 +2338,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                     break;
                 }
+            }
+            // `Element::click` で登録された処理が先。 その後で従来の
+            // `on_click(id)` も呼ぶ (併用しても壊れない)。
+            if let Some(id) = click_target {
+                self.run_action(&id);
+                self.app.on_click(&id);
             }
             // Blur if clicked on a non-focusable region (or empty area)
             if !focus_set {
@@ -3167,6 +3203,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 mono_advance,
                 measurer: Some(&measurer),
                 managed: Default::default(),
+            actions: Default::default(),
             };
             let root = self.app.view_for(&extra.key, &ctx);
             let built = build_tree_measured(&root, w, h, &measurer);
