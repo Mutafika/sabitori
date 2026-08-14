@@ -113,3 +113,48 @@ fn modifier_changes_are_observable_through_the_facade() {
     );
     assert!(shift_went_down, "修飾キーの変化が読めない");
 }
+
+/// レイアウトの基本型が **1 組しか無い**こと。
+///
+/// かつては `sabitori-core::element` と `sabitori-style::props` が同じ名前の型を
+/// 9 個**別々に**定義していて、 ファサードは style 側だけを名前付きで出していた。
+/// その結果 `use sabitori::Overflow` した値が `div().overflow(..)` に渡らず、
+///
+/// ```text
+/// error: expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+/// ```
+///
+/// という**名前が同じに見えるのに型が違う**エラーになった (issue #24)。
+/// 0.4.0 で core に一本化してある。
+///
+/// このテストは「同じ import が `Element` と `StyleProps` の両方で通る」ことで
+/// 一本化を固定する。 再び分けたらここが落ちる。
+#[test]
+fn layout_types_are_shared_between_element_and_style_props() {
+    use sabitori::{
+        div, AlignItems, Dimension, DimensionExt, EdgeDimensions, FlexDirection,
+        FlexWrap, JustifyContent, Overflow, Position, StyleProps,
+    };
+
+    // Element のビルダーに渡せる。
+    let _ = div()
+        .overflow(Overflow::Scroll)
+        .position(Position::Absolute)
+        .w(Dimension::Px(10.0))
+        .h(20.0.px());
+
+    // 同じ型が StyleProps でも使える。
+    let props = StyleProps {
+        width: Dimension::Px(10.0),
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::SpaceBetween,
+        flex_direction: FlexDirection::Column,
+        flex_wrap: FlexWrap::Wrap,
+        overflow: Overflow::Hidden,
+        position: Position::Relative,
+        padding: EdgeDimensions::all(Dimension::Px(4.0)),
+        shadow: Some(sabitori::BoxShadow::default()),
+        ..Default::default()
+    };
+    assert_eq!(props.width, Dimension::Px(10.0));
+}

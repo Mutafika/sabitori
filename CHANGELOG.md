@@ -15,6 +15,563 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-14
+
+フレームワーク全体を見直して挙げた [#14〜#22](https://github.com/Mutafika/sabitori/issues)
+と、その後の 2 巡目レビューで出た構造的な穴を潰す破壊的変更ラウンド。旧 API は
+`#[deprecated]` を挟まず削除し、代わりに移行手順をここに残してある。
+
+**2 巡目で出たもの。** 1 巡目でランタイムの契約は直ったが、その上の層——ウィジェット・
+example・README——が古いモデルを教えたままだった。機構が正しくても、消費側が読む場所に
+それが書いてなければ症状は減らない。widget crate は「`view()` から使える宣言的なもの」と
+「画面座標を渡す retained なもの」の 2 系統に割れており、後者は `Element` を返さないので
+`view()` から組み込めず、repo 内の使用箇所も 0 だった。旗艦 example の `filer` は
+テストされていない手動スクロールを教えていた。README は `0.1.0` のままだった。
+
+**背景。** 立て続けに来た issue を分類したら、純粋な機能不足は 1 件だけで、残りは
+すべて「core は持っているのに消費側に届かない」「doc と実装が食い違う」だった。しかも
+全部**黙って**落ちる — コンパイルは通り、パニックもせず、ただ何も起きない。個々を
+潰すより、**そういう状態を作れなくする**方に投資した版。
+
+象徴的なのは #17 で、`InputEvent` に variant を足すと 3 ランタイムすべてが
+コンパイルエラーで止まるようにした。その直後の #20（ペースト実装）で実際に発火し、
+配線漏れの余地なく全箇所を通ることになった。
+
+### Added
+- **入力イベントの配線漏れをコンパイルエラーで止める仕組み**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。
+
+  sabitori はイベント処理を共有しない 3 つのランタイム（`DeclarativeApp` /
+  `SceneApp` / `SabitoriApp`）を持ち、配線は 1 つずつ手で書かれている。その結果
+  「core は持っているのにランタイムが配らない」事故が繰り返し起きていた
+  （[#1](https://github.com/Mutafika/sabitori/issues/1) /
+  [#3](https://github.com/Mutafika/sabitori/issues/3) /
+  [#12](https://github.com/Mutafika/sabitori/issues/12)）。#12 に至っては、その修正作業の
+  中で `sabitori-window` が新 variant を `_ => {}` で握り潰す**同型のバグを作っている**。
+
+  - **`InputEventKind`** — `InputEvent` からペイロードを落とした種別。値を持たないので
+    `match` の腕として並べられる。`InputEventKind::ALL` で全種別を舐められる。
+  - **`InputEvent::kind()`** — 「全 variant を知っている唯一の場所」。`InputEvent` に
+    variant を足すとまずここが壊れる。
+  - **`Delivery`** — 1 種別をアプリへどう扱うかの宣言。`ToApp` / `FocusedOnly` /
+    `Internal(理由)` / `NotProduced(理由)`。
+  - **`input_delivery(kind) -> Delivery`** — 3 ランタイムそれぞれに追加。
+    `sabitori::declarative` / `sabitori::scene_app` / `sabitori_window` の各モジュール。
+    `InputEventKind` に対する**網羅マッチ**なので、種別が増えると 3 つとも
+    コンパイルエラーになり、「配る / 内部で消費する / 発行しない」の判断を必ず通る。
+
+  検証済み: `InputEvent` に variant を 1 つ足すと**計 6 箇所**（`kind()`、
+  `sabitori-window` の配信表とポインタ match 2 つ、`declarative` と `scene_app` の
+  配信表）がコンパイルエラーになる。
+
+  宣言はドキュメントでもある。「このランタイムで `InputEvent::ImeEnabled` は来るのか」
+  を表 1 つで確認できる。実際にこの作業でランタイム間の差が 2 件見つかっており、
+  事実として宣言に書き出したうえで
+  [#22](https://github.com/Mutafika/sabitori/issues/22) に切り出した。
+
+- **`ViewContext` に実フォント計測を追加**
+  ([#15](https://github.com/Mutafika/sabitori/issues/15))。
+
+  ```rust
+  ctx.caret_x(&self.input.text, self.input.cursor_pos, 14.0, false) // キャレットの x 位置
+  ctx.text_width("ラベル", 14.0, false)                             // 1 行の幅
+  ctx.measure(text, size, bold, monospace, family)                  // 太字・書体指定つき
+  ```
+
+  それまで `view()` の中でアプリが触れる計測手段は `ViewContext::mono_advance`
+  （等幅 1 セルぶんの送り）**だけ**だった。等幅なら `index * mono_advance` で
+  キャレット位置を出せるが、**プロポーショナル書体では計算する方法が存在しなかった**。
+  `sabitori_core::forms::text_input` が `cursor_pos_px` を受け取って無視していたのは、
+  呼び出し側が正しい値を作れなかったから。
+
+  `caret_x` は `byte_offset` が文字境界の途中でも panic せず、直前の境界まで戻る
+  （日本語のテキスト欄はカーソルが 3 バイト単位で動くので、1 バイトのずれで落ちる
+  API では使えない）。
+
+  精度の注記: 実装は `text[..byte_offset]` を単独で整形して幅を取る。合字やカーニングが
+  境界をまたぐ場合、全体を整形してクラスタ送りを足すのとは 1px 未満ずれ得る。
+
+### Changed（破壊的）
+- **`text_input` を 1 本に統合し、`sabitori_core::forms::text_input`
+  (`form_text_input`) を削除**
+  ([#16](https://github.com/Mutafika/sabitori/issues/16))。
+
+  テキスト欄の実装が 2 つあり、**どちらも不完全**だった:
+
+  | | preedit（変換中） | キャレット |
+  |---|---|---|
+  | `sabitori_widgets::text_input` | 出る | **描画コードが無かった** |
+  | `form_text_input` | 出ない | 描くが**常に文末** |
+
+  後者が `cursor_pos_px` を受け取って無視していたのは、呼び出し側に幅を測る手段が
+  無かったから（#15）。それが通ったので統合した。新しい `text_input` は:
+
+  - 確定済みテキスト + 変換中の文字を合成して表示（`preedit` 色で範囲を示す）
+  - **キャレットを正しい位置に描く**。変換中は preedit の**中**を指す
+  - 点滅する。ただし**変換中は点滅を止める**（編集位置を見失わないため）
+
+  ```rust
+  // 旧（11 引数、キャレット位置は 0 をベタ書きするしかなかった）
+  form_text_input(id, &display, is_placeholder, cursor_visible, 0.0, focused,
+                  text_color, placeholder_color, bg, border, focus_border)
+  // 新
+  text_input(ctx, id, &self.name, &style)
+  ```
+
+  `TextInputStyle` に `focus_border` / `caret` / `preedit`（いずれも `Option`）が
+  増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
+  作れる（返さないと**変換候補が画面左上に出る**）。
+
+- **アクセシビリティの意味層**（`Role` / `label` / `heading`）
+  ([#21](https://github.com/Mutafika/sabitori/issues/21))。
+
+  ```rust
+  div().role(Role::Button).label("閉じる").on_click(|| {})
+  div().heading(2).label("設定")
+  ```
+
+  `HitRegion` に `role` / `label` / `heading_level` が載り、**役割やラベルだけを
+  持つ要素**（クリックもフォーカスもしない見出しや画像）も `hit_regions` に出る
+  ようになった。`button()` と `text_input` は既定で役割を名乗る。
+
+  ⚠️ **これだけでは VoiceOver / NVDA からはまだ空の窓に見える。** `accesskit`
+  への接続は入っていない（#25）。残りは `accesskit_winit` のアダプタの
+  ライフサイクル依存で、スクリーンリーダの実機確認なしに「入った」と言えないため
+  意味層で区切った。素材（id / 矩形 / role / label / focusable）はここで揃っている。
+
+- **ペーストが動くようになった / コピーが全プラットフォーム対応になった**
+  ([#20](https://github.com/Mutafika/sabitori/issues/20))。
+
+  **ペーストはどのプラットフォームにも実装が無かった。** `TextInputState` に
+  `Key::V if is_cmd` の受け口と「実際のペーストテキストは CharInput か ImeCommit
+  で届く」というコメントだけがあり、**クリップボードを読むコードが repo に
+  存在しなかった**ので何も届かなかった。コピーも macOS 専用（`pbcopy`
+  サブプロセス）で、他は `let _ = text;` と捨てていた。
+
+  - `InputEvent::Paste { text }` を追加。`CharInput` の連打ではなく **1 操作 =
+    1 イベント**（undo の単位や IME の状態と噛み合わせられるように）
+  - `sabitori::clipboard`（`read_text` / `write_text` / ショートカット判定）を
+    追加。`arboard` で macOS / Windows / Linux を 1 本に
+  - `TextInputState::on_paste` — 選択を置換し、複数行は空白に均す（単一行の欄なので）
+  - `macos_drag::copy_text_to_clipboard` を削除（`clipboard::write_text` に統合）
+
+  wasm は `navigator.clipboard` が非同期なので未対応（`read_text` は `None`）。
+
+  ⚠️ `TextInputState::on_key` は **Cmd/Ctrl+V を消費しなくなった**（`false` を
+  返す）。消費するとランタイムの既定動作＝クリップボード読みが #18 の仕組みで
+  止まり、ペーストが永久に起きない。自前のフィールド実装で `Key::V` に `true` を
+  返しているコードは同じ理由で直すこと。
+
+  この variant 追加で **#17 の仕組みが実際に発火した** — `InputEvent` に
+  `Paste` を足した瞬間、3 ランタイムすべてがコンパイルエラーで止まり、配線の
+  判断を全箇所で通ることになった。
+
+- **`sabitori::testing` — アプリの回帰テストを窓も GPU も無しで書ける**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19))。
+
+  ```rust
+  let mut h = Harness::new(MyApp::default(), 800.0, 600.0);
+  h.frame();
+  h.click("save");
+  assert!(h.app().saved);
+  ```
+
+  ランタイムはヘッドレスでフレームを回せる作りだったのに、その入口が
+  `#[cfg(test)]` の中に閉じていた。実際 #1 / #3 / #12 / #14 は**全部「人間が手で
+  動かして気づいた」**で見つかっている。いずれも見た目に異常が出ない
+  「黙って効かない」タイプで、手動確認では見落としやすい。
+
+  `frame` / `click` / `click_at` / `press_at` / `release` / `key` / `text` /
+  `scroll` / `move_to` と、`app` / `capture` / `focused_id` / `rect_of` /
+  `visible_ids` / `scroll_y`。テキスト計測はスタブ（1 文字 = `font_size * 0.5`）
+  なので、ピクセル値そのものの assert には向かない。
+
+  そのために winit の match に埋まっていたポインタ処理を
+  `press_primary` / `release_primary` に切り出した。
+
+- **`TextInputState` が `Default` を実装した**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19))。アプリの state 構造体に
+  `#[derive(Default)]` を付けたままテキスト欄を持てなかった。ハーネスの使用感を
+  外から確かめている最中に判明。
+
+### Changed（破壊的・続き）
+- **レイアウト基本型の二重定義を解消した**
+  ([#24](https://github.com/Mutafika/sabitori/issues/24))。
+
+  `sabitori-core::element` と `sabitori-style::props` が、**同じ名前の型を 9 個
+  別々に定義**していた（`AlignItems` / `BoxShadow` / `Dimension` /
+  `EdgeDimensions` / `FlexDirection` / `FlexWrap` / `JustifyContent` /
+  `Overflow` / `Position`）。ファサードは style 側だけを名前付きで出していたので:
+
+  ```rust
+  use sabitori::{div, Overflow};
+  div().overflow(Overflow::Scroll);
+  // error: expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+  ```
+
+  **エラーの 2 つの名前がほぼ同じに見える**ので、踏むとコンパイラを疑うレベルで
+  混乱する。`sabitori::Px` は core 側、`sabitori::Dimension::Px` は style 側という
+  食い違いもあった。
+
+  構造も `Default` も同一で、差は style 側にだけ `Serialize` / `Deserialize` が
+  付いていた点だけだった（YAML テーマ用）。core にその derive を足したうえで
+  **style 側の定義を削除**し、core の 1 組に統合した（`props.rs` は 227 → 116 行）。
+
+  `StyleProps` を組むコードと `Element` を組むコードが**同じ型を共有する**ように
+  なったので、書き分けは不要。`tests/facade.rs` の
+  `layout_types_are_shared_between_element_and_style_props` が一本化を固定している。
+
+- **`SceneApp` だけ IME の届き方が違った**
+  ([#22](https://github.com/Mutafika/sabitori/issues/22))。`ImeEnabled` を
+  組み立てておらず、preedit / commit も `on_focused_input` にしか渡していなかった。
+  **フォーカス中の要素が無いと変換中の文字がどこにも届かない**ので、ターミナルの
+  ような「フォーカス要素は無いが IME 入力は受ける」アプリが `SceneApp` では
+  書けなかった。`DeclarativeApp` と同じ形に揃えた。
+
+  この差は #17 で入れた配信表が炙り出したもので、揃えたことで
+  `known_ime_divergence_between_declarative_and_scene_app` が**設計どおり落ちた**
+  （差が消えたことに気づくための仕掛け）。2 ランタイムの全種別一致を固定する
+  テストに差し替えてある。
+
+- **`on_input` の戻り値が効くようになった（既定動作の抑止）**
+  ([#18](https://github.com/Mutafika/sabitori/issues/18))。doc は "Return true if
+  handled" と言っていたのに、**呼び出し 15 箇所すべてが戻り値を捨てていた**。
+  `true` を返しても Tab のフォーカス移動も Escape のフォーカス解除も走る、という
+  状態で、独自キーバインドを持つアプリが書けなかった。
+
+  `true` を返すと止まるもの:
+  - Tab / Shift+Tab のフォーカス移動
+  - Escape のフォーカス解除
+  - Cmd/Ctrl+C による選択テキストのコピー
+  - 「コピー以外のキーで選択を解除する」挙動
+
+  ⚠️ **配信順が変わった。** 既定動作を抑止するには、アプリが先に見る必要がある。
+  そのため Tab / Escape を `on_input` で受け取った時点では**まだフォーカスが
+  動いていない**（以前は動いた後だった）。移動後の状態は直後の `on_ui_capture`
+  で届く。フォーカス移動後の状態を `on_input` の中で読んでいたコードは要確認。
+
+- **キャレットの点滅を `TextInputState` に寄せた**
+  ([#16](https://github.com/Mutafika/sabitori/issues/16))。点滅を
+  `FocusManager` / `TextInputState` / `TextInput` が別々に数えていて、どれを見れば
+  いいのか決まっていなかった。`TextInputState::tick(dt)` / `cursor_visible()` /
+  `caret_byte_offset()` が正になり、`FocusManager` の同名 API は各フィールドへ
+  委譲する（`FocusManager` 利用側の書き換えは不要）。
+
+  単一フィールドのアプリは `DeclarativeApp::tick` で `self.name.tick(dt)` を
+  呼ぶこと。呼ばないとキャレットが点滅しない（表示はされる）。
+
+- **`ViewContext` にライフタイム引数が付いた** (`ViewContext<'a>`)
+  ([#15](https://github.com/Mutafika/sabitori/issues/15))。計測器を借用で持つため。
+  `fn view(&self, ctx: &ViewContext) -> Element` はライフタイム省略で通るので、
+  **既存の実装は書き換え不要**。`ViewContext` を構造体フィールドに保持している場合
+  だけ `ViewContext<'_>` の記述が要る。
+
+- **`.overflow_scroll()` と `.scroll_offset(x, y)` を削除し、`.scroll(id)` と
+  `.scroll_manual(x, y)` に分けた**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。
+
+  スクロールには最初から 2 つのモデル（位置をランタイムが持つ／アプリが持つ）が
+  あったのに、データ上は区別が無かった。`ElementStyle` に `scroll_owner:
+  ScrollOwner` を足して明示する。
+
+  ```rust
+  // 旧
+  div().id("rows").flex_1().overflow_scroll().children(rows)
+  // 新 — 位置はランタイムが持つ。id はその状態のキー
+  div().scroll("rows").flex_1().children(rows)
+
+  // 旧
+  div().overflow_scroll().scroll_offset(0.0, self.y).children(rows)
+  // 新 — 位置はアプリが持つ。ランタイムは触らない
+  div().scroll_manual(0.0, self.y).children(rows)
+  ```
+
+  `.scroll(id)` が **id を引数で要求する**のは、それがスクロール状態のキーだから。
+  `id` はこの要素の `.id()` そのもので、`on_click` のルーティングと共用になる。
+
+  `.overflow(Overflow::Scroll)` は生の逃げ道として残るが、**ランタイム管理には
+  乗らない**（キーが無いので状態を引けない）。スクロールさせたいなら上の 2 つを使う。
+
+### Fixed
+- **役割だけを持つ要素がクリックを飲み込んでいた**
+  ([#21](https://github.com/Mutafika/sabitori/issues/21) の副作用)。
+  `.role()` / `.label()` を持つ要素も `hit_regions` に出すようにした結果、
+  **id もハンドラも持たない意味だけの子が手前に居ると、id を持つ親のクリックが
+  一切通らなくなっていた**。0.4.0 の宣言版 `table` でセルに `Role::Cell` を
+  書き足した瞬間に行が押せなくなり発覚。コンパイルも通るし警告も出ない。
+
+  `HitRegion::is_interactive()` を足し、ポインタを解決する側が意味だけの領域を
+  透過するようにした（`hit_region_at` / `wants_pointer` / declarative と scene の
+  マウス押下・タッチ押下、計 6 箇所）。
+
+- **`testing::Harness` に時間が無かった**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19) の穴)。すべての tick
+  （アプリの `tick`、スクロールのばね・慣性、tooltip の遅延、drag、style /
+  presence）が `about_to_wait` にベタ書きで、Harness からは 1 つも回せなかった。
+  そのため**ばねで動くものはテストすると必ず「動かない」ように見えた** —
+  とくに `scroll_intents()` は `smooth_scroll_to`（目標を置くだけ）なので、
+  実機では動くのにテストでは 1px も動かない。`AppState::advance(dt)` /
+  `is_animating()` に括り出し、ランタイムと Harness が同じ実装を通るようにした。
+
+- **`VirtualList` が可視範囲をウィンドウ高さから計算していた**。`ctx.height` は
+  ウィンドウの高さであって、リストを置いた入れ物の高さではない。サイドパネルに
+  入れると実際の 3〜4 倍の行を作った上に、スクロールすると下端で行が尽きた。
+  `ctx.visible_range(id, item_height)` に寄せた。
+
+- **`TreeView` の開閉が label 一致だった**。木を舐めて最初に label が一致した
+  ノードを開閉していたので、同じ名前のノードが 2 つあると**別のノードが開いた**。
+  展開位置の添字で辿る形に直した。
+
+- **`sabitori-window` のポインタ `match` が網羅でなかった**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` /
+  `inject_event` の `_ => {}` を廃止し、無視する種別も明示的に並べた。#12 で
+  `ModifiersChanged` が app へ一度も届かなかったのがこの穴で、当時はマージ前
+  レビューでしか捕まらなかった。
+
+- **`EmbeddedRunner::inject_event` が `PointerCancelled` を処理していなかった**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` 側には
+  最初からある腕が注入経路には無く、`_ => {}` が隠していた。ホストが cancel を
+  注入すると押下ノードが解除されず、**以後ずっと押されたまま**になる。網羅マッチに
+  した結果あらわれた実バグ。
+
+- **手動スクロールが事実上存在しなかった**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。ランタイムは
+  `Overflow::Scroll` の要素を**全部**管理対象にし、アプリが渡したオフセットを
+  毎フレーム上書きしていた（初回フレームでは `ScrollView` の初期値 0）。id を
+  付けなければ避けられる、ということも無く、**id が無ければツリー上の位置から
+  合成されて管理対象になった**。
+
+  同梱コンポーネントが 2 つこれを踏んでいた:
+  - `sabitori_core::tui::scroll_container` — 呼び出し側から `scroll_y` を受け取る
+    API なのに、その値は一度も効いていなかった
+  - `examples/tui_gallery.rs` — `ensure_sidebar_visible()` が書く値が毎フレーム
+    捨てられていた（完全な死にコード）。管理モード + `scroll_intents` に直した
+
+- **ツリーの形が変わるとスクロール位置が飛んだ**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。id を省いたときに合成
+  していた `__scroll:0.2.1` は子インデックス由来で、**兄弟が 1 つ増減しただけで
+  別 id** になった。条件付きレンダリングでヘッダが出入りすると別の状態を引き、
+  位置が 0 に戻る。「エラーは出ないのに、ある条件のときだけスクロールが巻き戻る」
+  という掴みにくい症状になっていた。`.scroll(id)` が安定した名前を要求するので、
+  位置依存の合成そのものを廃止した。
+
+- **`SceneApp` がスクロール処理を逐語コピーで持っていた**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。`patch_scroll_offsets`
+  と `apply_scroll_measures` の複製を削除し、`declarative` と同じ
+  `scroll_sync` の関数を呼ぶようにした。片方だけ直す事故の温床だった。
+
+### Added（クリック処理をその場に書く）
+
+- **`Element::click(ctx, id, handler)`** — 押されたときにアプリをどう変えるかを、
+  押される要素のところに書く。
+
+  ```rust
+  div().click(ctx, "save", |app: &mut App| app.saved = true)
+  ```
+
+  従来は `.id("save")` を置いて `DeclarativeApp::on_click` で文字列を突き合わせて
+  いた。 id を書く場所と受ける場所が離れていて、 型が繋いでいない:
+
+  ```rust
+  fn view(..) { div().id("save") }
+  fn on_click(&mut self, id: &str) {
+      if id == "sav" { self.saved = true; }   // ← タイプミス
+  }
+  ```
+
+  **これはコンパイルが通り、 押しても何も起きない。** このラウンドで潰し続けた
+  のとまったく同じ形の失敗が、 いちばん中心の経路に残っていた。 `click` なら
+  文字列が 1 回しか出てこないので、 **食い違う場所が存在しない**。
+
+  動的な一覧では添字を**捕まえる**。 id から切り出して `parse` する必要が無い:
+
+  ```rust
+  div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i))
+  ```
+
+  仕組みはテキスト入力と同じ登録方式。 `ViewContext::register_action` に
+  `Rc<dyn Fn(&mut dyn Any)>` を積み、 ランタイムがクリック時に降ろして呼ぶ。
+  `downcast` は `click` の中だけで、 アプリ側には出てこない。
+
+  **従来の `on_click(id)` はそのまま動く** (こちらが先に走り、 その後で呼ばれる)。
+  既存のコードを書き換える必要は無い。 動的に振り分けたい場合の口としても残る。
+
+- `DeclarativeApp` に `'static` 境界が付いた。 ハンドラが `&mut dyn Any` 経由で
+  アプリ本体に降りるため。 アプリはランタイムが所有するので実質的な制約は無いが、
+  借用を持つアプリ型はコンパイルエラーになる。
+
+### Changed（破壊的・テキスト入力の配線を廃止）
+
+- **`text_input` を `view()` に置くだけで動くようにした。** それが配線の全部。
+
+  0.4.0 の途中まで、 `text_input(ctx, "name", ..)` を置いても**それだけでは
+  動かなかった**。 別途 `on_focused_input` / `tick` / `ime_cursor_area` の 3 つを
+  実装して橋渡しする必要があり、 忘れると **フォーカスは入って枠も光るのに
+  打った文字がどこにも行かない**。 コンパイルは通り、 パニックもせず、 ただ何も
+  起きない。 このラウンドが潰してきたのとまったく同じ形の失敗が、 いちばん
+  よく使うウィジェットに残っていた。
+
+  ```rust
+  // これで全部。 他に書くことは無い。
+  fn view(&self, ctx: &ViewContext) -> Element {
+      text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+  }
+  ```
+
+  仕組み: `ViewContext` に登録の口 (`register_managed` /
+  [`Managed`](https://docs.rs/sabitori-core)) を足し、 `text_input` が組み立て
+  のときに自分を登録する。 ランタイムは登録された欄へ**アプリより先に**入力を
+  配り、 毎フレーム tick し、 フォーカス状態を反映し、 IME 変換候補の位置も
+  算出する。 **書き忘れる場所が存在しない。**
+
+  型消しは core 側 (`Managed` は `as_any` だけ) — 中身は widgets、 イベント型は
+  input にあり、 どちらも core に依存しているので、 core が知ると循環するため。
+
+- **`TextInputState` が共有ハンドルになった** (`Rc<RefCell<..>>`)。
+  `view(&self)` は不変借用なので、 ランタイムがそこへ書き込むには内部可変性が
+  要る。 公開フィールドはアクセサに変わる:
+
+  | 前 | 後 |
+  |---|---|
+  | `state.text` | `state.text()` / `state.set_text(..)` |
+  | `state.focused` | `state.is_focused()` |
+  | `state.cursor_pos` | `state.cursor_pos()` |
+  | `state.preedit.is_active()` | `state.is_composing()` |
+  | `state.on_focused_input(e)` / `on_char` / `on_key` | 不要 (ランタイムが呼ぶ) |
+
+  標準の操作で足りない場合は `with(..)` / `with_mut(..)` で中身
+  (`TextInputInner`) を借りられる。 `Clone` は同じ欄を指す (複製しない)。
+
+- **`Harness` に IME 操作を追加**: `ime_preedit(text, cursor)` / `ime_commit(text)` /
+  `ime_enabled()`。 日本語入力はこのフレームワークの主用途なのに、 テストから
+  変換を再現する手段が無かった。
+
+- **自作のテキスト欄には検出器が残る**。 `Role::TextInput` を名乗る要素に
+  フォーカスがあるのに打鍵を誰も消費しなかったら `log::warn!` を 1 回。
+  テストからは `Harness::unrouted_text_inputs()` で見える。 `text_input` を
+  使う限りこの状況は起きない。
+
+### Changed（破壊的・ウィジェット層）
+
+- **`view()` から使えない retained ウィジェットを削除した**。`new(x, y, w, h)` や
+  `new(bounds: Rect)` に画面座標を渡し、`hit_test(point)` で自分で当たり判定をする
+  一群。`Element` を返さないので宣言的ツリーには組み込めず、examples・他 crate
+  合わせて**使用箇所は 0** だった（grep のヒットは全部コメントと文字列リテラル）。
+  それでいて README は「20 widgets」の一部として数えていた。
+
+  | 消えたもの | 代わり |
+  |---|---|
+  | `Button` / `ButtonStyle` / `ButtonVariant` | `element::button()` |
+  | `Card` / `CardStyle` | `div()` + `.bg()` / `.rounded()` / `.shadow_md()` |
+  | `Tabs` / `TabStyle` | `forms::segment_control()` |
+  | `Dropdown` | `DropdownState` + `DropdownStyle` |
+  | `TextInput`（`bounds: Rect` を持つ方） | `text_input()` + `TextInputState` |
+
+  `DropdownStyle` は残る（宣言版 `select` が使う）。定義は `select.rs` へ移した。
+
+- **`Table` / `SplitPane` を宣言版に作り直した**。宣言的な等価物が無かったので
+  削除では穴が開く。列幅は taffy、当たり判定は id、スクロールは `.scroll(id)` が
+  持つので、widget 側に幾何演算は 1 行も要らない。
+
+  ```rust
+  table(ctx, "files", &self.files, &TableStyle::default_dark())
+  split_pane(ctx, "main", &self.split, &style, sidebar, editor)
+  tree_view(ctx, "tree", &self.tree, &TreeViewStyle::default_dark())
+  ```
+
+  `table` / `tree_view` / `virtual_list` は `ctx.visible_range()` で行を仮想化し、
+  上下に spacer を積む。10 万行でも作る Element は viewport ぶんだけで、
+  スクロール量は実データと一致する。
+
+- **Element を返す入口の命名を統一した**。`view()` / `bar()` / `build()` /
+  `render()` / `trigger()` / `to_element()` と 6 通りあり、ウィジェットごとに
+  ソースを読まないと分からなかった。**`snake_case` の自由関数で、第 1 引数が
+  `&ViewContext`、第 2 引数が `id`** に統一（`core::forms` と同じ形）。
+
+- **`VirtualList::build` から `scroll_y` 引数を落とした**。出どころが doc に
+  書かれておらず、素直に書くと 0 のまま動かなかった。位置はランタイムが持つ。
+
+- **`Role` に表と木の役割を追加**: `Table` / `Row` / `Cell` / `ColumnHeader` /
+  `Tree` / `TreeItem`。`Cursor` に `ResizeNs`（上下分割の仕切り）。どちらも
+  網羅マッチを壊すので、下流で `match` している箇所はコンパイルエラーになる。
+
+- **`core::forms` の 8 コントロールと宣言的ウィジェットに `.role()` / `.label()`
+  を付けた**。#21 で仕組みは入れたのに使っていたのは `text_input` だけで、
+  ウィジェットで組んだアプリの意味ツリーは実質空だった。
+
+- **`Harness::tick(dt)` / `settle()` / `settle_for(n)` を追加**。ばねで動くものを
+  テストするのに要る（上の Fixed 参照）。
+
+### Changed（example と doc）
+
+- **`examples/filer.rs` を runtime 管理スクロールへ移した**。旗艦 example が
+  `ScrollView` を自前で持ち、`first = scroll_y / ROW_H` で自前に仮想化し、
+  スクロールバーも `mt(top_offset)` も `on_scroll` 転送も `tick` も手書き
+  していた——つまり**#14 で直してテストもある `.scroll(id)` ではない方**を
+  教えていた。list / grid 両モードを `.scroll(FILE_SCROLL_ID)` へ。
+  `Tab` から `ScrollView` フィールドが消え、content_height の手計算も不要に
+  なった（レイアウトが測る）。
+
+- **README を全面的に書き直した**。`0.1.0` と書いてあり、`.scroll()` も
+  `testing::Harness` も role もクリップボードも——**0.4.0 で足したものが 1 つも
+  書かれていなかった**。「よく間違える 4 つ」（スクロール / テキスト入力と IME /
+  フォーカスとキーボード / テスト）を追加し、それぞれ正解を 1 つだけ示す形にした。
+
+- **README のコード例をコンパイル検査で固定した**
+  (`crates/sabitori/tests/readme_examples.rs`)。API を壊すと落ちるので、README を
+  直し忘れてマージすることが無くなる。
+
+- **ウィジェットをランタイム越しに動かすテストを追加した**
+  (`crates/sabitori/tests/widgets_through_runtime.rs`)。依存の向きが
+  `sabitori → sabitori-widgets` なので widget crate からは `Harness` に手が
+  届かず、それまでの widget テストは全部「関数を直接呼んで戻り値を見る」単体
+  テストだった。`table` / `tree_view` / `virtual_list` / `tooltip` / `panel` /
+  `modal` はテスト 0 件。**この経路を通した瞬間に実バグが 1 件出た**（上の
+  「役割だけを持つ要素が…」）。
+
+### 移行
+
+**`.overflow_scroll()` / `.scroll_offset()` を使っている箇所はコンパイルエラーに
+なる。** 上の Changed の対応表のとおり書き換える。判断基準は 1 つだけ:
+
+| スクロール位置を持つのは | 書き方 |
+|---|---|
+| ランタイム（ホイール・慣性・バウンス込み。プログラム的な移動は `scroll_intents`） | `.scroll(id)` |
+| アプリ（`on_scroll_xy` を自前で実装し、値を自分で進める） | `.scroll_manual(x, y)` |
+
+迷ったら `.scroll(id)` が正解。`.scroll_manual` は仮想リストのように「行の描画自体を
+オフセットから決める」実装向け。
+
+**`form_text_input` を使っている箇所もコンパイルエラーになる。** 引数 11 個を渡す
+代わりに、`TextInputState` を持って `text_input(ctx, id, &state, &style)` を呼ぶ。
+状態を持っていない場合は `TextInputState::new(placeholder)` を作り、
+`DeclarativeApp::on_focused_input` で `state.on_focused_input(ev)` に流す。
+
+⚠️ `.overflow_scroll()` を消すと rustc は `.overflow` を候補に挙げるが、**それは
+違う**（管理対象にならない生の逃げ道）。`.overflow()` の doc に誘導を入れてあるが、
+補完に釣られないよう注意。
+
+`sabitori::*` の glob に `Delivery` / `InputEventKind` / `ScrollOwner` が増えるので、
+下流に同名の型があれば衝突する（その場合は明示 import で回避）。
+
+**retained ウィジェットを使っている箇所はコンパイルエラーになる。** 上の対応表の
+とおり置き換える。いずれも `Element` を返さない型だったので、`view()` の中に
+書いていたということは無いはず（書けなかった）。自前で矩形を計算して描いていた
+場合は、宣言版に寄せると幾何計算がまるごと不要になる。
+
+**`Role` と `Cursor` に variant が増えた。** 下流で網羅 `match` している箇所は
+腕を足すこと。`_ =>` で受けていれば影響なし。
+
+**テキスト欄の手動配線は削除する。** `on_focused_input` / `tick` /
+`ime_cursor_area` に書いていたテキスト欄への橋渡しは不要になった。 残していても
+二重処理にはならない (登録済みの欄はランタイムが先に消費する) が、 死にコード
+なので消してよい。 `state.text` などの公開フィールドはコンパイルエラーになるので、
+上の対応表のとおりアクセサに置き換える。
+
+**`Harness` でばねを使う挙動をテストしている場合、`settle()` を足す。**
+`frame()` は時間を進めない（意図的にそうしてある——テストは決定的であるべきなので）。
+`scroll_intents` や慣性スクロールを見るテストは `h.frame(); h.settle();` の形にする。
+
 ## [0.3.21] - 2026-08-12
 
 修飾キーの変化を観測できるようにした版。「⇧を押している間だけ」効かせる操作
@@ -1284,7 +1841,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.21...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Mutafika/sabitori/compare/v0.3.21...v0.4.0
 [0.3.21]: https://github.com/Mutafika/sabitori/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/Mutafika/sabitori/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/Mutafika/sabitori/compare/v0.3.18...v0.3.19

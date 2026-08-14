@@ -20,10 +20,11 @@
 //! focus.register("dlg-name", "名前を入力");
 //! focus.register("dlg-material", "材質");
 //!
-//! // view(): 各フィールドを form_text_input で描く
-//! form_text_input("dlg-name", &focus.display_text("dlg-name"),
-//!     focus.is_placeholder("dlg-name"), focus.cursor_visible_for("dlg-name"),
-//!     0.0, focus.is_focused("dlg-name"), /* colors… */);
+//! // view(): 各フィールドを text_input で描く。 preedit もキャレットも
+//! // ウィジェット側が面倒を見るので、 渡すのは状態とスタイルだけ。
+//! if let Some(state) = focus.field("dlg-name") {
+//!     text_input(ctx, "dlg-name", state, &style);
+//! }
 //!
 //! // 左クリック押下 (hit_region_at の結果を渡す):
 //! match focus.handle_press(hit_id.as_deref()) {
@@ -96,8 +97,6 @@ pub struct FocusManager {
     /// Registration order — doubles as the Tab order.
     order: Vec<String>,
     focused: Option<String>,
-    /// Cursor blink phase in seconds, wraps at 1.0; visible while < 0.5.
-    blink: f32,
     /// When true (default), Tab / Shift+Tab cycle focus through the
     /// registered fields. Set false if the host wants Tab for itself.
     pub tab_navigation: bool,
@@ -109,7 +108,6 @@ impl FocusManager {
             fields: HashMap::new(),
             order: Vec::new(),
             focused: None,
-            blink: 0.0,
             tab_navigation: true,
         }
     }
@@ -158,28 +156,23 @@ impl FocusManager {
     }
 
     /// Current text of a field ("" when unregistered).
-    pub fn text(&self, id: &str) -> &str {
-        self.fields.get(id).map(|f| f.text.as_str()).unwrap_or("")
+    pub fn text(&self, id: &str) -> String {
+        self.fields.get(id).map(|f| f.text()).unwrap_or_default()
     }
 
     /// Replace a field's text and move the cursor to the end.
     pub fn set_text(&mut self, id: &str, text: impl Into<String>) {
-        if let Some(f) = self.fields.get_mut(id) {
-            f.text = text.into();
-            f.cursor_pos = f.text.len();
-            f.selection_start = None;
-            f.preedit.clear();
+        if let Some(f) = self.fields.get(id) {
+            f.set_text(text);
         }
     }
 
     /// Take the field's text out, leaving it empty (typical after Submit).
     pub fn take_text(&mut self, id: &str) -> String {
-        match self.fields.get_mut(id) {
+        match self.fields.get(id) {
             Some(f) => {
-                let out = std::mem::take(&mut f.text);
-                f.cursor_pos = 0;
-                f.selection_start = None;
-                f.preedit.clear();
+                let out = f.text();
+                f.clear();
                 out
             }
             None => String::new(),
@@ -227,16 +220,15 @@ impl FocusManager {
             return false;
         }
         if let Some(prev) = self.focused.take() {
-            if let Some(f) = self.fields.get_mut(&prev) {
-                f.focused = false;
-                f.preedit.clear();
+            if let Some(f) = self.fields.get(&prev) {
+                f.set_focused(false);
             }
         }
-        if let Some(f) = self.fields.get_mut(id) {
-            f.focused = true;
+        if let Some(f) = self.fields.get(id) {
+            f.set_focused(true);
         }
         self.focused = Some(id.to_string());
-        self.blink = 0.0;
+        self.restart_blink();
         true
     }
 
@@ -244,8 +236,7 @@ impl FocusManager {
     pub fn blur(&mut self) {
         if let Some(prev) = self.focused.take() {
             if let Some(f) = self.fields.get_mut(&prev) {
-                f.focused = false;
-                f.preedit.clear();
+                f.set_focused(false);
             }
         }
     }
@@ -256,7 +247,7 @@ impl FocusManager {
         match hit_id {
             Some(id) if self.fields.contains_key(id) => {
                 if self.is_focused(id) {
-                    self.blink = 0.0;
+                    self.restart_blink();
                     FocusChange::Unchanged
                 } else {
                     self.focus(id);
@@ -317,16 +308,16 @@ impl FocusManager {
         let Some(id) = self.focused.clone() else {
             return FocusKeyResult::NotFocused;
         };
-        self.blink = 0.0;
+        self.restart_blink();
         let Some(field) = self.fields.get_mut(&id) else {
             // Stale focus (field removed without blur) — self-heal.
             self.focused = None;
             return FocusKeyResult::NotFocused;
         };
-        if field.on_key(key, modifiers) {
+        if field.with_mut(|i| i.on_key(key, modifiers)) {
             return FocusKeyResult::Consumed;
         }
-        if field.preedit.is_active() {
+        if field.is_composing() {
             // Mid-composition: don't interpret Enter/Tab — the IME owns them.
             return FocusKeyResult::Ignored;
         }
@@ -351,10 +342,10 @@ impl FocusManager {
     /// Route a printable character to the focused field. Returns true
     /// when a field received it.
     pub fn on_char(&mut self, ch: char) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_char(ch);
+                f.with_mut(|i| i.on_char(ch));
                 true
             }
             None => false,
@@ -364,10 +355,10 @@ impl FocusManager {
     /// Route an IME preedit update to the focused field. Returns true
     /// when a field received it.
     pub fn on_ime_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_ime_preedit(text, cursor);
+                f.with_mut(|i| i.on_ime_preedit(text, cursor));
                 true
             }
             None => false,
@@ -377,10 +368,10 @@ impl FocusManager {
     /// Route an IME commit to the focused field. Returns true when a
     /// field received it.
     pub fn on_ime_commit(&mut self, text: &str) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
-                f.on_ime_commit(text);
+                f.with_mut(|i| i.on_ime_commit(text));
                 true
             }
             None => false,
@@ -390,30 +381,44 @@ impl FocusManager {
     /// IME was disabled — clear any composing text.
     pub fn on_ime_disabled(&mut self) {
         if let Some(f) = self.focused_field_mut() {
-            f.preedit.clear();
+            f.with_mut(|i| i.preedit.clear());
         }
     }
 
     // ── Cursor blink ──────────────────────────────────────────────
 
-    /// Advance the blink phase. Call once per frame.
-    pub fn tick(&mut self, dt: f32) {
-        if self.focused.is_some() {
-            self.blink += dt;
-            if self.blink > 1.0 {
-                self.blink -= 1.0;
+    /// キャレットを「見えている」状態に戻す。 打鍵やフォーカス移動のたびに呼ぶ。
+    /// 入力中にキャレットが消えていると、 どこに文字が入るのか分からなくなる。
+    fn restart_blink(&mut self) {
+        if let Some(id) = self.focused.clone() {
+            if let Some(f) = self.fields.get_mut(&id) {
+                f.with_mut(|i| i.blink = 0.0);
             }
+        }
+    }
+
+    /// Advance the blink phase. Call once per frame.
+    ///
+    /// 位相は各 [`TextInputState`] が持つ (0.4.0 で寄せた)。 以前は
+    /// `FocusManager` と `TextInputState` と `TextInput` が別々に点滅を数えていて、
+    /// どれを見ればいいのか決まっていなかった (issue #16)。
+    pub fn tick(&mut self, dt: f32) {
+        for f in self.fields.values_mut() {
+            f.advance(dt);
         }
     }
 
     /// Whether the focused field's caret is currently visible.
     pub fn cursor_visible(&self) -> bool {
-        self.focused.is_some() && self.blink < 0.5
+        self.focused
+            .as_ref()
+            .and_then(|id| self.fields.get(id))
+            .is_some_and(|f| f.cursor_visible())
     }
 
     /// Caret visibility for a specific field (false unless focused).
     pub fn cursor_visible_for(&self, id: &str) -> bool {
-        self.is_focused(id) && self.blink < 0.5
+        self.fields.get(id).is_some_and(|f| f.cursor_visible())
     }
 }
 
@@ -440,7 +445,7 @@ mod tests {
         let mut m = manager();
         assert_eq!(m.handle_press(Some("a")), FocusChange::Focused("a".into()));
         assert!(m.is_focused("a"));
-        assert!(m.field("a").unwrap().focused, "state flag synced");
+        assert!(m.field("a").unwrap().is_focused(), "state flag synced");
         assert!(m.wants_keyboard());
 
         // Same field again → unchanged.
@@ -448,7 +453,7 @@ mod tests {
 
         // Another registered field → focus moves.
         assert_eq!(m.handle_press(Some("b")), FocusChange::Focused("b".into()));
-        assert!(!m.field("a").unwrap().focused, "old field unfocused");
+        assert!(!m.field("a").unwrap().is_focused(), "old field unfocused");
 
         // Unregistered id (a button) → blur.
         assert_eq!(m.handle_press(Some("some-button")), FocusChange::Blurred);
@@ -538,7 +543,7 @@ mod tests {
         assert!(!m.on_ime_commit("壁"), "no focus → not delivered");
         m.focus("a");
         assert!(m.on_ime_preedit("かべ".into(), Some((0, 6))));
-        assert!(m.field("a").unwrap().preedit.is_active());
+        assert!(m.field("a").unwrap().is_composing());
         // Enter during composition must NOT submit.
         assert_eq!(
             m.on_key(Key::Enter, Modifiers::default()),
@@ -555,8 +560,8 @@ mod tests {
         m.focus("a");
         m.on_ime_preedit("へん".into(), None);
         m.blur();
-        assert!(!m.field("a").unwrap().focused);
-        assert!(!m.field("a").unwrap().preedit.is_active());
+        assert!(!m.field("a").unwrap().is_focused());
+        assert!(!m.field("a").unwrap().is_composing());
     }
 
     #[test]
@@ -592,7 +597,7 @@ mod tests {
         assert_eq!(m.display_text("a"), "wall-01");
         assert!(m.is_placeholder("b"));
         assert_eq!(m.display_text("b"), "field b");
-        assert_eq!(m.field("a").unwrap().cursor_pos, 7, "cursor at end");
+        assert_eq!(m.field("a").unwrap().cursor_pos(), 7, "cursor at end");
     }
 
     #[test]

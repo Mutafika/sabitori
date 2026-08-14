@@ -24,6 +24,7 @@ log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -31,7 +31,7 @@
 //! picker.on_key(key, modifiers); picker.on_char(ch);
 //! ```
 
-use sabitori_core::element::{div, text, Element, Px};
+use sabitori_core::element::{div, text, Element, Px, Role};
 use sabitori_core::forms::numeric_input;
 use sabitori_core::Color;
 
@@ -337,6 +337,7 @@ impl ColorPickerState {
                     };
                     div()
                         .id(&id)
+                        .role(Role::Radio)
                         .w(Px(style.swatch_size))
                         .h(Px(style.swatch_size))
                         .bg(*c)
@@ -496,7 +497,7 @@ mod tests {
         let mut p = picker();
         p.on_pointer_down("pick:r", 10.0);
         p.on_pointer_up(); // edit mode
-        p.r.edit.text = "10".into();
+        p.r.edit.set_text("10");
         assert!(!p.on_pointer_down("some-other-element", 0.0));
         assert_eq!(p.r.value(), 10.0, "edit committed on click-away");
         assert_eq!(p.color().to_srgb8().0, 10);

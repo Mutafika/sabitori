@@ -5,8 +5,9 @@ pub use sabitori_gpu::{GpuRenderer, ImageInstance, ImageRenderer, OrbitCamera, R
 // 構築できなくなる (実際 PointerKind の欠落で下流のビルドが落ちた)。 項目を足したら
 // ここにも足すこと — tests/facade.rs がコンパイル時に見張っている。
 pub use sabitori_input::{
-    ActivePointer, InputEvent, InteractionState, Key, Modifiers, MouseButton, PointerId,
-    PointerKind, PointerState, BUTTON_MIDDLE, BUTTON_PRIMARY, BUTTON_SECONDARY, MOUSE_POINTER_ID,
+    ActivePointer, Delivery, InputEvent, InputEventKind, InteractionState, Key, Modifiers,
+    MouseButton, PointerId, PointerKind, PointerState, BUTTON_MIDDLE, BUTTON_PRIMARY,
+    BUTTON_SECONDARY, MOUSE_POINTER_ID,
 };
 pub use sabitori_layout::{LayoutEngine, LayoutNodeId, LayoutResult};
 pub use sabitori_anim::{
@@ -18,10 +19,15 @@ pub use sabitori_anim::{
 pub use sabitori_scene::{NodeId, NodeStyle, NodeTree, UiNode};
 pub use sabitori_text::{rotate_glyphs, GlyphInstance, TextRenderer, TextShaper, FONT_SIZE_QUANTUM};
 pub use sabitori_widgets::*;
-pub use sabitori_style::{
-    AlignItems, BoxShadow, Dimension, DimensionExt, Display, EdgeDimensions, Fill, FlexDirection,
-    FlexWrap, JustifyContent, Overflow, Position, StyleProps, Theme,
-};
+// レイアウト系の型は core (`Element` と `StyleProps` の共通の定義) を出す。
+//
+// かつては core の `element` と style の `props` が同じ名前の型を 9 個**別々に**
+// 定義していて、 ファサードは style 側だけを名前付きで出していた。 その結果
+// `use sabitori::Overflow` した値が `div().overflow(..)` に渡せず、
+//   expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+// という、 名前が同じに見えるのに型が違うエラーになった (issue #24)。
+// 0.4.0 で style 側の重複定義を削除し、 core の 1 組に統合済み。
+pub use sabitori_style::{Display, Fill, StyleProps, Theme};
 pub use sabitori_window::{SabitoriApp, EmbeddedRunner, run};
 
 pub mod bridge;
@@ -33,6 +39,10 @@ pub mod slider_sync;
 pub mod image_runtime;
 pub(crate) mod input_router;
 pub mod scene_app;
+/// システムクリップボードの読み書き (issue #20)。
+pub mod clipboard;
+/// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
+pub mod testing;
 #[cfg(target_os = "macos")]
 pub mod macos_drag;
 #[cfg(target_os = "macos")]

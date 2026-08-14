@@ -1,9 +1,9 @@
 //! Element-id driven dropdown / select (egui `ComboBox` 相当).
 //!
-//! 既存の [`Dropdown`](crate::Dropdown) は画面座標 `Rect` を自前で持つ
-//! immediate 系で、 declarative ツリーや埋め込みホスト（bamiri 等の
-//! build→GPU 直接駆動）からは座標管理が二重になり使いにくかった。
-//! [`DropdownState`] は [`MenuBarState`](crate::MenuBarState) と同じ
+//! 0.4.0 より前は retained 版の `Dropdown` が並立していた。 あれは画面座標
+//! `Rect` を自前で持つので、 declarative ツリーや埋め込みホスト（bamiri 等の
+//! build→GPU 直接駆動）からは座標管理が二重になり使えず、 repo 内の使用箇所も
+//! 0 だったため削除した。 [`DropdownState`] は [`MenuBarState`](crate::MenuBarState) と同じ
 //! 「state ↔ visuals 分離 + element id でイベント解釈」 方式の dropdown:
 //!
 //! * [`DropdownState::trigger`] — 常設のトリガーボタン（選択中ラベル + ▼）。
@@ -32,11 +32,48 @@
 //! }
 //! ```
 
-use sabitori_core::element::{div, text, Element, Px};
+use sabitori_core::element::{div, text, Element, Px, Role};
 use sabitori_core::forms::dropdown_trigger;
 use sabitori_core::{Color, Rect};
 
-use crate::dropdown::DropdownStyle;
+/// Visuals for [`DropdownState`]. 0.4.0 より前は retained 版 `Dropdown` と
+/// 同居していたが、 そちらは削除したのでここに移した。
+#[derive(Clone, Debug)]
+pub struct DropdownStyle {
+    pub bg: Color,
+    pub bg_hover: Color,
+    pub fg: Color,
+    pub fg_selected: Color,
+    pub border_color: Color,
+    pub border_active: Color,
+    pub menu_bg: Color,
+    pub menu_item_hover: Color,
+    pub height: f32,
+    pub item_height: f32,
+    pub corner_radius: f32,
+    pub padding_x: f32,
+    pub max_visible_items: usize,
+}
+
+impl DropdownStyle {
+    pub fn default_dark() -> Self {
+        Self {
+            bg: Color::from_hex("#1e1e2e"),
+            bg_hover: Color::from_hex("#24243a"),
+            fg: Color::from_hex("#c8c8dc"),
+            fg_selected: Color::from_hex("#ffffff"),
+            border_color: Color::from_hex("#3a3a55"),
+            border_active: Color::from_hex("#6c8cff"),
+            menu_bg: Color::from_hex("#1a1a2e"),
+            menu_item_hover: Color::from_hex("#2a2a48"),
+            height: 32.0,
+            item_height: 30.0,
+            corner_radius: 6.0,
+            padding_x: 10.0,
+            max_visible_items: 8,
+        }
+    }
+}
 
 /// Result of [`DropdownState::handle_click`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,6 +255,8 @@ impl DropdownState {
                 };
                 let mut row = div()
                     .id(&id)
+                    .role(Role::ListItem)
+                    .label(label)
                     .w_full()
                     .h(Px(style.item_height))
                     .bg(bg)

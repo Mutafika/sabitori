@@ -61,6 +61,36 @@ pub struct HitRegion {
     /// Cursor preference (set via `.cursor(...)`). `None` means
     /// "no opinion" — runtime falls back to platform default.
     pub cursor: Option<Cursor>,
+    /// 支援技術に伝える役割 (`.role(..)`)。 `None` は意味を持たない入れ物。
+    pub role: Option<crate::element::Role>,
+    /// 支援技術が読み上げる名前 (`.label(..)`)。 アイコンだけのボタンや画像など、
+    /// 見た目から名前が取れないものに付く。
+    pub label: Option<String>,
+    /// 見出しの階層 (`.heading(n)`)。 `role` が `Heading` のときだけ意味がある。
+    pub heading_level: Option<u8>,
+}
+
+impl HitRegion {
+    /// この領域がポインタ入力を**受け取れる**か。
+    ///
+    /// `false` を返すのは、 `.role()` / `.label()` だけを持つ「意味のためだけ」の
+    /// 領域。 表のセル、 見出し、 画像の alt など、 押す先ではないもの。
+    ///
+    /// # なぜこの区別が要るか
+    ///
+    /// issue #21 で、 役割やラベルを持つ要素も `hit_regions` に出すようにした
+    /// (支援技術に渡すには意味を持つものが全部並んでいる必要がある)。 ところが
+    /// 押下解決は「点を含む最前面の領域」で打ち切っていたので、 **意味だけの子が
+    /// 手前に居ると、 id を持つ親のクリックが死ぬ**ようになっていた。
+    ///
+    /// 実際 0.4.0 の `table` で踏んだ: セルに `Role::Cell` を付けた瞬間、
+    /// 行のクリックが一切通らなくなった。 「役割を書き足しただけで動かなくなる」
+    /// のは最悪の壊れ方なので、 ポインタを解決する側が意味だけの領域を
+    /// 透過するようにした。
+    pub fn is_interactive(&self) -> bool {
+        self.clickable || self.focusable || self.hoverable || self.drop_zone
+            || self.drag_data.is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,11 +132,17 @@ pub struct BuildResult {
 }
 
 impl BuildResult {
-    /// Topmost hit region under `(x, y)`, if any. Regions are stored
-    /// front-to-back, so the first match is the visually topmost one.
+    /// Topmost **interactive** hit region under `(x, y)`, if any. Regions are
+    /// stored front-to-back, so the first match is the visually topmost one.
+    ///
+    /// `.role()` / `.label()` だけを持つ意味専用の領域は透過する
+    /// ([`HitRegion::is_interactive`])。 意味の側を舐めたいときは
+    /// [`BuildResult::hit_regions`] を直に見ること。
     pub fn hit_region_at(&self, x: f32, y: f32) -> Option<&HitRegion> {
         let pt = Point::new(x, y);
-        self.hit_regions.iter().find(|r| r.rect.contains(pt))
+        self.hit_regions
+            .iter()
+            .find(|r| r.is_interactive() && r.rect.contains(pt))
     }
 
     /// Whether the UI wants pointer input at `(x, y)` — i.e. the point is
@@ -759,7 +795,11 @@ fn emit_commands(
 
     let clickable = element.on_click.is_some() || element.id.is_some() || element.drag_data.is_some();
     let hoverable = element.on_hover.is_some() || element.hover_style.is_some() || element.id.is_some() || element.tooltip.is_some() || element.drop_zone;
-    if clickable || hoverable || element.focusable {
+    // 役割やラベルだけを持つ要素 (クリックもフォーカスもしない見出し・画像の alt 等)
+    // も領域として出す。 支援技術に渡すには「意味を持つものが全部並んでいる」
+    // 必要があるため (issue #21)。
+    let has_semantics = element.role.is_some() || element.label.is_some();
+    if clickable || hoverable || element.focusable || has_semantics {
         let hit_rect = match parent_clip {
             Some(clip) => match rect.intersect(&clip) {
                 Some(r) => r,
@@ -786,6 +826,9 @@ fn emit_commands(
                 drag_data: element.drag_data.clone(),
                 drop_zone: element.drop_zone,
                 cursor: element.cursor,
+                role: element.role,
+                label: element.label.clone(),
+                heading_level: element.heading_level,
             };
             if use_overlay {
                 overlay_hit_regions.push(region);
@@ -1314,7 +1357,7 @@ mod tests {
     /// bamiri の dock_panel 形そのまま:
     /// 固定 root → menu/toolbar → flex_1 の middle row →
     /// `w(Px).h_full()` パネル → タイトルバー + flex_1 padded column(body)
-    /// → 兄弟数個 + `flex_1().overflow_scroll()` リスト(大量の行)。
+    /// → 兄弟数個 + `flex_1().scroll(id)` リスト(大量の行)。
     /// `sibling_h` で兄弟の高さを変え、スクロールリストの flex 割当てを
     /// 健全(>0)/ゼロに振り分ける。
     fn dock_panel_tree(sibling_h: f32, row_count: usize) -> Element {
@@ -1334,11 +1377,10 @@ mod tests {
         }
         body.push(
             div()
-                .id("scroll-list")
+                .scroll("scroll-list")
                 .w_full()
                 .flex_1()
                 .flex_col()
-                .overflow_scroll()
                 .children(rows),
         );
         let panel = div()
@@ -1538,11 +1580,10 @@ mod tests {
             log = log.child(div().w_full().h(Px(50.0)).bg(Color::WHITE));
         }
         let root = div()
-            .id("transcript")
+            .scroll("transcript")
             .flex_col()
             .w(Px(400.0))
             .h(Px(300.0))
-            .overflow_scroll()
             .child(log);
 
         let result = build_tree(&root, 800.0, 600.0);
@@ -1571,10 +1612,9 @@ mod tests {
             .children([
                 div().w_full().h(Px(100.0)).bg(Color::BLACK), // header
                 div()
-                    .id("body-scroll")
+                    .scroll("body-scroll")
                     .flex_1()
                     .flex_col()
-                    .overflow_scroll()
                     .children(items),
             ]);
 
@@ -1609,10 +1649,9 @@ mod tests {
                     div().w_full().h(Px(48.0)).bg(Color::BLACK), // header
                     div().w_full().h(Px(1.0)).bg(Color::WHITE),  // hsep
                     div()
-                        .id("article-scroll")
+                        .scroll("article-scroll")
                         .flex_1()
                         .flex_col()
-                        .overflow_scroll()
                         .children(items),
                 ]),
             );
@@ -1867,10 +1906,9 @@ mod tests {
         let rows = |scale: f32| {
             div().w(Px(200.0)).h(Px(200.0)).scaled(scale).children([
                 div()
-                    .id("pane")
+                    .scroll("pane")
                     .w(Px(100.0))
                     .h(Px(100.0))
-                    .overflow_scroll()
                     .flex_col()
                     .children(
                         (0..10)
@@ -2262,7 +2300,7 @@ mod container_min_size_tests {
         div().flex_col().w_full().h_full().children(vec![
             div().h(Px(56.0)).shrink(0.0).child(text("header")),
             row(div().flex_row().w_full().grow(1.0)).children(vec![
-                pane(div().flex_col().grow(1.0).overflow_scroll().id("body")).children(content),
+                pane(div().flex_col().grow(1.0).scroll("body")).children(content),
             ]),
         ])
     }
@@ -2360,5 +2398,135 @@ mod container_min_size_tests {
             .find(|r| r.id.as_deref() == Some("floor"))
             .expect("the child should be laid out");
         assert_eq!(floor.rect.size.height, 300.0, "min_h(300) should beat the 100px parent");
+    }
+}
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+    use crate::element::{div, button, text, Dimension::Px, Role};
+
+    fn region<'a>(b: &'a BuildResult, id: &str) -> &'a HitRegion {
+        b.hit_regions
+            .iter()
+            .find(|r| r.id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id} が hit_regions に居ない"))
+    }
+
+    /// 役割とラベルがビルド結果まで運ばれること。 ここに載らないと、
+    /// 支援技術に渡す層 (accesskit アダプタ) が何も組めない。
+    #[test]
+    fn role_and_label_reach_the_build() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("close")
+                .w(Px(40.0))
+                .h(Px(40.0))
+                .role(Role::Button)
+                .label("閉じる")
+                .on_click(|| {}),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+        let r = region(&b, "close");
+        assert_eq!(r.role, Some(Role::Button));
+        assert_eq!(r.label.as_deref(), Some("閉じる"));
+    }
+
+    /// **役割だけを持つ要素も領域として出ること。**
+    ///
+    /// 見出しや画像の alt はクリックもフォーカスもしない。 それらが落ちると、
+    /// 支援技術から見える内容が「押せるものだけ」になってしまう。
+    #[test]
+    fn semantics_only_elements_are_not_dropped() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).children([
+            // id も handler も focusable も無い。 役割だけ。
+            div().w(Px(200.0)).h(Px(30.0)).heading(2).label("設定"),
+            div().w(Px(200.0)).h(Px(30.0)).role(Role::Image).label("地図"),
+        ]);
+        let b = build_tree(&root, 200.0, 100.0);
+
+        let heading = b
+            .hit_regions
+            .iter()
+            .find(|r| r.role == Some(Role::Heading))
+            .expect("見出しが落ちている");
+        assert_eq!(heading.label.as_deref(), Some("設定"));
+        assert_eq!(heading.heading_level, Some(2));
+
+        assert!(
+            b.hit_regions.iter().any(|r| r.role == Some(Role::Image)),
+            "画像が落ちている"
+        );
+    }
+
+    /// `button()` は既定で役割を名乗ること。 呼び出し側が毎回書かないで済む。
+    #[test]
+    fn button_declares_its_role_by_default() {
+        let root = div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .child(button("保存").id("save"));
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(region(&b, "save").role, Some(Role::Button));
+    }
+
+    /// 役割を書いていない普通の `div` は `None` のまま。 嘘の役割を作らない。
+    #[test]
+    fn plain_containers_claim_no_role() {
+        let root = div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .child(div().id("wrap").w(Px(50.0)).h(Px(50.0)).child(text("x")));
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(region(&b, "wrap").role, None);
+    }
+
+    /// **役割を足しただけで、 親のクリックが死んではいけない。**
+    ///
+    /// `.role()` / `.label()` だけを持つ子は hit region に出る (支援技術に
+    /// 渡すため) が、 ポインタは透過しなければならない。 これを間違えると、
+    /// 表のセルに `Role::Cell` を書いた瞬間に行が押せなくなる。
+    #[test]
+    fn semantic_only_regions_are_transparent_to_the_pointer() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("row")
+                .w(Px(200.0))
+                .h(Px(40.0))
+                // 意味だけの子。 id もハンドラも持たない。
+                .child(div().role(Role::Cell).w(Px(200.0)).h(Px(40.0))),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+
+        // セルは hit_regions には居る (支援技術のために必要)。
+        assert!(
+            b.hit_regions.iter().any(|r| r.role == Some(Role::Cell)),
+            "意味の領域は出ていること"
+        );
+        // でもポインタ解決には出てこない。
+        let hit = b.hit_region_at(100.0, 20.0).expect("何かに当たること");
+        assert_eq!(
+            hit.id.as_deref(),
+            Some("row"),
+            "セルを透過して行に当たること"
+        );
+    }
+
+    /// 逆に、 役割を持っていても押せる要素 (`role` + `id`) は透過しない。
+    #[test]
+    fn a_region_that_is_both_semantic_and_clickable_still_takes_the_click() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("outer")
+                .w(Px(200.0))
+                .h(Px(40.0))
+                .child(div().id("inner").role(Role::Button).w(Px(200.0)).h(Px(40.0))),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(
+            b.hit_region_at(100.0, 20.0).and_then(|r| r.id.as_deref()),
+            Some("inner"),
+            "id を持つ手前の要素が勝つ"
+        );
     }
 }

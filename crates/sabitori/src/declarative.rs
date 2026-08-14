@@ -10,8 +10,9 @@ use sabitori_core::build::{build_tree_measured, BuildResult};
 use sabitori_core::element::Element;
 use sabitori_core::ViewContext;
 use sabitori_gpu::{GpuContext, GpuRenderer, RingRenderer, SceneRenderContext};
-use sabitori_input::{InputEvent, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
+use sabitori_input::{Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
 use sabitori_text::TextRenderer;
+use sabitori_widgets::TextInputState;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -134,7 +135,10 @@ pub struct UiCapture {
     pub wants_keyboard: bool,
 }
 
-pub trait DeclarativeApp {
+/// `'static` を要求するのは、 `Element::click` で登録されたハンドラが
+/// `&mut dyn Any` 経由でアプリ本体に降りるため。 アプリはランタイムが所有して
+/// プロセス寿命まで持つので、 実質的な制約にはならない。
+pub trait DeclarativeApp: 'static {
     /// Build the UI tree. Called every frame.
     /// Use `ctx.hovered` to check which element the mouse is over.
     fn view(&self, ctx: &ViewContext) -> Element;
@@ -237,7 +241,33 @@ pub trait DeclarativeApp {
     /// Called when mouse forward button is pressed.
     fn on_navigate_forward(&mut self) {}
 
-    /// Called for keyboard input. Return true if handled.
+    /// Called for input events. Return `true` if the event was consumed.
+    ///
+    /// # `true` を返すと何が止まるか
+    ///
+    /// ランタイムはこのイベントに対する**既定動作を行わない**。 キー押下の場合、
+    /// 具体的には次が止まる:
+    ///
+    /// - Tab / Shift+Tab のフォーカス移動
+    /// - Escape のフォーカス解除
+    /// - Cmd/Ctrl+C による選択テキストのコピー
+    /// - 「コピー以外のキーで選択を解除する」挙動
+    ///
+    /// 独自のキーバインドを持つアプリ (Tab を補完に使う、 Escape を自前の
+    /// モーダル閉じに使う、 など) はこれで既定動作を抑止する。
+    ///
+    /// 配信はフォーカス中の要素が先で、 [`Self::on_focused_input`] が `true` を
+    /// 返した場合はここには来ない (その場合も既定動作は止まる)。 ただし
+    /// Tab / Escape はフォーカス操作そのものなので `on_focused_input` を経由せず、
+    /// 直接ここに来る。
+    ///
+    /// 0.4.0 より前はこの戻り値をどこも読んでいなかった。 doc は "Return true if
+    /// handled" と言っているのに `true` を返しても既定動作が走る、 という状態
+    /// だった (issue #18)。
+    ///
+    /// ポインタ系イベントの既定動作 (クリック判定・ホバー・管理スクロール) は
+    /// 現状これでは止められない。 どのランタイムがどの種別を配るかは
+    /// [`input_delivery`] を参照。
     fn on_input(&mut self, _event: &InputEvent) -> bool { false }
 
     /// Called when a focused text input receives a character/key/IME event.
@@ -298,7 +328,7 @@ pub trait DeclarativeApp {
     /// default) for zero cost — probing is skipped entirely when the set is empty.
     fn build_probes(&self) -> Vec<String> { Vec::new() }
 
-    /// Return pending programmatic scroll requests for overflow_scroll containers.
+    /// Return pending programmatic scroll requests for `.scroll(id)` containers.
     /// Drained once per frame after layout. `(id, y)` — pass `f32::MAX` for "bottom".
     /// Return empty to leave scroll untouched (user controls it via wheel).
     fn scroll_intents(&mut self) -> Vec<(String, f32)> { Vec::new() }
@@ -476,6 +506,45 @@ pub trait DeclarativeApp {
     fn render_extra_scene(&mut self, _key: &str, _ctx: &mut SceneRenderContext) {}
 }
 
+/// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
+///
+/// [`Delivery`] の doc にある通り、 sabitori はイベント処理を共有しない 3 つの
+/// ランタイムを持つ。 この関数は [`InputEventKind`] に対する**網羅マッチ**なので、
+/// 種別が増えるとここがコンパイルエラーになり、 配線の判断を必ず通ることになる。
+///
+/// 消費側にとっては「このランタイムで何が来るか」の一覧でもある。
+/// `sabitori::scene_app::input_delivery` / `sabitori_window::input_delivery` と
+/// 見比べると、 ランタイム間の差が分かる。
+pub fn input_delivery(kind: InputEventKind) -> Delivery {
+    match kind {
+        // ポインタ系は内部の hit-test / hover / 押下追跡にも使うが、 生のイベントも
+        // そのまま `on_input` に流している。
+        InputEventKind::PointerMoved
+        | InputEventKind::PointerPressed
+        | InputEventKind::PointerReleased
+        | InputEventKind::PointerCancelled => Delivery::ToApp,
+
+        // winit の `CursorLeft` は専用コールバックに変換していて、
+        // `InputEvent::PointerLeft` は組み立てていない。
+        InputEventKind::PointerLeft => {
+            Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
+        }
+
+        // IME / キーボードはフォーカス中の要素へ先に渡し、 消費されなければ
+        // `on_input` に落とす。
+        InputEventKind::ImeEnabled
+        | InputEventKind::ImePreedit
+        | InputEventKind::ImeCommit
+        | InputEventKind::KeyInput
+        | InputEventKind::CharInput => Delivery::ToApp,
+
+        InputEventKind::ModifiersChanged => Delivery::ToApp,
+
+        // Cmd/Ctrl+V を捕まえてクリップボードを読み、 1 イベントとして配る。
+        InputEventKind::Paste => Delivery::ToApp,
+    }
+}
+
 /// Per-extra-window resources. Each extra has its own GPU surface and
 /// renderer set; v1 keeps them passive (no input, no managed scroll /
 /// hover / drag) so the data they need is just the render pipeline plus
@@ -489,15 +558,15 @@ struct ExtraWindowState {
     ring_renderer: sabitori_gpu::RingRenderer,
     line_renderer: sabitori_gpu::LineRenderer,
     measure_cache: std::cell::RefCell<crate::bridge::MeasureCache>,
-    last_build: Option<BuildResult>,
+    pub(crate) last_build: Option<BuildResult>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
     scene_3d: bool,
 }
 
-struct AppState<A: DeclarativeApp> {
-    app: A,
+pub(crate) struct AppState<A: DeclarativeApp> {
+    pub(crate) app: A,
     /// True when the next frame would visually differ from the last drawn
     /// one. Set on input events / animation activity / app-reported state
     /// changes; cleared after each render. Only consulted when the app
@@ -517,9 +586,9 @@ struct AppState<A: DeclarativeApp> {
     /// copying the cache.
     measure_cache: std::rc::Rc<std::cell::RefCell<crate::bridge::MeasureCache>>,
     last_frame: Instant,
-    last_build: Option<BuildResult>,
-    mouse_x: f32,
-    mouse_y: f32,
+    pub(crate) last_build: Option<BuildResult>,
+    pub(crate) mouse_x: f32,
+    pub(crate) mouse_y: f32,
     hovered_id: Option<String>,
     /// 現在押されている要素の id。`active_style` (= `.active()` / `.pressable()`)
     /// を畳むのに使う。押下で入り、解放・キャンセル・ウィンドウ外への離脱で消える。
@@ -538,7 +607,16 @@ struct AppState<A: DeclarativeApp> {
     /// Last IME-allowed state handed winit (`set_ime_allowed`), to dedup.
     /// See [`DeclarativeApp::ime_allowed`].
     last_ime_allowed: bool,
-    focused_id: Option<String>,
+    pub(crate) focused_id: Option<String>,
+    /// 「打った文字がどこにも行かなかった」警告を出したテキスト欄の id。
+    /// 毎フレーム鳴らすとログが埋まるので 1 度だけにする。
+    /// [`AppState::warn_if_typing_went_nowhere`] を参照。
+    warned_unrouted_input: std::collections::HashSet<String>,
+    /// `view()` の中でウィジェットが登録した「面倒を見るもの」。 毎フレーム
+    /// 差し替わる。 [`AppState::adopt_managed`] を参照。
+    managed: Vec<(String, std::rc::Rc<dyn sabitori_core::Managed>)>,
+    /// `Element::click` が登録したクリック処理。 毎フレーム差し替わる。
+    actions: Vec<(String, sabitori_core::Action)>,
     modifiers: Modifiers,
     last_viewport_w: f32,
     last_viewport_h: f32,
@@ -552,8 +630,8 @@ struct AppState<A: DeclarativeApp> {
     touch_drag: Option<TouchDrag>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
-    /// Managed scroll states for elements with overflow_scroll + id.
-    scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
+    /// Managed scroll states, keyed by the id given to `.scroll(id)`.
+    pub(crate) scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Managed tooltip hover-delay state.
     tooltip_state: sabitori_widgets::TooltipState,
     /// Managed drag & drop state.
@@ -601,7 +679,7 @@ struct AppState<A: DeclarativeApp> {
     selecting: bool,
     /// Last [`UiCapture`] snapshot pushed to the app. Used to dedup
     /// `on_ui_capture` calls to actual state transitions.
-    last_capture: UiCapture,
+    pub(crate) last_capture: UiCapture,
 }
 
 /// 文字選択 state。 `(text_idx, byte_offset)` のペアを anchor / head で持つ。
@@ -915,100 +993,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if self.primary_input == PrimaryInput::None {
                     self.primary_input = PrimaryInput::Mouse;
                 }
-                // マウス押下もタッチ同様 InputEvent::Pointer* としてアプリへ転送する
-                // （キャンバスのドラッグパン等が押下状態を観測できるように）。#62
-                self.app.on_input(&InputEvent::PointerPressed {
-                    id: MOUSE_POINTER_ID,
-                    kind: PointerKind::Mouse,
-                    position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
-                    button: Some(InputMouseButton::Left),
-                    modifiers: self.modifiers,
-                });
-                // 押下中の要素を覚える。 次のフレームの `apply_state_styles` が
-                // ここから `active_style` を畳む (#3)。 hover と同じ引き方だが、
-                // 押下対象は `clickable`（= id 付き）で見る — `.active()` は
-                // hover_style を持たない要素にも書けるため。
-                self.pressed_id = self.hit_id_at(self.mouse_x, self.mouse_y);
-                if let Some(ref build) = self.last_build {
-                    let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-                    let mut focus_set = false;
-                    let mut pending_drag: Option<(String, Option<String>)> = None;
-                    let mut hit_clickable_or_drag = false;
-                    for region in &build.hit_regions {
-                        if region.rect.contains(pt) {
-                            // Handle focus
-                            if region.focusable {
-                                self.focused_id = region.id.clone();
-                                focus_set = true;
-                            }
-                            // Handle click (still fires for draggable elements)
-                            if region.clickable {
-                                if let Some(ref id) = region.id {
-                                    self.app.on_click(id);
-                                }
-                                hit_clickable_or_drag = true;
-                            }
-                            // Check for drag data
-                            if let Some(ref drag_data) = region.drag_data {
-                                pending_drag = Some((drag_data.clone(), region.id.clone()));
-                                hit_clickable_or_drag = true;
-                            }
-                            break;
-                        }
-                    }
-                    // Blur if clicked on a non-focusable region (or empty area)
-                    if !focus_set {
-                        self.focused_id = None;
-                    }
-                    // Start pending drag if a draggable element was hit
-                    let had_pending_drag = pending_drag.is_some();
-                    if let Some((data, source_id)) = pending_drag {
-                        self.drag_manager.start_pending(data, source_id, self.mouse_x, self.mouse_y);
-                    }
-
-                    // Text selection: テキスト上の mouse_down は常に selection 起点
-                    // として扱う。 sabitori の `clickable` flag は id 付き要素を全て
-                    // true にする仕様 (= sabitori-markdown の heading / image / scroll
-                    // container も clickable 扱い) なので、 clickable を gate に
-                    // すると本文上ですら selection できない。 on_click は別途
-                    // 上のループで既に発火済みなので click と selection が両立する。
-                    // 「ボタンを click」 = drag 無し → mouse_up で anchor==head 解除
-                    // 「テキストを drag」 = drag → selection 確定。
-                    if let Some((link_id, _)) = self.link_at(self.mouse_x, self.mouse_y) {
-                        // 本文中リンク click → その id を on_click 発火し遷移。
-                        // selection の起点にはしない（drag より優先）。
-                        self.app.on_click(&link_id);
-                        self.selection = None;
-                        self.selecting = false;
-                    } else if had_pending_drag || !self.app.text_selection_enabled() {
-                        // 明示的に draggable な要素は drag system 優先で selection 解除。
-                        // app が selection 自体を切っている場合も同じ扱い (#67)。
-                        self.selection = None;
-                        self.selecting = false;
-                    } else if let Some(hit) = self.hit_test_text(self.mouse_x, self.mouse_y, true) {
-                        let snap = self
-                            .text_layouts
-                            .iter()
-                            .find(|l| l.text_idx == hit.0)
-                            .map(|l| l.content.clone())
-                            .unwrap_or_default();
-                        self.selection = Some(TextSelection {
-                            anchor: hit,
-                            head: hit,
-                            anchor_content: snap.clone(),
-                            head_content: snap,
-                        });
-                        self.selecting = true;
-                    } else {
-                        // 空白領域 click → 既存 selection を取り消す。
-                        self.selection = None;
-                        self.selecting = false;
-                    }
-                    // hit_clickable_or_drag は warning 抑止のため _ で受ける。
-                    let _ = hit_clickable_or_drag;
-                }
-                // Focus / pending-drag transitions feed the capture snapshot.
-                self.push_ui_capture();
+                self.press_primary();
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
@@ -1022,38 +1007,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if self.primary_input == PrimaryInput::Mouse {
                     self.primary_input = PrimaryInput::None;
                 }
-                self.app.on_input(&InputEvent::PointerReleased {
-                    id: MOUSE_POINTER_ID,
-                    kind: PointerKind::Mouse,
-                    position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
-                    button: Some(InputMouseButton::Left),
-                    modifiers: self.modifiers,
-                });
-                self.pressed_id = None;
-                // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
-                self.selecting = false;
-                // 1 文字も範囲が無いなら (= 単なる click) 視覚 noise になるので消す。
-                if let Some(ref sel) = self.selection {
-                    if sel.is_empty() {
-                        self.selection = None;
-                    }
-                }
-                // Complete drag if active
-                if let Some((data, _source_id)) = self.drag_manager.on_release() {
-                    // Find drop zone under cursor
-                    if let Some(ref build) = self.last_build {
-                        let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-                        if let Some(target_id) = build.hit_regions.iter()
-                            .find(|r| r.drop_zone && r.rect.contains(pt))
-                            .and_then(|r| r.id.as_ref())
-                        {
-                            self.app.on_drop(&data, target_id);
-                        }
-                    }
-                }
-                self.app.on_pointer_up();
-                // Drag end may flip `wants_pointer` back off.
-                self.push_ui_capture();
+                self.release_primary();
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
@@ -1226,7 +1180,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             if let Some(ref build) = self.last_build {
                                 let mut focus_set = false;
                                 for region in &build.hit_regions {
-                                    if region.rect.contains(pos) {
+                                    // マウス押下と同じく、 意味だけの領域は透過する。
+                                    if region.is_interactive() && region.rect.contains(pos) {
                                         if region.focusable {
                                             self.focused_id = region.id.clone();
                                             focus_set = true;
@@ -1481,9 +1436,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     winit::event::Ime::Enabled => InputEvent::ImeEnabled,
                     winit::event::Ime::Disabled => { return; }
                 };
-                let handled = if let Some(ref id) = self.focused_id {
-                    self.app.on_focused_input(id, &event)
-                } else { false };
+                let handled = self.route_to_managed(&event)
+                    || match self.focused_id {
+                        Some(ref id) => self.app.on_focused_input(id, &event),
+                        None => false,
+                    };
                 if !handled {
                     self.app.on_input(&event);
                 }
@@ -1528,11 +1485,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         }
                     }
                     for e in events {
-                        if let Some(ref fid) = self.focused_id {
-                            if !self.app.on_focused_input(fid, &e) {
-                                self.app.on_input(&e);
-                            }
-                        } else {
+                        let handled = self.route_to_managed(&e)
+                            || match self.focused_id {
+                                Some(ref fid) => self.app.on_focused_input(fid, &e),
+                                None => false,
+                            };
+                        if !handled {
                             self.app.on_input(&e);
                         }
                     }
@@ -1761,7 +1719,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // (style spring, scroll spring, presence) and app-side async
         // drains (e.g. mpsc channel polls). Cheap enough to run every
         // frame even when we end up not redrawing.
-        self.app.tick(dt);
+        self.advance(dt);
         // After tick: let the app reassert its desired focus. Popups
         // that open with a known input (e.g. command palette) use
         // this to grab focus the first frame they're rendered,
@@ -1776,7 +1734,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // rect changes — so the Cocoa call doesn't fire 125×/sec. Without this,
         // winit leaves the area at the window origin and the candidate window
         // sits in the top-left.
-        let ime_area = self.app.ime_cursor_area();
+        // アプリが明示した矩形が最優先。 無ければ、 フォーカス中の登録済みテキスト欄
+        // から自動で算出する — その欄の画面矩形はレイアウト済みで `hit_regions` に
+        // あり、 キャレットの x は表示文字列を実フォントで測れば出る。 つまり
+        // ランタイムは必要な材料を全部持っている。 アプリが `ime_cursor_area` を
+        // 書かなくても、 変換候補は正しい位置に出る。
+        let ime_area = self.app.ime_cursor_area().or_else(|| self.managed_ime_area());
         if ime_area != self.last_ime_area {
             self.last_ime_area = ime_area;
             if let (Some(w), Some((x, y, cw, ch))) = (self.window.as_ref(), ime_area) {
@@ -1799,14 +1762,6 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Layout / focus may have changed since the last pointer event —
         // keep the capture snapshot current once per tick.
         self.push_ui_capture();
-        for sv in self.scroll_states.values_mut() {
-            sv.tick(dt);
-        }
-        self.tooltip_state.tick(dt);
-        self.drag_manager.tick(dt);
-        self.style_animator.tick(dt);
-        self.presence_animator.tick(dt);
-
         let app_dirty = self.app.poll_dirty();
         // Scroll spring / fling keeps animating after the user lets go of the
         // wheel. Without this check, lazy_render parks the loop and the
@@ -1865,12 +1820,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
 /// One frame's built element trees, before any GPU work touches them.
 /// Produced by [`AppState::build_frame`].
-struct FrameBuild {
+pub(crate) struct FrameBuild {
     /// The main UI tree.
-    build_result: BuildResult,
+    pub(crate) build_result: BuildResult,
     /// The overlay tree — app `overlay_view` plus the tooltip and drag ghost —
     /// when any of those produced content this frame.
-    overlay_build: Option<BuildResult>,
+    pub(crate) overlay_build: Option<BuildResult>,
 }
 
 impl<A: DeclarativeApp> AppState<A> {
@@ -1880,7 +1835,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// already usable for what happens independently of rendering: input
     /// routing, animators, managed scroll, and [`Self::build_frame`].
     /// `resumed` fills in the window and the renderers afterwards.
-    fn new(app: A) -> Self {
+    pub(crate) fn new(app: A) -> Self {
         let image_cache = std::sync::Arc::new(std::sync::Mutex::new(
             sabitori_core::image_cache::ImageCache::new(),
         ));
@@ -1927,6 +1882,9 @@ impl<A: DeclarativeApp> AppState<A> {
             last_ime_area: None,
             last_ime_allowed: true,
             focused_id: None,
+            warned_unrouted_input: std::collections::HashSet::new(),
+            managed: Vec::new(),
+            actions: Vec::new(),
             last_viewport_w: 0.0,
             last_viewport_h: 0.0,
             primary_input: PrimaryInput::None,
@@ -1967,7 +1925,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// Splitting it out keeps the frame's *logic* reachable without a window or
     /// a `wgpu` device — the render path calls it with a `TextRenderer`-backed
     /// measurer, and tests call it with a stub one.
-    fn build_frame(
+    pub(crate) fn build_frame(
         &mut self,
         w: f32,
         h: f32,
@@ -2039,6 +1997,12 @@ impl<A: DeclarativeApp> AppState<A> {
             presence: self.presence_animator.all_progress(),
             images: Some(self.image_ctx.clone()),
             mono_advance,
+            // 実フォント計測をアプリに渡す。 これが無いとキャレット位置を
+            // 計算する手段が無く、 等幅以外のテキスト欄にカーソルを置けない
+            // (issue #15)。
+            measurer: Some(measurer),
+            managed: Default::default(),
+            actions: Default::default(),
         };
         // Build main UI tree
         let mut root = self.app.view(&ctx);
@@ -2078,6 +2042,12 @@ impl<A: DeclarativeApp> AppState<A> {
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active
         let app_overlay = self.app.overlay_view(&ctx);
+
+        // `view()` / `overlay_view()` の中でウィジェットが登録したものを引き取る。
+        // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
+        // 書くことは何も無い (`sabitori_core::Managed` の doc を参照)。
+        self.adopt_managed(ctx.take_managed());
+        self.actions = ctx.take_actions();
         let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
             sabitori_core::tooltip_popup(
                 &text, tx, ty, w, h,
@@ -2109,7 +2079,7 @@ impl<A: DeclarativeApp> AppState<A> {
         };
         let overlay_build = overlay_element.map(|mut el| {
             // Overlay trees also participate in managed scroll: register their
-            // overflow_scroll containers so wheel/touch routing (which consults
+            // `.scroll(id)` containers so wheel/touch routing (which consults
             // the merged build with overlay hits prepended) can scroll modal
             // lists AND let a full-screen scrim absorb scroll (background lock).
             // Without this, overlay scroll containers are never in scroll_states,
@@ -2136,7 +2106,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// declarative app was rendered from a build it was never told about, and
     /// `hit_regions` was unreachable. Keeping this the only writer of
     /// `last_build` makes that pairing impossible to get wrong again.
-    fn commit_build(&mut self, build: BuildResult) {
+    pub(crate) fn commit_build(&mut self, build: BuildResult) {
         self.last_build = Some(build);
         // `last_build` was just assigned, so the app always sees this frame.
         if let Some(ref build) = self.last_build {
@@ -2151,27 +2121,381 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 配っていた頃は、⇧の押下は届くのに解放が来ないので、アプリ側で「押しっぱなし」
     /// を保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような修飾つき
     /// 操作が書けない）。副作用は `if pressed` の中に閉じてある。
-    fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
-        // 副作用（コピー・選択解除・フォーカス移動・文字入力）は押下でだけ
-        // 起こす。解放でも走らせると、⇧を離しただけで選択が消えるといった
-        // 挙動になる。アプリへの KeyInput 転送だけが押下・解放の両方。
-        if pressed {
-            // Cmd+C (macOS) / Ctrl+C (other): copy selected text to clipboard.
-            // 文字選択中 (= self.selection が Some) ならグローバル捕捉して
-            // focused element の input route には流さない。 macOS では meta
-            // (Cmd) を見る、 他 platform は ctrl。
-            let copy_modifier = if cfg!(target_os = "macos") {
-                self.modifiers.meta
+    /// 主ボタン押下の処理本体。 winit の match から切り出してある。
+    ///
+    /// 切り出しは [`crate::testing`] のためでもある — ヘッドレスでクリックを
+    /// 流せないと、 消費側は自分のアプリに回帰テストを書けない (issue #19)。
+    /// 座標は呼び出し前に `mouse_x` / `mouse_y` へ入れておくこと。
+    /// **テキスト欄にフォーカスがあるのに、 打った文字を誰も受け取らなかった**
+    /// ときに一度だけ警告する。
+    ///
+    /// これは設定ミスであって、 正常な状態ではない。 `text_input(..)` を `view()`
+    /// に置いてクリックすると、 フォーカスは入るし枠も光る。 でも
+    /// [`DeclarativeApp::on_focused_input`] を実装していないと、 **打った文字は
+    /// どこにも行かない**。 既定実装が `false` を返すだけなので、 コンパイルは
+    /// 通り、 パニックもせず、 ただ何も起きない。 0.4.0 が潰してきたのと同じ
+    /// 形の失敗が、 いちばんよく使うウィジェットに残っていた。
+    ///
+    /// 構造で防げれば一番いいが、 文字の行き先はアプリの状態なので、 ランタイム
+    /// からは代わりに書き込めない。 せめて**黙って落ちるのをやめる**。
+    ///
+    /// 判定は `Role::TextInput` / `Role::TextArea` を名乗る要素にフォーカスが
+    /// ある場合だけ。 フォーカスできるボタンが打鍵を無視するのは正常なので、
+    /// そこでは鳴らさない。 id ごとに 1 回。
+    fn warn_if_typing_went_nowhere(&mut self) {
+        let Some(id) = self.focused_id.clone() else { return };
+        let Some(build) = self.last_build.as_ref() else { return };
+        let is_text_field = build.hit_regions.iter().any(|r| {
+            r.id.as_deref() == Some(id.as_str())
+                && matches!(
+                    r.role,
+                    Some(sabitori_core::element::Role::TextInput)
+                        | Some(sabitori_core::element::Role::TextArea)
+                )
+        });
+        if !is_text_field || !self.warned_unrouted_input.insert(id.clone()) {
+            return;
+        }
+        log::warn!(
+            "sabitori: テキスト欄 `{id}` にフォーカスがあるのに、 打った文字を \
+             誰も受け取っていない。 `DeclarativeApp::on_focused_input` を実装して \
+             `{id}` を状態へ繋ぐこと:\n\
+             \n\
+             \x20   fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {{\n\
+             \x20       match id {{ \"{id}\" => self.field.on_focused_input(e), _ => false }}\n\
+             \x20   }}\n"
+        );
+    }
+
+    /// `view()` が登録したものを引き取り、 **フォーカス状態をその場で反映する**。
+    ///
+    /// 反映をここでやるのは、 「フォーカスが変わった」 と 「ツリーが組み直された」
+    /// のどちらが先でも、 描画に使うフレームでは必ず一致させたいから。
+    /// アプリが `state.focused = true` を書く必要は無い。
+    pub(crate) fn adopt_managed(
+        &mut self,
+        managed: Vec<(String, std::rc::Rc<dyn sabitori_core::Managed>)>,
+    ) {
+        for (id, target) in &managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                field.set_focused(self.focused_id.as_deref() == Some(id.as_str()));
+            }
+        }
+        self.managed = managed;
+    }
+
+    /// フォーカス中の登録済みテキスト欄から、 IME 変換候補を出す矩形を作る。
+    ///
+    /// これを返さないと winit は候補位置をウィンドウ原点のままにするので、
+    /// **日本語の変換候補が画面の左上に出る**。 0.4.0 より前はアプリが
+    /// `ime_cursor_area` を実装して自分で計算する必要があり、 書かなければ
+    /// 黙って左上に出ていた。
+    ///
+    /// 欄の矩形は `hit_regions` にあり、 キャレットの x は表示文字列を実フォントで
+    /// 測れば出る。 材料はランタイムが全部持っているので、 アプリに書かせる理由が無い。
+    fn managed_ime_area(&self) -> Option<(f32, f32, f32, f32)> {
+        let id = self.focused_id.as_deref()?;
+        let field = self.managed_text_field(id)?;
+        let build = self.last_build.as_ref()?;
+        let rect = build.region_rect(id)?;
+        // キャレットの欄内オフセットは `text_input` が描くときに実フォントで
+        // 測って書き込んである。 ここは画面座標を足すだけ。
+        let (dx, caret_h) = field.caret_offset();
+        Some((rect.origin.x + dx, rect.origin.y, 1.0, caret_h.max(1.0)))
+    }
+
+    /// `id` に結びついたクリック処理を走らせる。 あれば `true`。
+    ///
+    /// `Element::click(ctx, id, f)` で登録されたもの。 id とハンドラが同じ
+    /// 呼び出しで書かれているので、 **文字列の食い違いが起こらない**。
+    pub(crate) fn run_action(&mut self, id: &str) -> bool {
+        // `self.app` を可変で貸すあいだ `self.actions` を借りたままにできないので、
+        // Rc を 1 つ複製して外に出す。
+        let action = self
+            .actions
+            .iter()
+            .find(|(aid, _)| aid == id)
+            .map(|(_, a)| a.clone());
+        match action {
+            Some(action) => {
+                action(&mut self.app as &mut dyn std::any::Any);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 登録済みのテキスト欄をフォーカス id で引く。
+    fn managed_text_field(&self, id: &str) -> Option<&TextInputState> {
+        self.managed
+            .iter()
+            .find(|(mid, _)| mid == id)
+            .and_then(|(_, t)| t.as_any().downcast_ref::<TextInputState>())
+    }
+
+    /// フォーカス中の要素が登録済みなら、 そこへイベントを流す。 消費したら `true`。
+    ///
+    /// **アプリの `on_focused_input` より先**に見る。 登録されている欄は
+    /// ランタイムの持ち物で、 アプリが二重に処理する余地を作らないため。
+    pub(crate) fn route_to_managed(&mut self, event: &InputEvent) -> bool {
+        let Some(id) = self.focused_id.clone() else { return false };
+        match self.managed_text_field(&id) {
+            Some(field) => field.handle_input(event),
+            None => false,
+        }
+    }
+
+    /// 打鍵が行き場を失ったテキスト欄の id。 テストから配線漏れを assert する
+    /// ための口 ([`crate::testing::Harness::unrouted_text_inputs`])。
+    pub(crate) fn unrouted_text_inputs(&self) -> &std::collections::HashSet<String> {
+        &self.warned_unrouted_input
+    }
+
+    /// 時間を `dt` 秒ぶん進める。 アプリの `tick` と、 ランタイムが持つ
+    /// アニメーション状態 (スクロールのばね・慣性、 tooltip の遅延、 ドラッグ、
+    /// style / presence) を **1 箇所で**まとめて回す。
+    ///
+    /// ## なぜ関数に括り出すか
+    ///
+    /// 以前はこの並びが `about_to_wait` にベタ書きされていた。 そのため
+    /// [`testing::Harness`](crate::testing::Harness) には**時間が無く**、
+    /// ばねが 1mm も動かなかった。 `scroll_intents()` は `smooth_scroll_to`
+    /// (= ばねの目標を置くだけ) なので、 プログラム的スクロールを使うアプリは
+    /// **テストすると必ず「動かない」ように見える**。 実機では動くのに。
+    ///
+    /// tick する対象が増えたときに、 ランタイムだけ更新されて Harness が
+    /// 置き去りになるのも防ぐ。
+    pub(crate) fn advance(&mut self, dt: f32) {
+        self.app.tick(dt);
+        // 登録済みのテキスト欄はランタイムが進める (キャレット点滅)。
+        // アプリが `state.tick(dt)` を書く必要は無い。
+        for (_, target) in &self.managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                field.advance(dt);
+            }
+        }
+        for sv in self.scroll_states.values_mut() {
+            sv.tick(dt);
+        }
+        self.tooltip_state.tick(dt);
+        self.drag_manager.tick(dt);
+        self.style_animator.tick(dt);
+        self.presence_animator.tick(dt);
+    }
+
+    /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
+    /// 回し続けるべきかの判定で、 テストの「落ち着くまで待つ」もこれを見る。
+    pub(crate) fn is_animating(&self) -> bool {
+        self.app.is_animating()
+            || self.scroll_states.values().any(|sv| sv.is_animating())
+            || self.style_animator.is_animating()
+            || self.drag_manager.is_active()
+            || self.tooltip_state.is_pending()
+    }
+
+    pub(crate) fn press_primary(&mut self) {
+        // マウス押下もタッチ同様 InputEvent::Pointer* としてアプリへ転送する
+        // （キャンバスのドラッグパン等が押下状態を観測できるように）。#62
+        self.app.on_input(&InputEvent::PointerPressed {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+            button: Some(InputMouseButton::Left),
+            modifiers: self.modifiers,
+        });
+        // 押下中の要素を覚える。 次のフレームの `apply_state_styles` が
+        // ここから `active_style` を畳む (#3)。 hover と同じ引き方だが、
+        // 押下対象は `clickable`（= id 付き）で見る — `.active()` は
+        // hover_style を持たない要素にも書けるため。
+        self.pressed_id = self.hit_id_at(self.mouse_x, self.mouse_y);
+        if let Some(ref build) = self.last_build {
+            let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+            let mut focus_set = false;
+            let mut pending_drag: Option<(String, Option<String>)> = None;
+            let mut hit_clickable_or_drag = false;
+            // クリック対象はここでは決めるだけ。 実行はループを抜けてから —
+            // ハンドラは `&mut self` を要り、 `build` を借りたままでは呼べない。
+            let mut click_target: Option<String> = None;
+            for region in &build.hit_regions {
+                // 意味だけの領域 (role/label のみ) は透過する。 これを止めると
+                // 表のセルに `Role::Cell` を書いた瞬間、 行のクリックが死ぬ
+                // (`HitRegion::is_interactive` の doc を参照)。
+                if region.is_interactive() && region.rect.contains(pt) {
+                    // Handle focus
+                    if region.focusable {
+                        self.focused_id = region.id.clone();
+                        focus_set = true;
+                    }
+                    // Handle click (still fires for draggable elements)
+                    if region.clickable {
+                        click_target = region.id.clone();
+                        hit_clickable_or_drag = true;
+                    }
+                    // Check for drag data
+                    if let Some(ref drag_data) = region.drag_data {
+                        pending_drag = Some((drag_data.clone(), region.id.clone()));
+                        hit_clickable_or_drag = true;
+                    }
+                    break;
+                }
+            }
+            // `Element::click` で登録された処理が先。 その後で従来の
+            // `on_click(id)` も呼ぶ (併用しても壊れない)。
+            if let Some(id) = click_target {
+                self.run_action(&id);
+                self.app.on_click(&id);
+            }
+            // Blur if clicked on a non-focusable region (or empty area)
+            if !focus_set {
+                self.focused_id = None;
+            }
+            // Start pending drag if a draggable element was hit
+            let had_pending_drag = pending_drag.is_some();
+            if let Some((data, source_id)) = pending_drag {
+                self.drag_manager.start_pending(data, source_id, self.mouse_x, self.mouse_y);
+            }
+
+            // Text selection: テキスト上の mouse_down は常に selection 起点
+            // として扱う。 sabitori の `clickable` flag は id 付き要素を全て
+            // true にする仕様 (= sabitori-markdown の heading / image / scroll
+            // container も clickable 扱い) なので、 clickable を gate に
+            // すると本文上ですら selection できない。 on_click は別途
+            // 上のループで既に発火済みなので click と selection が両立する。
+            // 「ボタンを click」 = drag 無し → mouse_up で anchor==head 解除
+            // 「テキストを drag」 = drag → selection 確定。
+            if let Some((link_id, _)) = self.link_at(self.mouse_x, self.mouse_y) {
+                // 本文中リンク click → その id を on_click 発火し遷移。
+                // selection の起点にはしない（drag より優先）。
+                self.app.on_click(&link_id);
+                self.selection = None;
+                self.selecting = false;
+            } else if had_pending_drag || !self.app.text_selection_enabled() {
+                // 明示的に draggable な要素は drag system 優先で selection 解除。
+                // app が selection 自体を切っている場合も同じ扱い (#67)。
+                self.selection = None;
+                self.selecting = false;
+            } else if let Some(hit) = self.hit_test_text(self.mouse_x, self.mouse_y, true) {
+                let snap = self
+                    .text_layouts
+                    .iter()
+                    .find(|l| l.text_idx == hit.0)
+                    .map(|l| l.content.clone())
+                    .unwrap_or_default();
+                self.selection = Some(TextSelection {
+                    anchor: hit,
+                    head: hit,
+                    anchor_content: snap.clone(),
+                    head_content: snap,
+                });
+                self.selecting = true;
             } else {
-                self.modifiers.ctrl
-            };
-            let is_copy = key == Key::C && copy_modifier;
+                // 空白領域 click → 既存 selection を取り消す。
+                self.selection = None;
+                self.selecting = false;
+            }
+            // hit_clickable_or_drag は warning 抑止のため _ で受ける。
+            let _ = hit_clickable_or_drag;
+        }
+        // Focus / pending-drag transitions feed the capture snapshot.
+        self.push_ui_capture();
+    
+    }
+
+    /// 主ボタン解放の処理本体。 [`Self::press_primary`] と同じ理由で切り出してある。
+    pub(crate) fn release_primary(&mut self) {
+        self.app.on_input(&InputEvent::PointerReleased {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+            button: Some(InputMouseButton::Left),
+            modifiers: self.modifiers,
+        });
+        self.pressed_id = None;
+        // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
+        self.selecting = false;
+        // 1 文字も範囲が無いなら (= 単なる click) 視覚 noise になるので消す。
+        if let Some(ref sel) = self.selection {
+            if sel.is_empty() {
+                self.selection = None;
+            }
+        }
+        // Complete drag if active
+        if let Some((data, _source_id)) = self.drag_manager.on_release() {
+            // Find drop zone under cursor
+            if let Some(ref build) = self.last_build {
+                let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+                if let Some(target_id) = build.hit_regions.iter()
+                    .find(|r| r.drop_zone && r.rect.contains(pt))
+                    .and_then(|r| r.id.as_ref())
+                {
+                    self.app.on_drop(&data, target_id);
+                }
+            }
+        }
+        self.app.on_pointer_up();
+        // Drag end may flip `wants_pointer` back off.
+        self.push_ui_capture();
+    
+    }
+
+    pub(crate) fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
+        // 配る順が要点: **アプリが先、既定動作があと**。
+        //
+        // 以前は既定動作 (コピー・選択解除・フォーカス移動) を先に実行してから
+        // イベントを配っていて、 `on_input` の戻り値もどこでも読んでいなかった。
+        // doc は "Return true if handled" と言っているのに、 `true` を返しても
+        // 既定動作はそのまま走る — 契約が嘘になっていた (issue #18)。
+        // アプリが独自キーバインドを持てるよう、 消費されたら既定動作を止める。
+        let key_event = InputEvent::KeyInput {
+            key,
+            pressed,
+            modifiers: self.modifiers,
+        };
+
+        // フォーカス中の要素 → アプリ の順。 Tab / Escape は「フォーカス操作
+        // そのもの」なので、 フィールドには渡さない (テキスト欄が Tab を食べて
+        // しまうと移動できなくなる)。
+        let handled_by_focus = if key != Key::Tab && key != Key::Escape {
+            // 登録済みの欄が先。 id の借用と `&mut self` が重なるので clone で外す。
+            self.route_to_managed(&key_event)
+                || match self.focused_id.clone() {
+                    Some(id) => self.app.on_focused_input(&id, &key_event),
+                    None => false,
+                }
+        } else { false };
+        // 押下・解放の**両方**を配る。押下だけを配っていた頃は、⇧の押下は届くのに
+        // 解放が来ないので、アプリ側で「押しっぱなし」を保持すると二度と落ちなかった。
+        let handled = handled_by_focus || self.app.on_input(&key_event);
+
+        // 既定動作は押下のみ、 かつ誰も消費しなかったときだけ。 解放でも走らせると
+        // ⇧を離しただけで選択が消える、といった挙動になる。
+        if pressed && !handled {
+            // Cmd+C (macOS) / Ctrl+C (other): 選択テキストをクリップボードへ。
+            // 0.4.0 より前は macOS 専用 (pbcopy サブプロセス) で、 他は
+            // `let _ = text;` と捨てていた (issue #20)。
+            let is_copy = crate::clipboard::is_copy_shortcut(key, self.modifiers);
             if is_copy {
                 if let Some(text) = self.selected_text() {
-                    #[cfg(target_os = "macos")]
-                    crate::macos_drag::copy_text_to_clipboard(&text);
-                    #[cfg(not(target_os = "macos"))]
-                    { let _ = text; /* TODO: linux/wasm clipboard */ }
+                    crate::clipboard::write_text(&text);
+                }
+            }
+            // Cmd+V (macOS) / Ctrl+V (other): クリップボードを読んで 1 イベントで配る。
+            //
+            // 0.4.0 より前は**ペーストの実装がどこにも無かった**。 widgets 側に
+            // 受け口のコメントだけがあり、 実際には何も届かなかった (issue #20)。
+            // `CharInput` の連打にしないのは、 消費側が undo の単位や IME の状態と
+            // 噛み合わせられなくなるため。
+            if crate::clipboard::is_paste_shortcut(key, self.modifiers) {
+                if let Some(text) = crate::clipboard::read_text() {
+                    let ev = InputEvent::Paste { text };
+                    // 登録済みの欄が先。 他のイベントと同じ順序。
+                    if !self.route_to_managed(&ev) {
+                        crate::runtime_shared::dispatch(
+                            &mut self.app,
+                            self.focused_id.as_deref(),
+                            &ev,
+                        );
+                    }
                 }
             }
             // Any key other than the copy shortcut dismisses the
@@ -2217,30 +2541,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                 }
             }
-            // Escape / Tab moved focus → refresh the capture snapshot
-            // before the event reaches the app.
+            // Escape / Tab がフォーカスを動かしたら capture を撮り直す。
+            // 配信より後になったので、 アプリはこの frame の `on_input` では
+            // 移動前の状態を見る。 移動後は直後の `on_ui_capture` で届く。
             if key == Key::Escape || key == Key::Tab {
                 self.push_ui_capture();
             }
-        }
-        // Route to focused element first, then to app.
-        //
-        // 押下・解放の**両方**を発行する。押下だけを配っていた頃は、
-        // ⇧の押下は届くのに解放が来ないので、アプリ側で「押しっぱなし」を
-        // 保持すると二度と落ちなかった（⇧+ドラッグ = 選択に足す、のような
-        // 修飾つき操作が作れない）。副作用は上の `if pressed` に閉じてある。
-        let key_event = InputEvent::KeyInput {
-            key,
-            pressed,
-            modifiers: self.modifiers,
-        };
-        let handled_by_focus = if key != Key::Tab && key != Key::Escape {
-            if let Some(ref id) = self.focused_id {
-                self.app.on_focused_input(id, &key_event)
-            } else { false }
-        } else { false };
-        if !handled_by_focus {
-            self.app.on_input(&key_event);
         }
         if pressed {
             // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の
@@ -2248,11 +2554,17 @@ impl<A: DeclarativeApp> AppState<A> {
             // ここはルーティングだけ。
             for ch in chars {
                 let char_event = InputEvent::CharInput(ch);
-                let handled = if let Some(ref id) = self.focused_id {
-                    self.app.on_focused_input(id, &char_event)
-                } else { false };
+                // 登録済みの欄が先。 アプリが二重に処理する余地を作らない。
+                let handled = self.route_to_managed(&char_event)
+                    || match self.focused_id {
+                        Some(ref id) => self.app.on_focused_input(id, &char_event),
+                        None => false,
+                    };
                 if !handled {
-                    self.app.on_input(&char_event);
+                    let handled_by_app = self.app.on_input(&char_event);
+                    if !handled_by_app {
+                        self.warn_if_typing_went_nowhere();
+                    }
                 }
             }
         }
@@ -2718,7 +3030,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// `KeyboardInput` を先に、`ModifiersChanged` を後に積むためで、⇧の押下イベントは
     /// `shift: false` を、解放イベントは `shift: true` を載せて届く。
     /// [`InputEvent::ModifiersChanged`] だけが変化そのものを正しく伝える。
-    fn set_modifiers(&mut self, modifiers: Modifiers) {
+    pub(crate) fn set_modifiers(&mut self, modifiers: Modifiers) {
         self.modifiers = modifiers;
         self.app.on_input(&InputEvent::ModifiersChanged(modifiers));
     }
@@ -2732,7 +3044,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// ポインタ直下のホバー / tooltip / cursor を引き直し、変化をアプリへ通知する。
     /// 解決そのものは [`crate::runtime_shared::resolve_hover`]（scene ランタイムと
     /// 共通）で、ここが足すのは本文中リンクの上書きだけ。
-    fn update_hover(&mut self) {
+    pub(crate) fn update_hover(&mut self) {
         let mut hit = self
             .last_build
             .as_ref()
@@ -2864,31 +3176,40 @@ impl<A: DeclarativeApp> AppState<A> {
             .size
             .width
             / 1000.0;
-        let ctx = ViewContext {
-            width: w,
-            height: h,
-            hovered: None,
-            focused: None,
-            mouse_x: 0.0,
-            mouse_y: 0.0,
-            shift_held: false,
-            cmd_held: false,
-            scroll_states: std::collections::HashMap::new(),
-            tooltip: None,
-            drag: None,
-            theme: self.app.theme(),
-            presence: std::collections::HashMap::new(),
-            images: Some(self.image_ctx.clone()),
-            mono_advance,
-        };
-        let root = self.app.view_for(&extra.key, &ctx);
-        let build_result = {
+        // 計測器を先に作り、 `ViewContext` に差してから view を呼ぶ。 以前は
+        // view のあとで作っていたが、 それだとアプリが実フォント計測に触れない
+        // (issue #15)。 `extra.text_renderer` の可変借用を後段の
+        // `UiDrawLists::extract` に返すため、 ブロックで閉じる。
+        let (root, build_result) = {
             let measurer = crate::bridge::TextRendererMeasurer::new(
                 &mut extra.text_renderer,
                 &extra.measure_cache,
             );
-            build_tree_measured(&root, w, h, &measurer)
+            let ctx = ViewContext {
+                width: w,
+                height: h,
+                hovered: None,
+                focused: None,
+                mouse_x: 0.0,
+                mouse_y: 0.0,
+                shift_held: false,
+                cmd_held: false,
+                scroll_states: std::collections::HashMap::new(),
+                tooltip: None,
+                drag: None,
+                theme: self.app.theme(),
+                presence: std::collections::HashMap::new(),
+                images: Some(self.image_ctx.clone()),
+                mono_advance,
+                measurer: Some(&measurer),
+                managed: Default::default(),
+            actions: Default::default(),
+            };
+            let root = self.app.view_for(&extra.key, &ctx);
+            let built = build_tree_measured(&root, w, h, &measurer);
+            (root, built)
         };
+        let _ = &root;
 
         let (rects, lists) =
             UiDrawLists::extract(&build_result.render_list, &mut extra.text_renderer);
@@ -3142,10 +3463,28 @@ mod frame_tests {
         modifier_changes: Vec<Modifiers>,
         /// `on_input` で受けた `PointerMoved` を (kind, x, shift) で記録する。
         moves: Vec<(PointerKind, f32, bool)>,
+        /// `on_input` に届いた全イベントの種別。 `input_delivery` の宣言と
+        /// 実挙動を突き合わせるのに使う。
+        received: Vec<InputEventKind>,
+        /// `view()` の中で `ctx.caret_x(..)` を呼んだ結果。 `view` は `&self` なので
+        /// `Cell` 越しに書く。
+        measured_caret: std::cell::Cell<f32>,
+        /// `on_input` で常に `true` を返す (= 全イベントを消費する)。
+        consume_all: bool,
+        /// `view()` に渡された `ctx` が計測器を持っていたか。
+        ///
+        /// 値だけでは配線漏れを検出できない — StubMeasure (1 文字 = font_size*0.5) と
+        /// `mono_advance` フォールバックは同じ答えを返すので、 `measurer: None` でも
+        /// caret の値は一致してしまう。 有無そのものを見る必要がある。
+        measurer_present: std::cell::Cell<bool>,
     }
 
     impl DeclarativeApp for RecordingApp {
         fn view(&self, _ctx: &ViewContext) -> Element {
+            // 実フォント計測がアプリまで届いているかを毎フレーム記録する。
+            self.measurer_present.set(_ctx.measurer.is_some());
+            self.measured_caret
+                .set(_ctx.caret_x("abcd", 2, 20.0, false));
             match &self.tree {
                 Some(build) => build(),
                 None => sabitori_core::div(),
@@ -3161,6 +3500,9 @@ mod frame_tests {
         }
 
         fn on_input(&mut self, event: &InputEvent) -> bool {
+            // 種別だけを別に貯める。 `input_delivery` の宣言が実挙動と合っているかを
+            // 突き合わせるのに使う (下の declared_delivery_matches_reality)。
+            self.received.push(event.kind());
             match event {
                 InputEvent::KeyInput { key, pressed, modifiers } => {
                     self.keys.push((*key, *pressed, modifiers.shift));
@@ -3172,7 +3514,7 @@ mod frame_tests {
                 }
                 _ => {}
             }
-            false
+            self.consume_all
         }
 
         fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
@@ -3259,10 +3601,9 @@ mod frame_tests {
                 })
                 .collect();
             sabitori_core::div()
-                .id("pane")
+                .scroll("pane")
                 .flex_col()
                 .h(sabitori_core::Dimension::Px(200.0))
-                .overflow_scroll()
                 .children(rows)
         };
 
@@ -3303,10 +3644,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()
@@ -3333,10 +3673,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()
@@ -3362,10 +3701,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()
@@ -3576,6 +3914,159 @@ mod frame_tests {
         assert!(state.selection.is_some());
         state.handle_key_input(Key::Other, false, Vec::new());
         assert!(state.selection.is_some());
+    }
+
+    /// フォーカス可能な 2 要素を持つツリー。 Tab 移動の観測用。
+    fn two_focusables() -> Element {
+        sabitori_core::div().flex_col().children([
+            sabitori_core::div()
+                .id("a")
+                .w(sabitori_core::Dimension::Px(100.0))
+                .h(sabitori_core::Dimension::Px(30.0))
+                .focusable(),
+            sabitori_core::div()
+                .id("b")
+                .w(sabitori_core::Dimension::Px(100.0))
+                .h(sabitori_core::Dimension::Px(30.0))
+                .focusable(),
+        ])
+    }
+
+    /// 前提: 消費しなければ Tab はフォーカスを動かす。 下のテストの対照。
+    #[test]
+    fn tab_moves_focus_when_the_app_does_not_consume_it() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+
+        state.handle_key_input(Key::Tab, true, Vec::new());
+        assert!(state.focused_id.is_some(), "Tab でフォーカスが入る");
+    }
+
+    /// **issue #18 の回帰テスト.** `on_input` が `true` を返したら、 ランタイムの
+    /// 既定動作 (Tab のフォーカス移動) を行わないこと。
+    ///
+    /// doc は "Return true if handled" と言っていたのに、 0.4.0 より前は戻り値を
+    /// どの呼び出し箇所でも読んでいなかった。 Tab を補完に使うアプリのように、
+    /// 既定動作を奪いたいケースが書けなかった。
+    #[test]
+    fn consuming_tab_prevents_the_runtime_from_moving_focus() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            consume_all: true,
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+
+        state.handle_key_input(Key::Tab, true, Vec::new());
+
+        assert_eq!(
+            state.focused_id, None,
+            "アプリが消費したのにランタイムがフォーカスを動かした"
+        );
+        // イベント自体は届いていること (消費 = 届かない、ではない)。
+        assert!(
+            state.app.keys.iter().any(|(k, pressed, _)| *k == Key::Tab && *pressed),
+            "消費するアプリにもイベントは届く"
+        );
+    }
+
+    /// **issue #18 の回帰テスト.** Escape のフォーカス解除も抑止できること。
+    /// 自前のモーダルを Escape で閉じたいアプリ向け。
+    #[test]
+    fn consuming_escape_keeps_the_current_focus() {
+        let mut state = AppState::new(RecordingApp {
+            tree: Some(Box::new(two_focusables)),
+            consume_all: true,
+            ..Default::default()
+        });
+        run_frame(&mut state, 400.0, 300.0);
+        state.focused_id = Some("a".to_string());
+
+        state.handle_key_input(Key::Escape, true, Vec::new());
+
+        assert_eq!(
+            state.focused_id.as_deref(),
+            Some("a"),
+            "アプリが消費したのにフォーカスが外れた"
+        );
+    }
+
+    /// **issue #15 の回帰テスト.** `view()` の中で実フォント計測が使えること。
+    ///
+    /// これが無いとキャレットの x 位置を計算する手段が無く、 等幅以外のテキスト欄に
+    /// カーソルを置けない。 `ViewContext::mono_advance` (等幅 1 セルぶんの送り) が
+    /// 唯一の計測手段だった頃は、 プロポーショナル書体では原理的に書けなかった。
+    ///
+    /// ランタイムが `measurer` を差し忘れると `None` へのフォールバック
+    /// (mono_advance からの概算) に落ちるので、 **StubMeasure の値と一致するか**で
+    /// 「概算ではなく本物が来ている」ことまで見る。
+    #[test]
+    fn view_can_measure_text_with_the_real_measurer() {
+        let mut state = AppState::new(RecordingApp::default());
+        run_frame(&mut state, 800.0, 600.0);
+
+        // 配線そのもの。 値の比較では検出できない (下の注記参照)。
+        assert!(
+            state.app.measurer_present.get(),
+            "ランタイムが ViewContext に計測器を差していない"
+        );
+        // 計測の中身。 StubMeasure は 1 文字 = font_size * 0.5 なので "ab" @ 20px = 20.0。
+        //
+        // 注意: この値だけでは配線漏れを検出できない。 StubMeasure から導かれる
+        // `mono_advance` は 0.5 で、 計測器なしのフォールバック
+        // (chars * mono_advance * font_size) と答えが一致するため。 上の
+        // `measurer_present` が本命で、 こちらは計算そのものの確認。
+        assert_eq!(state.app.measured_caret.get(), 20.0);
+    }
+
+    /// `input_delivery` の宣言が、 実際にランタイムを回したときの挙動と一致すること。
+    ///
+    /// 表は手書きなので、 放っておけば実装とズレる — それでは issue #12 の
+    /// 「宣言はあるが配線が無い」 を別の形で再生産するだけになる。 ここでは
+    /// **ヘッドレスで叩ける入口を持つ種別**について、 `ToApp` と宣言したものが
+    /// 本当に `on_input` へ届くことを確認する。
+    ///
+    /// ポインタ系と IME は winit の `WindowEvent` からしか駆動できず、 それには
+    /// 窓が要るのでここでは検証できない。 ヘッドレス駆動を公開 API にする
+    /// issue #19 が入ったら、 残りもここに足すこと。
+    #[test]
+    fn declared_delivery_matches_reality() {
+        use sabitori_input::Delivery;
+
+        let mut state = AppState::new(RecordingApp::default());
+
+        // 叩ける入口: キー入力 (文字つき) と修飾キーの変化。
+        state.handle_key_input(Key::A, true, vec!['a']);
+        state.set_modifiers(Modifiers { shift: true, ..Default::default() });
+
+        let driven = [
+            InputEventKind::KeyInput,
+            InputEventKind::CharInput,
+            InputEventKind::ModifiersChanged,
+        ];
+        for kind in driven {
+            assert_eq!(
+                crate::declarative::input_delivery(kind),
+                Delivery::ToApp,
+                "{kind:?} を ToApp 以外に変えたなら、 このテストの driven からも外すこと"
+            );
+            assert!(
+                state.app.received.contains(&kind),
+                "{kind:?} は ToApp と宣言されているのに on_input へ届いていない"
+            );
+        }
+
+        // 逆向きも見る: 宣言が ToApp でない種別が紛れ込んでいないこと。
+        for kind in &state.app.received {
+            assert_eq!(
+                crate::declarative::input_delivery(*kind),
+                Delivery::ToApp,
+                "{kind:?} が on_input に届いているのに、 宣言が ToApp になっていない"
+            );
+        }
     }
 }
 

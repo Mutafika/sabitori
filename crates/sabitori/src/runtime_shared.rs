@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use sabitori_core::build::BuildResult;
 use sabitori_core::{Cursor, Point};
+use sabitori_input::InputEvent;
 use winit::window::Window;
 
 use crate::declarative::{DeclarativeApp, UiCapture};
@@ -85,6 +86,7 @@ pub(crate) fn winit_cursor(cursor: Cursor) -> winit::window::CursorIcon {
         Cursor::Crosshair => CursorIcon::Crosshair,
         Cursor::NotAllowed => CursorIcon::NotAllowed,
         Cursor::ResizeEw => CursorIcon::EwResize,
+        Cursor::ResizeNs => CursorIcon::NsResize,
     }
 }
 
@@ -190,6 +192,7 @@ mod tests {
             (Cursor::Crosshair, CursorIcon::Crosshair),
             (Cursor::NotAllowed, CursorIcon::NotAllowed),
             (Cursor::ResizeEw, CursorIcon::EwResize),
+            (Cursor::ResizeNs, CursorIcon::NsResize),
         ];
         for (from, to) in pairs {
             assert_eq!(winit_cursor(from), to, "{from:?} のマッピングが違う");
@@ -219,4 +222,29 @@ mod tests {
         assert!(ui_capture(Some(&b), 5.0, 5.0, true, false).wants_pointer);
         assert!(ui_capture(None, 5.0, 5.0, false, true).wants_keyboard);
     }
+}
+
+/// 入力イベントをアプリへ配る唯一の口。 消費されたら `true`。
+///
+/// 順序は **フォーカス中の要素が先、アプリ全体があと**。 フォーカス中の要素が
+/// [`DeclarativeApp::on_focused_input`] で消費すれば、 [`DeclarativeApp::on_input`]
+/// には流さない (テキスト欄に打った文字がアプリ全体のキーバインドにも当たる、
+/// といった二重処理を防ぐ)。
+///
+/// この分岐は 2 ランタイムの キー / 文字 / IME の各経路に散らばっていて、
+/// 実際 scene_app の IME だけ `on_input` へのフォールバックが無く、 フォーカスが
+/// 無いと変換中の文字がどこにも届かなかった (issue #22)。 1 箇所に寄せてある。
+///
+/// Tab / Escape のような「フォーカス操作そのもの」は `focused_id` に `None` を
+/// 渡して呼ぶこと — フィールドが食べてしまうと移動できなくなる。
+pub(crate) fn dispatch<A: DeclarativeApp>(
+    app: &mut A,
+    focused_id: Option<&str>,
+    event: &InputEvent,
+) -> bool {
+    let handled_by_focus = match focused_id {
+        Some(id) => app.on_focused_input(id, event),
+        None => false,
+    };
+    handled_by_focus || app.on_input(event)
 }

@@ -36,7 +36,13 @@ struct Gallery {
     // Scroll
     scroll_y: f32,
     scroll_target: f32,
-    sidebar_scroll: f32,
+    /// 選択項目を見える位置へ動かす要求。 `scroll_intents` が 1 度だけ吸い出す。
+    ///
+    /// 以前は `sidebar_scroll: f32` を直に持って `.scroll_offset()` に渡していたが、
+    /// ランタイムが `Overflow::Scroll` の要素を全部管理していたため**毎フレーム
+    /// 上書きされ、この値は一度も効いていなかった** (issue #14)。 プログラム的な
+    /// スクロールは `scroll_intents` が正しい口。
+    sidebar_scroll_intent: Option<f32>,
     // Cached presets
     presets: Vec<Theme>,
     // Toggle states
@@ -126,18 +132,16 @@ impl Gallery {
         }
     }
 
-    /// Estimated content height for the current selected demo.
+    /// 選択中の項目がサイドバーの見える範囲に来るよう要求する。
+    ///
+    /// 現在のスクロール位置はランタイムが持っているので、 「足りない分だけ動かす」
+    /// 判断はこちらでは書けない。 選択項目が中央に来る位置を要求し、 上下端の
+    /// クランプはランタイム側 (`smooth_scroll_to`) に任せる。
     fn ensure_sidebar_visible(&mut self) {
-        // Each menu item ~22px high, estimate item position
-        // Account for section headers (~30px each at indices 0, 8, 16/21, 17/22)
         let item_h = 22.0;
+        let viewport = 500.0; // サイドバーのおおよその可視高さ
         let y = self.selected as f32 * item_h;
-        let viewport = 500.0; // approximate sidebar viewport
-        if y < self.sidebar_scroll {
-            self.sidebar_scroll = (y - 20.0).max(0.0);
-        } else if y > self.sidebar_scroll + viewport - item_h * 2.0 {
-            self.sidebar_scroll = y - viewport + item_h * 3.0;
-        }
+        self.sidebar_scroll_intent = Some((y - viewport * 0.5).max(0.0));
     }
 
     fn content_h(&self) -> f32 {
@@ -1575,22 +1579,22 @@ impl Gallery {
     fn form_controls(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
         let is_focused = |id: &str| ctx.focused.as_deref() == Some(id);
 
-        // Text input
-        let text_display = self.form_text.display_text();
-        let is_placeholder = self.form_text.text.is_empty();
-        let input = form_text_input(
-            "form-input",
-            &text_display,
-            is_placeholder,
-            ((self.elapsed() * 2.0) as u32 % 2 == 0) && is_focused("form-input"),
-            0.0,
-            is_focused("form-input"),
-            t.text_primary,
-            t.text_disabled,
-            t.surface,
-            t.border,
-            t.primary,
-        );
+        // Text input。 0.4.0 で text_input が 1 本になった。 以前は自前で点滅を
+        // 数え (elapsed の偶奇)、キャレット位置には 0 を渡していた (呼び出し側が
+        // 幅を測れなかったため文末固定)。 いまは状態と ctx が両方持つ。
+        let input_style = sabitori_widgets::TextInputStyle {
+            bg: t.surface,
+            border: t.border,
+            text: t.text_primary,
+            placeholder: t.text_disabled,
+            font_size: 14.0,
+            radius: 6.0,
+            padding: 10.0,
+            focus_border: Some(t.primary),
+            caret: Some(t.text_primary),
+            preedit: Some(t.primary.with_alpha(0.25)),
+        };
+        let input = sabitori_widgets::text_input(ctx, "form-input", &self.form_text, &input_style);
 
         // Checkboxes
         let check_labels = ["Enable notifications", "Dark mode", "Auto-save"];
@@ -2142,8 +2146,7 @@ impl DeclarativeApp for Gallery {
                 sidebar_title.shrink(0.0).p_px(if modern { 10.0 } else { 6.0 }).pb(Px(4.0)),
                 hsep(s_border),
                 div().flex_1()
-                    .overflow_scroll()
-                    .scroll_offset(0.0, self.sidebar_scroll)
+                    .scroll("sidebar")
                     .flex_col().py(Px(4.0))
                     .children(menu_items),
             ]);
@@ -2328,6 +2331,13 @@ impl DeclarativeApp for Gallery {
         root.children(root_kids)
     }
 
+    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+        self.sidebar_scroll_intent
+            .take()
+            .map(|y| vec![("sidebar".to_string(), y)])
+            .unwrap_or_default()
+    }
+
     fn on_scroll(&mut self, delta_y: f32) {
         let max = self.content_h();
         if max <= 0.0 { return; } // no scrollable content
@@ -2466,22 +2476,8 @@ impl DeclarativeApp for Gallery {
             self.splash_done = true;
             return true;
         }
-        // Route input to focused text input
-        if self.focused.as_deref() == Some("form-input") {
-            match event {
-                InputEvent::CharInput(ch) => { self.form_text.on_char(*ch); return true; }
-                InputEvent::KeyInput { key, pressed: true, modifiers, .. } => {
-                    if self.form_text.on_key(*key, *modifiers) { return true; }
-                }
-                InputEvent::ImePreedit { text: t, cursor } => {
-                    self.form_text.on_ime_preedit(t.clone(), *cursor); return true;
-                }
-                InputEvent::ImeCommit { text: t } => {
-                    self.form_text.on_ime_commit(t); return true;
-                }
-                _ => {}
-            }
-        }
+        // テキスト欄への配線は 0.4.0 で不要になった。 `text_input(..)` を
+        // `view()` に置いた時点でランタイムが配信する。
         if let InputEvent::CharInput(c) = event {
             match c {
                 'j' => {
@@ -2569,7 +2565,7 @@ fn main() {
         next_toast_id: 0,
         scroll_y: 0.0,
         scroll_target: 0.0,
-        sidebar_scroll: 0.0,
+        sidebar_scroll_intent: None,
         presets: Theme::all_presets(),
         toggles: [true, false, true, false],
         toggle_changed: [0.0; 4],

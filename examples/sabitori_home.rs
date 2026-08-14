@@ -1132,10 +1132,12 @@ const THEMES: [(&str, &str); 4] = [
     ("Amber Dusk", ACCENT_AMBER),
 ];
 
-const WIDGET_NAMES: [&str; 20] = [
-    "Table", "TreeView", "Modal", "Dropdown", "Select", "DatePicker", "ColorPicker",
-    "Slider", "Tabs", "Toast", "Tooltip", "ContextMenu", "TextInput", "SplitPane",
-    "ScrollView", "NumericInput", "MenuBar", "Panel", "Card", "VirtualList",
+/// 実在するものだけを並べること。 0.4.0 より前は、 `view()` から使えない
+/// retained ウィジェット (`Card` / `Tabs` / 旧 `Table` など) もここに数えていた。
+const WIDGET_NAMES: [&str; 16] = [
+    "Table", "TreeView", "Modal", "Select", "DatePicker", "ColorPicker",
+    "Slider", "Toast", "Tooltip", "ContextMenu", "TextInput", "SplitPane",
+    "NumericInput", "MenuBar", "Panel", "VirtualList",
 ];
 
 fn mac_dots(title: &str) -> Element {
@@ -1519,27 +1521,9 @@ impl DeclarativeApp for Home {
         self.hovered = id.map(|s| s.to_string());
     }
 
-    fn on_input(&mut self, event: &InputEvent) -> bool {
-        if !self.input_focused {
-            return false;
-        }
-        match event {
-            InputEvent::CharInput(c) => {
-                self.input.on_char(*c);
-                true
-            }
-            InputEvent::KeyInput { key, pressed: true, modifiers } => self.input.on_key(*key, *modifiers),
-            InputEvent::ImePreedit { text, cursor } => {
-                self.input.on_ime_preedit(text.clone(), *cursor);
-                true
-            }
-            InputEvent::ImeCommit { text } => {
-                self.input.on_ime_commit(text);
-                true
-            }
-            _ => false,
-        }
-    }
+    // 0.4.0 で `on_input` によるテキスト欄への手動配線を削除した。
+    // `text_input(..)` を `view()` に置いた時点でランタイムが面倒を見るので、
+    // ここに書くことは何も無い (書くと二重処理になる)。
 }
 
 // Native example entry. On wasm the page is driven by `web/sabitori-home`,

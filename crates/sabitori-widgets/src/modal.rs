@@ -1,6 +1,6 @@
 use sabitori_anim::{Animated, Spring};
 use sabitori_core::{Color, Element, Rect};
-use sabitori_core::element::{div, Px};
+use sabitori_core::element::{div, Px, Role};
 
 /// Style for modal dialog.
 #[derive(Clone, Debug)]
@@ -165,6 +165,8 @@ impl Modal {
 
         // Dialog panel
         let dialog = div()
+            .role(Role::Dialog)
+            .label(&self.title)
             .pos(left, top)
             .w(Px(dialog_w))
             .h(Px(dialog_h))

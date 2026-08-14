@@ -1,7 +1,7 @@
 //! Scroll-state synchronization helpers for hosts that drive the
 //! build→GPU pipeline manually.
 //!
-//! The declarative runner manages `overflow_scroll` containers internally;
+//! The declarative runner manages `.scroll(id)` containers internally;
 //! embedded hosts (e.g. a CAD app overlaying sabitori UI on its own wgpu
 //! scene via [`UiOverlayRenderer`](sabitori_gpu::UiOverlayRenderer)) need the
 //! same bookkeeping without the runner. The per-frame protocol is:
@@ -25,16 +25,26 @@
 use std::collections::HashMap;
 
 use sabitori_core::build::BuildResult;
-use sabitori_core::element::{Dimension, Element, Overflow};
+use sabitori_core::element::{Dimension, Element, Overflow, ScrollOwner};
 use sabitori_widgets::ScrollView;
 
 /// Walk the element tree and wire up scroll containers.
 ///
-/// For every element with `.overflow_scroll()`:
-/// - Synthesize a stable id from the tree path if none is set. The path
-///   is a dot-separated list of child indices (e.g. `__scroll:0.2.1`),
-///   stable across frames as long as the tree shape is stable. This
-///   removes the "scroll doesn't work because I forgot .id()" trap.
+/// 対象は **`.scroll(id)` で作られたコンテナだけ** — `scroll_owner` が
+/// [`ScrollOwner::Runtime`] かつ id を持つもの。 `.scroll_manual(x, y)` の
+/// コンテナには触れない。
+///
+/// 以前はここで `Overflow::Scroll` の要素を**全部**管理対象にし、 id が無ければ
+/// ツリー上の位置から合成していた。 それが 2 つのバグを生んでいた (issue #14):
+///
+/// - アプリが自分で持っているつもりのオフセットを毎フレーム上書きしていた
+///   (= 手動モードが事実上存在しなかった)
+/// - 合成 id (`__scroll:0.2.1`) は子インデックス由来なので、 兄弟が 1 つ増減
+///   しただけで別 id になり、 スクロール位置が 0 に飛んだ
+///
+/// どちらも `.scroll(id)` が安定した id を要求することで根から消えている。
+///
+/// For every runtime-owned scroll container:
 /// - Register a [`ScrollView`] in `states` on first sight, keyed by id.
 /// - Set `scroll_x`/`scroll_y` from the managed state so the build picks
 ///   up the current scroll offset.
@@ -49,24 +59,16 @@ use sabitori_widgets::ScrollView;
 /// 0 every frame because it understates content_height when children
 /// are structured (e.g. one div containing a long article).
 pub fn patch_scroll_offsets(root: &mut Element, states: &mut HashMap<String, ScrollView>) {
-    let mut path: Vec<usize> = Vec::new();
-    patch_scroll_inner(root, states, &mut path);
+    patch_scroll_inner(root, states);
 }
 
-fn patch_scroll_inner(
-    element: &mut Element,
-    states: &mut HashMap<String, ScrollView>,
-    path: &mut Vec<usize>,
-) {
-    if element.style.overflow == Overflow::Scroll {
-        if element.id.is_none() {
-            let path_str = path
-                .iter()
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            element.id = Some(format!("__scroll:{path_str}"));
-        }
+fn patch_scroll_inner(element: &mut Element, states: &mut HashMap<String, ScrollView>) {
+    if element.style.overflow == Overflow::Scroll
+        && element.style.scroll_owner == ScrollOwner::Runtime
+    {
+        // id はスクロール状態のキー。 `.scroll(id)` が必ず設定するので、 ここが
+        // `None` になるのは生の `.overflow(Overflow::Scroll)` を使った場合だけ。
+        // その場合はキーが無いので管理できない = アプリ所有として扱う。
         if let Some(ref id) = element.id {
             // Explicit height wins; otherwise reuse the previous frame's
             // measurement (0 on the very first frame — one jank frame is
@@ -89,10 +91,8 @@ fn patch_scroll_inner(
             element.style.scroll_y = sv.scroll_y.value();
         }
     }
-    for (i, child) in element.children.iter_mut().enumerate() {
-        path.push(i);
-        patch_scroll_inner(child, states, path);
-        path.pop();
+    for child in element.children.iter_mut() {
+        patch_scroll_inner(child, states);
     }
 }
 
@@ -157,12 +157,18 @@ mod tests {
             .collect();
         div().w(Px(400.0)).h(Px(300.0)).flex_col().child(
             div()
-                .id("list")
+                .scroll("list")
                 .flex_1()
                 .flex_col()
-                .overflow_scroll()
                 .children(rows),
         )
+    }
+
+    /// 50 行 (40px) — 上の `scroll_tree` と同じ中身を、別の外枠で使い回す。
+    fn rows_50() -> Vec<Element> {
+        (0..50)
+            .map(|_| div().w_full().h(Px(40.0)).bg(Color::WHITE))
+            .collect()
     }
 
     #[test]
@@ -198,15 +204,90 @@ mod tests {
         );
     }
 
+    /// **issue #14 の回帰テスト (A).** アプリが持つオフセットにランタイムが触らないこと。
+    ///
+    /// 以前は `Overflow::Scroll` の要素を無条件に管理対象にしていたため、
+    /// `.scroll_offset(0.0, 500.0)` は初回フレームで 0 に潰されていた
+    /// (`ScrollView::new()` の初期値が書き込まれる)。 id を付けなければ避けられる、
+    /// ということも無く、 **id が無ければ合成されて管理対象になった**。
+    /// つまり手動スクロールは事実上存在しなかった。
     #[test]
-    fn patch_synthesizes_id_for_anonymous_scroller() {
+    fn app_owned_offset_is_left_alone() {
         let mut states = HashMap::new();
-        let mut root = div().w(Px(100.0)).h(Px(100.0)).child(
-            div().flex_1().flex_col().overflow_scroll(),
-        );
+        let mut root = div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .child(div().flex_1().flex_col().scroll_manual(0.0, 500.0));
+
         patch_scroll_offsets(&mut root, &mut states);
-        assert_eq!(root.children[0].id.as_deref(), Some("__scroll:0"));
-        assert!(states.contains_key("__scroll:0"));
+
+        assert_eq!(
+            root.children[0].style.scroll_y, 500.0,
+            "アプリ所有のオフセットが上書きされた"
+        );
+        assert!(
+            states.is_empty(),
+            "アプリ所有のコンテナに管理状態を作ってはいけない"
+        );
+    }
+
+    /// **issue #14 の回帰テスト (B).** ツリーの形が変わってもスクロール位置が残ること。
+    ///
+    /// 以前は id が無いと子インデックスから合成していた (`__scroll:0.2.1`)。
+    /// ヘッダが出入りするだけで `__scroll:0` → `__scroll:1` に変わり、
+    /// 別の状態を引いて位置が 0 に飛んだ。 `.scroll(id)` が安定した名前を要求する
+    /// ので、 同じ id を書いている限りこれは起こらない。
+    #[test]
+    fn scroll_position_survives_a_sibling_appearing() {
+        let mut states = HashMap::new();
+
+        // ヘッダ無し: scroller は index 0。
+        let mut a = div()
+            .w(Px(400.0))
+            .h(Px(300.0))
+            .flex_col()
+            .child(div().scroll("list").flex_1().flex_col().children(rows_50()));
+        patch_scroll_offsets(&mut a, &mut states);
+        apply_scroll_measures(&build_tree(&a, 400.0, 300.0), &mut states);
+
+        states.get_mut("list").unwrap().on_scroll_xy(0.0, -500.0);
+        for _ in 0..200 {
+            tick_all(&mut states, 1.0 / 60.0);
+        }
+        let scrolled = states.get("list").unwrap().scroll_y.value();
+        assert!(scrolled > 100.0, "前提: スクロールできている (got {scrolled})");
+
+        // ヘッダが出現 → scroller は index 1 へずれる。
+        let mut b = div().w(Px(400.0)).h(Px(300.0)).flex_col().children([
+            div().w_full().h(Px(20.0)),
+            div().scroll("list").flex_1().flex_col().children(rows_50()),
+        ]);
+        patch_scroll_offsets(&mut b, &mut states);
+
+        assert!(
+            b.children[1].style.scroll_y > 100.0,
+            "兄弟が増えたらスクロール位置が飛んだ (got {})",
+            b.children[1].style.scroll_y
+        );
+    }
+
+    /// 生の `.overflow(Overflow::Scroll)` は id が無ければ管理対象にならない。
+    /// キーが無い以上どうしようもないので、 黙って合成せずアプリ所有として扱う。
+    #[test]
+    fn raw_overflow_scroll_without_id_is_not_managed() {
+        let mut states = HashMap::new();
+        let mut root = div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .child(div().flex_1().flex_col().overflow(Overflow::Scroll));
+
+        patch_scroll_offsets(&mut root, &mut states);
+
+        assert!(states.is_empty(), "キーの無いコンテナを登録してはいけない");
+        assert!(
+            root.children[0].id.is_none(),
+            "id を勝手に合成してはいけない (位置依存の id が #14 の原因だった)"
+        );
     }
 
     #[test]

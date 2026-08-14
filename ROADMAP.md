@@ -4,9 +4,9 @@
 
 ## Current Status
 
-`0.3.x` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Next focus: API stabilization and the unimplemented areas (macOS native integration, physical-unit layout).
+`0.4.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. `0.4.0` removed the APIs that compiled but silently did nothing, and unified the widget layer on Element-returning free functions. Next focus: the accesskit adapter, then API stabilization and the unimplemented areas (macOS native integration, physical-unit layout).
 
-Releases ship from a single line — `0.3.x`. The `0.2.x` maintenance branch was merged back into `main` at `v0.3.1` and is no longer maintained. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
+Releases ship from a single line — now `0.4.x`. The `0.2.x` maintenance branch was merged back into `main` at `v0.3.1` and is no longer maintained. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
 
 ## Implemented
 

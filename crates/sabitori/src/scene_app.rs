@@ -12,7 +12,8 @@ use sabitori_core::build::build_tree_measured;
 use sabitori_core::ViewContext;
 use sabitori_gpu::{GpuContext, GpuRenderer, RenderPhase, SceneRenderContext};
 use sabitori_input::{
-    InputEvent, Key, Modifiers, MouseButton as SabiMouseButton, PointerKind, MOUSE_POINTER_ID,
+    Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as SabiMouseButton,
+    PointerKind, MOUSE_POINTER_ID,
 };
 use sabitori_text::TextRenderer;
 use winit::application::ApplicationHandler;
@@ -50,6 +51,33 @@ pub trait SceneApp: DeclarativeApp {
     /// updates while a non-primary button (middle/right) is held, so camera pan/orbit driven
     /// off `on_pointer_move` freezes mid-drag. Use this for those drags (CAD/3D-app style).
     fn on_raw_motion(&mut self, _dx: f64, _dy: f64) {}
+}
+
+/// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
+///
+/// [`crate::declarative::input_delivery`] と見比べること。 IME の届き方が
+/// declarative と違っていた (`ImeEnabled` を組み立てない / preedit・commit が
+/// フォーカス限定) が、 issue #22 で揃えた。 現在の差は `PointerLeft` の扱いだけで、
+/// これは両ランタイムとも同じ (`on_cursor_left` で伝える)。
+pub fn input_delivery(kind: InputEventKind) -> Delivery {
+    match kind {
+        InputEventKind::PointerMoved
+        | InputEventKind::PointerPressed
+        | InputEventKind::PointerReleased
+        | InputEventKind::PointerCancelled => Delivery::ToApp,
+
+        InputEventKind::PointerLeft => {
+            Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
+        }
+
+        InputEventKind::ImeEnabled
+        | InputEventKind::ImePreedit
+        | InputEventKind::ImeCommit
+        | InputEventKind::KeyInput
+        | InputEventKind::CharInput
+        | InputEventKind::ModifiersChanged
+        | InputEventKind::Paste => Delivery::ToApp,
+    }
 }
 
 struct SceneAppState<A: SceneApp> {
@@ -96,7 +124,7 @@ struct SceneAppState<A: SceneApp> {
     pinch: Option<PinchGesture>,
     /// Last [`UiCapture`] snapshot pushed to the app (deduped).
     last_capture: UiCapture,
-    /// 管理されたスクロールコンテナ(overflow_scroll)の状態。DeclarativeApp ランタイム
+    /// 管理されたスクロールコンテナ(`.scroll(id)`)の状態。DeclarativeApp ランタイム
     /// と同様にホイールを該当領域へルーティングし、毎フレーム offset を patch する。
     scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Animated style transitions (hover/active spring). Mirrors `AppState`
@@ -172,54 +200,6 @@ impl<A: SceneApp> SceneAppState<A> {
             winit::event::MouseButton::Right => Some(SabiMouseButton::Right),
             winit::event::MouseButton::Middle => Some(SabiMouseButton::Middle),
             _ => None,
-        }
-    }
-
-    /// `overflow_scroll` の要素を見つけて管理状態を作り、現在の offset を要素へ patch する。
-    /// DeclarativeApp ランタイムの同名処理を SceneApp 用に移植したもの。
-    fn patch_scroll_offsets(
-        element: &mut sabitori_core::Element,
-        states: &mut std::collections::HashMap<String, sabitori_widgets::ScrollView>,
-    ) {
-        let mut path: Vec<usize> = Vec::new();
-        Self::patch_scroll_inner(element, states, &mut path);
-    }
-
-    fn patch_scroll_inner(
-        element: &mut sabitori_core::Element,
-        states: &mut std::collections::HashMap<String, sabitori_widgets::ScrollView>,
-        path: &mut Vec<usize>,
-    ) {
-        use sabitori_core::element::{Dimension, Overflow};
-
-        if element.style.overflow == Overflow::Scroll {
-            if element.id.is_none() {
-                let path_str =
-                    path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
-                element.id = Some(format!("__scroll:{path_str}"));
-            }
-            if let Some(ref id) = element.id {
-                let explicit_h = match element.style.height {
-                    Dimension::Px(h) => Some(h),
-                    _ => None,
-                };
-                let viewport_h = explicit_h
-                    .or_else(|| states.get(id).map(|sv| sv.viewport_height))
-                    .unwrap_or(0.0);
-                let sv = states.entry(id.clone()).or_insert_with(|| {
-                    sabitori_widgets::ScrollView::new(viewport_h.max(1.0), viewport_h.max(1.0))
-                });
-                if let Some(h) = explicit_h {
-                    sv.viewport_height = h;
-                }
-                element.style.scroll_x = sv.scroll_x.value();
-                element.style.scroll_y = sv.scroll_y.value();
-            }
-        }
-        for (i, child) in element.children.iter_mut().enumerate() {
-            path.push(i);
-            Self::patch_scroll_inner(child, states, path);
-            path.pop();
         }
     }
 }
@@ -414,7 +394,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     if let Some(ref build) = self.last_build {
                         let mut focus_set = false;
                         for region in &build.hit_regions {
-                            if region.rect.contains(pos) {
+                            // 意味だけの領域 (role/label のみ) は透過する。 declarative
+                            // 側と同じ扱い (`HitRegion::is_interactive` の doc を参照)。
+                            if region.is_interactive() && region.rect.contains(pos) {
                                 if region.focusable {
                                     self.focused_id = region.id.clone();
                                     focus_set = true;
@@ -493,7 +475,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
-                // カーソル下の管理スクロールコンテナ(overflow_scroll)へルーティング。
+                // カーソル下の管理スクロールコンテナ(`.scroll(id)`)へルーティング。
                 // 該当が無ければアプリの on_scroll へフォールバック（DeclarativeApp と同じ）。
                 let mut handled = false;
                 if let Some(ref build) = self.last_build {
@@ -587,7 +569,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             if let Some(ref build) = self.last_build {
                                 let mut focus_set = false;
                                 for region in &build.hit_regions {
-                                    if region.rect.contains(pos) {
+                                    // タッチも同様に、 意味だけの領域は透過する。
+                                    if region.is_interactive() && region.rect.contains(pos) {
                                         if region.focusable {
                                             self.focused_id = region.id.clone();
                                             focus_set = true;
@@ -732,58 +715,86 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // （3 ランタイム共通）。対応が無い名前付きキーは Other として届ける。
                     let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
                         .unwrap_or(Key::Other);
-                    if key == Key::Escape {
+                    let key_event = InputEvent::KeyInput {
+                        key,
+                        pressed: true,
+                        modifiers: self.modifiers,
+                    };
+                    // 配る順は declarative と同じ: **アプリが先、既定動作があと**。
+                    // 消費されたら既定動作 (Escape のフォーカス解除) を行わない
+                    // (issue #18)。 Escape はフォーカス操作そのものなので
+                    // `on_focused_input` は経由しない。
+                    let fid = self.focused_id.clone();
+                    let handled_by_focus = if key != Key::Escape {
+                        match fid.as_ref() {
+                            Some(f) => self.app.on_focused_input(f, &key_event),
+                            None => false,
+                        }
+                    } else {
+                        false
+                    };
+                    let handled = handled_by_focus || self.app.on_input(&key_event);
+
+                    if !handled && key == Key::Escape {
                         self.focused_id = None;
                         self.push_ui_capture();
                     }
-                    // focused要素があればon_focused_inputへルーティング
-                    if let Some(ref fid) = self.focused_id {
-                        let key_event = InputEvent::KeyInput {
-                            key,
-                            pressed: true,
-                            modifiers: self.modifiers,
+
+                    // Cmd/Ctrl+V: クリップボードを読んで 1 イベントで配る (issue #20)。
+                    // declarative と同じ扱い。
+                    if !handled && crate::clipboard::is_paste_shortcut(key, self.modifiers) {
+                        if let Some(text) = crate::clipboard::read_text() {
+                            let ev = InputEvent::Paste { text };
+                            crate::runtime_shared::dispatch(
+                                &mut self.app,
+                                self.focused_id.as_deref(),
+                                &ev,
+                            );
+                        }
+                    }
+
+                    // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
+                    // 挿入され、Cmd+C の "c" も漏れていた。判定は keymap に集約。
+                    for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
+                        let char_event = InputEvent::CharInput(ch);
+                        let consumed = match fid.as_ref() {
+                            Some(f) => self.app.on_focused_input(f, &char_event),
+                            None => false,
                         };
-                        if !self.app.on_focused_input(fid, &key_event) {
-                            self.app.on_input(&key_event);
-                        }
-                        // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
-                        // 挿入され、Cmd+C の "c" も漏れていた。判定は keymap に集約。
-                        for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
-                            let char_event = InputEvent::CharInput(ch);
-                            if !self.app.on_focused_input(fid, &char_event) {
-                                self.app.on_input(&char_event);
-                            }
-                        }
-                    } else {
-                        self.app.on_input(&InputEvent::KeyInput {
-                            key,
-                            pressed: true,
-                            modifiers: self.modifiers,
-                        });
-                        for ch in sabitori_window::keymap::char_inputs(&event, self.modifiers) {
-                            self.app.on_input(&InputEvent::CharInput(ch));
+                        if !consumed {
+                            self.app.on_input(&char_event);
                         }
                     }
                 }
             }
 
             WindowEvent::Ime(ime_event) => {
-                if let Some(ref fid) = self.focused_id {
-                    match ime_event {
-                        winit::event::Ime::Preedit(text, cursor) => {
-                            self.app.on_focused_input(fid, &InputEvent::ImePreedit {
-                                text,
-                                cursor,
-                            });
-                        }
-                        winit::event::Ime::Commit(text) => {
-                            self.app.on_focused_input(fid, &InputEvent::ImeCommit {
-                                text: text.clone(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
+                // declarative と同じ形。 以前はここが
+                //   `if let Some(fid) = focused_id { on_focused_input(..) }`
+                // だけで、 (a) `Ime::Enabled` を組み立てず、 (b) `on_input` への
+                // フォールバックも無かった。 その結果フォーカス中の要素が無いと
+                // 変換中の文字がどこにも届かず、 ターミナルのような
+                // 「フォーカス要素は無いが IME 入力は受ける」 アプリが
+                // SceneApp では書けなかった (issue #22)。
+                let event = match &ime_event {
+                    winit::event::Ime::Preedit(text, cursor) => InputEvent::ImePreedit {
+                        text: text.clone(),
+                        cursor: cursor.map(|(s, e)| (s, e)),
+                    },
+                    winit::event::Ime::Commit(text) => InputEvent::ImeCommit {
+                        text: text.clone(),
+                    },
+                    winit::event::Ime::Enabled => InputEvent::ImeEnabled,
+                    // `Ime::Disabled` に対応する InputEvent がまだ無い。
+                    // 受け手 (FocusManager::on_ime_disabled) はいるので、
+                    // variant を足すのは別 issue で。
+                    winit::event::Ime::Disabled => return,
+                };
+                crate::runtime_shared::dispatch(
+                    &mut self.app,
+                    self.focused_id.as_deref(),
+                    &event,
+                );
             }
 
             WindowEvent::RedrawRequested => {
@@ -864,6 +875,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         .size
                         .width
                         / 1000.0;
+                // 計測器は `ViewContext` に差すので、 view を呼ぶ前に作る。
+                let measurer = TextRendererMeasurer::new(&mut tr, &self.measure_cache);
                 // 管理スクロール状態を ViewContext へ（アプリが scroll_states を読めるように）。
                 let scroll_info: std::collections::HashMap<String, sabitori_core::ScrollInfo> =
                     self.scroll_states
@@ -910,6 +923,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // can still use `image(key, data)` with their own cache.
                     images: None,
                     mono_advance,
+                    // 実フォント計測をアプリに渡す (issue #15)。 計測器は下の
+                    // `build_tree_measured` でも使い回す。
+                    measurer: Some(&measurer),
+                    managed: Default::default(),
+            actions: Default::default(),
                 };
 
                 let mut root = self.app.view(&ctx);
@@ -927,21 +945,14 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     &self.pressed_id,
                 );
 
-                // overflow_scroll コンテナを登録し、現在の offset を要素へ patch する。
-                Self::patch_scroll_offsets(&mut root, &mut self.scroll_states);
-                let mut build_result = {
-                    let measurer = TextRendererMeasurer::new(&mut tr, &self.measure_cache);
-                    build_tree_measured(&root, w, h, &measurer)
-                };
+                // `.scroll(id)` のコンテナを登録し、現在の offset を要素へ patch する。
+                // declarative と同じ関数を呼ぶ — 以前はこのファイルに逐語コピーが
+                // あり、片方だけ直す事故の温床になっていた (issue #14 / #17)。
+                crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
+                let mut build_result = build_tree_measured(&root, w, h, &measurer);
                 // 測定したスクロール範囲(viewport/content)を管理状態へ反映 → 次フレームの
                 // ホイールが正しい上限でクランプされる（コンテンツ高がここで確定）。
-                for (id, measure) in &build_result.scroll_measures {
-                    if let Some(sv) = self.scroll_states.get_mut(id) {
-                        sv.viewport_width = measure.viewport_width;
-                        sv.viewport_height = measure.viewport_height;
-                        sv.set_content_size(measure.content_width, measure.content_height);
-                    }
-                }
+                crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
                 // Apply programmatic scroll requests now that content extents
                 // are known, so `smooth_scroll_to` clamps to the real range.
                 for (id, y) in self.app.scroll_intents() {
