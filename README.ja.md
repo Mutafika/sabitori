@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**ステータス**: pre-release (`0.4.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。`0.4.0` は「コンパイルは通るのに黙って効かない API」を消すための破壊的変更ラウンドです — [CHANGELOG.md](CHANGELOG.md) を参照。
+**ステータス**: pre-release (`0.5.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。`0.5.0` は CSS にあって無かった穴 — grid / `align-self` / `aspect-ratio` / `z-index` / `text-align` — を埋め、折り返す複数行テキスト欄を足した版です — [CHANGELOG.md](CHANGELOG.md) を参照。
 
 ## 特徴
 

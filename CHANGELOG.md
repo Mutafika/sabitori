@@ -15,11 +15,23 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-14
+
+CSS にあって sabitori に無かったものを埋めた版。前半はレイアウト（grid ほか）、
+後半は折り返す複数行テキスト欄。
+
+**`0.4.0` とは逆方向の作業。** あちらは「宣言はあるが実際には届かない」を潰す回
+だったが、こちらは純粋な機能不足を埋める回。ただし埋める過程で「黙って効かない」
+が 10 件出てきたので、結局同じ話に戻っている。
+
+象徴的なのが README で、`readme_examples.rs` は `0.4.0` で「README のコードが
+今の API で通ること」を見るために足したのに、**README から逐語で写していなかった**
+ので見ていなかった。逐語化して初めて、コード例が 3 箇所コンパイルできない /
+動かないことが分かった。
+
 ### Added
 
-CSS にあって sabitori に無かったレイアウト機能のうち、**土台が既に持っているのに
-変換層で捨てていたもの**を通した回。`0.4.0` までの「宣言はあるが届かない」潰しとは
-逆方向で、こちらは純粋な機能不足。
+土台が既に持っているのに変換層で捨てていたものを通した。
 
 taffy 0.7 は grid も `align-self` も `aspect-ratio` も実装済みなのに、
 `convert_to_taffy_style` が `display: Flex` を決め打ちし、対応するフィールドを
@@ -2052,7 +2064,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Mutafika/sabitori/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Mutafika/sabitori/compare/v0.3.21...v0.4.0
 [0.3.21]: https://github.com/Mutafika/sabitori/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/Mutafika/sabitori/compare/v0.3.19...v0.3.20

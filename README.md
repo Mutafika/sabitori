@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**Status**: pre-release (`0.4.0`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.4.0` is a breaking round that removed the APIs which compiled but silently did nothing — see [CHANGELOG.md](CHANGELOG.md).
+**Status**: pre-release (`0.5.0`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.5.0` fills the CSS-shaped gaps — grid, `align-self`, `aspect-ratio`, `z-index`, `text-align` — and adds a wrapping multi-line text field. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
