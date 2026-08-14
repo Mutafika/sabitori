@@ -12,7 +12,8 @@ use sabitori_core::build::build_tree_measured;
 use sabitori_core::ViewContext;
 use sabitori_gpu::{GpuContext, GpuRenderer, RenderPhase, SceneRenderContext};
 use sabitori_input::{
-    InputEvent, Key, Modifiers, MouseButton as SabiMouseButton, PointerKind, MOUSE_POINTER_ID,
+    Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as SabiMouseButton,
+    PointerKind, MOUSE_POINTER_ID,
 };
 use sabitori_text::TextRenderer;
 use winit::application::ApplicationHandler;
@@ -50,6 +51,39 @@ pub trait SceneApp: DeclarativeApp {
     /// updates while a non-primary button (middle/right) is held, so camera pan/orbit driven
     /// off `on_pointer_move` freezes mid-drag. Use this for those drags (CAD/3D-app style).
     fn on_raw_motion(&mut self, _dx: f64, _dy: f64) {}
+}
+
+/// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
+///
+/// [`crate::declarative::input_delivery`] と見比べること。 **同じ
+/// `DeclarativeApp` を実装していても届き方が違う種別がある。**
+/// この差は設計されたものではなく、 配線が 1 つずつ手で書かれた結果そうなった
+/// もので、 issue #22 で解消予定。 それまでは事実として宣言しておく。
+pub fn input_delivery(kind: InputEventKind) -> Delivery {
+    match kind {
+        InputEventKind::PointerMoved
+        | InputEventKind::PointerPressed
+        | InputEventKind::PointerReleased
+        | InputEventKind::PointerCancelled => Delivery::ToApp,
+
+        InputEventKind::PointerLeft => {
+            Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
+        }
+
+        // ⚠️ declarative と違う: このランタイムは `Ime::Enabled` を
+        // `InputEvent` に変換していない。
+        InputEventKind::ImeEnabled => Delivery::NotProduced(
+            "未配線 — declarative では届くが SceneApp では組み立てていない (issue #22)",
+        ),
+
+        // ⚠️ declarative と違う: フォーカス中の要素が無いと**どこにも届かない**。
+        // declarative は `on_focused_input` が消費しなければ `on_input` へ落とす。
+        InputEventKind::ImePreedit | InputEventKind::ImeCommit => Delivery::FocusedOnly,
+
+        InputEventKind::KeyInput
+        | InputEventKind::CharInput
+        | InputEventKind::ModifiersChanged => Delivery::ToApp,
+    }
 }
 
 struct SceneAppState<A: SceneApp> {

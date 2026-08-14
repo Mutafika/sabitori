@@ -10,7 +10,7 @@ use sabitori_core::build::{build_tree_measured, BuildResult};
 use sabitori_core::element::Element;
 use sabitori_core::ViewContext;
 use sabitori_gpu::{GpuContext, GpuRenderer, RingRenderer, SceneRenderContext};
-use sabitori_input::{InputEvent, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
+use sabitori_input::{Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
 use sabitori_text::TextRenderer;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
@@ -474,6 +474,42 @@ pub trait DeclarativeApp {
     /// `scene_3d = true`. Default no-op.
     #[cfg(not(target_arch = "wasm32"))]
     fn render_extra_scene(&mut self, _key: &str, _ctx: &mut SceneRenderContext) {}
+}
+
+/// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
+///
+/// [`Delivery`] の doc にある通り、 sabitori はイベント処理を共有しない 3 つの
+/// ランタイムを持つ。 この関数は [`InputEventKind`] に対する**網羅マッチ**なので、
+/// 種別が増えるとここがコンパイルエラーになり、 配線の判断を必ず通ることになる。
+///
+/// 消費側にとっては「このランタイムで何が来るか」の一覧でもある。
+/// `sabitori::scene_app::input_delivery` / `sabitori_window::input_delivery` と
+/// 見比べると、 ランタイム間の差が分かる。
+pub fn input_delivery(kind: InputEventKind) -> Delivery {
+    match kind {
+        // ポインタ系は内部の hit-test / hover / 押下追跡にも使うが、 生のイベントも
+        // そのまま `on_input` に流している。
+        InputEventKind::PointerMoved
+        | InputEventKind::PointerPressed
+        | InputEventKind::PointerReleased
+        | InputEventKind::PointerCancelled => Delivery::ToApp,
+
+        // winit の `CursorLeft` は専用コールバックに変換していて、
+        // `InputEvent::PointerLeft` は組み立てていない。
+        InputEventKind::PointerLeft => {
+            Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
+        }
+
+        // IME / キーボードはフォーカス中の要素へ先に渡し、 消費されなければ
+        // `on_input` に落とす。
+        InputEventKind::ImeEnabled
+        | InputEventKind::ImePreedit
+        | InputEventKind::ImeCommit
+        | InputEventKind::KeyInput
+        | InputEventKind::CharInput => Delivery::ToApp,
+
+        InputEventKind::ModifiersChanged => Delivery::ToApp,
+    }
 }
 
 /// Per-extra-window resources. Each extra has its own GPU surface and
@@ -3142,6 +3178,9 @@ mod frame_tests {
         modifier_changes: Vec<Modifiers>,
         /// `on_input` で受けた `PointerMoved` を (kind, x, shift) で記録する。
         moves: Vec<(PointerKind, f32, bool)>,
+        /// `on_input` に届いた全イベントの種別。 `input_delivery` の宣言と
+        /// 実挙動を突き合わせるのに使う。
+        received: Vec<InputEventKind>,
     }
 
     impl DeclarativeApp for RecordingApp {
@@ -3161,6 +3200,9 @@ mod frame_tests {
         }
 
         fn on_input(&mut self, event: &InputEvent) -> bool {
+            // 種別だけを別に貯める。 `input_delivery` の宣言が実挙動と合っているかを
+            // 突き合わせるのに使う (下の declared_delivery_matches_reality)。
+            self.received.push(event.kind());
             match event {
                 InputEvent::KeyInput { key, pressed, modifiers } => {
                     self.keys.push((*key, *pressed, modifiers.shift));
@@ -3576,6 +3618,53 @@ mod frame_tests {
         assert!(state.selection.is_some());
         state.handle_key_input(Key::Other, false, Vec::new());
         assert!(state.selection.is_some());
+    }
+
+    /// `input_delivery` の宣言が、 実際にランタイムを回したときの挙動と一致すること。
+    ///
+    /// 表は手書きなので、 放っておけば実装とズレる — それでは issue #12 の
+    /// 「宣言はあるが配線が無い」 を別の形で再生産するだけになる。 ここでは
+    /// **ヘッドレスで叩ける入口を持つ種別**について、 `ToApp` と宣言したものが
+    /// 本当に `on_input` へ届くことを確認する。
+    ///
+    /// ポインタ系と IME は winit の `WindowEvent` からしか駆動できず、 それには
+    /// 窓が要るのでここでは検証できない。 ヘッドレス駆動を公開 API にする
+    /// issue #19 が入ったら、 残りもここに足すこと。
+    #[test]
+    fn declared_delivery_matches_reality() {
+        use sabitori_input::Delivery;
+
+        let mut state = AppState::new(RecordingApp::default());
+
+        // 叩ける入口: キー入力 (文字つき) と修飾キーの変化。
+        state.handle_key_input(Key::A, true, vec!['a']);
+        state.set_modifiers(Modifiers { shift: true, ..Default::default() });
+
+        let driven = [
+            InputEventKind::KeyInput,
+            InputEventKind::CharInput,
+            InputEventKind::ModifiersChanged,
+        ];
+        for kind in driven {
+            assert_eq!(
+                crate::declarative::input_delivery(kind),
+                Delivery::ToApp,
+                "{kind:?} を ToApp 以外に変えたなら、 このテストの driven からも外すこと"
+            );
+            assert!(
+                state.app.received.contains(&kind),
+                "{kind:?} は ToApp と宣言されているのに on_input へ届いていない"
+            );
+        }
+
+        // 逆向きも見る: 宣言が ToApp でない種別が紛れ込んでいないこと。
+        for kind in &state.app.received {
+            assert_eq!(
+                crate::declarative::input_delivery(*kind),
+                Delivery::ToApp,
+                "{kind:?} が on_input に届いているのに、 宣言が ToApp になっていない"
+            );
+        }
     }
 }
 

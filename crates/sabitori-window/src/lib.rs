@@ -6,7 +6,7 @@ use std::time::Instant;
 use sabitori_core::Point;
 use sabitori_gpu::{GpuRenderer, RectInstance};
 use sabitori_input::{
-    button_bit, ActivePointer, BUTTON_PRIMARY, InputEvent, MouseButton,
+    button_bit, ActivePointer, BUTTON_PRIMARY, Delivery, InputEvent, InputEventKind, MouseButton,
     PointerKind, PointerState, MOUSE_POINTER_ID,
 };
 use sabitori_scene::{NodeId, NodeTree};
@@ -33,6 +33,37 @@ pub trait SabitoriApp {
     /// Return `true` if the event was handled (consumed).
     fn on_input(&mut self, _event: &InputEvent) -> bool {
         false
+    }
+}
+
+/// このランタイムが [`InputEvent`] の各種別をアプリへどう届けるかの宣言。
+///
+/// 他の 2 つ (`sabitori::declarative::input_delivery` /
+/// `sabitori::scene_app::input_delivery`) と大きく違い、 **ポインタ系は 1 つも
+/// アプリに届かない**。 `NodeTree` が hit-test と押下追跡を内部で行い、 結果だけを
+/// [`SabitoriApp::on_click`] で伝える retained なモデルだから。
+///
+/// [`Delivery`] の doc にある通り、 これは [`InputEventKind`] に対する網羅マッチ
+/// なので、 種別が増えるとここがコンパイルエラーになる。 issue #12 では
+/// `ModifiersChanged` がこのランタイムの `_ => {}` に落ちて app へ一度も届かず、
+/// マージ前レビューでしか捕まらなかった。 その経路を型で塞ぐのがこの宣言の目的。
+pub fn input_delivery(kind: InputEventKind) -> Delivery {
+    match kind {
+        InputEventKind::PointerMoved => {
+            Delivery::Internal("NodeTree の hover 更新と押下ノードの追跡")
+        }
+        InputEventKind::PointerPressed | InputEventKind::PointerReleased => {
+            Delivery::Internal("NodeTree の押下追跡 → SabitoriApp::on_click")
+        }
+        InputEventKind::PointerCancelled => Delivery::Internal("押下ノードの解除"),
+        InputEventKind::PointerLeft => Delivery::Internal("hover の解除とカーソル復帰"),
+
+        InputEventKind::ImeEnabled
+        | InputEventKind::ImePreedit
+        | InputEventKind::ImeCommit
+        | InputEventKind::KeyInput
+        | InputEventKind::CharInput
+        | InputEventKind::ModifiersChanged => Delivery::ToApp,
     }
 }
 
@@ -539,7 +570,25 @@ impl<A: SabitoriApp> AppState<A> {
                     window.set_cursor(CursorIcon::Default);
                 }
             }
-            _ => {}
+
+            // --- ここから下は上の match が `return` 済み ---
+            //
+            // ワイルドカードで畳まないのが要点。 `_ => {}` にしていたせいで、
+            // `InputEvent` に足したばかりの `ModifiersChanged` が上の
+            // キーボード群にも入らずここにも落ちて、 app へ一度も届かなかった
+            // (issue #12)。 網羅マッチにしてあれば、 種別を足した人はここで
+            // コンパイルエラーに当たり、 上のキーボード群に入れるか
+            // ポインタとして処理するかを選ばされる。
+            //
+            // 押下・移動が非 primary (右/中ボタン) の場合もガード付きの腕から
+            // 漏れてここに来る。 このランタイムは primary しか見ないので no-op。
+            InputEvent::PointerPressed { .. } | InputEvent::PointerReleased { .. } => {}
+            InputEvent::ImeEnabled
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit { .. }
+            | InputEvent::KeyInput { .. }
+            | InputEvent::CharInput(_)
+            | InputEvent::ModifiersChanged(_) => {}
         }
     }
 }
@@ -826,7 +875,27 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
                 self.pointer.inside_window = false;
                 self.tree.update_hover(None);
             }
-            _ => {}
+            // `process_event` 側には最初からある腕。 こちらには無く、 `_ => {}` が
+            // 隠していた。 注入経路で cancel を受けると押下ノードが解除されず、
+            // 以後ずっと押されたままになる。 網羅マッチにした結果あらわれた実バグ。
+            InputEvent::PointerCancelled { id, .. } => {
+                self.pointer.remove(id);
+                self.pressed_node = None;
+                self.tree.set_pressed(None, false);
+            }
+
+            // --- ここから下は上の match が `return` 済み ---
+            //
+            // ワイルドカードで畳まない。 `_ => {}` だったせいで、 追加したばかりの
+            // `ModifiersChanged` が上のキーボード群にも入らずここにも落ちて、
+            // app へ一度も届かなかった (issue #12)。 網羅にしてあれば、 種別を
+            // 足した人はここで必ず判断を迫られる。
+            InputEvent::ImeEnabled
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit { .. }
+            | InputEvent::KeyInput { .. }
+            | InputEvent::CharInput(_)
+            | InputEvent::ModifiersChanged(_) => {}
         }
         self.needs_rebuild = true;
     }

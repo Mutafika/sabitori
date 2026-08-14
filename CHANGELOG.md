@@ -15,6 +15,60 @@
 
 ## [Unreleased]
 
+次の版は **0.4.0**。フレームワーク全体を見直して挙げた
+[#14〜#22](https://github.com/Mutafika/sabitori/issues) を潰す破壊的変更ラウンド。
+旧 API は `#[deprecated]` を挟まず削除し、代わりに移行手順をここに残す方針。
+
+### Added
+- **入力イベントの配線漏れをコンパイルエラーで止める仕組み**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。
+
+  sabitori はイベント処理を共有しない 3 つのランタイム（`DeclarativeApp` /
+  `SceneApp` / `SabitoriApp`）を持ち、配線は 1 つずつ手で書かれている。その結果
+  「core は持っているのにランタイムが配らない」事故が繰り返し起きていた
+  （[#1](https://github.com/Mutafika/sabitori/issues/1) /
+  [#3](https://github.com/Mutafika/sabitori/issues/3) /
+  [#12](https://github.com/Mutafika/sabitori/issues/12)）。#12 に至っては、その修正作業の
+  中で `sabitori-window` が新 variant を `_ => {}` で握り潰す**同型のバグを作っている**。
+
+  - **`InputEventKind`** — `InputEvent` からペイロードを落とした種別。値を持たないので
+    `match` の腕として並べられる。`InputEventKind::ALL` で全種別を舐められる。
+  - **`InputEvent::kind()`** — 「全 variant を知っている唯一の場所」。`InputEvent` に
+    variant を足すとまずここが壊れる。
+  - **`Delivery`** — 1 種別をアプリへどう扱うかの宣言。`ToApp` / `FocusedOnly` /
+    `Internal(理由)` / `NotProduced(理由)`。
+  - **`input_delivery(kind) -> Delivery`** — 3 ランタイムそれぞれに追加。
+    `sabitori::declarative` / `sabitori::scene_app` / `sabitori_window` の各モジュール。
+    `InputEventKind` に対する**網羅マッチ**なので、種別が増えると 3 つとも
+    コンパイルエラーになり、「配る / 内部で消費する / 発行しない」の判断を必ず通る。
+
+  検証済み: `InputEvent` に variant を 1 つ足すと**計 6 箇所**（`kind()`、
+  `sabitori-window` の配信表とポインタ match 2 つ、`declarative` と `scene_app` の
+  配信表）がコンパイルエラーになる。
+
+  宣言はドキュメントでもある。「このランタイムで `InputEvent::ImeEnabled` は来るのか」
+  を表 1 つで確認できる。実際にこの作業でランタイム間の差が 2 件見つかっており、
+  事実として宣言に書き出したうえで
+  [#22](https://github.com/Mutafika/sabitori/issues/22) に切り出した。
+
+### Fixed
+- **`sabitori-window` のポインタ `match` が網羅でなかった**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` /
+  `inject_event` の `_ => {}` を廃止し、無視する種別も明示的に並べた。#12 で
+  `ModifiersChanged` が app へ一度も届かなかったのがこの穴で、当時はマージ前
+  レビューでしか捕まらなかった。
+
+- **`EmbeddedRunner::inject_event` が `PointerCancelled` を処理していなかった**
+  ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` 側には
+  最初からある腕が注入経路には無く、`_ => {}` が隠していた。ホストが cancel を
+  注入すると押下ノードが解除されず、**以後ずっと押されたまま**になる。網羅マッチに
+  した結果あらわれた実バグ。
+
+### 移行
+
+破壊的変更なし。`sabitori::*` の glob に `Delivery` / `InputEventKind` が増えるので、
+下流に同名の型があれば衝突する（その場合は明示 import で回避）。
+
 ## [0.3.21] - 2026-08-12
 
 修飾キーの変化を観測できるようにした版。「⇧を押している間だけ」効かせる操作

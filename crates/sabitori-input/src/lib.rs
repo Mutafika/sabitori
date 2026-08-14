@@ -169,6 +169,122 @@ pub enum InputEvent {
     CharInput(char),
 }
 
+/// [`InputEvent`] からペイロードを落とした種別。
+///
+/// 値を持たないので `match` の腕として並べられる。 「どのランタイムがどの種類を
+/// アプリへ配るか」 を [`Delivery`] の表で宣言するために要る。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputEventKind {
+    PointerMoved,
+    PointerPressed,
+    PointerReleased,
+    PointerCancelled,
+    PointerLeft,
+    ImeEnabled,
+    ImePreedit,
+    ImeCommit,
+    KeyInput,
+    ModifiersChanged,
+    CharInput,
+}
+
+impl InputEventKind {
+    /// 全種別。 [`Delivery`] の表をテストが舐めるのに使う。
+    ///
+    /// 更新漏れは下の `all_lists_every_kind` が落とす — [`Self::order`] が網羅
+    /// マッチなので、 variant を足すとまず**コンパイルが壊れ**、 番号を振ると
+    /// 今度は `ALL` に入れるまで**テストが落ちる**。 2 段で塞いである。
+    pub const ALL: &'static [InputEventKind] = &[
+        InputEventKind::PointerMoved,
+        InputEventKind::PointerPressed,
+        InputEventKind::PointerReleased,
+        InputEventKind::PointerCancelled,
+        InputEventKind::PointerLeft,
+        InputEventKind::ImeEnabled,
+        InputEventKind::ImePreedit,
+        InputEventKind::ImeCommit,
+        InputEventKind::KeyInput,
+        InputEventKind::ModifiersChanged,
+        InputEventKind::CharInput,
+    ];
+
+    /// [`Self::ALL`] 内で占めるべき位置。 `ALL` の完全性検査にだけ使うので
+    /// テストビルド限定。 種別追加をコンパイルで止める役目は [`InputEvent::kind`]
+    /// が通常ビルドで担っており、 こちらはその後の「`ALL` 更新漏れ」だけを見る。
+    #[cfg(test)]
+    fn order(self) -> usize {
+        match self {
+            InputEventKind::PointerMoved => 0,
+            InputEventKind::PointerPressed => 1,
+            InputEventKind::PointerReleased => 2,
+            InputEventKind::PointerCancelled => 3,
+            InputEventKind::PointerLeft => 4,
+            InputEventKind::ImeEnabled => 5,
+            InputEventKind::ImePreedit => 6,
+            InputEventKind::ImeCommit => 7,
+            InputEventKind::KeyInput => 8,
+            InputEventKind::ModifiersChanged => 9,
+            InputEventKind::CharInput => 10,
+        }
+    }
+}
+
+impl InputEvent {
+    /// 種別だけを取り出す。
+    ///
+    /// **`InputEvent` に variant を足すとこの `match` が壊れる。** それが狙いで、
+    /// ここが「全 variant を知っている唯一の場所」。 壊れたら
+    /// [`InputEventKind`] に対応する種別を足すことになり、 その結果 3 つの
+    /// ランタイムの `input_delivery` (これも網羅マッチ) が軒並みコンパイル
+    /// エラーになる。 新しい入力が「どこかのランタイムだけ配線されない」状態で
+    /// merge されるのを、 レビューではなく型で止める。
+    pub fn kind(&self) -> InputEventKind {
+        match self {
+            InputEvent::PointerMoved { .. } => InputEventKind::PointerMoved,
+            InputEvent::PointerPressed { .. } => InputEventKind::PointerPressed,
+            InputEvent::PointerReleased { .. } => InputEventKind::PointerReleased,
+            InputEvent::PointerCancelled { .. } => InputEventKind::PointerCancelled,
+            InputEvent::PointerLeft => InputEventKind::PointerLeft,
+            InputEvent::ImeEnabled => InputEventKind::ImeEnabled,
+            InputEvent::ImePreedit { .. } => InputEventKind::ImePreedit,
+            InputEvent::ImeCommit { .. } => InputEventKind::ImeCommit,
+            InputEvent::KeyInput { .. } => InputEventKind::KeyInput,
+            InputEvent::ModifiersChanged(_) => InputEventKind::ModifiersChanged,
+            InputEvent::CharInput(_) => InputEventKind::CharInput,
+        }
+    }
+}
+
+/// あるランタイムが [`InputEventKind`] の 1 種別をどう扱うかの宣言。
+///
+/// sabitori にはイベント処理を共有しない 3 つのランタイム (`DeclarativeApp` /
+/// `SceneApp` / `SabitoriApp`) があり、 配線は 1 つずつ手で書かれている。 その結果
+/// 「core は持っているのにランタイムが配らない」 事故が繰り返し起きた
+/// (issue #1 / #3 / #12)。 #12 に至っては、 修正作業そのものの中で
+/// `sabitori-window` が新 variant を `_ => {}` で握り潰す同型のバグを作っている。
+///
+/// そこで各ランタイムは全種別についてこの型で意思表示する。 宣言は
+/// [`InputEventKind`] に対する**網羅マッチ**なので、 種別が増えると 3 ランタイム
+/// 全部がコンパイルエラーになり、 「配る / 内部で消費する / 発行しない」 の判断を
+/// 必ず通ることになる。
+///
+/// 宣言はドキュメントでもある — 消費側は「このランタイムで
+/// `InputEvent::ImeEnabled` は来るのか」 を表 1 つで確認できる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// `on_input` でアプリに届く。 フォーカス中の要素があれば
+    /// `on_focused_input` を先に試し、 消費されなければ `on_input` へ落ちる。
+    ToApp,
+    /// `on_focused_input` に**だけ**届く。 フォーカス中の要素が無いときは
+    /// どこにも届かないので、 グローバルに観測したい用途には使えない。
+    FocusedOnly,
+    /// ランタイムが内部で消費する。 文字列はアプリ側へ伝わる別の口の名前
+    /// (`"on_click"` など)。 生のイベントは届かない。
+    Internal(&'static str),
+    /// このランタイムでは発行されない。 文字列は理由。
+    NotProduced(&'static str),
+}
+
 /// Per-node interaction state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InteractionState {
@@ -224,5 +340,86 @@ impl PointerState {
             .iter()
             .position(|p| p.id == id)
             .map(|i| self.active.remove(i))
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+    use sabitori_core::Point;
+
+    /// `InputEventKind::ALL` に載せ忘れた種別を落とす。
+    ///
+    /// `order()` が網羅マッチなので variant 追加はまずコンパイルで止まるが、
+    /// そこで番号を振っただけで `ALL` を更新し忘れる経路が残る。 それをここで塞ぐ。
+    #[test]
+    fn all_lists_every_kind() {
+        for (i, k) in InputEventKind::ALL.iter().enumerate() {
+            assert_eq!(
+                k.order(),
+                i,
+                "ALL の並びが order() と食い違っている: {k:?} は {} 番のはず",
+                k.order()
+            );
+        }
+        // order() に振った最大番号 + 1 = ALL の長さ。 新種別に番号を振ったのに
+        // ALL へ入れ忘れると、 ここが落ちる。
+        let max_order = InputEventKind::ALL.iter().map(|k| k.order()).max().unwrap();
+        assert_eq!(
+            InputEventKind::ALL.len(),
+            max_order + 1,
+            "order() に番号を振った種別が ALL に入っていない"
+        );
+    }
+
+    /// `kind()` が各 variant を正しい種別に落とすこと。
+    #[test]
+    fn kind_maps_each_variant() {
+        let at = Point::new(0.0, 0.0);
+        let m = Modifiers::default();
+        let cases: &[(InputEvent, InputEventKind)] = &[
+            (
+                InputEvent::PointerMoved { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at, modifiers: m },
+                InputEventKind::PointerMoved,
+            ),
+            (
+                InputEvent::PointerPressed { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at, button: Some(MouseButton::Left), modifiers: m },
+                InputEventKind::PointerPressed,
+            ),
+            (
+                InputEvent::PointerReleased { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at, button: Some(MouseButton::Left), modifiers: m },
+                InputEventKind::PointerReleased,
+            ),
+            (
+                InputEvent::PointerCancelled { id: 1, kind: PointerKind::Touch },
+                InputEventKind::PointerCancelled,
+            ),
+            (InputEvent::PointerLeft, InputEventKind::PointerLeft),
+            (InputEvent::ImeEnabled, InputEventKind::ImeEnabled),
+            (
+                InputEvent::ImePreedit { text: "かな".into(), cursor: None },
+                InputEventKind::ImePreedit,
+            ),
+            (
+                InputEvent::ImeCommit { text: "仮名".into() },
+                InputEventKind::ImeCommit,
+            ),
+            (
+                InputEvent::KeyInput { key: Key::A, pressed: true, modifiers: m },
+                InputEventKind::KeyInput,
+            ),
+            (InputEvent::ModifiersChanged(m), InputEventKind::ModifiersChanged),
+            (InputEvent::CharInput('あ'), InputEventKind::CharInput),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.kind(), *expected, "{event:?} の kind() が違う");
+        }
+        // 全種別を 1 度ずつ網羅していること (テスト自体の抜けを防ぐ)。
+        for k in InputEventKind::ALL {
+            assert!(
+                cases.iter().any(|(_, got)| got == k),
+                "{k:?} のケースがこのテストに無い"
+            );
+        }
     }
 }
