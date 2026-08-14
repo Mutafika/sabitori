@@ -12,6 +12,7 @@
 ## Features
 
 - **Declarative builder API** — compose trees with `div() / text() / button() / image()`
+- **CSS-shaped layout** — flexbox *and* grid via Taffy, plus `align-self`, `align-content`, `aspect-ratio`, `z-index`, `text-align`
 - **GPU rendering** — wgpu + SDF shaders for rounded corners, borders, shadows, and gradients in a single pass
 - **WASM-first** — WebGPU preferred with WebGL2 fallback; canvas auto-binding via winit's web extension
 - **Spring physics animation** — snappy / gentle / bouncy presets + 11 easing functions + keyframes
@@ -114,7 +115,7 @@ The other model is `.scroll_manual(x, y)`, where **your app** owns the offset an
 **Put `text_input` in `view()`. That is the entire wiring.**
 
 ```rust
-struct App { name: TextInputState }
+struct App { name: TextInputState, saved: Option<String> }
 
 impl DeclarativeApp for App {
     fn view(&self, ctx: &ViewContext) -> Element {
@@ -138,6 +139,22 @@ If you hand-roll a text field instead (your own element declaring `Role::TextInp
 assert!(h.unrouted_text_inputs().is_empty());
 ```
 
+
+For a wrapping, multi-line field use `text_area` — same state type, same zero wiring:
+
+```rust
+text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 6)  // 6 lines tall
+```
+
+| | `text_input` | `text_area` |
+|---|---|---|
+| Enter | bubbles to your app (form submit) | inserts a newline |
+| Paste | newlines collapse to spaces | newlines preserved |
+| ↑ ↓ | bubble to your app | move one **visual** line |
+| Home / End | ends of the string | ends of the **visual** line |
+
+"Visual line" is the point: moving by logical line (`\n`) makes one keypress jump a whole wrapped paragraph. `Cmd+Enter` still bubbles out, so you can bind it to "send".
+
 ### 3. Focus and keyboard
 
 Elements with `.focusable` take focus on click and via Tab. Keys go to `on_focused_input(id, event)` first; whatever is unhandled falls through to `on_input(event)`.
@@ -153,14 +170,53 @@ use sabitori::testing::Harness;
 
 let mut h = Harness::new(App::default(), 800.0, 600.0);
 h.frame();                  // build + layout
-h.click("save");            // by id
-h.text("hello");            // typed input to the focused element
+h.click("name");            // focus the field by id
+h.text("hello");            // typed input goes to the focused element
+h.click("save");            // now the handler sees the typed value
 h.scroll("file-list", 400.0);
 h.settle();                 // let springs finish (needed for scroll_intents)
 assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 `frame()` does not advance time. Anything spring-driven — momentum scroll, `scroll_intents`, style animation — needs `tick(dt)` or `settle()`.
+
+## Layout
+
+Flexbox and grid, both backed by Taffy. If you know CSS you already know this — the names match.
+
+```rust
+// Flex
+let toolbar = div().flex_row().items_center().justify_between().gap(8.0);
+
+// Grid — a fixed sidebar and a body that takes the rest
+let shell = grid()
+    .grid_cols([Track::px(240.0), Track::fr(1.0)])
+    .gap(12.0)
+    .children([sidebar, body]);
+
+// A header spanning every column
+let sheet = grid()
+    .grid_cols(Track::repeat(3, Track::fr(1.0)))
+    .children([header.col_span(3), a, b, c]);
+```
+
+`Track` is CSS `minmax(min, max)`: build one with `Track::px / pct / fr / auto / min_content / max_content / minmax`, and repeat it with `Track::repeat(n, track)`. `auto-fill` / `auto-fit` are not implemented — you pick the count.
+
+| | |
+|---|---|
+| One child opting out of the parent's alignment | `.self_start()` `.self_center()` `.self_end()` `.self_stretch()` |
+| Distributing wrapped **lines** | `.align_content(..)` on a `.wrap()` container |
+| Locking width-to-height | `.aspect(16.0 / 9.0)` |
+| Stacking order among siblings | `.z(5)` |
+| Aligning wrapped text | `.text_center()` `.text_right()` |
+
+Three of these have a precondition worth knowing before you decide they are broken:
+
+- **`.aspect()` loses to stretch.** In a `flex_col` the default `align_items: stretch` already fixes the child's width; with two sides determined there is nothing for the ratio to decide. Add `.self_start()` when you want height to drive width.
+- **`.text_center()` needs a width.** A text element sizes to its content, and content-sized boxes have no slack to align within. Inside a `flex_col` it stretches to the parent and just works; inside a `flex_row` it will not.
+- **`.z()` does not escape the parent**, exactly like a CSS stacking context. It reorders siblings — paint order *and* click order together. To lift something above the whole tree (popups, context menus) use `.overlay()`.
+
+`display: none` has no equivalent on purpose: don't emit the element. That removes its layout cost too.
 
 ## Widgets
 
@@ -184,8 +240,8 @@ div().flex_col().children([
 The window is a GPU surface, so screen readers see nothing unless the tree says what things are. `button()` declares `Role::Button` on its own; describe the rest:
 
 ```rust
-div().id("close").role(Role::Button).label("Close")   // icon-only button
-text("Settings").role(Role::Heading).heading(2)
+let close = div().id("close").role(Role::Button).label("Close");   // icon-only button
+let heading = text("Settings").role(Role::Heading).heading(2);
 ```
 
 The semantic layer is in place and carried through `hit_regions`. The OS adapter (accesskit) is not wired yet.

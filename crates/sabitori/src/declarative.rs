@@ -2038,6 +2038,17 @@ impl<A: DeclarativeApp> AppState<A> {
                 sv.smooth_scroll_to(y);
             }
         }
+        // 登録済みテキスト欄からのスクロール要求 — キャレットが箱の外に出たら
+        // 追いかける。 アプリが `scroll_intents` を書く必要は無い。
+        for (_, target) in &self.managed {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
+                if let Some((sid, y)) = field.take_scroll_request() {
+                    if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                        sv.smooth_scroll_to(y);
+                    }
+                }
+            }
+        }
 
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active
@@ -2179,6 +2190,13 @@ impl<A: DeclarativeApp> AppState<A> {
         for (id, target) in &managed {
             if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
                 field.set_focused(self.focused_id.as_deref() == Some(id.as_str()));
+                // 折り返し幅は「欄が実際に何 px だったか」で決まるが、 それは
+                // レイアウトが終わるまで分からない。 前フレームの実測を渡して
+                // おき、 次の `view()` がそれで折り返す。 幅が変わった最初の
+                // 1 フレームだけ古い幅で折り返し、 次で追いつく。
+                if let Some(rect) = self.last_build.as_ref().and_then(|b| b.region_rect(id)) {
+                    field.set_measured_width(rect.size.width);
+                }
             }
         }
         self.managed = managed;
@@ -2325,6 +2343,18 @@ impl<A: DeclarativeApp> AppState<A> {
                     if region.focusable {
                         self.focused_id = region.id.clone();
                         focus_set = true;
+                        // 登録済みテキスト欄なら、 **押した場所にキャレットを置く**。
+                        // 欄の内側が原点の座標に直して渡し、 解決は次の `view()`
+                        // でやる (実フォントで測れるのがそこだけなので)。
+                        if let Some(id) = region.id.as_deref() {
+                            if let Some(field) = self.managed_text_field(id) {
+                                field.request_point(
+                                    pt.x - region.rect.origin.x,
+                                    pt.y - region.rect.origin.y,
+                                    self.modifiers.shift,
+                                );
+                            }
+                        }
                     }
                     // Handle click (still fires for draggable elements)
                     if region.clickable {
@@ -3415,6 +3445,8 @@ mod frame_tests {
     /// below depends on it.
     struct StubMeasure;
 
+    use sabitori_core::build::{CaretPos, TextShape};
+
     impl TextMeasure for StubMeasure {
         fn measure(
             &self,
@@ -3434,6 +3466,23 @@ mod frame_tests {
                 },
                 baseline: font_size * 0.8,
             }
+        }
+
+        fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+            sabitori_core::build::approx_caret::caret_pos(content, byte_offset, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+            sabitori_core::build::approx_caret::offset_at(content, point, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn range_rects(
+            &self,
+            content: &str,
+            range: (usize, usize),
+            shape: TextShape<'_>,
+        ) -> Vec<sabitori_core::Rect> {
+            sabitori_core::build::approx_caret::range_rects(content, range, shape.font_size * 0.5, shape.font_size * 1.0)
         }
     }
 

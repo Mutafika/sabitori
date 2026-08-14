@@ -454,6 +454,7 @@ fn input_style() -> TextInputStyle {
         focus_border: None,
         caret: None,
         preedit: None,
+        selection: None,
     }
 }
 

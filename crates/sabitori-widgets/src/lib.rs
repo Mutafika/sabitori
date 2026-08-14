@@ -38,7 +38,7 @@
 //! | `Card` | `div()` + `.bg()` / `.rounded()` / `.shadow_md()` |
 //! | `Tabs` | `sabitori_core::forms::segment_control()` |
 //! | `Dropdown` | [`DropdownState`] + [`DropdownStyle`] |
-//! | `TextInput` | [`text_input`] + [`TextInputState`] |
+//! | `TextInput` | [`text_input`] + [`TextInputState`]、折り返す欄は [`text_area`] |
 //! | `Table` | [`table`] + [`TableState`] (宣言版に作り直し) |
 //! | `SplitPane` | [`split_pane`] + [`SplitPaneState`] (宣言版に作り直し) |
 
@@ -91,7 +91,9 @@ pub use table::{
     table, table_clicked_header, table_clicked_row, table_header_id, table_row_id, Cell,
     TableColumn, TableState, TableStyle,
 };
-pub use text_input::{text_input, PreeditState, TextInputState, TextInputStyle};
+pub use text_input::{
+    text_area, text_input, PendingMove, PreeditState, TextInputState, TextInputStyle,
+};
 pub use toast::{ToastKind, ToastManager};
 pub use tooltip::TooltipState;
 pub use tree_view::{

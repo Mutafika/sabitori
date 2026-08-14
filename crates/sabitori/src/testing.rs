@@ -36,7 +36,7 @@
 //! ヘッドレスなので GPU 描画・IME・実際の winit イベントは通らない。 IME 合成の
 //! ような OS 依存の経路はここでは再現できない。
 
-use sabitori_core::build::{BuildResult, TextMeasure};
+use sabitori_core::build::{BuildResult, CaretPos, TextMeasure, TextShape};
 use sabitori_core::{Element, Size, TextMetrics, Typography};
 use sabitori_input::{InputEvent, Key, Modifiers};
 
@@ -61,14 +61,102 @@ impl TextMeasure for StubMeasure {
         _max_lines: Option<u32>,
         _typo: Typography,
     ) -> TextMetrics {
+        // **折り返しは模さないが、 `\n` は数える。**
+        //
+        // 数えないと `caret_pos` (論理行を数える) と食い違い、 「キャレットは
+        // 8 行目にあるのに箱は 1 行ぶんの高さ」という、 現実には起こり得ない
+        // 状態でテストが回ってしまう。 実際それでスクロール追従のテストが
+        // 通らなかった。
+        let lines = content.split('\n');
+        let widest = lines.clone().map(|l| l.chars().count()).max().unwrap_or(0);
+        let count = content.split('\n').count().max(1);
         TextMetrics {
             size: Size {
-                width: content.chars().count() as f32 * font_size * 0.5,
-                height: font_size,
+                width: widest as f32 * font_size * 0.5,
+                height: count as f32 * font_size,
             },
             baseline: font_size * 0.8,
         }
     }
+
+    fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+        let (line, before) = stub_line_of(content, byte_offset);
+        CaretPos {
+            x: before.chars().count() as f32 * shape.font_size * 0.5,
+            y: line as f32 * shape.font_size,
+            line_height: shape.font_size,
+            line,
+        }
+    }
+
+    fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+        let (x, y) = point;
+        let target = ((y / shape.font_size).floor().max(0.0)) as usize;
+        let mut acc = 0usize;
+        for (i, line) in content.split('\n').enumerate() {
+            if i == target {
+                let cols = (x / (shape.font_size * 0.5)).round().max(0.0) as usize;
+                let take: usize = line.chars().take(cols).map(char::len_utf8).sum();
+                return acc + take;
+            }
+            acc += line.len() + 1;
+        }
+        content.len()
+    }
+
+    fn range_rects(
+        &self,
+        content: &str,
+        range: (usize, usize),
+        shape: TextShape<'_>,
+    ) -> Vec<sabitori_core::Rect> {
+        let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+        let cw = shape.font_size * 0.5;
+        let mut out = Vec::new();
+        let mut acc = 0usize;
+        for (i, line) in content.split('\n').enumerate() {
+            let (ls, le) = (acc, acc + line.len());
+            if hi > ls && lo < le.max(ls) {
+                let a = lo.clamp(ls, le) - ls;
+                let b = hi.clamp(ls, le) - ls;
+                let x0 = line[..a].chars().count() as f32 * cw;
+                let x1 = line[..b].chars().count() as f32 * cw;
+                if x1 > x0 {
+                    out.push(sabitori_core::Rect::new(
+                        x0,
+                        i as f32 * shape.font_size,
+                        x1 - x0,
+                        shape.font_size,
+                    ));
+                }
+            }
+            acc = le + 1;
+        }
+        out
+    }
+}
+
+/// `byte_offset` が何番目の論理行の、 行頭から何文字目かを返す。
+///
+/// **スタブは折り返しを模さない。** `measure` が `max_width` を見ていないので、
+/// ここだけ折り返すと「測った高さ」と「キャレットの y」が食い違う。 `\n` で
+/// 分かれた論理行だけ数え、 内部で辻褄を合わせておく。 実際の折り返しの検証は
+/// `sabitori-text` 側で本物の shaper に対してやること。
+fn stub_line_of(content: &str, byte_offset: usize) -> (usize, &str) {
+    let n = byte_offset.min(content.len());
+    let mut acc = 0usize;
+    for (i, line) in content.split('\n').enumerate() {
+        let end = acc + line.len();
+        if n <= end {
+            let mut cut = n - acc;
+            while cut > 0 && !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            return (i, &line[..cut]);
+        }
+        acc = end + 1;
+    }
+    (0, "")
 }
 
 /// [`DeclarativeApp`] をヘッドレスで駆動する。

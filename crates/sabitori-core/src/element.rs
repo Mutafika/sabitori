@@ -105,6 +105,60 @@ pub enum AlignItems {
     Start,
     End,
     Center,
+    /// 文字のベースラインを揃える。 フォントサイズの違う文字を横に並べたとき、
+    /// `Center` は箱の中心を合わせるので大きい方の文字が沈んで見える。
+    Baseline,
+}
+
+/// 子 1 個だけが親の [`AlignItems`] から外れる (CSS `align-self`)。
+///
+/// 親の指定を全員に効かせたうえで 1 個だけ例外にしたい、 が CSS では日常だが
+/// sabitori には無かったので、 その子を別の入れ物で包んで逃がすしかなかった。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlignSelf {
+    /// 親の [`AlignItems`] に従う (既定)。
+    #[default]
+    Auto,
+    Stretch,
+    Start,
+    End,
+    Center,
+    Baseline,
+}
+
+/// 交差軸方向に**行そのもの**をどう配るか (CSS `align-content`)。
+///
+/// [`FlexWrap::Wrap`] で複数行になったとき、 または grid の行に効く。 折り返しが
+/// 起きない限り意味を持たない ([`AlignItems`] と紛らわしいのはここ — あちらは
+/// 「1 行の中で子をどこに置くか」)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlignContent {
+    #[default]
+    Start,
+    End,
+    Center,
+    Stretch,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+/// 折り返した行の揃え方 (CSS `text-align`)。
+///
+/// **要素の箱の中で行がどう並ぶか**であって、 箱そのものの位置ではない。
+/// 1 行しかないテキストを画面の中央に置きたいなら、 これではなく親の
+/// [`JustifyContent::Center`] を使う。 これが効くのは折り返しが起きた後の
+/// 2 行目以降を含む「行の揃え」。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextAlign {
+    /// 書字方向の先頭側 (既定)。 日本語 / 英語なら左。
+    #[default]
+    Start,
+    Center,
+    /// 書字方向の末尾側。 日本語 / 英語なら右。
+    End,
+    /// 両端揃え。 最終行は先頭側のまま (CSS と同じ)。
+    Justify,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +185,147 @@ pub enum Position {
     #[default]
     Relative,
     Absolute,
+}
+
+/// この要素が子をどう並べるか。
+///
+/// CSS の `display` のうち、 アプリの UI で要るのはこの 2 つだけ。 `none` は
+/// 入れていない — 宣言的に組む以上「隠す」は要素を**出さない**ことで書けて、
+/// そちらの方が中身の計算ごと消える。
+///
+/// ```ignore
+/// if self.show_sidebar { children.push(sidebar) }   // display: none の代わり
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Display {
+    /// フレックスボックス。 既定。
+    #[default]
+    Flex,
+    /// グリッド。 [`Element::grid_cols`] / [`Element::grid_rows`] で線を引く。
+    Grid,
+}
+
+// ---------------------------------------------------------------------------
+// Grid
+// ---------------------------------------------------------------------------
+
+/// トラックの下限 / 上限に置ける大きさ。 単体で使うことは少なく、 普通は
+/// [`Track`] のコンストラクタ越しに指定する。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum TrackSize {
+    /// 固定 px。
+    Px(f32),
+    /// グリッド全体に対する割合 (0–100)。
+    Pct(f32),
+    /// 余った空間の分配比 (CSS の `fr`)。 **上限側にしか置けない** —
+    /// 下限に書いた場合は `Auto` として扱う (CSS と同じ制約)。
+    Fr(f32),
+    /// 中身に合わせる。
+    #[default]
+    Auto,
+    /// 折り返せるだけ折り返したときの幅。
+    MinContent,
+    /// 一切折り返さないときの幅。
+    MaxContent,
+}
+
+/// グリッドのトラック (列 1 本 / 行 1 本) の大きさ。
+///
+/// 中身は CSS の `minmax(min, max)` そのままで、 下限と上限の対。
+/// `Track::px(200.0)` のような単一指定は「下限も上限も 200px」に展開される。
+///
+/// ```ignore
+/// // サイドバー固定 + 本文が余りを取る
+/// .grid_cols([Track::px(240.0), Track::fr(1.0)])
+///
+/// // 3 等分
+/// .grid_cols(Track::repeat(3, Track::fr(1.0)))
+///
+/// // 最低 120px を保証しつつ余りを分ける (カードの並べ方の定番)
+/// .grid_cols(Track::repeat(4, Track::minmax(Track::px(120.0), Track::fr(1.0))))
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Track {
+    pub min: TrackSize,
+    pub max: TrackSize,
+}
+
+impl Track {
+    /// 固定 px。
+    pub fn px(v: f32) -> Self {
+        Self::both(TrackSize::Px(v))
+    }
+
+    /// グリッド全体に対する割合 (0–100)。
+    pub fn pct(v: f32) -> Self {
+        Self::both(TrackSize::Pct(v))
+    }
+
+    /// 余りを分け合う (CSS の `1fr` = `Track::fr(1.0)`)。
+    ///
+    /// 下限は `0` ではなく `Auto` — CSS の `fr` と同じで、 **中身より小さくは
+    /// ならない**。 中身を無視して等分したいなら
+    /// `Track::minmax(Track::px(0.0), Track::fr(1.0))`。
+    pub fn fr(v: f32) -> Self {
+        Self { min: TrackSize::Auto, max: TrackSize::Fr(v) }
+    }
+
+    /// 中身に合わせる。
+    pub fn auto() -> Self {
+        Self::both(TrackSize::Auto)
+    }
+
+    /// 折り返せるだけ折り返したときの幅。
+    pub fn min_content() -> Self {
+        Self::both(TrackSize::MinContent)
+    }
+
+    /// 一切折り返さないときの幅。
+    pub fn max_content() -> Self {
+        Self::both(TrackSize::MaxContent)
+    }
+
+    /// `minmax(min, max)`。 `min` からは下限が、 `max` からは上限が採られる。
+    pub fn minmax(min: Track, max: Track) -> Self {
+        Self { min: min.min, max: max.max }
+    }
+
+    /// 同じトラックを `n` 本。 CSS の `repeat(n, ..)` に当たるが、 本数は
+    /// 呼び出し側が決める (`auto-fill` / `auto-fit` は未対応)。
+    pub fn repeat(n: usize, track: Track) -> Vec<Track> {
+        vec![track; n]
+    }
+
+    fn both(s: TrackSize) -> Self {
+        Self { min: s, max: s }
+    }
+}
+
+/// グリッド内での位置。 [`Element::col`] / [`Element::row`] に渡す。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GridPlacement {
+    /// 自動配置 (既定)。
+    #[default]
+    Auto,
+    /// 指定した**線**に接する。 1 始まりで、 負の値は末尾から数える
+    /// (`-1` = 最後の線)。 CSS の `grid-column-start` と同じ数え方。
+    Line(i16),
+    /// トラックを `n` 本ぶんまたぐ。
+    Span(u16),
+}
+
+/// 自動配置の進み方 (CSS `grid-auto-flow`)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GridAutoFlow {
+    /// 行を左から埋めて、 足りなくなったら行を足す (既定)。
+    #[default]
+    Row,
+    /// 列を上から埋めて、 足りなくなったら列を足す。
+    Column,
+    /// `Row` + 隙間詰め。 後ろの小さい要素が前の穴に入る。
+    RowDense,
+    /// `Column` + 隙間詰め。
+    ColumnDense,
 }
 
 // ---------------------------------------------------------------------------
@@ -353,10 +548,40 @@ pub enum ScrollOwner {
 pub struct ElementStyle {
     // Layout
     pub position: Position,
+    /// フレックスか grid か。 [`Display::Flex`] が既定。
+    pub display: Display,
     pub flex_direction: FlexDirection,
     pub flex_wrap: FlexWrap,
     pub align_items: AlignItems,
     pub justify_content: JustifyContent,
+    /// この子だけ親の `align_items` から外れる。 [`AlignSelf::Auto`] (既定) は
+    /// 「親に従う」。
+    pub align_self: AlignSelf,
+    /// grid で、 セルの中の主軸方向の寄せ。 flex では無視される。
+    pub justify_self: AlignSelf,
+    /// 折り返した**行**そのものの配り方。 折り返しか grid でだけ意味がある。
+    /// `None` (既定) は taffy の既定に任せる。
+    pub align_content: Option<AlignContent>,
+    /// grid で、 セルの中の主軸方向の寄せの既定値 (子の `justify_self` が優先)。
+    pub justify_items: Option<AlignItems>,
+    /// 幅 ÷ 高さ。 片方の辺だけ決めれば、 もう片方がこの比で決まる。
+    /// `None` (既定) = 比の拘束なし。
+    pub aspect_ratio: Option<f32>,
+    /// grid の列。 空 (既定) なら列は自動生成される。
+    pub grid_template_columns: Vec<Track>,
+    /// grid の行。 空 (既定) なら行は自動生成される。
+    pub grid_template_rows: Vec<Track>,
+    /// 自動配置の進み方。
+    pub grid_auto_flow: GridAutoFlow,
+    /// この要素が置かれる列 (開始, 終了)。
+    pub grid_column: (GridPlacement, GridPlacement),
+    /// この要素が置かれる行 (開始, 終了)。
+    pub grid_row: (GridPlacement, GridPlacement),
+    /// 兄弟の中での重なり順。 大きいほど手前。 既定は `0`。
+    ///
+    /// **同じ親を持つ兄弟の中でしか効かない** (CSS の重なり文脈と同じ)。
+    /// 親を飛び越えて最前面に出したいなら [`Element::overlay`] を使うこと。
+    pub z_index: i32,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     /// Flex base size along the parent's main axis. `Auto` (default) sizes
@@ -430,7 +655,12 @@ pub struct ElementStyle {
     pub color: Color,
     pub font_size: f32,
     pub bold: bool,
+    /// 斜体。 フォントが斜体の face を持たない場合は cosmic-text が傾けて代用する。
+    pub italic: bool,
     pub monospace: bool,
+    /// 折り返した行の揃え方。 折り返しが起きない 1 行のテキストでは効かない
+    /// (要素の箱が中身ぴったりなので、 揃える余白が無い)。
+    pub text_align: TextAlign,
     /// Specific font family for this element's text, overriding the generic
     /// (and any app-level preferred) family at shaping time. `None` (default)
     /// keeps the normal resolution: monospace/sans-serif generics, optionally
@@ -476,10 +706,22 @@ impl Default for ElementStyle {
     fn default() -> Self {
         Self {
             position: Position::Relative,
+            display: Display::Flex,
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::NoWrap,
             align_items: AlignItems::Stretch,
             justify_content: JustifyContent::Start,
+            align_self: AlignSelf::Auto,
+            justify_self: AlignSelf::Auto,
+            align_content: None,
+            justify_items: None,
+            aspect_ratio: None,
+            grid_template_columns: Vec::new(),
+            grid_template_rows: Vec::new(),
+            grid_auto_flow: GridAutoFlow::Row,
+            grid_column: (GridPlacement::Auto, GridPlacement::Auto),
+            grid_row: (GridPlacement::Auto, GridPlacement::Auto),
+            z_index: 0,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: Dimension::Auto,
@@ -516,7 +758,9 @@ impl Default for ElementStyle {
             color: Color::WHITE,
             font_size: 14.0,
             bold: false,
+            italic: false,
             monospace: false,
+            text_align: TextAlign::Start,
             font_family: None,
             font_weight: None,
             letter_spacing: 0.0,
@@ -541,11 +785,22 @@ pub struct Typography {
     pub letter_spacing: f32,
     /// Line height as a multiple of the font size. `None` = 1.4.
     pub line_height: Option<f32>,
+    /// 斜体。 face に斜体が無ければ合成斜体になる。
+    pub italic: bool,
+    /// 折り返した行の揃え方。 **幅が決まっている要素でのみ効く** — 揃える
+    /// 相手の余白が無ければ何も起きない。
+    pub align: TextAlign,
 }
 
 impl Default for Typography {
     fn default() -> Self {
-        Self { weight: None, letter_spacing: 0.0, line_height: None }
+        Self {
+            weight: None,
+            letter_spacing: 0.0,
+            line_height: None,
+            italic: false,
+            align: TextAlign::Start,
+        }
     }
 }
 
@@ -568,6 +823,8 @@ impl ElementStyle {
             weight: self.font_weight,
             letter_spacing: self.letter_spacing,
             line_height: self.line_height,
+            italic: self.italic,
+            align: self.text_align,
         }
     }
 }
@@ -944,6 +1201,18 @@ pub fn div() -> Element {
         cursor: None,
         no_select: false,
     }
+}
+
+/// grid の入れ物を作る。 `div().grid()` と同じ。
+///
+/// ```ignore
+/// grid()
+///     .grid_cols([Track::px(240.0), Track::fr(1.0)])
+///     .gap(12.0)
+///     .children([sidebar, main])
+/// ```
+pub fn grid() -> Element {
+    div().grid()
 }
 
 /// Create a text element.
@@ -1532,6 +1801,153 @@ impl Element {
         self
     }
 
+    // -- align-self / align-content / aspect-ratio --
+
+    /// この子だけ親の `align_items` から外れる (CSS `align-self`)。
+    pub fn align_self(mut self, a: AlignSelf) -> Self {
+        self.style.align_self = a;
+        self
+    }
+
+    /// Shortcut: `align-self: start`.
+    pub fn self_start(self) -> Self {
+        self.align_self(AlignSelf::Start)
+    }
+
+    /// Shortcut: `align-self: center`.
+    pub fn self_center(self) -> Self {
+        self.align_self(AlignSelf::Center)
+    }
+
+    /// Shortcut: `align-self: end`.
+    pub fn self_end(self) -> Self {
+        self.align_self(AlignSelf::End)
+    }
+
+    /// Shortcut: `align-self: stretch`. 親が `items_center()` でも、 これを
+    /// 付けた子だけは交差軸いっぱいに伸びる。
+    pub fn self_stretch(self) -> Self {
+        self.align_self(AlignSelf::Stretch)
+    }
+
+    /// grid のセル内での主軸方向の寄せ。 flex では無視される。
+    pub fn justify_self(mut self, a: AlignSelf) -> Self {
+        self.style.justify_self = a;
+        self
+    }
+
+    /// 折り返した**行**そのものの配り方 (CSS `align-content`)。
+    /// [`Element::wrap`] を付けた入れ物か grid でだけ効く。
+    pub fn align_content(mut self, a: AlignContent) -> Self {
+        self.style.align_content = Some(a);
+        self
+    }
+
+    /// grid のセル内での主軸方向の寄せの既定値。 子の `justify_self` が優先。
+    pub fn justify_items(mut self, a: AlignItems) -> Self {
+        self.style.justify_items = Some(a);
+        self
+    }
+
+    /// 幅 ÷ 高さの比を固定する (CSS `aspect-ratio`)。
+    ///
+    /// 片方の辺だけ決めれば、 もう片方がこの比で決まる。 サムネイルを
+    /// 16:9 に揃える、 アイコンを正方形に保つ、 といった用途。
+    ///
+    /// ```ignore
+    /// div().w_full().aspect(16.0 / 9.0)   // 幅なりの 16:9
+    /// div().h(Px(40.0)).aspect(1.0)       // 40x40 の正方形
+    /// ```
+    pub fn aspect(mut self, ratio: f32) -> Self {
+        self.style.aspect_ratio = Some(ratio);
+        self
+    }
+
+    // -- Grid --
+
+    /// この要素を grid にする。 列は [`Element::grid_cols`] で引く。
+    pub fn grid(mut self) -> Self {
+        self.style.display = Display::Grid;
+        self
+    }
+
+    /// grid の列を引く。 **付けると `display: grid` になる**ので
+    /// [`Element::grid`] を別途呼ぶ必要は無い。
+    ///
+    /// ```ignore
+    /// div().grid_cols([Track::px(240.0), Track::fr(1.0)]).gap(12.0)
+    /// ```
+    pub fn grid_cols(mut self, tracks: impl IntoIterator<Item = Track>) -> Self {
+        self.style.display = Display::Grid;
+        self.style.grid_template_columns = tracks.into_iter().collect();
+        self
+    }
+
+    /// grid の行を引く。 [`Element::grid_cols`] と同じく `display: grid` になる。
+    pub fn grid_rows(mut self, tracks: impl IntoIterator<Item = Track>) -> Self {
+        self.style.display = Display::Grid;
+        self.style.grid_template_rows = tracks.into_iter().collect();
+        self
+    }
+
+    /// 自動配置の進み方。
+    pub fn grid_flow(mut self, flow: GridAutoFlow) -> Self {
+        self.style.grid_auto_flow = flow;
+        self
+    }
+
+    /// この要素が占める列を (開始, 終了) で指定する。
+    pub fn col(mut self, start: GridPlacement, end: GridPlacement) -> Self {
+        self.style.grid_column = (start, end);
+        self
+    }
+
+    /// この要素が占める行を (開始, 終了) で指定する。
+    pub fn row(mut self, start: GridPlacement, end: GridPlacement) -> Self {
+        self.style.grid_row = (start, end);
+        self
+    }
+
+    /// 列を `n` 本ぶんまたぐ。 開始位置は自動。
+    pub fn col_span(mut self, n: u16) -> Self {
+        self.style.grid_column = (GridPlacement::Span(n), GridPlacement::Auto);
+        self
+    }
+
+    /// 行を `n` 本ぶんまたぐ。 開始位置は自動。
+    pub fn row_span(mut self, n: u16) -> Self {
+        self.style.grid_row = (GridPlacement::Span(n), GridPlacement::Auto);
+        self
+    }
+
+    // -- Stacking --
+
+    /// 兄弟の中での重なり順。 大きいほど手前に描かれ、 クリックも先に取る。
+    /// 既定は `0` で、 同値なら書いた順 (後ろが手前)。
+    ///
+    /// # 親は飛び越えない
+    ///
+    /// **効くのは同じ親を持つ兄弟の中だけ**。 `z(999)` を書いても、 親より
+    /// 手前の要素の上には出ない。 CSS の重なり文脈と同じ制約で、 sabitori では
+    /// 親の `overflow_hidden` によるクリップが子に効いている以上、 これを
+    /// 破ると「クリップの外に描かれる要素」が生まれてしまう。
+    ///
+    /// 木を飛び越えて最前面に出したいなら [`Element::overlay`] — ポップアップや
+    /// コンテキストメニューはそちら。
+    ///
+    /// ```ignore
+    /// // 重なった丸を、書いた順と逆に見せる
+    /// div().children([
+    ///     avatar(a).z(3),
+    ///     avatar(b).z(2),
+    ///     avatar(c).z(1),
+    /// ])
+    /// ```
+    pub fn z(mut self, z: i32) -> Self {
+        self.style.z_index = z;
+        self
+    }
+
     /// Set overflow behavior.
     ///
     /// # スクロールさせたいなら [`Element::scroll`] を使うこと
@@ -1709,6 +2125,34 @@ impl Element {
     pub fn mono(mut self) -> Self {
         self.style.monospace = true;
         self
+    }
+
+    /// 斜体にする。 face に斜体が無ければ cosmic-text が傾けて代用する
+    /// (合成斜体)。 日本語フォントは斜体を持たないのが普通なので、 和文は
+    /// ほぼ合成になる。
+    pub fn italic(mut self) -> Self {
+        self.style.italic = true;
+        self
+    }
+
+    /// 折り返した行の揃え方 (CSS `text-align`)。
+    ///
+    /// **効くのは折り返しが起きたときだけ**。 1 行しか無いテキスト要素は箱が
+    /// 中身ぴったりなので揃える余白が無く、 見た目は変わらない。 その場合は
+    /// 幅を与える (`.w_full()`) か、 親の [`Element::justify_center`] を使う。
+    pub fn text_align(mut self, a: TextAlign) -> Self {
+        self.style.text_align = a;
+        self
+    }
+
+    /// Shortcut: `text-align: center`。 折り返す前提の段落向け。
+    pub fn text_center(self) -> Self {
+        self.text_align(TextAlign::Center)
+    }
+
+    /// Shortcut: `text-align: end` (日本語 / 英語なら右)。
+    pub fn text_right(self) -> Self {
+        self.text_align(TextAlign::End)
     }
 
     /// Shape this element's text in a specific named font family, overriding

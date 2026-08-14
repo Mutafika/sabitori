@@ -12,6 +12,7 @@
 ## 特徴
 
 - **宣言的ビルダー API** — `div() / text() / button() / image()` でツリーを組み立てる
+- **CSS の形のレイアウト** — Taffy による flex と grid、`align-self` / `align-content` / `aspect-ratio` / `z-index` / `text-align`
 - **GPU レンダリング** — wgpu + SDF シェーダーで角丸 / ボーダー / 影 / グラデーションを 1 パスで描画
 - **WASM ファースト** — WebGPU 優先、WebGL2 フォールバック、winit web extension で canvas 自動バインド
 - **Spring 物理アニメーション** — snappy / gentle / bouncy プリセット + 11 種の easing + keyframe
@@ -114,7 +115,7 @@ let (first, count) = ctx.visible_range("file-list", ROW_H);
 **`view()` に `text_input` を置く。配線はこれで全部です。**
 
 ```rust
-struct App { name: TextInputState }
+struct App { name: TextInputState, saved: Option<String> }
 
 impl DeclarativeApp for App {
     fn view(&self, ctx: &ViewContext) -> Element {
@@ -138,6 +139,22 @@ impl DeclarativeApp for App {
 assert!(h.unrouted_text_inputs().is_empty());
 ```
 
+
+折り返す複数行の欄は `text_area` です。状態の型も配線の要らなさも同じです。
+
+```rust
+text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 6)  // 6 行ぶんの高さ
+```
+
+| | `text_input` | `text_area` |
+|---|---|---|
+| Enter | アプリへ流す (フォーム送信) | 改行を入れる |
+| 貼り付け | 改行を空白に潰す | 改行を保つ |
+| ↑ ↓ | アプリへ流す | **視覚行**を 1 つ移動 |
+| Home / End | 文字列の先頭 / 末尾 | **視覚行**の先頭 / 末尾 |
+
+「視覚行」であることが要点です。論理行 (`\n` 区切り) で動かすと、折り返した長い段落の中で 1 回押しただけで段落ごと飛びます。`Cmd+Enter` はアプリへ流れるので、「送信」を割り当てられます。
+
 ### 3. フォーカスとキーボード
 
 `.focusable` な要素はクリックと Tab でフォーカスが入ります。キーはまず `on_focused_input(id, event)` に行き、処理されなかったぶんが `on_input(event)` に落ちます。
@@ -153,14 +170,53 @@ use sabitori::testing::Harness;
 
 let mut h = Harness::new(App::default(), 800.0, 600.0);
 h.frame();                  // 組み立て + レイアウト
-h.click("save");            // id で押す
-h.text("hello");            // フォーカス中の要素へ打鍵
+h.click("name");            // id で欄にフォーカスを入れる
+h.text("hello");            // 打鍵はフォーカス中の要素へ行く
+h.click("save");            // ここで初めてハンドラが打った値を見る
 h.scroll("file-list", 400.0);
 h.settle();                 // ばねを終わらせる (scroll_intents に必要)
 assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 **`frame()` は時間を進めません。** 慣性スクロール・`scroll_intents`・style アニメーションなど、ばねで動くものは `tick(dt)` か `settle()` が要ります。
+
+## レイアウト
+
+flex と grid の両方が使えます。土台は Taffy で、名前は CSS に揃えてあります。
+
+```rust
+// flex
+let toolbar = div().flex_row().items_center().justify_between().gap(8.0);
+
+// grid — サイドバー固定 + 本文が余りを取る
+let shell = grid()
+    .grid_cols([Track::px(240.0), Track::fr(1.0)])
+    .gap(12.0)
+    .children([sidebar, body]);
+
+// 全列にまたがる見出し行
+let sheet = grid()
+    .grid_cols(Track::repeat(3, Track::fr(1.0)))
+    .children([header.col_span(3), a, b, c]);
+```
+
+`Track` は CSS の `minmax(min, max)` そのものです。`Track::px / pct / fr / auto / min_content / max_content / minmax` で作り、`Track::repeat(n, track)` で並べます。`auto-fill` / `auto-fit` は未対応で、本数は呼び出し側が決めます。
+
+| | |
+|---|---|
+| 子 1 個だけ親の揃えから外す | `.self_start()` `.self_center()` `.self_end()` `.self_stretch()` |
+| 折り返した**行**の配り方 | `.wrap()` した入れ物に `.align_content(..)` |
+| 縦横比を固定する | `.aspect(16.0 / 9.0)` |
+| 兄弟の中での重なり順 | `.z(5)` |
+| 折り返したテキストの揃え | `.text_center()` `.text_right()` |
+
+このうち 3 つには前提があります。「効かない」と思う前にここを見てください。
+
+- **`.aspect()` は stretch に負けます。** `flex_col` の既定 (`align_items: stretch`) は子の幅を先に決めてしまうので、辺が 2 つ決まった時点で比の出番がありません。高さから幅を出したいなら `.self_start()` を併記します。
+- **`.text_center()` には幅が要ります。** テキスト要素は中身なりの大きさなので、揃える余白がそもそもありません。`flex_col` の中では親幅まで伸びるのでそのまま効きますが、`flex_row` の中では効きません。
+- **`.z()` は親を飛び越えません。** CSS の重なり文脈と同じです。効くのは兄弟の中だけで、描画順とクリック順が一緒に動きます。木を飛び越えて最前面に出したいなら (ポップアップ、コンテキストメニュー) `.overlay()` を使ってください。
+
+`display: none` は意図的に入れていません。要素を出さなければいいので、そちらの方がレイアウト計算ごと消えます。
 
 ## ウィジェット
 
@@ -184,8 +240,8 @@ div().flex_col().children([
 窓の中身は GPU で描いたピクセルなので、ツリーが「これは何か」を言わない限りスクリーンリーダーには何も見えません。`button()` は自分で `Role::Button` を名乗ります。それ以外は書いてください：
 
 ```rust
-div().id("close").role(Role::Button).label("閉じる")   // アイコンだけのボタン
-text("設定").role(Role::Heading).heading(2)
+let close = div().id("close").role(Role::Button).label("閉じる");   // アイコンだけのボタン
+let heading = text("設定").role(Role::Heading).heading(2);
 ```
 
 意味の層は入っていて `hit_regions` まで通っています。OS 側のアダプタ（accesskit）はまだ繋がっていません。
