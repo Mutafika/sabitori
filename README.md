@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**Status**: pre-release (`0.1.0`). Core features are implemented and the WASM target is buildable via the `templates/wasm/` setup. The API is still in flux.
+**Status**: pre-release (`0.4.0`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.4.0` is a breaking round that removed the APIs which compiled but silently did nothing — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
@@ -15,8 +15,9 @@
 - **GPU rendering** — wgpu + SDF shaders for rounded corners, borders, shadows, and gradients in a single pass
 - **WASM-first** — WebGPU preferred with WebGL2 fallback; canvas auto-binding via winit's web extension
 - **Spring physics animation** — snappy / gentle / bouncy presets + 11 easing functions + keyframes
-- **Unified input** — mouse / touch / pen abstracted as `Pointer`; Japanese IME and preedit support
-- **20 widgets** — Modal / Table (virtual scroll) / TreeView / SplitPane / ContextMenu and more
+- **Unified input** — mouse / touch / pen abstracted as `Pointer`; Japanese IME with inline preedit and a correctly positioned caret
+- **Headless testing** — drive a whole app with no window and no GPU via `sabitori::testing::Harness`
+- **Accessibility scaffolding** — `.role()` / `.label()` / `.heading(n)` describe the tree for assistive tech
 - **Markdown renderer** — CommonMark + GFM (tables / strikethrough / footnotes) + TOC
 - **TUI components** — Block / StatusBar / Spinner / Typewriter for terminal-style UIs
 - **MIT purity** — `cargo deny` automatically rejects AGPL/GPL dependencies
@@ -25,7 +26,6 @@
 
 ```rust
 use sabitori::*;
-use sabitori::element::*;
 
 struct App { clicks: u32 }
 
@@ -61,6 +61,114 @@ fn main() {
 }
 ```
 
+Anything you want to interact with needs an `.id()` — that is what click, hover, focus, and scroll are keyed on.
+
+## The four things people get wrong
+
+These come up more than everything else combined. Each has exactly one correct form.
+
+### 1. Scrolling
+
+**Give the container `.scroll(id)` and let the runtime own the offset.**
+
+```rust
+div().scroll("file-list").flex_1().flex_col().children(rows)
+```
+
+That is the whole wiring. The runtime routes the wheel, runs the momentum spring, and keeps the position across frames. Do **not** implement `on_scroll` for it — the wheel is already delivered, so adding your own handler scrolls twice.
+
+Read the position back with `ctx.scroll_info("file-list")`, and scroll programmatically by returning from `scroll_intents()`:
+
+```rust
+fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+    self.pending.take().map(|y| ("file-list".into(), y)).into_iter().collect()
+}
+```
+
+For long lists, ask the runtime which rows are visible and pad the rest with spacers so the scrollbar length matches the real data:
+
+```rust
+let (first, count) = ctx.visible_range("file-list", ROW_H);
+```
+
+`virtual_list(ctx, id, &items, row_h, render)` does that for you.
+
+The other model is `.scroll_manual(x, y)`, where **your app** owns the offset and the runtime never touches it. Pick one; the type says which.
+
+### 2. Text input and the IME
+
+**Use `text_input` with a `TextInputState`.** Do not hand-roll a text field — the inline preedit and the caret position both depend on real font measurement that only the runtime has.
+
+```rust
+// view()
+text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
+
+// route keys/IME to the focused field
+fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
+    match id { "name" => self.name.on_focused_input(e), _ => false }
+}
+
+// blink the caret
+fn tick(&mut self, dt: f32) { self.name.tick(dt); }
+
+// anchor the OS candidate window at the caret
+fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { … }
+```
+
+Japanese conversion shows inline with the caret **inside** the preedit, which is how you can tell what is being converted.
+
+### 3. Focus and keyboard
+
+Elements with `.focusable` take focus on click and via Tab. Keys go to `on_focused_input(id, event)` first; whatever is unhandled falls through to `on_input(event)`.
+
+**`on_input` returning `true` suppresses the built-in behavior** for that key (copy, paste, Escape, Tab). Return `false` when you did not consume it, or you will silently kill the defaults.
+
+### 4. Testing
+
+Apps are testable with no window and no GPU:
+
+```rust
+use sabitori::testing::Harness;
+
+let mut h = Harness::new(App::default(), 800.0, 600.0);
+h.frame();                  // build + layout
+h.click("save");            // by id
+h.text("hello");            // typed input to the focused element
+h.scroll("file-list", 400.0);
+h.settle();                 // let springs finish (needed for scroll_intents)
+assert_eq!(h.app().saved.as_deref(), Some("hello"));
+```
+
+`frame()` does not advance time. Anything spring-driven — momentum scroll, `scroll_intents`, style animation — needs `tick(dt)` or `settle()`.
+
+## Widgets
+
+Two kinds, and the split is the API:
+
+- **State** is a struct you keep on your app: `TextInputState`, `TableState`, `DropdownState`, `SplitPaneState`.
+- **Visuals** are free functions you call from `view()`: `text_input(ctx, id, &state, &style) -> Element`.
+
+Every Element-producing entry point is a `snake_case` free function taking `&ViewContext` first and `id` second. `sabitori_core::forms` (`checkbox`, `radio`, `slider`, `segment_control`, `progress_bar`, `numeric_input`, `collapsing_header`, `dropdown_trigger`) follows the same shape, so there is nothing to look up per widget.
+
+```rust
+div().flex_col().children([
+    text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),
+    table(ctx, "files", &self.files, &TableStyle::default_dark()),
+    tree_view(ctx, "tree", &self.tree, &TreeViewStyle::default_dark()),
+])
+```
+
+## Accessibility
+
+The window is a GPU surface, so screen readers see nothing unless the tree says what things are. `button()` declares `Role::Button` on its own; describe the rest:
+
+```rust
+div().id("close").role(Role::Button).label("Close")   // icon-only button
+text("Settings").role(Role::Heading).heading(2)
+```
+
+The semantic layer is in place and carried through `hit_regions`. The OS adapter (accesskit) is not wired yet.
+
 ## Examples
 
 ```bash
@@ -73,7 +181,7 @@ cargo run --example layout        # Taffy Flexbox layout
 cargo run --example text          # cosmic-text integration
 cargo run --example tui_demo      # ANSI-based TUI dashboard
 cargo run --example tui_gallery   # Animation gallery
-cargo run --example filer         # File manager (Table / ContextMenu / rename)
+cargo run --example filer         # File manager — runtime-managed scroll, virtualized rows
 cargo run --example hello         # Low-level API (`SabitoriApp` trait)
 ```
 
@@ -83,15 +191,15 @@ A 13-crate workspace:
 
 ```
 sabitori (umbrella)
-├── sabitori-core      Element builders / core types / TUI components
+├── sabitori-core      Element builders / core types / form controls / TUI components
 ├── sabitori-gpu       wgpu SDF renderer / OrbitCamera / image textures
-├── sabitori-style     CSS-like StyleProps / Theme / ANSI palette
+├── sabitori-style     Theme / ANSI palette / StyleProps (layout types re-exported from core)
 ├── sabitori-layout    Taffy wrapper (Flexbox + Grid)
 ├── sabitori-scene     NodeTree / hit test / state management
-├── sabitori-input     Pointer abstraction / IME / focus
+├── sabitori-input     Pointer abstraction / IME / focus / delivery table
 ├── sabitori-anim      Spring / Easing / Keyframe / specialized states
 ├── sabitori-text      cosmic-text integration / glyph atlas
-├── sabitori-widgets   20 high-level widgets
+├── sabitori-widgets   Stateful widgets (state structs + Element functions)
 ├── sabitori-window    winit runtime / EmbeddedRunner
 ├── sabitori-markdown  Markdown → Element conversion
 └── sabitori-net       HTTP fetch (reqwest / wasm fetch)
@@ -121,6 +229,7 @@ For WASM-specific requirements (the `webgl` feature on `wgpu`, bundling fonts, t
 See [ROADMAP.md](ROADMAP.md) for implemented features and outstanding areas.
 
 Notable open items:
+- accesskit adapter so the semantic layer reaches VoiceOver / NVDA / Narrator
 - macOS native integration (NSStatusItem / transparent NSWindow / notifications)
 - Physical units (`Mm` / `Pt`) and accurate PPI detection
 - crates.io publishing prep (metadata cleanup + `release-plz` automation)

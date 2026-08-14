@@ -18,8 +18,15 @@
 ## [0.4.0] - 2026-08-14
 
 フレームワーク全体を見直して挙げた [#14〜#22](https://github.com/Mutafika/sabitori/issues)
-を潰す破壊的変更ラウンド。旧 API は `#[deprecated]` を挟まず削除し、代わりに移行手順を
-ここに残してある。
+と、その後の 2 巡目レビューで出た構造的な穴を潰す破壊的変更ラウンド。旧 API は
+`#[deprecated]` を挟まず削除し、代わりに移行手順をここに残してある。
+
+**2 巡目で出たもの。** 1 巡目でランタイムの契約は直ったが、その上の層——ウィジェット・
+example・README——が古いモデルを教えたままだった。機構が正しくても、消費側が読む場所に
+それが書いてなければ症状は減らない。widget crate は「`view()` から使える宣言的なもの」と
+「画面座標を渡す retained なもの」の 2 系統に割れており、後者は `Element` を返さないので
+`view()` から組み込めず、repo 内の使用箇所も 0 だった。旗艦 example の `filer` は
+テストされていない手動スクロールを教えていた。README は `0.1.0` のままだった。
 
 **背景。** 立て続けに来た issue を分類したら、純粋な機能不足は 1 件だけで、残りは
 すべて「core は持っているのに消費側に届かない」「doc と実装が食い違う」だった。しかも
@@ -286,6 +293,35 @@
   乗らない**（キーが無いので状態を引けない）。スクロールさせたいなら上の 2 つを使う。
 
 ### Fixed
+- **役割だけを持つ要素がクリックを飲み込んでいた**
+  ([#21](https://github.com/Mutafika/sabitori/issues/21) の副作用)。
+  `.role()` / `.label()` を持つ要素も `hit_regions` に出すようにした結果、
+  **id もハンドラも持たない意味だけの子が手前に居ると、id を持つ親のクリックが
+  一切通らなくなっていた**。0.4.0 の宣言版 `table` でセルに `Role::Cell` を
+  書き足した瞬間に行が押せなくなり発覚。コンパイルも通るし警告も出ない。
+
+  `HitRegion::is_interactive()` を足し、ポインタを解決する側が意味だけの領域を
+  透過するようにした（`hit_region_at` / `wants_pointer` / declarative と scene の
+  マウス押下・タッチ押下、計 6 箇所）。
+
+- **`testing::Harness` に時間が無かった**
+  ([#19](https://github.com/Mutafika/sabitori/issues/19) の穴)。すべての tick
+  （アプリの `tick`、スクロールのばね・慣性、tooltip の遅延、drag、style /
+  presence）が `about_to_wait` にベタ書きで、Harness からは 1 つも回せなかった。
+  そのため**ばねで動くものはテストすると必ず「動かない」ように見えた** —
+  とくに `scroll_intents()` は `smooth_scroll_to`（目標を置くだけ）なので、
+  実機では動くのにテストでは 1px も動かない。`AppState::advance(dt)` /
+  `is_animating()` に括り出し、ランタイムと Harness が同じ実装を通るようにした。
+
+- **`VirtualList` が可視範囲をウィンドウ高さから計算していた**。`ctx.height` は
+  ウィンドウの高さであって、リストを置いた入れ物の高さではない。サイドパネルに
+  入れると実際の 3〜4 倍の行を作った上に、スクロールすると下端で行が尽きた。
+  `ctx.visible_range(id, item_height)` に寄せた。
+
+- **`TreeView` の開閉が label 一致だった**。木を舐めて最初に label が一致した
+  ノードを開閉していたので、同じ名前のノードが 2 つあると**別のノードが開いた**。
+  展開位置の添字で辿る形に直した。
+
 - **`sabitori-window` のポインタ `match` が網羅でなかった**
   ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` /
   `inject_event` の `_ => {}` を廃止し、無視する種別も明示的に並べた。#12 で
@@ -324,6 +360,84 @@
   と `apply_scroll_measures` の複製を削除し、`declarative` と同じ
   `scroll_sync` の関数を呼ぶようにした。片方だけ直す事故の温床だった。
 
+### Changed（破壊的・ウィジェット層）
+
+- **`view()` から使えない retained ウィジェットを削除した**。`new(x, y, w, h)` や
+  `new(bounds: Rect)` に画面座標を渡し、`hit_test(point)` で自分で当たり判定をする
+  一群。`Element` を返さないので宣言的ツリーには組み込めず、examples・他 crate
+  合わせて**使用箇所は 0** だった（grep のヒットは全部コメントと文字列リテラル）。
+  それでいて README は「20 widgets」の一部として数えていた。
+
+  | 消えたもの | 代わり |
+  |---|---|
+  | `Button` / `ButtonStyle` / `ButtonVariant` | `element::button()` |
+  | `Card` / `CardStyle` | `div()` + `.bg()` / `.rounded()` / `.shadow_md()` |
+  | `Tabs` / `TabStyle` | `forms::segment_control()` |
+  | `Dropdown` | `DropdownState` + `DropdownStyle` |
+  | `TextInput`（`bounds: Rect` を持つ方） | `text_input()` + `TextInputState` |
+
+  `DropdownStyle` は残る（宣言版 `select` が使う）。定義は `select.rs` へ移した。
+
+- **`Table` / `SplitPane` を宣言版に作り直した**。宣言的な等価物が無かったので
+  削除では穴が開く。列幅は taffy、当たり判定は id、スクロールは `.scroll(id)` が
+  持つので、widget 側に幾何演算は 1 行も要らない。
+
+  ```rust
+  table(ctx, "files", &self.files, &TableStyle::default_dark())
+  split_pane(ctx, "main", &self.split, &style, sidebar, editor)
+  tree_view(ctx, "tree", &self.tree, &TreeViewStyle::default_dark())
+  ```
+
+  `table` / `tree_view` / `virtual_list` は `ctx.visible_range()` で行を仮想化し、
+  上下に spacer を積む。10 万行でも作る Element は viewport ぶんだけで、
+  スクロール量は実データと一致する。
+
+- **Element を返す入口の命名を統一した**。`view()` / `bar()` / `build()` /
+  `render()` / `trigger()` / `to_element()` と 6 通りあり、ウィジェットごとに
+  ソースを読まないと分からなかった。**`snake_case` の自由関数で、第 1 引数が
+  `&ViewContext`、第 2 引数が `id`** に統一（`core::forms` と同じ形）。
+
+- **`VirtualList::build` から `scroll_y` 引数を落とした**。出どころが doc に
+  書かれておらず、素直に書くと 0 のまま動かなかった。位置はランタイムが持つ。
+
+- **`Role` に表と木の役割を追加**: `Table` / `Row` / `Cell` / `ColumnHeader` /
+  `Tree` / `TreeItem`。`Cursor` に `ResizeNs`（上下分割の仕切り）。どちらも
+  網羅マッチを壊すので、下流で `match` している箇所はコンパイルエラーになる。
+
+- **`core::forms` の 8 コントロールと宣言的ウィジェットに `.role()` / `.label()`
+  を付けた**。#21 で仕組みは入れたのに使っていたのは `text_input` だけで、
+  ウィジェットで組んだアプリの意味ツリーは実質空だった。
+
+- **`Harness::tick(dt)` / `settle()` / `settle_for(n)` を追加**。ばねで動くものを
+  テストするのに要る（上の Fixed 参照）。
+
+### Changed（example と doc）
+
+- **`examples/filer.rs` を runtime 管理スクロールへ移した**。旗艦 example が
+  `ScrollView` を自前で持ち、`first = scroll_y / ROW_H` で自前に仮想化し、
+  スクロールバーも `mt(top_offset)` も `on_scroll` 転送も `tick` も手書き
+  していた——つまり**#14 で直してテストもある `.scroll(id)` ではない方**を
+  教えていた。list / grid 両モードを `.scroll(FILE_SCROLL_ID)` へ。
+  `Tab` から `ScrollView` フィールドが消え、content_height の手計算も不要に
+  なった（レイアウトが測る）。
+
+- **README を全面的に書き直した**。`0.1.0` と書いてあり、`.scroll()` も
+  `testing::Harness` も role もクリップボードも——**0.4.0 で足したものが 1 つも
+  書かれていなかった**。「よく間違える 4 つ」（スクロール / テキスト入力と IME /
+  フォーカスとキーボード / テスト）を追加し、それぞれ正解を 1 つだけ示す形にした。
+
+- **README のコード例をコンパイル検査で固定した**
+  (`crates/sabitori/tests/readme_examples.rs`)。API を壊すと落ちるので、README を
+  直し忘れてマージすることが無くなる。
+
+- **ウィジェットをランタイム越しに動かすテストを追加した**
+  (`crates/sabitori/tests/widgets_through_runtime.rs`)。依存の向きが
+  `sabitori → sabitori-widgets` なので widget crate からは `Harness` に手が
+  届かず、それまでの widget テストは全部「関数を直接呼んで戻り値を見る」単体
+  テストだった。`table` / `tree_view` / `virtual_list` / `tooltip` / `panel` /
+  `modal` はテスト 0 件。**この経路を通した瞬間に実バグが 1 件出た**（上の
+  「役割だけを持つ要素が…」）。
+
 ### 移行
 
 **`.overflow_scroll()` / `.scroll_offset()` を使っている箇所はコンパイルエラーに
@@ -348,6 +462,18 @@
 
 `sabitori::*` の glob に `Delivery` / `InputEventKind` / `ScrollOwner` が増えるので、
 下流に同名の型があれば衝突する（その場合は明示 import で回避）。
+
+**retained ウィジェットを使っている箇所はコンパイルエラーになる。** 上の対応表の
+とおり置き換える。いずれも `Element` を返さない型だったので、`view()` の中に
+書いていたということは無いはず（書けなかった）。自前で矩形を計算して描いていた
+場合は、宣言版に寄せると幾何計算がまるごと不要になる。
+
+**`Role` と `Cursor` に variant が増えた。** 下流で網羅 `match` している箇所は
+腕を足すこと。`_ =>` で受けていれば影響なし。
+
+**`Harness` でばねを使う挙動をテストしている場合、`settle()` を足す。**
+`frame()` は時間を進めない（意図的にそうしてある——テストは決定的であるべきなので）。
+`scroll_intents` や慣性スクロールを見るテストは `h.frame(); h.settle();` の形にする。
 
 ## [0.3.21] - 2026-08-12
 
