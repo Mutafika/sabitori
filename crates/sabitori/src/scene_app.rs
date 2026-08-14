@@ -130,7 +130,7 @@ struct SceneAppState<A: SceneApp> {
     pinch: Option<PinchGesture>,
     /// Last [`UiCapture`] snapshot pushed to the app (deduped).
     last_capture: UiCapture,
-    /// 管理されたスクロールコンテナ(overflow_scroll)の状態。DeclarativeApp ランタイム
+    /// 管理されたスクロールコンテナ(`.scroll(id)`)の状態。DeclarativeApp ランタイム
     /// と同様にホイールを該当領域へルーティングし、毎フレーム offset を patch する。
     scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Animated style transitions (hover/active spring). Mirrors `AppState`
@@ -206,54 +206,6 @@ impl<A: SceneApp> SceneAppState<A> {
             winit::event::MouseButton::Right => Some(SabiMouseButton::Right),
             winit::event::MouseButton::Middle => Some(SabiMouseButton::Middle),
             _ => None,
-        }
-    }
-
-    /// `overflow_scroll` の要素を見つけて管理状態を作り、現在の offset を要素へ patch する。
-    /// DeclarativeApp ランタイムの同名処理を SceneApp 用に移植したもの。
-    fn patch_scroll_offsets(
-        element: &mut sabitori_core::Element,
-        states: &mut std::collections::HashMap<String, sabitori_widgets::ScrollView>,
-    ) {
-        let mut path: Vec<usize> = Vec::new();
-        Self::patch_scroll_inner(element, states, &mut path);
-    }
-
-    fn patch_scroll_inner(
-        element: &mut sabitori_core::Element,
-        states: &mut std::collections::HashMap<String, sabitori_widgets::ScrollView>,
-        path: &mut Vec<usize>,
-    ) {
-        use sabitori_core::element::{Dimension, Overflow};
-
-        if element.style.overflow == Overflow::Scroll {
-            if element.id.is_none() {
-                let path_str =
-                    path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
-                element.id = Some(format!("__scroll:{path_str}"));
-            }
-            if let Some(ref id) = element.id {
-                let explicit_h = match element.style.height {
-                    Dimension::Px(h) => Some(h),
-                    _ => None,
-                };
-                let viewport_h = explicit_h
-                    .or_else(|| states.get(id).map(|sv| sv.viewport_height))
-                    .unwrap_or(0.0);
-                let sv = states.entry(id.clone()).or_insert_with(|| {
-                    sabitori_widgets::ScrollView::new(viewport_h.max(1.0), viewport_h.max(1.0))
-                });
-                if let Some(h) = explicit_h {
-                    sv.viewport_height = h;
-                }
-                element.style.scroll_x = sv.scroll_x.value();
-                element.style.scroll_y = sv.scroll_y.value();
-            }
-        }
-        for (i, child) in element.children.iter_mut().enumerate() {
-            path.push(i);
-            Self::patch_scroll_inner(child, states, path);
-            path.pop();
         }
     }
 }
@@ -527,7 +479,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
-                // カーソル下の管理スクロールコンテナ(overflow_scroll)へルーティング。
+                // カーソル下の管理スクロールコンテナ(`.scroll(id)`)へルーティング。
                 // 該当が無ければアプリの on_scroll へフォールバック（DeclarativeApp と同じ）。
                 let mut handled = false;
                 if let Some(ref build) = self.last_build {
@@ -961,21 +913,17 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     &self.pressed_id,
                 );
 
-                // overflow_scroll コンテナを登録し、現在の offset を要素へ patch する。
-                Self::patch_scroll_offsets(&mut root, &mut self.scroll_states);
+                // `.scroll(id)` のコンテナを登録し、現在の offset を要素へ patch する。
+                // declarative と同じ関数を呼ぶ — 以前はこのファイルに逐語コピーが
+                // あり、片方だけ直す事故の温床になっていた (issue #14 / #17)。
+                crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
                 let mut build_result = {
                     let measurer = TextRendererMeasurer::new(&mut tr, &self.measure_cache);
                     build_tree_measured(&root, w, h, &measurer)
                 };
                 // 測定したスクロール範囲(viewport/content)を管理状態へ反映 → 次フレームの
                 // ホイールが正しい上限でクランプされる（コンテンツ高がここで確定）。
-                for (id, measure) in &build_result.scroll_measures {
-                    if let Some(sv) = self.scroll_states.get_mut(id) {
-                        sv.viewport_width = measure.viewport_width;
-                        sv.viewport_height = measure.viewport_height;
-                        sv.set_content_size(measure.content_width, measure.content_height);
-                    }
-                }
+                crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
                 // Apply programmatic scroll requests now that content extents
                 // are known, so `smooth_scroll_to` clamps to the real range.
                 for (id, y) in self.app.scroll_intents() {

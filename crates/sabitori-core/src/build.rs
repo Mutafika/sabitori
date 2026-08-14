@@ -1314,7 +1314,7 @@ mod tests {
     /// bamiri の dock_panel 形そのまま:
     /// 固定 root → menu/toolbar → flex_1 の middle row →
     /// `w(Px).h_full()` パネル → タイトルバー + flex_1 padded column(body)
-    /// → 兄弟数個 + `flex_1().overflow_scroll()` リスト(大量の行)。
+    /// → 兄弟数個 + `flex_1().scroll(id)` リスト(大量の行)。
     /// `sibling_h` で兄弟の高さを変え、スクロールリストの flex 割当てを
     /// 健全(>0)/ゼロに振り分ける。
     fn dock_panel_tree(sibling_h: f32, row_count: usize) -> Element {
@@ -1334,11 +1334,10 @@ mod tests {
         }
         body.push(
             div()
-                .id("scroll-list")
+                .scroll("scroll-list")
                 .w_full()
                 .flex_1()
                 .flex_col()
-                .overflow_scroll()
                 .children(rows),
         );
         let panel = div()
@@ -1538,11 +1537,10 @@ mod tests {
             log = log.child(div().w_full().h(Px(50.0)).bg(Color::WHITE));
         }
         let root = div()
-            .id("transcript")
+            .scroll("transcript")
             .flex_col()
             .w(Px(400.0))
             .h(Px(300.0))
-            .overflow_scroll()
             .child(log);
 
         let result = build_tree(&root, 800.0, 600.0);
@@ -1571,10 +1569,9 @@ mod tests {
             .children([
                 div().w_full().h(Px(100.0)).bg(Color::BLACK), // header
                 div()
-                    .id("body-scroll")
+                    .scroll("body-scroll")
                     .flex_1()
                     .flex_col()
-                    .overflow_scroll()
                     .children(items),
             ]);
 
@@ -1609,10 +1606,9 @@ mod tests {
                     div().w_full().h(Px(48.0)).bg(Color::BLACK), // header
                     div().w_full().h(Px(1.0)).bg(Color::WHITE),  // hsep
                     div()
-                        .id("article-scroll")
+                        .scroll("article-scroll")
                         .flex_1()
                         .flex_col()
-                        .overflow_scroll()
                         .children(items),
                 ]),
             );
@@ -1867,10 +1863,9 @@ mod tests {
         let rows = |scale: f32| {
             div().w(Px(200.0)).h(Px(200.0)).scaled(scale).children([
                 div()
-                    .id("pane")
+                    .scroll("pane")
                     .w(Px(100.0))
                     .h(Px(100.0))
-                    .overflow_scroll()
                     .flex_col()
                     .children(
                         (0..10)
@@ -2262,7 +2257,7 @@ mod container_min_size_tests {
         div().flex_col().w_full().h_full().children(vec![
             div().h(Px(56.0)).shrink(0.0).child(text("header")),
             row(div().flex_row().w_full().grow(1.0)).children(vec![
-                pane(div().flex_col().grow(1.0).overflow_scroll().id("body")).children(content),
+                pane(div().flex_col().grow(1.0).scroll("body")).children(content),
             ]),
         ])
     }

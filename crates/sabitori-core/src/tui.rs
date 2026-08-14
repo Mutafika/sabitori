@@ -433,10 +433,15 @@ pub fn scroll_container(
         .w_full().h(Px(viewport_h))
         .flex_row()
         .children([
-            // Scrollable content
+            // Scrollable content.
+            //
+            // 呼び出し側が `scroll_y` を渡す API なので、 位置はアプリ所有
+            // (`.scroll_manual`)。 以前は `.overflow_scroll().scroll_offset(..)` と
+            // 書いていたが、 ランタイムが `Overflow::Scroll` の要素を全部管理対象に
+            // していたため、 **渡された `scroll_y` は毎フレーム 0 に上書きされていた**
+            // (issue #14)。 このコンポーネントは実質動いていなかった。
             div().flex_1().h(Px(viewport_h))
-                .overflow_scroll()
-                .scroll_offset(0.0, scroll_y)
+                .scroll_manual(0.0, scroll_y)
                 .flex_col()
                 .children(children),
             // Scrollbar

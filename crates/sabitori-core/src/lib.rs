@@ -15,7 +15,7 @@ pub use theme::AppTheme;
 // Re-export key element API items at crate root for convenience.
 pub use element::{
     arc, div, text, button, image, ArcKind, Cursor, Element, ElementKind, HighlightSpec, ImageData,
-    LinkRange, ObjectFit, Typography,
+    LinkRange, ObjectFit, ScrollOwner, Typography,
 };
 pub use element::{Dimension, Px, Percent, Auto, DimensionExt};
 pub use element::{

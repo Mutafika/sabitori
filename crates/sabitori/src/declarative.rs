@@ -298,7 +298,7 @@ pub trait DeclarativeApp {
     /// default) for zero cost — probing is skipped entirely when the set is empty.
     fn build_probes(&self) -> Vec<String> { Vec::new() }
 
-    /// Return pending programmatic scroll requests for overflow_scroll containers.
+    /// Return pending programmatic scroll requests for `.scroll(id)` containers.
     /// Drained once per frame after layout. `(id, y)` — pass `f32::MAX` for "bottom".
     /// Return empty to leave scroll untouched (user controls it via wheel).
     fn scroll_intents(&mut self) -> Vec<(String, f32)> { Vec::new() }
@@ -588,7 +588,7 @@ struct AppState<A: DeclarativeApp> {
     touch_drag: Option<TouchDrag>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
-    /// Managed scroll states for elements with overflow_scroll + id.
+    /// Managed scroll states, keyed by the id given to `.scroll(id)`.
     scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Managed tooltip hover-delay state.
     tooltip_state: sabitori_widgets::TooltipState,
@@ -2145,7 +2145,7 @@ impl<A: DeclarativeApp> AppState<A> {
         };
         let overlay_build = overlay_element.map(|mut el| {
             // Overlay trees also participate in managed scroll: register their
-            // overflow_scroll containers so wheel/touch routing (which consults
+            // `.scroll(id)` containers so wheel/touch routing (which consults
             // the merged build with overlay hits prepended) can scroll modal
             // lists AND let a full-screen scrim absorb scroll (background lock).
             // Without this, overlay scroll containers are never in scroll_states,
@@ -3301,10 +3301,9 @@ mod frame_tests {
                 })
                 .collect();
             sabitori_core::div()
-                .id("pane")
+                .scroll("pane")
                 .flex_col()
                 .h(sabitori_core::Dimension::Px(200.0))
-                .overflow_scroll()
                 .children(rows)
         };
 
@@ -3345,10 +3344,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()
@@ -3375,10 +3373,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()
@@ -3404,10 +3401,9 @@ mod frame_tests {
                     .map(|i| sabitori_core::text(format!("row {i}")).id(format!("row-{i}")))
                     .collect();
                 sabitori_core::div()
-                    .id("pane")
+                    .scroll("pane")
                     .flex_col()
                     .h(sabitori_core::Dimension::Px(200.0))
-                    .overflow_scroll()
                     .children(rows)
             })),
             ..Default::default()

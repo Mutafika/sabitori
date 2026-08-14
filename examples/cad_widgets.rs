@@ -5,7 +5,7 @@
 /// * NumericInput (G2): drag horizontally to change the value, click to
 ///   type (Enter commits, Escape cancels). min/max/step/suffix.
 /// * checkbox (G3) and collapsing_section (G4) form builders.
-/// * A `flex_1().overflow_scroll()` list — no explicit height (G5 fix).
+/// * A `scroll(id) + flex_1()` list — no explicit height (G5 fix).
 /// * FocusManager: two text fields with click-to-focus, Tab cycling,
 ///   Enter submit, IME routing.
 /// * ColorPickerState: palette grid + RGB numeric fine-tuning.
@@ -255,14 +255,13 @@ impl DeclarativeApp for CadDemo {
         );
 
         let props = div()
-            .id("props-scroll")
+            .scroll("props-scroll")
             .w(Px(260.0))
             .h_full()
             .bg(t.surface)
             .p(Px(12.0))
             .flex_col()
             .gap(8.0)
-            .overflow_scroll()
             .scrollbar(t.border)
             .children([
                 collapsing_section(
@@ -311,7 +310,7 @@ impl DeclarativeApp for CadDemo {
                     .color(t.text_secondary),
             ]);
 
-        // ── Right: flex_1 + overflow_scroll list (G5) ───────────
+        // ── Right: flex_1 + scroll(id) list (G5) ───────────
         let rows: Vec<Element> = (0..60)
             .map(|i| {
                 div()
@@ -339,13 +338,12 @@ impl DeclarativeApp for CadDemo {
                     .px_pad(Px(10.0))
                     .flex_row()
                     .items_center()
-                    .child(text("要素一覧 (flex_1 + overflow_scroll、明示高さ無し)")
+                    .child(text("要素一覧 (flex_1 + scroll(id)、明示高さ無し)")
                         .font_size(12.0).bold().color(t.text_primary)),
                 div()
-                    .id("element-scroll")
+                    .scroll("element-scroll")
                     .flex_1()
                     .flex_col()
-                    .overflow_scroll()
                     .scrollbar(t.border)
                     .children(rows),
             ]);

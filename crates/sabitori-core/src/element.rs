@@ -262,6 +262,27 @@ pub struct LinkRange {
     pub color: Color,
 }
 
+/// スクロール位置を誰が持つか。 `overflow` が [`Overflow::Scroll`] のときだけ意味がある。
+///
+/// sabitori のスクロールには最初から 2 つのモデルがあったが、 データ上は区別が無く、
+/// ランタイムは `Overflow::Scroll` の要素を**全部**管理対象にしていた。 そのため
+/// アプリが自分で持っているつもりのオフセットが毎フレーム上書きされ、
+/// **手動モードが事実上存在しなかった** (issue #14)。 その区別をここで明示する。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollOwner {
+    /// ランタイムが位置を持つ。 要素の `id` がその状態のキーで、 ホイール・慣性・
+    /// バウンスはランタイムが面倒を見る。 [`Element::scroll`] が設定する。
+    ///
+    /// **`id` が無い要素は管理対象にならない** (キーが無いので状態を引けない)。
+    /// `.scroll(id)` は id を必ず取るので、 その道を通れば起こらない。
+    #[default]
+    Runtime,
+    /// アプリが位置を持つ。 ランタイムは `scroll_x` / `scroll_y` に触れないので、
+    /// ホイールは `on_scroll_xy` などで自分で受けて値を進める。
+    /// [`Element::scroll_manual`] が設定する。
+    App,
+}
+
 /// Complete resolved style for one element.
 #[derive(Clone, Debug)]
 pub struct ElementStyle {
@@ -297,6 +318,8 @@ pub struct ElementStyle {
     /// Scroll offset in logical pixels (x, y). Applied when overflow is Scroll.
     pub scroll_x: f32,
     pub scroll_y: f32,
+    /// スクロール位置を誰が持つか。 [`Overflow::Scroll`] のときだけ意味がある。
+    pub scroll_owner: ScrollOwner,
 
     // Visual
     pub background: Color,
@@ -411,6 +434,7 @@ impl Default for ElementStyle {
             inset_left: Dimension::Auto,
             scroll_x: 0.0,
             scroll_y: 0.0,
+            scroll_owner: ScrollOwner::Runtime,
             background: Color::TRANSPARENT,
             gradient_end: Color::TRANSPARENT,
             gradient_angle: 0.0,
@@ -1332,7 +1356,7 @@ impl Element {
     /// Sets `flex_grow: 1` AND `flex_basis: 0` so the item's share of the
     /// parent's main axis is computed from *free space*, not from its own
     /// content size. The basis-0 part is what makes
-    /// `flex_1().overflow_scroll()` work without an explicit height: with
+    /// `flex_1().scroll(id)` work without an explicit height: with
     /// the old `flex_basis: auto` behavior the scroll container's flex base
     /// size was its full content height, so it overflowed its slot (and
     /// squeezed its siblings) instead of scrolling. Use `.grow(1.0)` if you
@@ -1410,6 +1434,20 @@ impl Element {
     }
 
     /// Set overflow behavior.
+    ///
+    /// # スクロールさせたいなら [`Element::scroll`] を使うこと
+    ///
+    /// `.overflow(Overflow::Scroll)` は**生の逃げ道**で、 スクロール位置を持つ主体が
+    /// 決まらない。 id が無ければランタイムは状態を引けないので管理対象にならず、
+    /// ホイールも慣性も効かないまま「クリップだけされる箱」になる。
+    ///
+    /// ```ignore
+    /// div().scroll("rows").flex_1().flex_col().children(rows)      // ランタイムが位置を持つ
+    /// div().scroll_manual(0.0, self.y).flex_col().children(rows)   // アプリが位置を持つ
+    /// ```
+    ///
+    /// 0.4.0 より前の `.overflow_scroll()` は上の 2 つに分かれた。 どちらでもない
+    /// `.overflow(Overflow::Scroll)` は、 スクロールの主体を自分で書く場合だけ使う。
     pub fn overflow(mut self, o: Overflow) -> Self {
         self.style.overflow = o;
         self
@@ -1421,14 +1459,46 @@ impl Element {
         self
     }
 
-    /// Set overflow to scroll.
-    pub fn overflow_scroll(mut self) -> Self {
+    /// スクロールコンテナにする。 位置はランタイムが `id` をキーに保持し、
+    /// ホイール・慣性・バウンスも面倒を見る。
+    ///
+    /// ```ignore
+    /// div().scroll("rows").flex_1().flex_col().children(rows)
+    /// ```
+    ///
+    /// **`id` を引数で要求するのは、 スクロール状態のキーが要るから。** 以前の
+    /// `.overflow_scroll()` は id を省けて、 省いた場合はツリー上の位置
+    /// (`__scroll:0.2.1`) から id を合成していた。 が、 その id は**兄弟が 1 つ
+    /// 増減しただけで変わる**ので、 条件付きレンダリングでヘッダが出入りすると
+    /// 別の状態を引いてスクロール位置が 0 に飛んだ (issue #14)。 安定した名前を
+    /// 書かせる方に倒した。
+    ///
+    /// `id` はこの要素の [`Element::id`] そのもの。 `on_click` などのルーティングに
+    /// 使う id と共用になるので、 別々の名前を付けることはできない。
+    ///
+    /// 位置をアプリ側で持ちたい場合は [`Element::scroll_manual`]。
+    pub fn scroll(mut self, id: impl Into<String>) -> Self {
         self.style.overflow = Overflow::Scroll;
+        self.style.scroll_owner = ScrollOwner::Runtime;
+        self.id = Some(id.into());
         self
     }
 
-    /// Set scroll offset (logical pixels). Only applies when overflow is Scroll.
-    pub fn scroll_offset(mut self, x: f32, y: f32) -> Self {
+    /// スクロールコンテナにするが、 位置は**アプリが持つ**。 ランタイムは
+    /// `scroll_x` / `scroll_y` に一切触れない。
+    ///
+    /// ```ignore
+    /// div().scroll_manual(0.0, self.sidebar_scroll).flex_col().children(items)
+    /// ```
+    ///
+    /// ホイールは届かないので、 `DeclarativeApp::on_scroll_xy` などで受けて自分で
+    /// 値を進めること。 慣性やバウンスも自前になる。 仮想リストのように
+    /// 「行の描画自体をオフセットから決める」 実装向け。
+    ///
+    /// 大半の用途では [`Element::scroll`] の方が短く、 挙動も揃う。
+    pub fn scroll_manual(mut self, x: f32, y: f32) -> Self {
+        self.style.overflow = Overflow::Scroll;
+        self.style.scroll_owner = ScrollOwner::App;
         self.style.scroll_x = x;
         self.style.scroll_y = y;
         self
@@ -1436,7 +1506,7 @@ impl Element {
 
     /// Draw a scrollbar thumb in `thumb` color at this scroll container's
     /// right edge whenever its content overflows vertically. Only meaningful
-    /// together with `.overflow_scroll()`. Indicator only (not draggable);
+    /// together with `.scroll(id)` / `.scroll_manual(x, y)`. Indicator only (not draggable);
     /// hidden while the content fits the viewport.
     pub fn scrollbar(mut self, thumb: Color) -> Self {
         self.style.scrollbar_thumb = Some(thumb);

@@ -51,6 +51,33 @@
   事実として宣言に書き出したうえで
   [#22](https://github.com/Mutafika/sabitori/issues/22) に切り出した。
 
+### Changed（破壊的）
+- **`.overflow_scroll()` と `.scroll_offset(x, y)` を削除し、`.scroll(id)` と
+  `.scroll_manual(x, y)` に分けた**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。
+
+  スクロールには最初から 2 つのモデル（位置をランタイムが持つ／アプリが持つ）が
+  あったのに、データ上は区別が無かった。`ElementStyle` に `scroll_owner:
+  ScrollOwner` を足して明示する。
+
+  ```rust
+  // 旧
+  div().id("rows").flex_1().overflow_scroll().children(rows)
+  // 新 — 位置はランタイムが持つ。id はその状態のキー
+  div().scroll("rows").flex_1().children(rows)
+
+  // 旧
+  div().overflow_scroll().scroll_offset(0.0, self.y).children(rows)
+  // 新 — 位置はアプリが持つ。ランタイムは触らない
+  div().scroll_manual(0.0, self.y).children(rows)
+  ```
+
+  `.scroll(id)` が **id を引数で要求する**のは、それがスクロール状態のキーだから。
+  `id` はこの要素の `.id()` そのもので、`on_click` のルーティングと共用になる。
+
+  `.overflow(Overflow::Scroll)` は生の逃げ道として残るが、**ランタイム管理には
+  乗らない**（キーが無いので状態を引けない）。スクロールさせたいなら上の 2 つを使う。
+
 ### Fixed
 - **`sabitori-window` のポインタ `match` が網羅でなかった**
   ([#17](https://github.com/Mutafika/sabitori/issues/17))。`process_event` /
@@ -64,9 +91,50 @@
   注入すると押下ノードが解除されず、**以後ずっと押されたまま**になる。網羅マッチに
   した結果あらわれた実バグ。
 
+- **手動スクロールが事実上存在しなかった**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。ランタイムは
+  `Overflow::Scroll` の要素を**全部**管理対象にし、アプリが渡したオフセットを
+  毎フレーム上書きしていた（初回フレームでは `ScrollView` の初期値 0）。id を
+  付けなければ避けられる、ということも無く、**id が無ければツリー上の位置から
+  合成されて管理対象になった**。
+
+  同梱コンポーネントが 2 つこれを踏んでいた:
+  - `sabitori_core::tui::scroll_container` — 呼び出し側から `scroll_y` を受け取る
+    API なのに、その値は一度も効いていなかった
+  - `examples/tui_gallery.rs` — `ensure_sidebar_visible()` が書く値が毎フレーム
+    捨てられていた（完全な死にコード）。管理モード + `scroll_intents` に直した
+
+- **ツリーの形が変わるとスクロール位置が飛んだ**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。id を省いたときに合成
+  していた `__scroll:0.2.1` は子インデックス由来で、**兄弟が 1 つ増減しただけで
+  別 id** になった。条件付きレンダリングでヘッダが出入りすると別の状態を引き、
+  位置が 0 に戻る。「エラーは出ないのに、ある条件のときだけスクロールが巻き戻る」
+  という掴みにくい症状になっていた。`.scroll(id)` が安定した名前を要求するので、
+  位置依存の合成そのものを廃止した。
+
+- **`SceneApp` がスクロール処理を逐語コピーで持っていた**
+  ([#14](https://github.com/Mutafika/sabitori/issues/14))。`patch_scroll_offsets`
+  と `apply_scroll_measures` の複製を削除し、`declarative` と同じ
+  `scroll_sync` の関数を呼ぶようにした。片方だけ直す事故の温床だった。
+
 ### 移行
 
-破壊的変更なし。`sabitori::*` の glob に `Delivery` / `InputEventKind` が増えるので、
+**`.overflow_scroll()` / `.scroll_offset()` を使っている箇所はコンパイルエラーに
+なる。** 上の Changed の対応表のとおり書き換える。判断基準は 1 つだけ:
+
+| スクロール位置を持つのは | 書き方 |
+|---|---|
+| ランタイム（ホイール・慣性・バウンス込み。プログラム的な移動は `scroll_intents`） | `.scroll(id)` |
+| アプリ（`on_scroll_xy` を自前で実装し、値を自分で進める） | `.scroll_manual(x, y)` |
+
+迷ったら `.scroll(id)` が正解。`.scroll_manual` は仮想リストのように「行の描画自体を
+オフセットから決める」実装向け。
+
+⚠️ `.overflow_scroll()` を消すと rustc は `.overflow` を候補に挙げるが、**それは
+違う**（管理対象にならない生の逃げ道）。`.overflow()` の doc に誘導を入れてあるが、
+補完に釣られないよう注意。
+
+`sabitori::*` の glob に `Delivery` / `InputEventKind` / `ScrollOwner` が増えるので、
 下流に同名の型があれば衝突する（その場合は明示 import で回避）。
 
 ## [0.3.21] - 2026-08-12

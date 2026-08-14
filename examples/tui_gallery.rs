@@ -36,7 +36,13 @@ struct Gallery {
     // Scroll
     scroll_y: f32,
     scroll_target: f32,
-    sidebar_scroll: f32,
+    /// 選択項目を見える位置へ動かす要求。 `scroll_intents` が 1 度だけ吸い出す。
+    ///
+    /// 以前は `sidebar_scroll: f32` を直に持って `.scroll_offset()` に渡していたが、
+    /// ランタイムが `Overflow::Scroll` の要素を全部管理していたため**毎フレーム
+    /// 上書きされ、この値は一度も効いていなかった** (issue #14)。 プログラム的な
+    /// スクロールは `scroll_intents` が正しい口。
+    sidebar_scroll_intent: Option<f32>,
     // Cached presets
     presets: Vec<Theme>,
     // Toggle states
@@ -126,18 +132,16 @@ impl Gallery {
         }
     }
 
-    /// Estimated content height for the current selected demo.
+    /// 選択中の項目がサイドバーの見える範囲に来るよう要求する。
+    ///
+    /// 現在のスクロール位置はランタイムが持っているので、 「足りない分だけ動かす」
+    /// 判断はこちらでは書けない。 選択項目が中央に来る位置を要求し、 上下端の
+    /// クランプはランタイム側 (`smooth_scroll_to`) に任せる。
     fn ensure_sidebar_visible(&mut self) {
-        // Each menu item ~22px high, estimate item position
-        // Account for section headers (~30px each at indices 0, 8, 16/21, 17/22)
         let item_h = 22.0;
+        let viewport = 500.0; // サイドバーのおおよその可視高さ
         let y = self.selected as f32 * item_h;
-        let viewport = 500.0; // approximate sidebar viewport
-        if y < self.sidebar_scroll {
-            self.sidebar_scroll = (y - 20.0).max(0.0);
-        } else if y > self.sidebar_scroll + viewport - item_h * 2.0 {
-            self.sidebar_scroll = y - viewport + item_h * 3.0;
-        }
+        self.sidebar_scroll_intent = Some((y - viewport * 0.5).max(0.0));
     }
 
     fn content_h(&self) -> f32 {
@@ -2142,8 +2146,7 @@ impl DeclarativeApp for Gallery {
                 sidebar_title.shrink(0.0).p_px(if modern { 10.0 } else { 6.0 }).pb(Px(4.0)),
                 hsep(s_border),
                 div().flex_1()
-                    .overflow_scroll()
-                    .scroll_offset(0.0, self.sidebar_scroll)
+                    .scroll("sidebar")
                     .flex_col().py(Px(4.0))
                     .children(menu_items),
             ]);
@@ -2326,6 +2329,13 @@ impl DeclarativeApp for Gallery {
         let root = div().w(Px(ctx.width)).h(Px(ctx.height)).flex_col();
         let root = if modern { root.gradient(s_bg0, s_bg1, 90.0) } else { root.bg(bg) };
         root.children(root_kids)
+    }
+
+    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+        self.sidebar_scroll_intent
+            .take()
+            .map(|y| vec![("sidebar".to_string(), y)])
+            .unwrap_or_default()
     }
 
     fn on_scroll(&mut self, delta_y: f32) {
@@ -2569,7 +2579,7 @@ fn main() {
         next_toast_id: 0,
         scroll_y: 0.0,
         scroll_target: 0.0,
-        sidebar_scroll: 0.0,
+        sidebar_scroll_intent: None,
         presets: Theme::all_presets(),
         toggles: [true, false, true, false],
         toggle_changed: [0.0; 4],
