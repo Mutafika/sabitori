@@ -8,7 +8,7 @@
 //! の例も兼ねる。
 
 use sabitori::testing::Harness;
-use sabitori::{div, text, Element, InputEvent, Key, Modifiers, Px, ViewContext};
+use sabitori::{div, text, Element, Key, Modifiers, Px, ViewContext};
 use sabitori_widgets::{TextInputState, TextInputStyle};
 
 /// 名前を入れて保存する、それだけのアプリ。
@@ -202,4 +202,238 @@ fn paste_without_focus_does_not_touch_the_field() {
     h.paste("xyz");
 
     assert_eq!(h.app().name.text(), "");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// `desired_focus` — クリックさせずに欄を掴む (#28)
+// ─────────────────────────────────────────────────────────────────────
+
+/// コマンドパレット。 開いている間だけ、 中の入力欄にフォーカスを主張する。
+///
+/// `desired_focus` の代表的な用途そのもの — 開いた瞬間から打てる。
+struct Palette {
+    q: TextInputState,
+    open: bool,
+}
+
+impl Palette {
+    fn new(open: bool) -> Self {
+        Self {
+            q: TextInputState::new(""),
+            open,
+        }
+    }
+}
+
+impl sabitori::DeclarativeApp for Palette {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        let mut root = div().flex_col().w_full().h_full().child(
+            div()
+                .id("open")
+                .w(Px(80.0))
+                .h(Px(32.0))
+                .on_click(|| {})
+                .child(text("開く")),
+        );
+        // パレット外の focusable。 フォーカスを奪ってみる相手役。
+        root = root.child(
+            div()
+                .id("side")
+                .w(Px(80.0))
+                .h(Px(32.0))
+                .focusable()
+                .child(text("横")),
+        );
+        if self.open {
+            root = root.child(sabitori_widgets::text_input(
+                ctx,
+                "q",
+                &self.q,
+                &Form::style(),
+            ));
+        }
+        root
+    }
+
+    fn on_click(&mut self, id: &str) {
+        if id == "open" {
+            self.open = true;
+        }
+    }
+
+    fn desired_focus(&self) -> Option<String> {
+        self.open.then(|| "q".to_string())
+    }
+}
+
+/// **これが #28 の本体。** `desired_focus` を実装したアプリを Harness に載せて、
+/// クリックせずに打てること。
+///
+/// v0.5.0 までは反映が `about_to_wait` にベタ書きされていたので、 Harness からは
+/// 一度も通らなかった。 実機では動くのにテストだけが落ちる — しかも
+/// `focused_id()` が `None` のままなので、 何が起きていないのかも見えなかった。
+#[test]
+fn desired_focus_grabs_the_field_without_a_click() {
+    let mut h = Harness::new(Palette::new(true), 400.0, 400.0);
+
+    h.frame();
+
+    assert_eq!(
+        h.focused_id(),
+        Some("q"),
+        "アプリが主張したフォーカスが、 最初のフレームで入っていること"
+    );
+
+    h.text("abc");
+
+    assert_eq!(h.app().q.text(), "abc", "クリックせずに打てること");
+}
+
+/// 掴んだフレームの `view()` からもう見えていること。
+///
+/// `build_frame` の**頭**で当てているので、 掴んだその同じフレームの
+/// `ctx.focused` に出る。 フォーカス枠が 1 フレーム遅れて光らない。
+#[test]
+fn the_grabbed_focus_is_visible_to_the_same_frame() {
+    struct Probe {
+        seen: std::cell::Cell<Option<String>>,
+    }
+    impl sabitori::DeclarativeApp for Probe {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            self.seen.set(ctx.focused.clone());
+            div().id("q").w(Px(80.0)).h(Px(32.0)).focusable()
+        }
+        fn desired_focus(&self) -> Option<String> {
+            Some("q".to_string())
+        }
+    }
+
+    let h_app = Probe {
+        seen: std::cell::Cell::new(None),
+    };
+    let mut h = Harness::new(h_app, 400.0, 400.0);
+    h.frame();
+
+    assert_eq!(
+        h.app().seen.take().as_deref(),
+        Some("q"),
+        "掴んだ結果は、 その掴んだフレームの ctx.focused に出ていること"
+    );
+}
+
+/// 実際の使い方 — ボタンで開いて、そのまま打つ。
+#[test]
+fn opening_the_palette_moves_focus_into_it() {
+    let mut h = Harness::new(Palette::new(false), 400.0, 400.0);
+    h.frame();
+    assert_eq!(h.focused_id(), None, "閉じている間は誰も掴まない");
+
+    h.click("open");
+    h.frame();
+
+    assert_eq!(h.focused_id(), Some("q"));
+    h.text("hi");
+    assert_eq!(h.app().q.text(), "hi");
+}
+
+/// `frame()` を呼ばず `tick()` だけでも反映されること。
+///
+/// 実機の cadence は `about_to_wait`（= tick）→ 描画なので、 lazy_render で
+/// 描画が止まっている間もフォーカスは追随する。 その経路が Harness にもある。
+#[test]
+fn desired_focus_also_applies_on_a_bare_tick() {
+    let mut h = Harness::new(Palette::new(false), 400.0, 400.0);
+    h.frame();
+
+    h.app_mut().open = true;
+    h.tick(0.016);
+
+    assert_eq!(h.focused_id(), Some("q"));
+}
+
+/// `None` の間はランタイムがフォーカスに触らないこと。
+#[test]
+fn desired_focus_of_none_leaves_focus_alone() {
+    let mut h = Harness::new(Palette::new(false), 400.0, 400.0);
+    h.frame();
+
+    h.click("side");
+    h.frame();
+
+    assert_eq!(
+        h.focused_id(),
+        Some("side"),
+        "主張が無いなら、 クリックで入ったフォーカスはそのまま"
+    );
+}
+
+/// 主張し続けている間は引き戻すこと（既存の挙動を固定する）。
+///
+/// 「モーダルが開いている間はそこから出さない」ための性質で、 `Some` を返す
+/// 限り毎フレーム主張し直す。
+#[test]
+fn desired_focus_reasserts_itself_after_focus_moves_away() {
+    let mut h = Harness::new(Palette::new(true), 400.0, 400.0);
+    h.frame();
+    assert_eq!(h.focused_id(), Some("q"));
+
+    h.click("side");
+    assert_eq!(h.focused_id(), Some("side"), "クリックの瞬間は移る");
+
+    h.frame();
+
+    assert_eq!(
+        h.focused_id(),
+        Some("q"),
+        "次のフレームでアプリが引き戻すこと"
+    );
+}
+
+/// 掴んだら `wants_keyboard` も立つこと。
+///
+/// フォーカスだけ動いて capture が古いままだと、 埋め込みホストは「UI は
+/// キーボードを要らない」と判断して打鍵を自分で食ってしまう。
+#[test]
+fn grabbing_focus_updates_the_capture_snapshot() {
+    let mut h = Harness::new(Palette::new(true), 400.0, 400.0);
+    h.frame();
+
+    assert!(
+        h.capture().wants_keyboard,
+        "掴んだ以上、 キーボードは UI が要る"
+    );
+}
+
+/// レイアウトが変わったら `capture()` も追随すること。
+///
+/// `wants_pointer` は「いまのマウス位置の下に UI があるか」なので、 マウスが
+/// 動かなくても**ツリーが変われば答えが変わる**。 実機のランタイムは毎 tick
+/// 押し直しているが、 Harness にその経路が無いと、 消費側は古い答えを見る。
+#[test]
+fn the_capture_snapshot_follows_layout_changes() {
+    struct Panel {
+        show: bool,
+    }
+    impl sabitori::DeclarativeApp for Panel {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            if self.show {
+                div().id("panel").w_full().h_full().on_click(|| {})
+            } else {
+                div()
+            }
+        }
+    }
+
+    let mut h = Harness::new(Panel { show: true }, 400.0, 400.0);
+    h.frame();
+    h.move_to(200.0, 200.0);
+    assert!(h.capture().wants_pointer, "パネルの上にいる");
+
+    h.app_mut().show = false;
+    h.frame();
+
+    assert!(
+        !h.capture().wants_pointer,
+        "パネルが消えたら、 UI はもうポインタを要らない"
+    );
 }

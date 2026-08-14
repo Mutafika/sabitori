@@ -281,6 +281,10 @@ pub trait DeclarativeApp: 'static {
     /// open with a known input field and should keep focus until
     /// they're dismissed (Spotlight / command-palette pattern).
     /// Default `None` means "let click-to-focus drive it."
+    ///
+    /// [`testing::Harness`](crate::testing::Harness) も同じ経路を通るので、
+    /// 「クリックせずに打てる」ことをそのままテストできる — `h.frame()` を
+    /// 1 回回せば `h.focused_id()` に出る ([#28](https://github.com/Mutafika/sabitori/issues/28))。
     fn desired_focus(&self) -> Option<String> { None }
 
     /// The caret rectangle to hand the platform IME, in window-logical pixels
@@ -1719,16 +1723,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // (style spring, scroll spring, presence) and app-side async
         // drains (e.g. mpsc channel polls). Cheap enough to run every
         // frame even when we end up not redrawing.
+        // `desired_focus` の反映は `advance` / `build_frame` の中 (#28)。
+        // ここに書くと Harness からは一度も通らない。
         self.advance(dt);
-        // After tick: let the app reassert its desired focus. Popups
-        // that open with a known input (e.g. command palette) use
-        // this to grab focus the first frame they're rendered,
-        // without needing the user to click the input first.
-        if let Some(desired) = self.app.desired_focus() {
-            if self.focused_id.as_deref() != Some(&desired) {
-                self.focused_id = Some(desired);
-            }
-        }
         // Anchor the platform IME (conversion / candidate window) at the app's
         // caret. Polled every frame but deduped — only re-sent when the caret
         // rect changes — so the Cocoa call doesn't fire 125×/sec. Without this,
@@ -1931,6 +1928,11 @@ impl<A: DeclarativeApp> AppState<A> {
         h: f32,
         measurer: &dyn sabitori_core::build::TextMeasure,
     ) -> FrameBuild {
+        // アプリが主張するフォーカスを、 `view()` を呼ぶ**前**に当てる (#28)。
+        // こうしておくと、 掴んだその同じフレームの `ctx.focused` にもう出て
+        // いる — ポップアップが開いた最初の描画からフォーカス枠が光る。
+        self.apply_desired_focus();
+
         // Build scroll info for ViewContext
         let scroll_info: std::collections::HashMap<String, sabitori_core::ScrollInfo> =
             self.scroll_states
@@ -2123,6 +2125,12 @@ impl<A: DeclarativeApp> AppState<A> {
         if let Some(ref build) = self.last_build {
             self.app.on_build(build);
         }
+        // `wants_pointer` は「いまのマウス位置の下に UI があるか」なので、
+        // マウスが動かなくても**ツリーが変われば答えが変わる**。 パネルを
+        // 閉じた瞬間がそれ。 ランタイムは毎 tick 押し直していたが、
+        // Harness にはその経路が無く、 消費側は古い答えを見ていた (#28 と
+        // 同じ形の穴)。 コミット直後に押し直せば 3 経路すべてが揃う。
+        self.push_ui_capture();
     }
 
     /// `WindowEvent::KeyboardInput` の本体を winit から剥がしたもの。 `chars` は
@@ -2285,6 +2293,11 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 置き去りになるのも防ぐ。
     pub(crate) fn advance(&mut self, dt: f32) {
         self.app.tick(dt);
+        // `tick` でアプリの状態が変われば、 主張するフォーカスも変わりうる。
+        // 描画されるフレームでの反映は `build_frame` 側が持つので、 ここは
+        // 「時間が進んだ結果」を拾う分 (lazy_render で描画が止まっていても
+        // フォーカスは追随する)。 どちらも同じ 1 実装を呼ぶ (#28)。
+        self.apply_desired_focus();
         // 登録済みのテキスト欄はランタイムが進める (キャレット点滅)。
         // アプリが `state.tick(dt)` を書く必要は無い。
         for (_, target) in &self.managed {
@@ -3102,6 +3115,16 @@ impl<A: DeclarativeApp> AppState<A> {
         self.hovered_id = hit.hovered_id;
         self.apply_cursor(hit.cursor);
         self.push_ui_capture();
+    }
+
+    /// [`DeclarativeApp::desired_focus`] を `focused_id` へ当てる。
+    ///
+    /// 実装は [`crate::runtime_shared::apply_desired_focus`] — scene_app と
+    /// 共有する。 掴んだら `wants_keyboard` も変わるので capture を押し直す。
+    pub(crate) fn apply_desired_focus(&mut self) {
+        if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
+            self.push_ui_capture();
+        }
     }
 
     /// Recompute the [`UiCapture`] snapshot and push it to the app when it

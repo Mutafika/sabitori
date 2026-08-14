@@ -805,13 +805,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 self.app.tick(dt);
                 // After tick: let the app reassert its desired focus (e.g. a
                 // modal that opens with a known input grabs focus its first
-                // frame, without needing a click). Mirrors the declarative
-                // runtime's `about_to_wait` poll.
-                if let Some(desired) = self.app.desired_focus() {
-                    if self.focused_id.as_deref() != Some(&desired) {
-                        self.focused_id = Some(desired);
-                        self.push_ui_capture();
-                    }
+                // frame, without needing a click). 判断は declarative /
+                // Harness と同じ 1 実装を通す (#28)。
+                if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
+                    self.push_ui_capture();
                 }
                 // Anchor the platform IME (conversion / candidate window) at
                 // the app's caret. Polled every frame but deduped — only
