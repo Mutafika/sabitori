@@ -117,6 +117,12 @@ fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { … }
 
 Japanese conversion shows inline with the caret **inside** the preedit, which is how you can tell what is being converted.
 
+⚠️ **`text_input` in `view()` is not enough.** Without `on_focused_input`, clicking the field still focuses it and lights up the border, but typed characters go nowhere — it compiles, it does not panic, it just does nothing. The runtime logs a warning the first time this happens, and tests can assert on it:
+
+```rust
+assert!(h.unrouted_text_inputs().is_empty());
+```
+
 ### 3. Focus and keyboard
 
 Elements with `.focusable` take focus on click and via Tab. Keys go to `on_focused_input(id, event)` first; whatever is unhandled falls through to `on_input(event)`.

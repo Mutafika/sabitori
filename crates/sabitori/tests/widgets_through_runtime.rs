@@ -435,3 +435,119 @@ fn scroll_intents_move_a_runtime_owned_container() {
     let y = h.scroll_y("file-list").unwrap_or(-1.0);
     assert!(y < 1.0, "intent どおり先頭に戻ること (実際: {y})");
 }
+
+// ---------------------------------------------------------------------------
+// 配線漏れが「黙って」起きないこと
+// ---------------------------------------------------------------------------
+
+use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
+
+fn input_style() -> TextInputStyle {
+    TextInputStyle {
+        bg: sabitori::Color::from_hex("#202020"),
+        border: sabitori::Color::from_hex("#404040"),
+        text: sabitori::Color::WHITE,
+        placeholder: sabitori::Color::from_hex("#808080"),
+        font_size: 14.0,
+        radius: 4.0,
+        padding: 8.0,
+        focus_border: None,
+        caret: None,
+        preedit: None,
+    }
+}
+
+/// `text_input` を置いただけで `on_focused_input` を実装していないアプリ。
+struct Unwired {
+    name: TextInputState,
+}
+
+impl sabitori::DeclarativeApp for Unwired {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        text_input(ctx, "name", &self.name, &input_style())
+    }
+    // on_focused_input を**わざと**実装しない。
+}
+
+/// 正しく配線したアプリ。
+struct Wired {
+    name: TextInputState,
+}
+
+impl sabitori::DeclarativeApp for Wired {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        text_input(ctx, "name", &self.name, &input_style())
+    }
+    fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {
+        match id {
+            "name" => self.name.on_focused_input(e),
+            _ => false,
+        }
+    }
+}
+
+/// **配線漏れが観測できること。**
+///
+/// `text_input` は `view()` に置いてクリックすればフォーカスは入るし枠も光る。
+/// でも `on_focused_input` を実装していないと打った文字はどこにも行かない。
+/// コンパイルは通り、 パニックもせず、 ただ何も起きない — 0.4.0 が潰してきた
+/// のと同じ形の失敗。 構造では防げない (文字の行き先はアプリの状態なので、
+/// ランタイムが代わりに書き込めない) ので、 せめて黙らせない。
+#[test]
+fn a_text_input_with_no_handler_is_reported_not_silent() {
+    let mut h = Harness::new(Unwired { name: TextInputState::new("名前") }, 400.0, 200.0);
+    h.frame();
+
+    h.click("name");
+    assert_eq!(h.focused_id(), Some("name"), "フォーカスは入る (だから気づかない)");
+
+    h.text("abc");
+
+    assert_eq!(h.app().name.text, "", "文字は入らない");
+    assert_eq!(
+        h.unrouted_text_inputs(),
+        vec!["name"],
+        "そのことが観測できること"
+    );
+}
+
+/// 配線してあれば何も報告されないこと (誤検知しない)。
+#[test]
+fn a_wired_text_input_reports_nothing() {
+    let mut h = Harness::new(Wired { name: TextInputState::new("名前") }, 400.0, 200.0);
+    h.frame();
+
+    h.click("name");
+    h.text("abc");
+
+    assert_eq!(h.app().name.text, "abc");
+    assert!(
+        h.unrouted_text_inputs().is_empty(),
+        "配線済みなら何も出ない: {:?}",
+        h.unrouted_text_inputs()
+    );
+}
+
+/// フォーカスできるだけの要素 (ボタン等) が打鍵を無視するのは正常なので、
+/// そこでは報告しないこと。
+#[test]
+fn a_focusable_non_text_element_is_not_reported() {
+    struct FocusableButton;
+    impl sabitori::DeclarativeApp for FocusableButton {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            let mut el = div().id("btn").w(Px(80.0)).h(Px(32.0));
+            el.focusable = true;
+            el
+        }
+    }
+    let mut h = Harness::new(FocusableButton, 400.0, 200.0);
+    h.frame();
+
+    h.click("btn");
+    h.text("abc");
+
+    assert!(
+        h.unrouted_text_inputs().is_empty(),
+        "テキスト欄でないものは対象外"
+    );
+}

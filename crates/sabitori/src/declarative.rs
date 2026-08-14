@@ -604,6 +604,10 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// See [`DeclarativeApp::ime_allowed`].
     last_ime_allowed: bool,
     pub(crate) focused_id: Option<String>,
+    /// 「打った文字がどこにも行かなかった」警告を出したテキスト欄の id。
+    /// 毎フレーム鳴らすとログが埋まるので 1 度だけにする。
+    /// [`AppState::warn_if_typing_went_nowhere`] を参照。
+    warned_unrouted_input: std::collections::HashSet<String>,
     modifiers: Modifiers,
     last_viewport_w: f32,
     last_viewport_h: f32,
@@ -1861,6 +1865,7 @@ impl<A: DeclarativeApp> AppState<A> {
             last_ime_area: None,
             last_ime_allowed: true,
             focused_id: None,
+            warned_unrouted_input: std::collections::HashSet::new(),
             last_viewport_w: 0.0,
             last_viewport_h: 0.0,
             primary_input: PrimaryInput::None,
@@ -2094,6 +2099,53 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 切り出しは [`crate::testing`] のためでもある — ヘッドレスでクリックを
     /// 流せないと、 消費側は自分のアプリに回帰テストを書けない (issue #19)。
     /// 座標は呼び出し前に `mouse_x` / `mouse_y` へ入れておくこと。
+    /// **テキスト欄にフォーカスがあるのに、 打った文字を誰も受け取らなかった**
+    /// ときに一度だけ警告する。
+    ///
+    /// これは設定ミスであって、 正常な状態ではない。 `text_input(..)` を `view()`
+    /// に置いてクリックすると、 フォーカスは入るし枠も光る。 でも
+    /// [`DeclarativeApp::on_focused_input`] を実装していないと、 **打った文字は
+    /// どこにも行かない**。 既定実装が `false` を返すだけなので、 コンパイルは
+    /// 通り、 パニックもせず、 ただ何も起きない。 0.4.0 が潰してきたのと同じ
+    /// 形の失敗が、 いちばんよく使うウィジェットに残っていた。
+    ///
+    /// 構造で防げれば一番いいが、 文字の行き先はアプリの状態なので、 ランタイム
+    /// からは代わりに書き込めない。 せめて**黙って落ちるのをやめる**。
+    ///
+    /// 判定は `Role::TextInput` / `Role::TextArea` を名乗る要素にフォーカスが
+    /// ある場合だけ。 フォーカスできるボタンが打鍵を無視するのは正常なので、
+    /// そこでは鳴らさない。 id ごとに 1 回。
+    fn warn_if_typing_went_nowhere(&mut self) {
+        let Some(id) = self.focused_id.clone() else { return };
+        let Some(build) = self.last_build.as_ref() else { return };
+        let is_text_field = build.hit_regions.iter().any(|r| {
+            r.id.as_deref() == Some(id.as_str())
+                && matches!(
+                    r.role,
+                    Some(sabitori_core::element::Role::TextInput)
+                        | Some(sabitori_core::element::Role::TextArea)
+                )
+        });
+        if !is_text_field || !self.warned_unrouted_input.insert(id.clone()) {
+            return;
+        }
+        log::warn!(
+            "sabitori: テキスト欄 `{id}` にフォーカスがあるのに、 打った文字を \
+             誰も受け取っていない。 `DeclarativeApp::on_focused_input` を実装して \
+             `{id}` を状態へ繋ぐこと:\n\
+             \n\
+             \x20   fn on_focused_input(&mut self, id: &str, e: &InputEvent) -> bool {{\n\
+             \x20       match id {{ \"{id}\" => self.field.on_focused_input(e), _ => false }}\n\
+             \x20   }}\n"
+        );
+    }
+
+    /// 打鍵が行き場を失ったテキスト欄の id。 テストから配線漏れを assert する
+    /// ための口 ([`crate::testing::Harness::unrouted_text_inputs`])。
+    pub(crate) fn unrouted_text_inputs(&self) -> &std::collections::HashSet<String> {
+        &self.warned_unrouted_input
+    }
+
     /// 時間を `dt` 秒ぶん進める。 アプリの `tick` と、 ランタイムが持つ
     /// アニメーション状態 (スクロールのばね・慣性、 tooltip の遅延、 ドラッグ、
     /// style / presence) を **1 箇所で**まとめて回す。
@@ -2381,7 +2433,10 @@ impl<A: DeclarativeApp> AppState<A> {
                     self.app.on_focused_input(id, &char_event)
                 } else { false };
                 if !handled {
-                    self.app.on_input(&char_event);
+                    let handled_by_app = self.app.on_input(&char_event);
+                    if !handled_by_app {
+                        self.warn_if_typing_went_nowhere();
+                    }
                 }
             }
         }

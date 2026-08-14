@@ -276,6 +276,33 @@ impl<A: DeclarativeApp> Harness<A> {
         }
     }
 
+    /// **打鍵が行き場を失ったテキスト欄**の id。 空なら配線は通っている。
+    ///
+    /// `text_input(..)` を `view()` に置いただけでは文字は入らない。
+    /// [`DeclarativeApp::on_focused_input`](crate::DeclarativeApp::on_focused_input)
+    /// を実装して欄の状態へ繋ぐ必要がある。 忘れると **フォーカスは入って枠も
+    /// 光るのに、 打った文字がどこにも行かない** — コンパイルは通り、 パニックも
+    /// せず、 ただ何も起きない。
+    ///
+    /// ランタイムは実行時に一度 `log::warn!` を出すが、 ログは見落とす。
+    /// テストから直接見られるようにしてある:
+    ///
+    /// ```ignore
+    /// h.click("name");
+    /// h.text("a");
+    /// assert!(h.unrouted_text_inputs().is_empty(), "配線漏れ: {:?}", h.unrouted_text_inputs());
+    /// ```
+    pub fn unrouted_text_inputs(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = self
+            .state
+            .unrouted_text_inputs()
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// ペーストされたことにする。 実際のクリップボードには触れない。
     ///
     /// ランタイムの Cmd/Ctrl+V ハンドラは
