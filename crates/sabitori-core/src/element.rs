@@ -313,6 +313,18 @@ pub enum Role {
     ProgressBar,
     /// 区切り線。
     Separator,
+    /// 行と列を持つ表。 中身は [`Role::Row`] → [`Role::Cell`] の入れ子。
+    Table,
+    /// 表の 1 行。
+    Row,
+    /// 表のセル。
+    Cell,
+    /// 表の列見出しセル。
+    ColumnHeader,
+    /// 入れ子の木構造の入れ物。
+    Tree,
+    /// 木の 1 項目。 深さは [`Element::heading_level`] に入れる (1 が根)。
+    TreeItem,
 }
 
 /// スクロール位置を誰が持つか。 `overflow` が [`Overflow::Scroll`] のときだけ意味がある。
@@ -746,6 +758,8 @@ pub enum Cursor {
     /// Horizontal resize (`ew-resize`) cursor — drag-to-adjust affordance
     /// for numeric inputs and split panes.
     ResizeEw,
+    /// Vertical resize (`ns-resize`) cursor — 上下に分割したペインの仕切り。
+    ResizeNs,
 }
 
 #[derive(Clone, Debug)]

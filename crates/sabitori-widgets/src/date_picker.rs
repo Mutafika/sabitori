@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use sabitori_core::element::{div, text, Element, Px};
+use sabitori_core::element::{div, text, Element, Px, Role};
 use sabitori_core::Color;
 
 /// Visual parameters for [`DatePickerState::view`].
@@ -174,6 +174,7 @@ impl DatePickerState {
             };
             div()
                 .id(&id)
+                .role(Role::Button)
                 .w(Px(cell))
                 .h(Px(cell))
                 .bg(bg)
@@ -251,6 +252,7 @@ impl DatePickerState {
             current.push(
                 div()
                     .id(&id)
+                    .role(Role::Button)
                     .w(Px(cell))
                     .h(Px(cell))
                     .bg(bg)

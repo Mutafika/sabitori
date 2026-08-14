@@ -44,7 +44,7 @@
 //! }
 //! ```
 
-use sabitori_core::element::{div, text, JustifyContent, Px};
+use sabitori_core::element::{div, text, JustifyContent, Px, Role};
 use sabitori_core::{Color, Element};
 
 use crate::context_menu_widget::MenuItemDef;
@@ -352,6 +352,8 @@ impl MenuBarState {
         let fg = if visible { style.label_fg } else { Color::TRANSPARENT };
         div()
             .id(&id)
+            .role(Role::Button)
+            .label(&menu.label)
             .h(Px(style.bar_height))
             .bg(bg)
             .px_pad(Px(style.label_padding_x))
@@ -458,6 +460,8 @@ impl MenuBarState {
 
         let mut row = div()
             .id(&id)
+            .role(Role::Button)
+            .label(&item.label)
             .w_full()
             .h(Px(style.item_height))
             .bg(bg)

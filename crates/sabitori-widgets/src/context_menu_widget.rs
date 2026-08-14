@@ -1,6 +1,6 @@
 use sabitori_anim::{Animated, Spring};
 use sabitori_core::{Color, Element};
-use sabitori_core::element::{div, text, Px, JustifyContent};
+use sabitori_core::element::{div, text, Px, JustifyContent, Role};
 
 /// Definition for a single item in a context menu or menu bar dropdown.
 #[derive(Clone)]
@@ -174,6 +174,8 @@ impl ContextMenuState {
 
                 let mut row = div()
                     .id(&item.id)
+                    .role(Role::Button)
+                    .label(&item.label)
                     .w_full()
                     .h(Px(item_h))
                     .bg(item_bg)

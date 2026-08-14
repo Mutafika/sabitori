@@ -1,399 +1,380 @@
-use sabitori_anim::{Animated, Spring};
-use sabitori_core::{Color, Point, Rect};
+//! 宣言的な表。 `view()` から呼んで [`Element`] を受け取る。
+//!
+//! ```ignore
+//! // view():
+//! table(ctx, "files", &self.table, &TableStyle::default_dark())
+//!
+//! // on_click():
+//! if let Some(row) = table_clicked_row("files", id) { self.table.selected = Some(row); }
+//! ```
+//!
+//! ## 0.4.0 での作り直し
+//!
+//! 旧 `Table` は `new(bounds: Rect, ..)` に画面座標を渡し、 `column_xs()` /
+//! `header_cell_rect()` で自分でセルの矩形を計算し、 `on_click(point: Point)`
+//! で自分で当たり判定をする retained 型だった。 `view()` からは使えず、
+//! repo 内の使用箇所も 0 だった。
+//!
+//! 宣言版では列幅は taffy が、 当たり判定は id が、 スクロールは
+//! `.scroll(id)` が持つ。 だから widget 側に幾何演算は 1 行も要らない。
+//! **行の仮想化も `ctx.visible_range()` 任せ**で、 10 万行でも見えている行しか
+//! Element を作らない。
 
-/// Column definition for a table.
+use sabitori_core::element::{div, text, Element, Px, Role};
+use sabitori_core::{Color, ViewContext};
+
+/// 1 列の定義。 `width` が `None` の列は残り幅を等分する。
 #[derive(Clone, Debug)]
 pub struct TableColumn {
-    /// Column header label.
     pub label: String,
-    /// Width fraction (0.0-1.0). All fractions are normalized.
-    pub width: f32,
+    /// 固定幅 (px)。 `None` なら伸縮 (`flex_1`)。
+    pub width: Option<f32>,
 }
 
 impl TableColumn {
-    pub fn new(label: &str, width: f32) -> Self {
-        Self {
-            label: label.to_string(),
-            width,
-        }
+    /// 伸縮する列。
+    pub fn flex(label: impl Into<String>) -> Self {
+        Self { label: label.into(), width: None }
+    }
+
+    /// 固定幅の列。
+    pub fn fixed(label: impl Into<String>, width: f32) -> Self {
+        Self { label: label.into(), width: Some(width) }
     }
 }
 
-/// A single cell value.
+/// セル 1 つ。 色を上書きしたいときだけ `colored` を使う。
 #[derive(Clone, Debug)]
-pub struct CellValue {
+pub struct Cell {
     pub text: String,
     pub color: Option<Color>,
     pub bold: bool,
 }
 
-impl CellValue {
-    pub fn text(s: &str) -> Self {
-        Self {
-            text: s.to_string(),
-            color: None,
-            bold: false,
-        }
+impl Cell {
+    pub fn text(s: impl Into<String>) -> Self {
+        Self { text: s.into(), color: None, bold: false }
     }
 
-    pub fn colored(s: &str, color: Color) -> Self {
-        Self {
-            text: s.to_string(),
-            color: Some(color),
-            bold: false,
-        }
+    pub fn colored(s: impl Into<String>, color: Color) -> Self {
+        Self { text: s.into(), color: Some(color), bold: false }
     }
 
-    pub fn bold(s: &str) -> Self {
-        Self {
-            text: s.to_string(),
-            color: None,
-            bold: true,
-        }
+    pub fn bold(s: impl Into<String>) -> Self {
+        Self { text: s.into(), color: None, bold: true }
     }
 }
 
-/// Style configuration for the table.
+/// 表の状態。 中身と選択だけを持つ。 **スクロール位置は持たない** —
+/// それはランタイムが `.scroll(id)` で持つ (issue #14 の所有権の話)。
+#[derive(Clone, Debug, Default)]
+pub struct TableState {
+    pub columns: Vec<TableColumn>,
+    pub rows: Vec<Vec<Cell>>,
+    /// 選択中の行 (元データの添字)。
+    pub selected: Option<usize>,
+}
+
+impl TableState {
+    pub fn new(columns: Vec<TableColumn>) -> Self {
+        Self { columns, rows: Vec::new(), selected: None }
+    }
+
+    pub fn set_rows(&mut self, rows: Vec<Vec<Cell>>) {
+        self.rows = rows;
+        if let Some(sel) = self.selected {
+            if sel >= self.rows.len() {
+                self.selected = None;
+            }
+        }
+    }
+
+    /// 選択を 1 つ下へ。 未選択なら先頭。
+    pub fn select_next(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = Some(match self.selected {
+            Some(i) if i + 1 < self.rows.len() => i + 1,
+            Some(i) => i,
+            None => 0,
+        });
+    }
+
+    /// 選択を 1 つ上へ。 未選択なら先頭。
+    pub fn select_prev(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = Some(match self.selected {
+            Some(i) => i.saturating_sub(1),
+            None => 0,
+        });
+    }
+}
+
+/// 表の見た目。
 #[derive(Clone, Debug)]
 pub struct TableStyle {
     pub header_bg: Color,
     pub header_fg: Color,
     pub row_bg: Color,
-    pub row_alt_bg: Color,
-    pub row_hover_bg: Color,
-    pub row_selected_bg: Color,
-    pub row_fg: Color,
-    pub row_selected_fg: Color,
-    pub border_color: Color,
+    pub row_bg_alt: Color,
+    pub row_bg_hover: Color,
+    pub row_bg_selected: Color,
+    pub fg: Color,
+    pub fg_selected: Color,
+    pub border: Color,
     pub row_height: f32,
-    pub header_height: f32,
-    pub padding_x: f32,
-    pub corner_radius: f32,
+    pub font_size: f32,
+    pub cell_padding_x: f32,
 }
 
 impl TableStyle {
     pub fn default_dark() -> Self {
         Self {
             header_bg: Color::from_hex("#1a1a2e"),
-            header_fg: Color::from_hex("#8888aa"),
-            row_bg: Color::from_hex("#16161e"),
-            row_alt_bg: Color::from_hex("#1a1a28"),
-            row_hover_bg: Color::from_hex("#24243a"),
-            row_selected_bg: Color::from_hex("#2a2a50"),
-            row_fg: Color::from_hex("#c8c8dc"),
-            row_selected_fg: Color::from_hex("#ffffff"),
-            border_color: Color::from_hex("#2a2a40"),
-            row_height: 32.0,
-            header_height: 36.0,
-            padding_x: 12.0,
-            corner_radius: 8.0,
+            header_fg: Color::from_hex("#8a8aa8"),
+            row_bg: Color::TRANSPARENT,
+            row_bg_alt: Color::new(1.0, 1.0, 1.0, 0.02),
+            row_bg_hover: Color::from_hex("#24243a"),
+            row_bg_selected: Color::from_hex("#2a3a6a"),
+            fg: Color::from_hex("#c8c8dc"),
+            fg_selected: Color::from_hex("#ffffff"),
+            border: Color::from_hex("#2a2a44"),
+            row_height: 28.0,
+            font_size: 13.0,
+            cell_padding_x: 10.0,
         }
     }
 }
 
-/// Table widget state.
-pub struct Table {
-    pub bounds: Rect,
-    pub columns: Vec<TableColumn>,
-    pub rows: Vec<Vec<CellValue>>,
-    pub style: TableStyle,
-
-    /// Currently selected row index.
-    pub selected: Option<usize>,
-    /// Currently hovered row index.
-    pub hovered: Option<usize>,
-    /// Scroll offset for virtual scrolling.
-    pub scroll_y: Animated<f32>,
-    /// Sort column index and ascending flag.
-    pub sort: Option<(usize, bool)>,
-
-    // Animation
-    pub hover_anim: Animated<f32>,
-    prev_hovered: Option<usize>,
+/// 行 `row` の要素 id。 `on_click` で突き合わせる。
+pub fn table_row_id(id: &str, row: usize) -> String {
+    format!("{id}::row:{row}")
 }
 
-impl Table {
-    pub fn new(bounds: Rect, columns: Vec<TableColumn>, style: TableStyle) -> Self {
-        Self {
-            bounds,
-            columns,
-            rows: Vec::new(),
-            style,
-            selected: None,
-            hovered: None,
-            scroll_y: Animated::new(0.0).with_spring(Spring::critical(150.0)),
-            sort: None,
-            hover_anim: Animated::new(0.0).with_spring(Spring::snappy()),
-            prev_hovered: None,
-        }
+/// 列見出し `col` の要素 id。 ソートの切り替えに使う。
+pub fn table_header_id(id: &str, col: usize) -> String {
+    format!("{id}::col:{col}")
+}
+
+/// クリックされた id が表の行なら、 その行番号。
+///
+/// ```ignore
+/// fn on_click(&mut self, id: &str) {
+///     if let Some(row) = table_clicked_row("files", id) {
+///         self.table.selected = Some(row);
+///     }
+/// }
+/// ```
+pub fn table_clicked_row(id: &str, clicked: &str) -> Option<usize> {
+    clicked.strip_prefix(&format!("{id}::row:"))?.parse().ok()
+}
+
+/// クリックされた id が列見出しなら、 その列番号。
+pub fn table_clicked_header(id: &str, clicked: &str) -> Option<usize> {
+    clicked.strip_prefix(&format!("{id}::col:"))?.parse().ok()
+}
+
+/// 表を組み立てる。
+///
+/// `id` はスクロールコンテナの id でもある。 高さは呼び出し側が決める
+/// (`.h(Px(..))` か `.flex_1()` を結果に繋ぐ)。
+pub fn table(ctx: &ViewContext, id: &str, state: &TableState, style: &TableStyle) -> Element {
+    let body_id = format!("{id}::body");
+
+    // 見えている行だけ作る。 ランタイムが持つスクロール位置から範囲を貰う。
+    // 初回フレームはまだ測れていないので、 `visible_range` は広めの既定を返す。
+    let (first, count) = ctx.visible_range(&body_id, style.row_height);
+    let end = (first + count).min(state.rows.len());
+    let first = first.min(end);
+
+    // 上下に「見えていない行ぶんの高さ」を積んで、 スクロール量を実データに合わせる。
+    let spacer_top = first as f32 * style.row_height;
+    let spacer_bottom = (state.rows.len().saturating_sub(end)) as f32 * style.row_height;
+
+    let mut body_children = Vec::with_capacity(end - first + 2);
+    if spacer_top > 0.0 {
+        body_children.push(div().h(Px(spacer_top)).shrink(0.0));
+    }
+    for row in first..end {
+        body_children.push(table_row(ctx, id, state, style, row));
+    }
+    if spacer_bottom > 0.0 {
+        body_children.push(div().h(Px(spacer_bottom)).shrink(0.0));
     }
 
-    /// Set the data rows.
-    pub fn set_rows(&mut self, rows: Vec<Vec<CellValue>>) {
-        self.rows = rows;
-    }
+    let body = div()
+        .id(&body_id)
+        .scroll(&body_id)
+        .flex_1()
+        .flex_col()
+        .children(body_children);
 
-    /// Total content height.
-    pub fn content_height(&self) -> f32 {
-        self.style.header_height + self.rows.len() as f32 * self.style.row_height
-    }
+    // 見出しの下の区切り線。 `border()` は 4 辺に付いてしまうので 1px の div。
+    let rule = div().w_full().h(Px(1.0)).shrink(0.0).bg(style.border);
 
-    /// Viewport height (excluding header).
-    pub fn viewport_height(&self) -> f32 {
-        self.bounds.size.height - self.style.header_height
-    }
+    div()
+        .id(id)
+        .role(Role::Table)
+        .flex_col()
+        .children([header(id, state, style), rule, body])
+}
 
-    /// Max scroll offset.
-    pub fn max_scroll(&self) -> f32 {
-        (self.rows.len() as f32 * self.style.row_height - self.viewport_height()).max(0.0)
-    }
+fn header(id: &str, state: &TableState, style: &TableStyle) -> Element {
+    let cells: Vec<Element> = state
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(col, c)| {
+            let label = text(c.label.clone())
+                .font_size(style.font_size)
+                .color(style.header_fg);
+            sized(div(), c.width)
+                .id(&table_header_id(id, col))
+                .role(Role::ColumnHeader)
+                .label(&c.label)
+                .h_full()
+                .px_pad(Px(style.cell_padding_x))
+                .flex_row()
+                .items_center()
+                .overflow_hidden()
+                .child(label)
+        })
+        .collect();
 
-    /// Handle scroll input.
-    pub fn on_scroll(&mut self, delta_y: f32) {
-        let current = self.scroll_y.value();
-        let new_target = (current - delta_y).clamp(0.0, self.max_scroll());
-        self.scroll_y.set_target(new_target);
-    }
+    div()
+        .role(Role::Row)
+        .w_full()
+        .h(Px(style.row_height))
+        .shrink(0.0)
+        .bg(style.header_bg)
+        .flex_row()
+        .children(cells)
+}
 
-    /// Get the range of visible rows (start_index, end_index).
-    pub fn visible_range(&self) -> (usize, usize) {
-        let scroll = self.scroll_y.value();
-        let first = (scroll / self.style.row_height).floor() as usize;
-        let count = (self.viewport_height() / self.style.row_height).ceil() as usize + 2;
-        let last = (first + count).min(self.rows.len());
-        (first, last)
-    }
+fn table_row(
+    ctx: &ViewContext,
+    id: &str,
+    state: &TableState,
+    style: &TableStyle,
+    row: usize,
+) -> Element {
+    let row_id = table_row_id(id, row);
+    let selected = state.selected == Some(row);
+    let hovered = ctx.hovered.as_deref() == Some(row_id.as_str());
 
-    /// Handle pointer move — update hover state.
-    pub fn on_pointer_move(&mut self, point: Point) {
-        if !self.bounds.contains(point) {
-            self.hovered = None;
-            return;
-        }
+    let bg = if selected {
+        style.row_bg_selected
+    } else if hovered {
+        style.row_bg_hover
+    } else if row % 2 == 1 {
+        style.row_bg_alt
+    } else {
+        style.row_bg
+    };
+    let fg = if selected { style.fg_selected } else { style.fg };
 
-        let local_y = point.y - self.bounds.origin.y - self.style.header_height + self.scroll_y.value();
-        if local_y < 0.0 {
-            self.hovered = None;
-            return;
-        }
-
-        let row_idx = (local_y / self.style.row_height) as usize;
-        if row_idx < self.rows.len() {
-            self.hovered = Some(row_idx);
-        } else {
-            self.hovered = None;
-        }
-    }
-
-    /// Handle click — select row or sort column.
-    pub fn on_click(&mut self, point: Point) -> TableEvent {
-        if !self.bounds.contains(point) {
-            return TableEvent::None;
-        }
-
-        let local_y = point.y - self.bounds.origin.y;
-
-        // Click on header → sort
-        if local_y < self.style.header_height {
-            let col_idx = self.column_at_x(point.x);
-            if let Some(idx) = col_idx {
-                self.sort = Some(match self.sort {
-                    Some((prev_col, asc)) if prev_col == idx => (idx, !asc),
-                    _ => (idx, true),
-                });
-                return TableEvent::Sort(idx, self.sort.unwrap().1);
+    let cells: Vec<Element> = state.columns
+        .iter()
+        .enumerate()
+        .map(|(col, c)| {
+            let cell = state.rows.get(row).and_then(|r| r.get(col));
+            let content = cell.map(|c| c.text.as_str()).unwrap_or("");
+            let mut label = text(content)
+                .font_size(style.font_size)
+                .color(cell.and_then(|c| c.color).unwrap_or(fg));
+            if cell.is_some_and(|c| c.bold) {
+                label = label.bold();
             }
-            return TableEvent::None;
-        }
+            sized(div(), c.width)
+                .role(Role::Cell)
+                .h_full()
+                .px_pad(Px(style.cell_padding_x))
+                .flex_row()
+                .items_center()
+                .overflow_hidden()
+                .child(label)
+        })
+        .collect();
 
-        // Click on row → select
-        let scroll = self.scroll_y.value();
-        let row_y = local_y - self.style.header_height + scroll;
-        let row_idx = (row_y / self.style.row_height) as usize;
-        if row_idx < self.rows.len() {
-            self.selected = Some(row_idx);
-            return TableEvent::Select(row_idx);
-        }
+    // 行ラベルは 1 行ぶんの読み上げ内容 — セルを繋いだもの。
+    let spoken = state
+        .rows
+        .get(row)
+        .map(|r| r.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
 
-        TableEvent::None
-    }
+    div()
+        .id(&row_id)
+        .role(Role::Row)
+        .label(&spoken)
+        .w_full()
+        .h(Px(style.row_height))
+        .shrink(0.0)
+        .bg(bg)
+        .flex_row()
+        .children(cells)
+}
 
-    /// Handle double-click on a row.
-    pub fn on_double_click(&mut self, point: Point) -> TableEvent {
-        if !self.bounds.contains(point) {
-            return TableEvent::None;
-        }
-
-        let local_y = point.y - self.bounds.origin.y - self.style.header_height + self.scroll_y.value();
-        if local_y < 0.0 {
-            return TableEvent::None;
-        }
-
-        let row_idx = (local_y / self.style.row_height) as usize;
-        if row_idx < self.rows.len() {
-            self.selected = Some(row_idx);
-            return TableEvent::Activate(row_idx);
-        }
-
-        TableEvent::None
-    }
-
-    /// Select next/previous row.
-    pub fn select_next(&mut self) {
-        let len = self.rows.len();
-        if len == 0 { return; }
-        self.selected = Some(match self.selected {
-            Some(i) if i + 1 < len => i + 1,
-            Some(_) => 0,
-            None => 0,
-        });
-        self.ensure_visible();
-    }
-
-    pub fn select_prev(&mut self) {
-        let len = self.rows.len();
-        if len == 0 { return; }
-        self.selected = Some(match self.selected {
-            Some(0) => len - 1,
-            Some(i) => i - 1,
-            None => 0,
-        });
-        self.ensure_visible();
-    }
-
-    /// Ensure selected row is visible (scroll if needed).
-    fn ensure_visible(&mut self) {
-        if let Some(idx) = self.selected {
-            let row_top = idx as f32 * self.style.row_height;
-            let row_bottom = row_top + self.style.row_height;
-            let scroll = self.scroll_y.value();
-            let viewport = self.viewport_height();
-
-            if row_top < scroll {
-                self.scroll_y.set_target(row_top);
-            } else if row_bottom > scroll + viewport {
-                self.scroll_y.set_target(row_bottom - viewport);
-            }
-        }
-    }
-
-    /// Get column widths in pixels based on table bounds.
-    pub fn column_widths(&self) -> Vec<f32> {
-        let total: f32 = self.columns.iter().map(|c| c.width).sum();
-        let available = self.bounds.size.width;
-        self.columns
-            .iter()
-            .map(|c| (c.width / total) * available)
-            .collect()
-    }
-
-    /// Get x positions for each column.
-    pub fn column_xs(&self) -> Vec<f32> {
-        let widths = self.column_widths();
-        let mut xs = Vec::with_capacity(widths.len());
-        let mut x = self.bounds.origin.x;
-        for w in &widths {
-            xs.push(x);
-            x += w;
-        }
-        xs
-    }
-
-    /// Find which column a given x coordinate is in.
-    fn column_at_x(&self, x: f32) -> Option<usize> {
-        let xs = self.column_xs();
-        let widths = self.column_widths();
-        for (i, (col_x, w)) in xs.iter().zip(widths.iter()).enumerate() {
-            if x >= *col_x && x < col_x + w {
-                return Some(i);
-            }
-        }
-        None
-    }
-
-    /// Get the rect for a header cell.
-    pub fn header_cell_rect(&self, col_idx: usize) -> Rect {
-        let xs = self.column_xs();
-        let widths = self.column_widths();
-        Rect::new(
-            xs[col_idx],
-            self.bounds.origin.y,
-            widths[col_idx],
-            self.style.header_height,
-        )
-    }
-
-    /// Get the rect for a data row.
-    pub fn row_rect(&self, row_idx: usize) -> Rect {
-        let scroll = self.scroll_y.value();
-        let y = self.bounds.origin.y + self.style.header_height
-            + row_idx as f32 * self.style.row_height
-            - scroll;
-        Rect::new(self.bounds.origin.x, y, self.bounds.size.width, self.style.row_height)
-    }
-
-    /// Get the rect for a specific cell.
-    pub fn cell_rect(&self, row_idx: usize, col_idx: usize) -> Rect {
-        let xs = self.column_xs();
-        let widths = self.column_widths();
-        let scroll = self.scroll_y.value();
-        let y = self.bounds.origin.y + self.style.header_height
-            + row_idx as f32 * self.style.row_height
-            - scroll;
-        Rect::new(xs[col_idx], y, widths[col_idx], self.style.row_height)
-    }
-
-    /// Tick animations.
-    pub fn tick(&mut self, dt: f32) {
-        self.scroll_y.tick(dt);
-        self.hover_anim.tick(dt);
-
-        if self.prev_hovered != self.hovered {
-            self.prev_hovered = self.hovered;
-            self.hover_anim.set_target(if self.hovered.is_some() { 1.0 } else { 0.0 });
-        }
-    }
-
-    /// Get background color for a row.
-    pub fn row_bg(&self, row_idx: usize) -> Color {
-        if self.selected == Some(row_idx) {
-            self.style.row_selected_bg
-        } else if self.hovered == Some(row_idx) {
-            self.style.row_hover_bg
-        } else if row_idx % 2 == 1 {
-            self.style.row_alt_bg
-        } else {
-            self.style.row_bg
-        }
-    }
-
-    /// Get foreground color for a row.
-    pub fn row_fg(&self, row_idx: usize) -> Color {
-        if self.selected == Some(row_idx) {
-            self.style.row_selected_fg
-        } else {
-            self.style.row_fg
-        }
-    }
-
-    /// Scrollbar thumb position and size (0..1 range).
-    pub fn scrollbar(&self) -> (f32, f32) {
-        let content = self.rows.len() as f32 * self.style.row_height;
-        let viewport = self.viewport_height();
-        if content <= viewport {
-            return (0.0, 1.0);
-        }
-        let ratio = viewport / content;
-        let position = self.scroll_y.value() / (content - viewport);
-        (position * (1.0 - ratio), ratio)
+/// 固定幅なら `.w()`、 伸縮なら `.flex_1()`。 列定義の唯一の分岐。
+fn sized(el: Element, width: Option<f32>) -> Element {
+    match width {
+        Some(w) => el.w(Px(w)).shrink(0.0),
+        None => el.flex_1(),
     }
 }
 
-/// Events emitted by table interactions.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TableEvent {
-    None,
-    Select(usize),
-    Activate(usize),
-    Sort(usize, bool),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(rows: usize) -> TableState {
+        let mut s = TableState::new(vec![
+            TableColumn::flex("名前"),
+            TableColumn::fixed("サイズ", 80.0),
+        ]);
+        s.set_rows(
+            (0..rows)
+                .map(|i| vec![Cell::text(format!("file-{i}")), Cell::text("1 KB")])
+                .collect(),
+        );
+        s
+    }
+
+    /// id の往復。 これが壊れると `on_click` が行を特定できなくなる。
+    #[test]
+    fn row_ids_round_trip() {
+        let id = table_row_id("files", 42);
+        assert_eq!(table_clicked_row("files", &id), Some(42));
+        // 別の表の行は拾わない。
+        assert_eq!(table_clicked_row("other", &id), None);
+        // 見出しは行ではない。
+        assert_eq!(table_clicked_row("files", &table_header_id("files", 1)), None);
+        assert_eq!(table_clicked_header("files", &table_header_id("files", 1)), Some(1));
+    }
+
+    /// 選択の上下移動が範囲を出ないこと。
+    #[test]
+    fn selection_stays_in_range() {
+        let mut s = state(3);
+        s.select_prev();
+        assert_eq!(s.selected, Some(0), "未選択からは先頭");
+        s.select_prev();
+        assert_eq!(s.selected, Some(0), "先頭より上には行かない");
+        for _ in 0..10 {
+            s.select_next();
+        }
+        assert_eq!(s.selected, Some(2), "末尾より下には行かない");
+    }
+
+    /// 行が減ったら、 範囲外を指したままの選択は捨てること。
+    #[test]
+    fn shrinking_the_rows_drops_a_stale_selection() {
+        let mut s = state(5);
+        s.selected = Some(4);
+        s.set_rows(vec![vec![Cell::text("only")]]);
+        assert_eq!(s.selected, None);
+    }
 }

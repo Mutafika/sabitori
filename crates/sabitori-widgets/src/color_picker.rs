@@ -31,7 +31,7 @@
 //! picker.on_key(key, modifiers); picker.on_char(ch);
 //! ```
 
-use sabitori_core::element::{div, text, Element, Px};
+use sabitori_core::element::{div, text, Element, Px, Role};
 use sabitori_core::forms::numeric_input;
 use sabitori_core::Color;
 
@@ -337,6 +337,7 @@ impl ColorPickerState {
                     };
                     div()
                         .id(&id)
+                        .role(Role::Radio)
                         .w(Px(style.swatch_size))
                         .h(Px(style.swatch_size))
                         .bg(*c)

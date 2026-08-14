@@ -4,7 +4,7 @@
 //! checkboxes, radio buttons, sliders, and dropdown triggers.
 //! Same pattern as [`crate::tui`] — take values, return [`Element`].
 
-use crate::element::{div, text, Cursor, Dimension::Px, Element};
+use crate::element::{div, text, Cursor, Dimension::Px, Element, Role};
 use crate::Color;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,7 @@ pub fn numeric_input(
         .rounded_px(5.0)
         .cursor(if editing { Cursor::Text } else { Cursor::ResizeEw })
         .id(id)
+        .role(Role::TextInput)
         .child(inner);
     el.focusable = true;
     el
@@ -125,6 +126,8 @@ pub fn checkbox(
         .gap(8.0)
         .items_center()
         .id(id)
+        .role(Role::Checkbox)
+        .label(label)
         .children([
             box_el,
             text(label)
@@ -155,6 +158,8 @@ pub fn collapsing_header(
     let arrow = if open { "\u{25BC}" } else { "\u{25B6}" }; // ▼ / ▶
     div()
         .id(id)
+        .role(Role::Button)
+        .label(title)
         .w_full()
         .h(Px(26.0))
         .bg(bg)
@@ -255,6 +260,8 @@ pub fn radio(
         .gap(8.0)
         .items_center()
         .id(id)
+        .role(Role::Radio)
+        .label(label)
         .children([
             circle,
             text(label)
@@ -313,6 +320,7 @@ pub fn slider(
         .w(Px(track_w))
         .h(Px(24.0))
         .id(id)
+        .role(Role::Slider)
         .items_center()
         .children([track, knob]);
     el.focusable = true;
@@ -394,6 +402,8 @@ pub fn dropdown_trigger(
         .rounded_px(6.0)
         .px_pad(Px(10.0))
         .id(id)
+        .role(Role::ComboBox)
+        .label(selected_label)
         .children([
             text(selected_label)
                 .mono()
@@ -430,6 +440,7 @@ pub fn progress_bar(
     let clamped = fraction.clamp(0.0, 1.0);
     let radius = height / 2.0;
     div()
+        .role(Role::ProgressBar)
         .w_full()
         .h(Px(height))
         .bg(track_color)
@@ -531,6 +542,8 @@ pub fn segment_control(
 
             div()
                 .id(&seg_id)
+                .role(Role::Tab)
+                .label(*label)
                 .flex_1()
                 .h(Px(32.0))
                 .bg(seg_bg)
@@ -550,6 +563,7 @@ pub fn segment_control(
         .collect();
 
     div()
+        .role(Role::TabList)
         .flex_row()
         .gap(2.0)
         .bg(bg)

@@ -1,5 +1,4 @@
-use sabitori_core::{Color, Rect};
-use sabitori_anim::{Animated, Spring};
+use sabitori_core::Color;
 
 /// IME preedit (composing) state.
 #[derive(Clone, Debug, Default)]
@@ -613,49 +612,9 @@ pub fn caret_rect(
     )
 }
 
-/// Text input widget.
-pub struct TextInput {
-    pub bounds: Rect,
-    pub state: TextInputState,
-    pub border_anim: Animated<Color>,
-    pub cursor_blink: f32,
-}
-
-impl TextInput {
-    pub fn new(x: f32, y: f32, width: f32, placeholder: impl Into<String>) -> Self {
-        Self {
-            bounds: Rect::new(x, y, width, 40.0),
-            state: TextInputState::new(placeholder),
-            border_anim: Animated::new(Color::from_hex("#3a3a55"))
-                .with_spring(Spring::snappy()),
-            cursor_blink: 0.0,
-        }
-    }
-
-    pub fn set_focus(&mut self, focused: bool) {
-        self.state.focused = focused;
-        if focused {
-            self.border_anim.set_target(Color::from_hex("#6c63ff"));
-            self.cursor_blink = 0.0;
-        } else {
-            self.border_anim.set_target(Color::from_hex("#3a3a55"));
-        }
-    }
-
-    pub fn tick(&mut self, dt: f32) {
-        self.border_anim.tick(dt);
-        if self.state.focused {
-            self.cursor_blink += dt;
-            if self.cursor_blink > 1.0 {
-                self.cursor_blink -= 1.0;
-            }
-        }
-    }
-
-    pub fn cursor_visible(&self) -> bool {
-        self.state.focused && self.cursor_blink < 0.5
-    }
-}
+// 0.4.0 で retained 版の `TextInput` (`bounds: Rect` を自前で持ち、 自前の
+// blink カウンタを回す) を削除した。 #16 で `text_input(ctx, ..)` +
+// [`TextInputState`] に一本化したので、 座標を二重管理する側は使い道が無い。
 
 #[cfg(test)]
 mod router_tests {
