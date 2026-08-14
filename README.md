@@ -115,7 +115,7 @@ The other model is `.scroll_manual(x, y)`, where **your app** owns the offset an
 **Put `text_input` in `view()`. That is the entire wiring.**
 
 ```rust
-struct App { name: TextInputState }
+struct App { name: TextInputState, saved: Option<String> }
 
 impl DeclarativeApp for App {
     fn view(&self, ctx: &ViewContext) -> Element {
@@ -170,8 +170,9 @@ use sabitori::testing::Harness;
 
 let mut h = Harness::new(App::default(), 800.0, 600.0);
 h.frame();                  // build + layout
-h.click("save");            // by id
-h.text("hello");            // typed input to the focused element
+h.click("name");            // focus the field by id
+h.text("hello");            // typed input goes to the focused element
+h.click("save");            // now the handler sees the typed value
 h.scroll("file-list", 400.0);
 h.settle();                 // let springs finish (needed for scroll_intents)
 assert_eq!(h.app().saved.as_deref(), Some("hello"));
@@ -185,18 +186,18 @@ Flexbox and grid, both backed by Taffy. If you know CSS you already know this �
 
 ```rust
 // Flex
-div().flex_row().items_center().justify_between().gap(8.0)
+let toolbar = div().flex_row().items_center().justify_between().gap(8.0);
 
 // Grid — a fixed sidebar and a body that takes the rest
-grid()
+let shell = grid()
     .grid_cols([Track::px(240.0), Track::fr(1.0)])
     .gap(12.0)
-    .children([sidebar, body])
+    .children([sidebar, body]);
 
 // A header spanning every column
-grid()
+let sheet = grid()
     .grid_cols(Track::repeat(3, Track::fr(1.0)))
-    .children([header.col_span(3), a, b, c])
+    .children([header.col_span(3), a, b, c]);
 ```
 
 `Track` is CSS `minmax(min, max)`: build one with `Track::px / pct / fr / auto / min_content / max_content / minmax`, and repeat it with `Track::repeat(n, track)`. `auto-fill` / `auto-fit` are not implemented — you pick the count.
@@ -239,8 +240,8 @@ div().flex_col().children([
 The window is a GPU surface, so screen readers see nothing unless the tree says what things are. `button()` declares `Role::Button` on its own; describe the rest:
 
 ```rust
-div().id("close").role(Role::Button).label("Close")   // icon-only button
-text("Settings").role(Role::Heading).heading(2)
+let close = div().id("close").role(Role::Button).label("Close");   // icon-only button
+let heading = text("Settings").role(Role::Heading).heading(2);
 ```
 
 The semantic layer is in place and carried through `hit_regions`. The OS adapter (accesskit) is not wired yet.

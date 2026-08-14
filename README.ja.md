@@ -115,7 +115,7 @@ let (first, count) = ctx.visible_range("file-list", ROW_H);
 **`view()` に `text_input` を置く。配線はこれで全部です。**
 
 ```rust
-struct App { name: TextInputState }
+struct App { name: TextInputState, saved: Option<String> }
 
 impl DeclarativeApp for App {
     fn view(&self, ctx: &ViewContext) -> Element {
@@ -170,8 +170,9 @@ use sabitori::testing::Harness;
 
 let mut h = Harness::new(App::default(), 800.0, 600.0);
 h.frame();                  // 組み立て + レイアウト
-h.click("save");            // id で押す
-h.text("hello");            // フォーカス中の要素へ打鍵
+h.click("name");            // id で欄にフォーカスを入れる
+h.text("hello");            // 打鍵はフォーカス中の要素へ行く
+h.click("save");            // ここで初めてハンドラが打った値を見る
 h.scroll("file-list", 400.0);
 h.settle();                 // ばねを終わらせる (scroll_intents に必要)
 assert_eq!(h.app().saved.as_deref(), Some("hello"));
@@ -185,18 +186,18 @@ flex と grid の両方が使えます。土台は Taffy で、名前は CSS に
 
 ```rust
 // flex
-div().flex_row().items_center().justify_between().gap(8.0)
+let toolbar = div().flex_row().items_center().justify_between().gap(8.0);
 
 // grid — サイドバー固定 + 本文が余りを取る
-grid()
+let shell = grid()
     .grid_cols([Track::px(240.0), Track::fr(1.0)])
     .gap(12.0)
-    .children([sidebar, body])
+    .children([sidebar, body]);
 
 // 全列にまたがる見出し行
-grid()
+let sheet = grid()
     .grid_cols(Track::repeat(3, Track::fr(1.0)))
-    .children([header.col_span(3), a, b, c])
+    .children([header.col_span(3), a, b, c]);
 ```
 
 `Track` は CSS の `minmax(min, max)` そのものです。`Track::px / pct / fr / auto / min_content / max_content / minmax` で作り、`Track::repeat(n, track)` で並べます。`auto-fill` / `auto-fit` は未対応で、本数は呼び出し側が決めます。
@@ -239,8 +240,8 @@ div().flex_col().children([
 窓の中身は GPU で描いたピクセルなので、ツリーが「これは何か」を言わない限りスクリーンリーダーには何も見えません。`button()` は自分で `Role::Button` を名乗ります。それ以外は書いてください：
 
 ```rust
-div().id("close").role(Role::Button).label("閉じる")   // アイコンだけのボタン
-text("設定").role(Role::Heading).heading(2)
+let close = div().id("close").role(Role::Button).label("閉じる");   // アイコンだけのボタン
+let heading = text("設定").role(Role::Heading).heading(2);
 ```
 
 意味の層は入っていて `hit_regions` まで通っています。OS 側のアダプタ（accesskit）はまだ繋がっていません。
