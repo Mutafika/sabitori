@@ -1579,22 +1579,22 @@ impl Gallery {
     fn form_controls(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
         let is_focused = |id: &str| ctx.focused.as_deref() == Some(id);
 
-        // Text input
-        let text_display = self.form_text.display_text();
-        let is_placeholder = self.form_text.text.is_empty();
-        let input = form_text_input(
-            "form-input",
-            &text_display,
-            is_placeholder,
-            ((self.elapsed() * 2.0) as u32 % 2 == 0) && is_focused("form-input"),
-            0.0,
-            is_focused("form-input"),
-            t.text_primary,
-            t.text_disabled,
-            t.surface,
-            t.border,
-            t.primary,
-        );
+        // Text input。 0.4.0 で text_input が 1 本になった。 以前は自前で点滅を
+        // 数え (elapsed の偶奇)、キャレット位置には 0 を渡していた (呼び出し側が
+        // 幅を測れなかったため文末固定)。 いまは状態と ctx が両方持つ。
+        let input_style = sabitori_widgets::TextInputStyle {
+            bg: t.surface,
+            border: t.border,
+            text: t.text_primary,
+            placeholder: t.text_disabled,
+            font_size: 14.0,
+            radius: 6.0,
+            padding: 10.0,
+            focus_border: Some(t.primary),
+            caret: Some(t.text_primary),
+            preedit: Some(t.primary.with_alpha(0.25)),
+        };
+        let input = sabitori_widgets::text_input(ctx, "form-input", &self.form_text, &input_style);
 
         // Checkboxes
         let check_labels = ["Enable notifications", "Dark mode", "Auto-save"];

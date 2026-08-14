@@ -20,10 +20,11 @@
 //! focus.register("dlg-name", "名前を入力");
 //! focus.register("dlg-material", "材質");
 //!
-//! // view(): 各フィールドを form_text_input で描く
-//! form_text_input("dlg-name", &focus.display_text("dlg-name"),
-//!     focus.is_placeholder("dlg-name"), focus.cursor_visible_for("dlg-name"),
-//!     0.0, focus.is_focused("dlg-name"), /* colors… */);
+//! // view(): 各フィールドを text_input で描く。 preedit もキャレットも
+//! // ウィジェット側が面倒を見るので、 渡すのは状態とスタイルだけ。
+//! if let Some(state) = focus.field("dlg-name") {
+//!     text_input(ctx, "dlg-name", state, &style);
+//! }
 //!
 //! // 左クリック押下 (hit_region_at の結果を渡す):
 //! match focus.handle_press(hit_id.as_deref()) {
@@ -96,8 +97,6 @@ pub struct FocusManager {
     /// Registration order — doubles as the Tab order.
     order: Vec<String>,
     focused: Option<String>,
-    /// Cursor blink phase in seconds, wraps at 1.0; visible while < 0.5.
-    blink: f32,
     /// When true (default), Tab / Shift+Tab cycle focus through the
     /// registered fields. Set false if the host wants Tab for itself.
     pub tab_navigation: bool,
@@ -109,7 +108,6 @@ impl FocusManager {
             fields: HashMap::new(),
             order: Vec::new(),
             focused: None,
-            blink: 0.0,
             tab_navigation: true,
         }
     }
@@ -236,7 +234,7 @@ impl FocusManager {
             f.focused = true;
         }
         self.focused = Some(id.to_string());
-        self.blink = 0.0;
+        self.restart_blink();
         true
     }
 
@@ -256,7 +254,7 @@ impl FocusManager {
         match hit_id {
             Some(id) if self.fields.contains_key(id) => {
                 if self.is_focused(id) {
-                    self.blink = 0.0;
+                    self.restart_blink();
                     FocusChange::Unchanged
                 } else {
                     self.focus(id);
@@ -317,7 +315,7 @@ impl FocusManager {
         let Some(id) = self.focused.clone() else {
             return FocusKeyResult::NotFocused;
         };
-        self.blink = 0.0;
+        self.restart_blink();
         let Some(field) = self.fields.get_mut(&id) else {
             // Stale focus (field removed without blur) — self-heal.
             self.focused = None;
@@ -351,7 +349,7 @@ impl FocusManager {
     /// Route a printable character to the focused field. Returns true
     /// when a field received it.
     pub fn on_char(&mut self, ch: char) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
                 f.on_char(ch);
@@ -364,7 +362,7 @@ impl FocusManager {
     /// Route an IME preedit update to the focused field. Returns true
     /// when a field received it.
     pub fn on_ime_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
                 f.on_ime_preedit(text, cursor);
@@ -377,7 +375,7 @@ impl FocusManager {
     /// Route an IME commit to the focused field. Returns true when a
     /// field received it.
     pub fn on_ime_commit(&mut self, text: &str) -> bool {
-        self.blink = 0.0;
+        self.restart_blink();
         match self.focused_field_mut() {
             Some(f) => {
                 f.on_ime_commit(text);
@@ -396,24 +394,38 @@ impl FocusManager {
 
     // ── Cursor blink ──────────────────────────────────────────────
 
-    /// Advance the blink phase. Call once per frame.
-    pub fn tick(&mut self, dt: f32) {
-        if self.focused.is_some() {
-            self.blink += dt;
-            if self.blink > 1.0 {
-                self.blink -= 1.0;
+    /// キャレットを「見えている」状態に戻す。 打鍵やフォーカス移動のたびに呼ぶ。
+    /// 入力中にキャレットが消えていると、 どこに文字が入るのか分からなくなる。
+    fn restart_blink(&mut self) {
+        if let Some(id) = self.focused.clone() {
+            if let Some(f) = self.fields.get_mut(&id) {
+                f.blink = 0.0;
             }
+        }
+    }
+
+    /// Advance the blink phase. Call once per frame.
+    ///
+    /// 位相は各 [`TextInputState`] が持つ (0.4.0 で寄せた)。 以前は
+    /// `FocusManager` と `TextInputState` と `TextInput` が別々に点滅を数えていて、
+    /// どれを見ればいいのか決まっていなかった (issue #16)。
+    pub fn tick(&mut self, dt: f32) {
+        for f in self.fields.values_mut() {
+            f.tick(dt);
         }
     }
 
     /// Whether the focused field's caret is currently visible.
     pub fn cursor_visible(&self) -> bool {
-        self.focused.is_some() && self.blink < 0.5
+        self.focused
+            .as_ref()
+            .and_then(|id| self.fields.get(id))
+            .is_some_and(|f| f.cursor_visible())
     }
 
     /// Caret visibility for a specific field (false unless focused).
     pub fn cursor_visible_for(&self, id: &str) -> bool {
-        self.is_focused(id) && self.blink < 0.5
+        self.fields.get(id).is_some_and(|f| f.cursor_visible())
     }
 }
 

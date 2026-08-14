@@ -30,6 +30,12 @@ pub struct TextInputState {
     pub placeholder: String,
     /// Current IME preedit (composing) state.
     pub preedit: PreeditState,
+    /// キャレット点滅の位相 (0.0..1.0)。 [`Self::tick`] が進める。
+    ///
+    /// 点滅は以前 `FocusManager` と `TextInput` が別々に持っていて、
+    /// `TextInputState` 単体では取れなかった。 [`text_input`] ウィジェットが
+    /// 引数を増やさず自己完結するよう、 状態側に寄せてある。
+    pub blink: f32,
 }
 
 impl TextInputState {
@@ -41,6 +47,7 @@ impl TextInputState {
             focused: false,
             placeholder: placeholder.into(),
             preedit: PreeditState::default(),
+            blink: 0.0,
         }
     }
 
@@ -309,6 +316,48 @@ impl TextInputState {
         self.cursor_pos = pos;
     }
 
+    // ── Cursor blink ──────────────────────────────────────────────
+
+    /// 点滅位相を進める。 毎フレーム 1 回呼ぶこと。 フォーカスされていなければ
+    /// 何もしない (フォーカスが戻ったとき必ず「見えている」状態から始まる)。
+    pub fn tick(&mut self, dt: f32) {
+        if self.focused {
+            self.blink += dt;
+            if self.blink > 1.0 {
+                self.blink -= 1.0;
+            }
+        } else {
+            self.blink = 0.0;
+        }
+    }
+
+    /// いまキャレットを描くべきか。 1 秒周期で前半だけ表示する。
+    ///
+    /// **変換中は点滅させない。** 未確定文字を編集している最中にキャレットが
+    /// 消えると、 どこを編集しているのか分からなくなるため。
+    pub fn cursor_visible(&self) -> bool {
+        self.focused && (self.preedit.is_active() || self.blink < 0.5)
+    }
+
+    /// [`Self::display_text_with_preedit`] の中でキャレットが立つべきバイト位置。
+    ///
+    /// 変換中は preedit の中の編集位置を指す (IME が `cursor` を教えてくれない
+    /// 場合は preedit の末尾)。 プレースホルダ表示中は 0。
+    pub fn caret_byte_offset(&self) -> usize {
+        if self.preedit.is_active() {
+            let within = self
+                .preedit
+                .cursor
+                .map(|(s, _)| s)
+                .unwrap_or(self.preedit.text.len());
+            self.cursor_pos + within.min(self.preedit.text.len())
+        } else if self.text.is_empty() {
+            0
+        } else {
+            self.cursor_pos.min(self.text.len())
+        }
+    }
+
     // ── Display helpers ───────────────────────────────────────────
 
     /// Text to display, including preedit composing text spliced in at cursor.
@@ -380,40 +429,151 @@ pub struct TextInputStyle {
     pub font_size: f32,
     pub radius: f32,
     pub padding: f32,
+    /// フォーカス中の枠線。 未指定なら `border` をそのまま使う。
+    pub focus_border: Option<Color>,
+    /// キャレットの色。 未指定なら `text` をそのまま使う。
+    pub caret: Option<Color>,
+    /// 変換中 (IME preedit) の文字に敷く色。 未指定なら塗らない。
+    ///
+    /// 下線を引くのが一般的だが、 現状 text 要素に下線の表現が無いので背景で示す。
+    pub preedit: Option<Color>,
 }
 
-/// A focusable single-line text field rendered from a [`TextInputState`].
+/// [`TextInputState`] を描く単一行テキスト欄。 **これ 1 本で完結する。**
 ///
-/// Shows committed text plus inline IME preedit (via
-/// [`TextInputState::display_text_with_preedit`]) and dims to
-/// [`TextInputStyle::placeholder`] when empty. Give it a stable `id`, route keys
-/// to [`TextInputState::on_focused_input`] inside
-/// `DeclarativeApp::on_focused_input`, and pin focus to the same `id` from
-/// `desired_focus` so the runtime enables the IME on it.
+/// - 確定済みテキスト + 変換中 (IME preedit) の文字を合成して表示する
+/// - **キャレットを正しい位置に描く** (`ctx` の実フォント計測を使う)
+/// - キャレットを点滅させる (変換中は点滅を止める)
+/// - 空なら placeholder 色に落とす
+///
+/// # 使い方
+///
+/// ```ignore
+/// // view()
+/// text_input(ctx, "name", &self.name, &style)
+///
+/// // DeclarativeApp::on_focused_input
+/// fn on_focused_input(&mut self, id: &str, ev: &InputEvent) -> bool {
+///     match id {
+///         "name" => self.name.on_focused_input(ev),
+///         _ => false,
+///     }
+/// }
+///
+/// // DeclarativeApp::tick — 点滅を進める
+/// fn tick(&mut self, dt: f32) { self.name.tick(dt); }
+///
+/// // DeclarativeApp::ime_cursor_area — 変換候補ウィンドウの位置
+/// //   返さないと候補が画面左上に出る
+/// fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { self.name_caret }
+/// ```
+///
+/// 候補ウィンドウの位置に渡す矩形は [`caret_rect`] で作れる。
+///
+/// # 0.4.0 での統合について
+///
+/// 以前はテキスト欄の実装が 2 つあり、 **どちらも不完全**だった (issue #16):
+///
+/// | | preedit | キャレット |
+/// |---|---|---|
+/// | `sabitori_widgets::text_input` | 出る | **描画コードが無かった** |
+/// | `sabitori_core::forms::text_input` | 出ない | 描くが**常に文末** |
+///
+/// 後者が `cursor_pos_px` を受け取って無視していたのは、 呼び出し側に幅を測る手段が
+/// 無かったから (issue #15)。 `ViewContext` に計測が通ったので、 ここで 1 本にした。
+/// `form_text_input` は削除済み。
 pub fn text_input(
+    ctx: &sabitori_core::ViewContext,
     id: &str,
     input: &TextInputState,
     style: &TextInputStyle,
 ) -> sabitori_core::element::Element {
-    use sabitori_core::element::{div, text};
-    let color = if input.is_placeholder() {
-        style.placeholder
+    use sabitori_core::element::{div, text, Dimension::Px};
+
+    let display = input.display_text_with_preedit();
+    let showing_placeholder = input.is_placeholder();
+    let color = if showing_placeholder { style.placeholder } else { style.text };
+
+    let mut label = text(display.clone())
+        .font_size(style.font_size)
+        .color(color);
+
+    // 変換中の範囲に色を敷く。 placeholder 表示中は preedit も無い。
+    if let (Some(tint), Some((s0, e0))) = (style.preedit, input.preedit_underline_range()) {
+        label = label.highlight(sabitori_core::HighlightSpec {
+            ranges: vec![(s0, e0)],
+            color: tint,
+            current: None,
+            current_color: tint,
+        });
+    }
+
+    let mut layers = vec![label];
+
+    // キャレット。 表示中の文字列に対する x を実フォントで測る。 これが
+    // できなかったのが issue #15 で、 そのせいで旧実装は文末固定だった。
+    if input.cursor_visible() {
+        let x = ctx.caret_x(
+            &display,
+            input.caret_byte_offset(),
+            style.font_size,
+            false,
+        );
+        layers.push(
+            div()
+                .absolute()
+                .pos(x, 0.0)
+                .w(Px(CARET_W))
+                .h(Px(style.font_size * CARET_H_RATIO))
+                .bg(style.caret.unwrap_or(style.text)),
+        );
+    }
+
+    let border = if input.focused {
+        style.focus_border.unwrap_or(style.border)
     } else {
-        style.text
+        style.border
     };
+
     div()
         .id(id)
         .focusable()
         .w_full()
         .p_px(style.padding)
         .bg(style.bg)
-        .border(1.0, style.border)
+        .border(1.0, border)
         .rounded_px(style.radius)
-        .child(
-            text(input.display_text_with_preedit())
-                .font_size(style.font_size)
-                .color(color),
-        )
+        // キャレットを絶対配置する基準。 これが無いと祖先まで遡って位置が狂う。
+        .position(sabitori_core::element::Position::Relative)
+        .child(div().position(sabitori_core::element::Position::Relative).children(layers))
+}
+
+/// キャレットの幅 (logical px)。 高 DPI でも 1px 幅は細すぎて消えるので気持ち太め。
+const CARET_W: f32 = 1.5;
+/// キャレットの高さ / font_size。 行の高さいっぱいだと窮屈なので少し詰める。
+const CARET_H_RATIO: f32 = 1.2;
+
+/// `ime_cursor_area` に渡す矩形を組む。
+///
+/// `field_origin` は [`text_input`] を置いた要素の画面上の左上 (`on_build` で
+/// `hit_regions` から引ける)。 変換候補ウィンドウはこの矩形の下に出る。
+///
+/// これを返さないと winit は候補位置をウィンドウ原点のままにするので、
+/// **変換候補が画面の左上に出る**。
+pub fn caret_rect(
+    ctx: &sabitori_core::ViewContext,
+    field_origin: (f32, f32),
+    input: &TextInputState,
+    style: &TextInputStyle,
+) -> (f32, f32, f32, f32) {
+    let display = input.display_text_with_preedit();
+    let x = ctx.caret_x(&display, input.caret_byte_offset(), style.font_size, false);
+    (
+        field_origin.0 + style.padding + x,
+        field_origin.1 + style.padding,
+        CARET_W,
+        style.font_size * CARET_H_RATIO,
+    )
 }
 
 /// Text input widget.
@@ -481,5 +641,80 @@ mod router_tests {
         // Commit folds the composition in.
         assert!(s.on_focused_input(&InputEvent::ImeCommit { text: "日本".into() }));
         assert_eq!(s.text, "a日本");
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+
+    /// キャレットのバイト位置が、 確定済みテキストのカーソル位置と一致すること。
+    #[test]
+    fn caret_offset_follows_the_cursor_in_committed_text() {
+        let mut s = TextInputState::new("placeholder");
+        s.focused = true;
+        for ch in "abcd".chars() {
+            s.on_char(ch);
+        }
+        assert_eq!(s.caret_byte_offset(), 4, "末尾");
+        s.move_left();
+        s.move_left();
+        assert_eq!(s.caret_byte_offset(), 2, "左に 2 文字ぶん");
+    }
+
+    /// **issue #16 の要点。** 変換中は、 キャレットが preedit の**中**を指すこと。
+    ///
+    /// 旧実装はキャレットを text 要素の後ろに並べるだけだったので、 変換中かどうかに
+    /// 関わらず常に文末に出ていた。 「いま何を変換しているのか」が分からない。
+    #[test]
+    fn caret_offset_points_inside_the_preedit() {
+        let mut s = TextInputState::new("placeholder");
+        s.focused = true;
+        s.on_char('a');
+        // 「にほん」を変換中、 IME は 2 文字目まで編集中と伝えてくる (6 バイト)。
+        s.on_ime_preedit("にほん".into(), Some((6, 6)));
+
+        assert_eq!(s.display_text_with_preedit(), "aにほん");
+        assert_eq!(
+            s.caret_byte_offset(),
+            1 + 6,
+            "確定済み 1 バイト + preedit 内 6 バイト"
+        );
+        // IME が編集位置を教えない場合は preedit の末尾。
+        s.on_ime_preedit("にほん".into(), None);
+        assert_eq!(s.caret_byte_offset(), 1 + 9);
+    }
+
+    /// 変換中はキャレットを点滅させないこと。 未確定文字を編集している最中に
+    /// 消えると、 どこを編集しているか分からなくなる。
+    #[test]
+    fn caret_does_not_blink_while_composing() {
+        let mut s = TextInputState::new("placeholder");
+        s.focused = true;
+
+        // 点滅の「消えている」位相へ進める。
+        s.blink = 0.75;
+        assert!(!s.cursor_visible(), "通常時は消える位相がある");
+
+        s.on_ime_preedit("にほ".into(), None);
+        assert!(s.cursor_visible(), "変換中は常に見えていること");
+    }
+
+    /// フォーカスが無ければキャレットは出ないし、 位相も溜まらない。
+    #[test]
+    fn caret_is_hidden_and_reset_without_focus() {
+        let mut s = TextInputState::new("placeholder");
+        s.blink = 0.3;
+        s.tick(0.5);
+        assert!(!s.cursor_visible());
+        assert_eq!(s.blink, 0.0, "非フォーカス中は位相を溜めない");
+    }
+
+    /// プレースホルダ表示中はキャレットが先頭に立つこと (末尾ではない)。
+    #[test]
+    fn caret_sits_at_the_start_while_showing_the_placeholder() {
+        let s = TextInputState::new("名前を入力");
+        assert!(s.is_placeholder());
+        assert_eq!(s.caret_byte_offset(), 0);
     }
 }

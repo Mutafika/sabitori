@@ -74,6 +74,46 @@
   境界をまたぐ場合、全体を整形してクラスタ送りを足すのとは 1px 未満ずれ得る。
 
 ### Changed（破壊的）
+- **`text_input` を 1 本に統合し、`sabitori_core::forms::text_input`
+  (`form_text_input`) を削除**
+  ([#16](https://github.com/Mutafika/sabitori/issues/16))。
+
+  テキスト欄の実装が 2 つあり、**どちらも不完全**だった:
+
+  | | preedit（変換中） | キャレット |
+  |---|---|---|
+  | `sabitori_widgets::text_input` | 出る | **描画コードが無かった** |
+  | `form_text_input` | 出ない | 描くが**常に文末** |
+
+  後者が `cursor_pos_px` を受け取って無視していたのは、呼び出し側に幅を測る手段が
+  無かったから（#15）。それが通ったので統合した。新しい `text_input` は:
+
+  - 確定済みテキスト + 変換中の文字を合成して表示（`preedit` 色で範囲を示す）
+  - **キャレットを正しい位置に描く**。変換中は preedit の**中**を指す
+  - 点滅する。ただし**変換中は点滅を止める**（編集位置を見失わないため）
+
+  ```rust
+  // 旧（11 引数、キャレット位置は 0 をベタ書きするしかなかった）
+  form_text_input(id, &display, is_placeholder, cursor_visible, 0.0, focused,
+                  text_color, placeholder_color, bg, border, focus_border)
+  // 新
+  text_input(ctx, id, &self.name, &style)
+  ```
+
+  `TextInputStyle` に `focus_border` / `caret` / `preedit`（いずれも `Option`）が
+  増えた。`ime_cursor_area` に渡す矩形は `caret_rect(ctx, origin, state, style)` で
+  作れる（返さないと**変換候補が画面左上に出る**）。
+
+- **キャレットの点滅を `TextInputState` に寄せた**
+  ([#16](https://github.com/Mutafika/sabitori/issues/16))。点滅を
+  `FocusManager` / `TextInputState` / `TextInput` が別々に数えていて、どれを見れば
+  いいのか決まっていなかった。`TextInputState::tick(dt)` / `cursor_visible()` /
+  `caret_byte_offset()` が正になり、`FocusManager` の同名 API は各フィールドへ
+  委譲する（`FocusManager` 利用側の書き換えは不要）。
+
+  単一フィールドのアプリは `DeclarativeApp::tick` で `self.name.tick(dt)` を
+  呼ぶこと。呼ばないとキャレットが点滅しない（表示はされる）。
+
 - **`ViewContext` にライフタイム引数が付いた** (`ViewContext<'a>`)
   ([#15](https://github.com/Mutafika/sabitori/issues/15))。計測器を借用で持つため。
   `fn view(&self, ctx: &ViewContext) -> Element` はライフタイム省略で通るので、
@@ -157,6 +197,11 @@
 
 迷ったら `.scroll(id)` が正解。`.scroll_manual` は仮想リストのように「行の描画自体を
 オフセットから決める」実装向け。
+
+**`form_text_input` を使っている箇所もコンパイルエラーになる。** 引数 11 個を渡す
+代わりに、`TextInputState` を持って `text_input(ctx, id, &state, &style)` を呼ぶ。
+状態を持っていない場合は `TextInputState::new(placeholder)` を作り、
+`DeclarativeApp::on_focused_input` で `state.on_focused_input(ev)` に流す。
 
 ⚠️ `.overflow_scroll()` を消すと rustc は `.overflow` を候補に挙げるが、**それは
 違う**（管理対象にならない生の逃げ道）。`.overflow()` の doc に誘導を入れてあるが、

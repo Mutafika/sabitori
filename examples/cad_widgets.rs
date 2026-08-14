@@ -116,26 +116,34 @@ impl CadDemo {
         }
     }
 
-    fn text_row<'a>(&self, label: &str, id: &str, t: &'a AppTheme) -> Element {
+    fn text_row<'a>(&self, ctx: &ViewContext, label: &str, id: &str, t: &'a AppTheme) -> Element {
+        // 0.4.0 で text_input が 1 本になった。 以前は `form_text_input` に
+        // cursor_pos_px として 0 をベタ書きし (呼び出し側が幅を測れなかったため)、
+        // 点滅も諦めて is_focused を渡していた。 いまは ctx の実フォント計測で
+        // キャレットが正しい位置に出て、点滅も状態側が持つ。
+        let style = TextInputStyle {
+            bg: t.surface,
+            border: t.border,
+            text: t.text_primary,
+            placeholder: t.text_secondary,
+            font_size: 14.0,
+            radius: 6.0,
+            padding: 10.0,
+            focus_border: Some(t.primary),
+            caret: Some(t.text_primary),
+            preedit: Some(t.primary.with_alpha(0.25)),
+        };
+        let field = div().flex_1().child(match self.focus.field(id) {
+            Some(state) => text_input(ctx, id, state, &style),
+            None => div(),
+        });
         div()
             .flex_row()
             .items_center()
             .gap(8.0)
             .children([
                 text(label).font_size(12.0).color(t.text_secondary).w(Px(70.0)).shrink(0.0),
-                div().flex_1().child(form_text_input(
-                    id,
-                    &self.focus.display_text(id),
-                    self.focus.is_placeholder(id),
-                    self.focus.is_focused(id), // caret always visible while focused (demo)
-                    0.0,
-                    self.focus.is_focused(id),
-                    t.text_primary,
-                    t.text_secondary,
-                    t.surface,
-                    t.border,
-                    t.primary,
-                )),
+                field,
             ])
     }
 
@@ -275,8 +283,8 @@ impl DeclarativeApp for CadDemo {
                 collapsing_section(
                     "sec-meta", "名称 (FocusManager)", meta_open, t.text_primary, t.surface,
                     vec![
-                        self.text_row("名前", "fld-name", t),
-                        self.text_row("材質", "fld-material", t),
+                        self.text_row(ctx, "名前", "fld-name", t),
+                        self.text_row(ctx, "材質", "fld-material", t),
                         text("クリックでフォーカス / Tabで巡回 / Enterで確定")
                             .font_size(10.0)
                             .color(t.text_secondary),

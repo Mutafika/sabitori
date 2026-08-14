@@ -31,7 +31,7 @@ pub use tui::{
     tooltip_popup,
 };
 pub use forms::{
-    text_input as form_text_input, checkbox, radio, slider, labeled_slider, dropdown_trigger,
+    checkbox, radio, slider, labeled_slider, dropdown_trigger,
     segment_control, numeric_input, collapsing_header, collapsing_section,
     progress_bar as form_progress_bar, labeled_progress_bar,
 };

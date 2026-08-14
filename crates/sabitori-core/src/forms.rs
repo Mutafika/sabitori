@@ -11,66 +11,6 @@ use crate::Color;
 // Text input
 // ---------------------------------------------------------------------------
 
-/// Render a text input field.
-///
-/// * `display_text` — the text to show (either user input or placeholder).
-/// * `is_placeholder` — when true, renders in `placeholder_color`.
-/// * `cursor_visible` — whether the blinking cursor is currently shown.
-/// * `cursor_pos_px` — x offset in pixels for the cursor position.
-/// * `focused` — when true, uses `focus_border_color` for the border.
-pub fn text_input(
-    id: &str,
-    display_text: &str,
-    is_placeholder: bool,
-    cursor_visible: bool,
-    _cursor_pos_px: f32,
-    focused: bool,
-    text_color: Color,
-    placeholder_color: Color,
-    bg: Color,
-    border_color: Color,
-    focus_border_color: Color,
-) -> Element {
-    let active_border = if focused { focus_border_color } else { border_color };
-    let content_color = if is_placeholder { placeholder_color } else { text_color };
-
-    let mut inner_children: Vec<Element> = vec![
-        text(display_text)
-            .mono()
-            .font_size(14.0)
-            .color(content_color)
-            .shrink(0.0),
-    ];
-
-    if focused && cursor_visible {
-        inner_children.push(
-            div()
-                .w(Px(1.5))
-                .h(Px(18.0))
-                .bg(text_color)
-                .shrink(0.0),
-        );
-    }
-
-    let inner = div()
-        .flex_row()
-        .items_center()
-        .px_pad(Px(10.0))
-        .flex_1()
-        .children(inner_children);
-
-    let mut el = div()
-        .w_full()
-        .h(Px(36.0))
-        .bg(bg)
-        .border(1.0, active_border)
-        .rounded_px(6.0)
-        .id(id)
-        .child(inner);
-    el.focusable = true;
-    el
-}
-
 // ---------------------------------------------------------------------------
 // Numeric input (drag-value)
 // ---------------------------------------------------------------------------
