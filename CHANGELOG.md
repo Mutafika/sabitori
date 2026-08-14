@@ -15,9 +15,20 @@
 
 ## [Unreleased]
 
-次の版は **0.4.0**。フレームワーク全体を見直して挙げた
-[#14〜#22](https://github.com/Mutafika/sabitori/issues) を潰す破壊的変更ラウンド。
-旧 API は `#[deprecated]` を挟まず削除し、代わりに移行手順をここに残す方針。
+## [0.4.0] - 2026-08-14
+
+フレームワーク全体を見直して挙げた [#14〜#22](https://github.com/Mutafika/sabitori/issues)
+を潰す破壊的変更ラウンド。旧 API は `#[deprecated]` を挟まず削除し、代わりに移行手順を
+ここに残してある。
+
+**背景。** 立て続けに来た issue を分類したら、純粋な機能不足は 1 件だけで、残りは
+すべて「core は持っているのに消費側に届かない」「doc と実装が食い違う」だった。しかも
+全部**黙って**落ちる — コンパイルは通り、パニックもせず、ただ何も起きない。個々を
+潰すより、**そういう状態を作れなくする**方に投資した版。
+
+象徴的なのは #17 で、`InputEvent` に variant を足すと 3 ランタイムすべてが
+コンパイルエラーで止まるようにした。その直後の #20（ペースト実装）で実際に発火し、
+配線漏れの余地なく全箇所を通ることになった。
 
 ### Added
 - **入力イベントの配線漏れをコンパイルエラーで止める仕組み**
@@ -1606,7 +1617,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.3.21...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Mutafika/sabitori/compare/v0.3.21...v0.4.0
 [0.3.21]: https://github.com/Mutafika/sabitori/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/Mutafika/sabitori/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/Mutafika/sabitori/compare/v0.3.18...v0.3.19
