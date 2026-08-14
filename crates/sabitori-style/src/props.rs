@@ -1,19 +1,24 @@
+//! `StyleProps` (YAML テーマ / retained な `NodeTree` 用の style 記述) が使う型。
+//!
+//! レイアウトの基本型 (`Dimension` / `Overflow` / `AlignItems` …) は
+//! **`sabitori-core::element` の定義をそのまま使う**。 かつてはこのファイルが
+//! 同じ名前の型を 9 個**別々に**定義していて、 ファサード越しに import した値が
+//! `Element` のビルダーに渡らなかった (issue #24):
+//!
+//! ```text
+//! error: expected `sabitori::element::Overflow`, found `sabitori::Overflow`
+//! ```
+//!
+//! 構造も derive もほぼ同一で、 分けている理由が無かったので core に寄せた。
+
 use sabitori_core::{Color, Corners, Point};
 use serde::{Deserialize, Serialize};
 
-/// CSS-like dimension value.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Dimension {
-    Auto,
-    Px(f32),
-    Percent(f32),
-}
-
-impl Default for Dimension {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
+// レイアウト基本型は core が正。 ここは再輸出だけ。
+pub use sabitori_core::element::{
+    AlignItems, BoxShadow, Dimension, DimensionExt, EdgeDimensions, FlexDirection, FlexWrap,
+    JustifyContent, Overflow, Position,
+};
 
 /// Display mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,107 +27,6 @@ pub enum Display {
     Flex,
     Grid,
     None,
-}
-
-/// Flex direction.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FlexDirection {
-    #[default]
-    Row,
-    Column,
-    RowReverse,
-    ColumnReverse,
-}
-
-/// Flex wrap behavior.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FlexWrap {
-    #[default]
-    NoWrap,
-    Wrap,
-    WrapReverse,
-}
-
-/// Alignment on the cross axis.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AlignItems {
-    #[default]
-    Stretch,
-    Start,
-    End,
-    Center,
-}
-
-/// Alignment on the main axis.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JustifyContent {
-    #[default]
-    Start,
-    End,
-    Center,
-    SpaceBetween,
-    SpaceAround,
-    SpaceEvenly,
-}
-
-/// Overflow behavior.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Overflow {
-    #[default]
-    Visible,
-    Hidden,
-    Scroll,
-}
-
-/// Position type.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Position {
-    #[default]
-    Relative,
-    Absolute,
-}
-
-/// Edge values (padding, margin).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct EdgeDimensions {
-    pub top: Dimension,
-    pub right: Dimension,
-    pub bottom: Dimension,
-    pub left: Dimension,
-}
-
-impl EdgeDimensions {
-    pub fn all(v: Dimension) -> Self {
-        Self { top: v, right: v, bottom: v, left: v }
-    }
-
-    pub fn px(v: f32) -> Self {
-        Self::all(Dimension::Px(v))
-    }
-
-    pub fn axes(vertical: Dimension, horizontal: Dimension) -> Self {
-        Self { top: vertical, right: horizontal, bottom: vertical, left: horizontal }
-    }
-}
-
-/// Box shadow definition.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BoxShadow {
-    pub color: Color,
-    pub offset: Point,
-    pub blur: f32,
-    pub spread: f32,
-}
-
-impl Default for BoxShadow {
-    fn default() -> Self {
-        Self {
-            color: Color::TRANSPARENT,
-            offset: Point::ZERO,
-            blur: 0.0,
-            spread: 0.0,
-        }
-    }
 }
 
 /// Fill type for backgrounds.
@@ -210,18 +114,3 @@ impl Default for StyleProps {
     }
 }
 
-/// Convenience trait for building styles.
-pub trait DimensionExt {
-    fn px(self) -> Dimension;
-    fn pct(self) -> Dimension;
-}
-
-impl DimensionExt for f32 {
-    fn px(self) -> Dimension { Dimension::Px(self) }
-    fn pct(self) -> Dimension { Dimension::Percent(self) }
-}
-
-impl DimensionExt for i32 {
-    fn px(self) -> Dimension { Dimension::Px(self as f32) }
-    fn pct(self) -> Dimension { Dimension::Percent(self as f32) }
-}

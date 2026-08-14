@@ -18,6 +18,13 @@ pub use element::{
     LinkRange, ObjectFit, Role, ScrollOwner, Typography,
 };
 pub use element::{Dimension, Px, Percent, Auto, DimensionExt};
+// レイアウト基本型。 `sabitori-style::props` が別々に定義していたものを 0.4.0 で
+// ここに一本化した (issue #24)。 crate root に出しておかないと、 ファサードの
+// glob (`pub use sabitori_core::*`) が拾えず `sabitori::Overflow` が消える。
+pub use element::{
+    AlignItems, BoxShadow, EdgeDimensions, FlexDirection, FlexWrap, JustifyContent, Overflow,
+    Position,
+};
 pub use element::{
     EasingFn, StateStyle, Transition, TransitionKind, TransitionProperty,
 };

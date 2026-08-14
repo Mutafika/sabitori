@@ -15,6 +15,7 @@
 //!     ])
 //! ```
 
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::{Color, Corners, Point};
 
@@ -23,7 +24,7 @@ use crate::{Color, Corners, Point};
 // ---------------------------------------------------------------------------
 
 /// CSS-like dimension value for the element builder API.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Dimension {
     Auto,
     Px(f32),
@@ -80,7 +81,7 @@ pub use Dimension::Px;
 // Enums for layout properties
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlexDirection {
     #[default]
     Row,
@@ -89,7 +90,7 @@ pub enum FlexDirection {
     ColumnReverse,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlexWrap {
     #[default]
     NoWrap,
@@ -97,7 +98,7 @@ pub enum FlexWrap {
     WrapReverse,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlignItems {
     #[default]
     Stretch,
@@ -106,7 +107,7 @@ pub enum AlignItems {
     Center,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JustifyContent {
     #[default]
     Start,
@@ -117,7 +118,7 @@ pub enum JustifyContent {
     SpaceEvenly,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Overflow {
     #[default]
     Visible,
@@ -125,7 +126,7 @@ pub enum Overflow {
     Scroll,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Position {
     #[default]
     Relative,
@@ -136,7 +137,7 @@ pub enum Position {
 // Edge dimensions (padding / margin)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct EdgeDimensions {
     pub top: Dimension,
     pub right: Dimension,
@@ -158,7 +159,7 @@ impl EdgeDimensions {
 // Box shadow
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BoxShadow {
     pub color: Color,
     pub offset: Point,

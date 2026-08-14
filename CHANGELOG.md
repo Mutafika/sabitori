@@ -188,14 +188,13 @@
   外から確かめている最中に判明。
 
 ### Changed（破壊的・続き）
-- **ファサードのレイアウト型を `Element` 側に揃えた**
+- **レイアウト基本型の二重定義を解消した**
   ([#24](https://github.com/Mutafika/sabitori/issues/24))。
 
-  `sabitori-core::element` と `sabitori-style::props` が**同じ名前の型を 9 個
-  別々に定義**していて（`AlignItems` / `BoxShadow` / `Dimension` /
+  `sabitori-core::element` と `sabitori-style::props` が、**同じ名前の型を 9 個
+  別々に定義**していた（`AlignItems` / `BoxShadow` / `Dimension` /
   `EdgeDimensions` / `FlexDirection` / `FlexWrap` / `JustifyContent` /
-  `Overflow` / `Position`）、ファサードは style 側だけを名前付きで出していた。
-  結果:
+  `Overflow` / `Position`）。ファサードは style 側だけを名前付きで出していたので:
 
   ```rust
   use sabitori::{div, Overflow};
@@ -207,11 +206,13 @@
   混乱する。`sabitori::Px` は core 側、`sabitori::Dimension::Px` は style 側という
   食い違いもあった。
 
-  `Element` に渡せる方（core）を無印にし、style 側は `StyleOverflow` /
-  `StyleDimension` のように `Style` 接頭辞つきにした。`StyleProps` を直に組んで
-  いるコードは接頭辞つきの名前に置き換えること（`examples/layout.rs` が実例）。
+  構造も `Default` も同一で、差は style 側にだけ `Serialize` / `Deserialize` が
+  付いていた点だけだった（YAML テーマ用）。core にその derive を足したうえで
+  **style 側の定義を削除**し、core の 1 組に統合した（`props.rs` は 227 → 116 行）。
 
-  型が 2 つある事実自体は残っているので、根治は #24 で追う。
+  `StyleProps` を組むコードと `Element` を組むコードが**同じ型を共有する**ように
+  なったので、書き分けは不要。`tests/facade.rs` の
+  `layout_types_are_shared_between_element_and_style_props` が一本化を固定している。
 
 - **`SceneApp` だけ IME の届き方が違った**
   ([#22](https://github.com/Mutafika/sabitori/issues/22))。`ImeEnabled` を
