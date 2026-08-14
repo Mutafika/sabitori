@@ -40,6 +40,7 @@ impl Form {
             focus_border: None,
             caret: None,
             preedit: None,
+            selection: None,
         }
     }
 }

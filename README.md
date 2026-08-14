@@ -139,6 +139,22 @@ If you hand-roll a text field instead (your own element declaring `Role::TextInp
 assert!(h.unrouted_text_inputs().is_empty());
 ```
 
+
+For a wrapping, multi-line field use `text_area` — same state type, same zero wiring:
+
+```rust
+text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 6)  // 6 lines tall
+```
+
+| | `text_input` | `text_area` |
+|---|---|---|
+| Enter | bubbles to your app (form submit) | inserts a newline |
+| Paste | newlines collapse to spaces | newlines preserved |
+| ↑ ↓ | bubble to your app | move one **visual** line |
+| Home / End | ends of the string | ends of the **visual** line |
+
+"Visual line" is the point: moving by logical line (`\n`) makes one keypress jump a whole wrapped paragraph. `Cmd+Enter` still bubbles out, so you can bind it to "send".
+
 ### 3. Focus and keyboard
 
 Elements with `.focusable` take focus on click and via Tab. Keys go to `on_focused_input(id, event)` first; whatever is unhandled falls through to `on_input(event)`.

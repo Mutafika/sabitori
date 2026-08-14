@@ -139,6 +139,22 @@ impl DeclarativeApp for App {
 assert!(h.unrouted_text_inputs().is_empty());
 ```
 
+
+折り返す複数行の欄は `text_area` です。状態の型も配線の要らなさも同じです。
+
+```rust
+text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 6)  // 6 行ぶんの高さ
+```
+
+| | `text_input` | `text_area` |
+|---|---|---|
+| Enter | アプリへ流す (フォーム送信) | 改行を入れる |
+| 貼り付け | 改行を空白に潰す | 改行を保つ |
+| ↑ ↓ | アプリへ流す | **視覚行**を 1 つ移動 |
+| Home / End | 文字列の先頭 / 末尾 | **視覚行**の先頭 / 末尾 |
+
+「視覚行」であることが要点です。論理行 (`\n` 区切り) で動かすと、折り返した長い段落の中で 1 回押しただけで段落ごと飛びます。`Cmd+Enter` はアプリへ流れるので、「送信」を割り当てられます。
+
 ### 3. フォーカスとキーボード
 
 `.focusable` な要素はクリックと Tab でフォーカスが入ります。キーはまず `on_focused_input(id, event)` に行き、処理されなかったぶんが `on_input(event)` に落ちます。

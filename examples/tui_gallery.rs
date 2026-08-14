@@ -1593,6 +1593,7 @@ impl Gallery {
             focus_border: Some(t.primary),
             caret: Some(t.text_primary),
             preedit: Some(t.primary.with_alpha(0.25)),
+            selection: None,
         };
         let input = sabitori_widgets::text_input(ctx, "form-input", &self.form_text, &input_style);
 

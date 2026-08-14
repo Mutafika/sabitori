@@ -132,6 +132,7 @@ impl CadDemo {
             focus_border: Some(t.primary),
             caret: Some(t.text_primary),
             preedit: Some(t.primary.with_alpha(0.25)),
+            selection: None,
         };
         let field = div().flex_1().child(match self.focus.field(id) {
             Some(state) => text_input(ctx, id, state, &style),

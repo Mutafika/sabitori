@@ -173,6 +173,79 @@ impl BuildResult {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// 1 回の整形を決めるパラメータ一式。
+///
+/// [`TextMeasure`] の各メソッドが同じものを 6 個ずつ並べて受け取っていたのを
+/// 束ねたもの。 引数の順番違いで `bold` と `monospace` を取り違える、 という
+/// 事故が起きない。
+#[derive(Clone, Copy, Debug)]
+pub struct TextShape<'a> {
+    pub font_size: f32,
+    pub bold: bool,
+    pub monospace: bool,
+    pub font_family: Option<&'a str>,
+    /// 折り返し幅。 `None` は折り返さない (1 行として扱う)。
+    pub wrap_width: Option<f32>,
+    pub typo: Typography,
+}
+
+impl TextShape<'_> {
+    /// 折り返さない既定の整形。 サイズだけ指定して作る。
+    pub fn new(font_size: f32) -> Self {
+        Self {
+            font_size,
+            bold: false,
+            monospace: false,
+            font_family: None,
+            wrap_width: None,
+            typo: Typography::default(),
+        }
+    }
+
+    pub fn bold(mut self, v: bool) -> Self {
+        self.bold = v;
+        self
+    }
+
+    pub fn monospace(mut self, v: bool) -> Self {
+        self.monospace = v;
+        self
+    }
+
+    pub fn family(mut self, v: Option<&str>) -> TextShape<'_> {
+        TextShape { font_family: v, ..self }
+    }
+
+    /// 折り返し幅を与える。 **これを渡さない限り複数行にはならない。**
+    pub fn wrap(mut self, width: f32) -> Self {
+        self.wrap_width = Some(width);
+        self
+    }
+
+    pub fn typography(mut self, typo: Typography) -> Self {
+        self.typo = typo;
+        self
+    }
+}
+
+/// 折り返しを考慮したキャレットの置き場所。
+///
+/// [`TextMeasure::caret_pos`] が返す。 座標はテキストの原点 (整形した箱の
+/// 左上) からの相対。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CaretPos {
+    /// 視覚行の中での x。
+    pub x: f32,
+    /// 視覚行の上端 y。
+    pub y: f32,
+    /// その行の高さ。 キャレットの縦棒の高さに使う。
+    pub line_height: f32,
+    /// 0 始まりの**視覚行**番号。 `\n` で分かれた論理行ではなく、 折り返し後の
+    /// 行。 ↑↓ 移動はこちらで数えないと、 長い段落の中で 1 回押しただけで
+    /// 段落ごと飛ぶ。
+    pub line: usize,
+}
+
 /// Measure text to determine its intrinsic size.
 ///
 /// Implement this trait on your text renderer to get accurate text layout.
@@ -180,6 +253,15 @@ impl BuildResult {
 ///
 /// Uses `&self` (not `&mut self`) so it can be shared across recursive calls.
 /// Implementors should use interior mutability (e.g. `RefCell`) if needed.
+///
+/// # 折り返し系の 3 つは既定実装を持たない
+///
+/// [`Self::caret_pos`] / [`Self::offset_at`] / [`Self::range_rects`] は必須。
+/// 「1 行目の x だけ返す」ような既定を置くと、 折り返した瞬間に**黙って**
+/// 嘘の座標を返す実装が出来上がる — キャレットが 1 行目に貼り付いたまま、
+/// クリックした場所と違う位置にカーソルが飛ぶ、 という形で出る。
+/// 実装しないと選べないので、 各ホストが「実フォントで測る」か
+/// 「等幅で概算する」かを必ず 1 回考えることになる。
 pub trait TextMeasure {
     /// Returns the box the text occupies plus its first baseline, in logical
     /// pixels.
@@ -207,6 +289,120 @@ pub trait TextMeasure {
         max_lines: Option<u32>,
         typo: Typography,
     ) -> TextMetrics;
+
+    /// `byte_offset` にキャレットを置いたときの位置。
+    ///
+    /// `byte_offset` が文字境界でなければ、 直前の境界まで戻して答えること
+    /// (panic しない)。 文字列末尾を渡すのは正当 — 末尾にキャレットは置ける。
+    ///
+    /// 末尾が `\n` のとき、 キャレットは**次の空行の先頭**に来ること。
+    /// ここを間違えると、 改行を打った瞬間にキャレットが前の行末に残る。
+    fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos;
+
+    /// テキスト原点からの相対座標 `point` に最も近いキャレット位置のバイト
+    /// 添字。 クリックでカーソルを置くのに使う。
+    ///
+    /// 範囲外の座標も**必ず何かを返す** — 上に外れたら先頭、 下に外れたら
+    /// 末尾、 行の右に外れたらその行の末尾。 `Option` にすると、 欄の余白を
+    /// クリックしたときに「何も起きない」になる。
+    fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize;
+
+    /// バイト範囲 `range` が占める矩形。 **視覚行ごとに 1 個**返る。
+    ///
+    /// 選択範囲の塗りと、 IME 変換中の下線に使う。 折り返しをまたぐ選択が
+    /// 1 個の矩形で返ると、 行間の余白まで塗って別の行に食い込む。
+    fn range_rects(
+        &self,
+        content: &str,
+        range: (usize, usize),
+        shape: TextShape<'_>,
+    ) -> Vec<Rect>;
+}
+
+/// 実フォントを持たないホスト向けの、 等幅近似によるキャレット計算。
+///
+/// 1 文字 = `char_w`、 1 行 = `line_h` の決め打ちで、 **折り返しは模さない**
+/// (`\n` で分かれた論理行だけ数える)。 プロポーショナル書体では実物とずれる。
+///
+/// [`TextMeasure`] の折り返し系 3 つを既定実装にせず必須にしたのは、 この近似を
+/// 黙って使われると「キャレットがクリック位置とずれる」が原因不明のまま残る
+/// から。 使うなら**明示的にここを呼ぶ**こと — テスト用スタブとヘッドレスの
+/// [`Harness`](https://docs.rs/sabitori) がそうしている。
+///
+/// 折り返しを模さないのは意図的で、 同じ理由。 中途半端に折り返すと、 箱の
+/// 高さを返す `measure` 側と食い違って**内部で辻褄が合わなくなる**。
+pub mod approx_caret {
+    use super::{CaretPos, Rect};
+
+    /// `byte_offset` が何番目の論理行の行頭から何文字目かを返す。
+    fn line_of(content: &str, byte_offset: usize) -> (usize, usize, &str) {
+        let n = byte_offset.min(content.len());
+        let mut acc = 0usize;
+        for (i, line) in content.split('\n').enumerate() {
+            let end = acc + line.len();
+            if n <= end {
+                let mut cut = n - acc;
+                while cut > 0 && !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                return (i, acc, &line[..cut]);
+            }
+            acc = end + 1;
+        }
+        (0, 0, "")
+    }
+
+    pub fn caret_pos(content: &str, byte_offset: usize, char_w: f32, line_h: f32) -> CaretPos {
+        let (line, _, before) = line_of(content, byte_offset);
+        CaretPos {
+            x: before.chars().count() as f32 * char_w,
+            y: line as f32 * line_h,
+            line_height: line_h,
+            line,
+        }
+    }
+
+    pub fn offset_at(content: &str, point: (f32, f32), char_w: f32, line_h: f32) -> usize {
+        let (x, y) = point;
+        let target = (y / line_h.max(f32::EPSILON)).floor().max(0.0) as usize;
+        let mut acc = 0usize;
+        let mut last = 0usize;
+        for (i, line) in content.split('\n').enumerate() {
+            if i == target {
+                let cols = (x / char_w.max(f32::EPSILON)).round().max(0.0) as usize;
+                let take: usize = line.chars().take(cols).map(char::len_utf8).sum();
+                return acc + take;
+            }
+            last = acc + line.len();
+            acc = last + 1;
+        }
+        last
+    }
+
+    pub fn range_rects(
+        content: &str,
+        range: (usize, usize),
+        char_w: f32,
+        line_h: f32,
+    ) -> Vec<Rect> {
+        let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+        let mut out = Vec::new();
+        let mut acc = 0usize;
+        for (i, line) in content.split('\n').enumerate() {
+            let (ls, le) = (acc, acc + line.len());
+            if hi > ls && lo < le {
+                let a = lo.clamp(ls, le) - ls;
+                let b = hi.clamp(ls, le) - ls;
+                let x0 = line[..a].chars().count() as f32 * char_w;
+                let x1 = line[..b].chars().count() as f32 * char_w;
+                if x1 > x0 {
+                    out.push(Rect::new(x0, i as f32 * line_h, x1 - x0, line_h));
+                }
+            }
+            acc = le + 1;
+        }
+        out
+    }
 }
 
 /// Build an element tree into render commands and hit regions.
@@ -2339,6 +2535,23 @@ mod font_family_threading_tests {
                 font_size * 1.08,
             )
         }
+
+        fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+            crate::build::approx_caret::caret_pos(content, byte_offset, shape.font_size * 0.6, shape.font_size * 1.4)
+        }
+
+        fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+            crate::build::approx_caret::offset_at(content, point, shape.font_size * 0.6, shape.font_size * 1.4)
+        }
+
+        fn range_rects(
+            &self,
+            content: &str,
+            range: (usize, usize),
+            shape: TextShape<'_>,
+        ) -> Vec<Rect> {
+            crate::build::approx_caret::range_rects(content, range, shape.font_size * 0.6, shape.font_size * 1.4)
+        }
     }
 
     /// `.font_family()` must survive the trip: Element → measure callback →
@@ -2483,6 +2696,23 @@ mod container_min_size_tests {
                 size: crate::Size { width, height: lines * font_size },
                 baseline: font_size * 0.8,
             }
+        }
+
+        fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+            crate::build::approx_caret::caret_pos(content, byte_offset, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+            crate::build::approx_caret::offset_at(content, point, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn range_rects(
+            &self,
+            content: &str,
+            range: (usize, usize),
+            shape: TextShape<'_>,
+        ) -> Vec<Rect> {
+            crate::build::approx_caret::range_rects(content, range, shape.font_size * 0.5, shape.font_size * 1.0)
         }
     }
 

@@ -13,7 +13,8 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sabitori_core::element::TextAlign;
-use sabitori_core::{TextMetrics, Typography};
+use sabitori_core::build::{CaretPos, TextShape};
+use sabitori_core::{Rect, TextMetrics, Typography};
 
 /// Grid (logical px) to which font sizes are snapped before shaping/caching.
 ///
@@ -294,6 +295,216 @@ impl TextShaper {
             baseline,
         )
     }
+
+    /// [`TextShape`] のとおりに整形した `Buffer` を作る。
+    ///
+    /// 折り返し系の 3 つのクエリが共有する下ごしらえ。 `measure_text` と同じ
+    /// 手順を踏むこと — ここがずれると、 測った箱と実際のキャレット位置が
+    /// 食い違う。
+    fn shaped(&mut self, text: &str, shape: TextShape<'_>) -> Buffer {
+        let font_size = quantize_font_size(shape.font_size);
+        let metrics = Metrics::new(font_size, shape.typo.line_height_px(font_size));
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        buffer.set_size(
+            &mut self.font_system,
+            Some(shape.wrap_width.unwrap_or(f32::MAX)),
+            None,
+        );
+
+        let family = resolve_family(
+            &self.preferred_family,
+            &self.preferred_monospace_family,
+            shape.monospace,
+            shape.font_family,
+        );
+        let weight = cosmic_text::Weight(shape.typo.resolved_weight(shape.bold));
+        let mut attrs = Attrs::new().family(family).weight(weight);
+        if shape.typo.italic {
+            attrs = attrs.style(cosmic_text::Style::Italic);
+        }
+
+        buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
+        apply_align(&mut buffer, shape.typo.align);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
+    }
+
+    /// `byte_offset` にキャレットを置いたときの位置。
+    ///
+    /// # 論理行と視覚行
+    ///
+    /// cosmic-text の `LayoutGlyph::start` は「**論理行の中での**添字」で、
+    /// 文字列全体の添字ではない。 1 行しか無いうちは同じ値なので気づかないが、
+    /// 改行を入れた瞬間に 2 行目以降が全部 0 起点に戻る。 ここで論理行の開始
+    /// 位置を足して絶対値に直している。
+    ///
+    /// # 境界での寄せ方
+    ///
+    /// - **折り返しの継ぎ目** (ソフト改行) — 次の視覚行の先頭に置く。 その方が
+    ///   「次に打った文字が出る場所」と一致する。
+    /// - **改行の直前** (ハード改行) — 前の行の末尾に置く。 `\n` の手前に
+    ///   キャレットがあるのだから、 次の行の先頭に飛んではいけない。
+    pub fn caret_pos(&mut self, text: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+        let offset = clamp_to_boundary(text, byte_offset);
+        let font_size = quantize_font_size(shape.font_size);
+        let line_height = shape.typo.line_height_px(font_size);
+        let buffer = self.shaped(text, shape);
+        let starts = logical_line_starts(&buffer);
+
+        // 見つからなかったとき用に「offset 以下から始まる最後の行」を覚えておく。
+        // ハード改行の直前と空行がここに落ちる。
+        let mut fallback: Option<CaretPos> = None;
+
+        for (line, run) in buffer.layout_runs().enumerate() {
+            let base = starts.get(run.line_i).copied().unwrap_or(0);
+            let (lo, hi) = run_range(&run, base);
+            let here = CaretPos { x: 0.0, y: run.line_top, line_height: run.line_height, line };
+
+            if offset >= lo && offset < hi {
+                // offset 以降から始まる最初のグリフの左端。
+                let x = run
+                    .glyphs
+                    .iter()
+                    .find(|g| base + g.start >= offset)
+                    .map(|g| g.x)
+                    .unwrap_or_else(|| run.glyphs.last().map_or(0.0, |g| g.x + g.w));
+                return CaretPos { x, ..here };
+            }
+            if offset >= lo {
+                let x = run.glyphs.last().map_or(0.0, |g| g.x + g.w);
+                fallback = Some(CaretPos { x, ..here });
+            }
+        }
+
+        fallback.unwrap_or(CaretPos { x: 0.0, y: 0.0, line_height, line: 0 })
+    }
+
+    /// テキスト原点からの相対座標に最も近いキャレット位置のバイト添字。
+    ///
+    /// **範囲外でも必ず答える。** 上に外れたら先頭、 下に外れたら末尾、 行から
+    /// 右に外れたらその行の末尾。 `Option` にすると、 欄の余白をクリックした
+    /// ときに「何も起きない」になる。
+    pub fn offset_at(&mut self, text: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+        let (px, py) = point;
+        let buffer = self.shaped(text, shape);
+        let starts = logical_line_starts(&buffer);
+
+        let mut best_run: Option<(f32, cosmic_text::LayoutRun<'_>)> = None;
+        for run in buffer.layout_runs() {
+            let top = run.line_top;
+            let bottom = top + run.line_height;
+            // py がこの行の帯に入っていれば即決。 そうでなければ「帯までの
+            // 距離」が最小の行を採る (上下に外れた場合の端寄せがこれで済む)。
+            let d = if py < top {
+                top - py
+            } else if py > bottom {
+                py - bottom
+            } else {
+                0.0
+            };
+            if best_run.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best_run = Some((d, run));
+            }
+        }
+
+        let Some((_, run)) = best_run else {
+            return 0;
+        };
+        let base = starts.get(run.line_i).copied().unwrap_or(0);
+        let (lo, hi) = run_range(&run, base);
+
+        // 行の中で x に最も近い**クラスタ境界**を選ぶ。 グリフの左端と右端の
+        // 両方が候補 — 文字の右半分をクリックしたら後ろに置きたい。
+        let mut best = lo;
+        let mut best_d = f32::MAX;
+        for g in run.glyphs {
+            for (edge, off) in [(g.x, base + g.start), (g.x + g.w, base + g.end)] {
+                let d = (edge - px).abs();
+                if d < best_d {
+                    best_d = d;
+                    best = off;
+                }
+            }
+        }
+        if run.glyphs.is_empty() {
+            best = lo;
+        }
+        clamp_to_boundary(text, best.min(hi.max(lo)))
+    }
+
+    /// バイト範囲が占める矩形を**視覚行ごとに**返す。
+    ///
+    /// 折り返しをまたぐ選択が 1 個の矩形で返ると、 行間の余白まで塗って隣の
+    /// 行に食い込む。 選択範囲の塗りと IME 変換中の下線がこれを使う。
+    pub fn range_rects(
+        &mut self,
+        text: &str,
+        range: (usize, usize),
+        shape: TextShape<'_>,
+    ) -> Vec<Rect> {
+        let lo = clamp_to_boundary(text, range.0.min(range.1));
+        let hi = clamp_to_boundary(text, range.0.max(range.1));
+        if lo == hi {
+            return Vec::new();
+        }
+        let buffer = self.shaped(text, shape);
+        let starts = logical_line_starts(&buffer);
+
+        let mut out = Vec::new();
+        for run in buffer.layout_runs() {
+            let base = starts.get(run.line_i).copied().unwrap_or(0);
+            let mut left = f32::MAX;
+            let mut right = f32::MIN;
+            for g in run.glyphs {
+                // クラスタが選択範囲に少しでも重なれば含める。
+                if base + g.end > lo && base + g.start < hi {
+                    left = left.min(g.x);
+                    right = right.max(g.x + g.w);
+                }
+            }
+            if left <= right {
+                out.push(Rect::new(left, run.line_top, right - left, run.line_height));
+            }
+        }
+        out
+    }
+}
+
+/// `offset` を直前の文字境界まで戻し、 文字列長で頭打ちにする。
+fn clamp_to_boundary(text: &str, offset: usize) -> usize {
+    let mut n = offset.min(text.len());
+    while n > 0 && !text.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+/// 各論理行が文字列全体の何バイト目から始まるか。
+///
+/// cosmic-text は `\n` で論理行に割り、 `BufferLine` のテキストに区切り文字は
+/// 含めない。 なので「前の行の長さ + 1」で足していける。 グリフの添字を絶対値に
+/// 直すのにこれが要る。
+fn logical_line_starts(buffer: &Buffer) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(buffer.lines.len());
+    let mut acc = 0usize;
+    for line in &buffer.lines {
+        starts.push(acc);
+        acc += line.text().len() + 1; // +1 = cosmic-text が落とした `\n`
+    }
+    starts
+}
+
+/// この視覚行が担当する**絶対**バイト範囲。
+///
+/// グリフが 1 つも無い視覚行 (改行だけの空行) は `(base, base)` になる。
+/// ここを `(0, 0)` に潰すと、 空行のキャレットが全部先頭に飛ぶ。
+fn run_range(run: &cosmic_text::LayoutRun<'_>, base: usize) -> (usize, usize) {
+    let lo = run.glyphs.iter().map(|g| base + g.start).min();
+    let hi = run.glyphs.iter().map(|g| base + g.end).max();
+    match (lo, hi) {
+        (Some(lo), Some(hi)) => (lo, hi),
+        _ => (base, base),
+    }
 }
 
 impl Default for TextShaper {
@@ -489,5 +700,179 @@ mod tests {
         assert_eq!(normalize_han_locale("zh-HK".into()), "zh-HK");
         assert_eq!(normalize_han_locale("zh-TW".into()), "zh-TW");
         assert_eq!(normalize_han_locale("zh-CN".into()), "zh-CN");
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+
+    const EM: f32 = 16.0;
+    /// 折り返しが確実に起きる幅。 実フォント依存なので、 行数そのものは
+    /// assert せず「2 行以上ある」だけを前提にする。
+    const NARROW: f32 = 120.0;
+    const PARA: &str = "the quick brown fox jumps over the lazy dog";
+
+    fn shaper() -> TextShaper {
+        TextShaper::with_locale("ja")
+    }
+
+    fn wrapped() -> TextShape<'static> {
+        TextShape::new(EM).wrap(NARROW)
+    }
+
+    /// **2 行目以降のキャレットが 1 行目に貼り付かないこと。**
+    ///
+    /// cosmic-text の `LayoutGlyph::start` は論理行の中での添字なので、 絶対値に
+    /// 直し忘れると 2 行目の全オフセットが 1 行目の座標に潰れる。 1 行しか無い
+    /// うちは同じ値なので、 この形でしか出ない。
+    #[test]
+    fn the_caret_moves_down_across_a_hard_line_break() {
+        let mut s = shaper();
+        let text = "first\nsecond";
+        let shape = TextShape::new(EM);
+
+        let a = s.caret_pos(text, 2, shape); // 1 行目の途中
+        let b = s.caret_pos(text, 6 + 2, shape); // 2 行目の途中 ("second" の 's' + 2)
+
+        assert_eq!(a.line, 0);
+        assert_eq!(b.line, 1, "2 行目と認識されていない");
+        assert!(b.y > a.y, "y が下がっていない: {} → {}", a.y, b.y);
+        assert!(
+            (a.x - b.x).abs() < a.x.max(b.x) * 0.9 + 1.0,
+            "行内 x が同じ計算になっているか要確認 (a={}, b={})",
+            a.x,
+            b.x
+        );
+    }
+
+    /// 改行の**直前**のキャレットは前の行の末尾に居ること。
+    ///
+    /// 次の行の先頭に飛ぶと、 行末で Backspace を押す位置が視覚的に合わない。
+    #[test]
+    fn the_caret_before_a_newline_stays_at_the_end_of_that_line() {
+        let mut s = shaper();
+        let text = "first\nsecond";
+        let shape = TextShape::new(EM);
+
+        let before_nl = s.caret_pos(text, 5, shape); // "first" の直後
+        let after_nl = s.caret_pos(text, 6, shape); // "second" の先頭
+
+        assert_eq!(before_nl.line, 0, "改行の手前は 1 行目");
+        assert_eq!(after_nl.line, 1, "改行の直後は 2 行目");
+        assert!(before_nl.x > 0.0, "1 行目の末尾なので x は 0 ではない");
+        assert_eq!(after_nl.x, 0.0, "2 行目の先頭なので x は 0");
+    }
+
+    /// **空行にもキャレットが置けること。** グリフが無い視覚行を「先頭」に
+    /// 潰すと、 改行を 2 回打った瞬間にキャレットが文頭へ飛ぶ。
+    #[test]
+    fn an_empty_line_still_has_a_caret_slot() {
+        let mut s = shaper();
+        let text = "a\n\nb";
+        let shape = TextShape::new(EM);
+
+        let empty = s.caret_pos(text, 2, shape); // 空行の位置
+        let last = s.caret_pos(text, 3, shape); // "b" の手前
+
+        assert_eq!(empty.line, 1, "空行が 2 行目として数えられていない");
+        assert_eq!(empty.x, 0.0);
+        assert_eq!(last.line, 2);
+        assert!(last.y > empty.y);
+    }
+
+    /// 折り返し (ソフト改行) でも行が下がること。 `\n` が無くても複数行になる。
+    #[test]
+    fn wrapping_alone_produces_more_than_one_caret_line() {
+        let mut s = shaper();
+        let head = s.caret_pos(PARA, 0, wrapped());
+        let tail = s.caret_pos(PARA, PARA.len(), wrapped());
+
+        assert_eq!(head.line, 0);
+        assert!(
+            tail.line >= 1,
+            "{NARROW}px 幅で折り返していない (行 {}) — 前提が崩れている",
+            tail.line
+        );
+        assert!(tail.y > head.y);
+    }
+
+    /// **キャレットを置いた場所を読み返せること。** `caret_pos` と `offset_at`
+    /// が食い違うと、 クリックした場所と違うところにカーソルが飛ぶ。
+    #[test]
+    fn offset_at_round_trips_with_caret_pos() {
+        let mut s = shaper();
+        let text = "first line\nsecond line";
+        let shape = TextShape::new(EM);
+
+        for &offset in &[0usize, 3, 10, 11, 14, text.len()] {
+            let c = s.caret_pos(text, offset, shape);
+            // 行の縦中央を突く (境界ちょうどだと隣の行に転びうる)。
+            let back = s.offset_at(text, (c.x, c.y + c.line_height * 0.5), shape);
+            assert_eq!(
+                back, offset,
+                "offset {offset} → ({}, {}) → {back} で戻ってこない",
+                c.x, c.y
+            );
+        }
+    }
+
+    /// 範囲外の座標でも必ず答えること。 `Option` にすると欄の余白を
+    /// クリックしたときに「何も起きない」になる。
+    #[test]
+    fn a_click_outside_the_text_still_lands_somewhere() {
+        let mut s = shaper();
+        let text = "abc\ndef";
+        let shape = TextShape::new(EM);
+
+        assert_eq!(s.offset_at(text, (-50.0, -50.0), shape), 0, "上に外れたら先頭");
+        assert_eq!(
+            s.offset_at(text, (9999.0, 9999.0), shape),
+            text.len(),
+            "下に外れたら末尾"
+        );
+        assert_eq!(
+            s.offset_at(text, (9999.0, EM * 0.5), shape),
+            3,
+            "1 行目の右に外れたらその行の末尾"
+        );
+    }
+
+    /// 選択範囲が**視覚行ごとに**割れること。 1 個の矩形で返ると行間まで
+    /// 塗って隣の行に食い込む。
+    #[test]
+    fn a_selection_across_lines_yields_one_rect_per_line() {
+        let mut s = shaper();
+        let text = "first\nsecond\nthird";
+        let shape = TextShape::new(EM);
+
+        // "rst" + 改行 + "second" + 改行 + "th"
+        let rects = s.range_rects(text, (2, 15), shape);
+        assert_eq!(rects.len(), 3, "3 行にまたがるので 3 個: {rects:?}");
+        assert!(rects[0].origin.y < rects[1].origin.y);
+        assert!(rects[1].origin.y < rects[2].origin.y);
+        assert!(rects.iter().all(|r| r.size.width > 0.0));
+    }
+
+    /// 空の選択は矩形を出さないこと。 幅 0 の矩形を出すと、 選択していない
+    /// のに細い線が見える。
+    #[test]
+    fn an_empty_selection_draws_nothing() {
+        let mut s = shaper();
+        assert!(s.range_rects("abc", (1, 1), TextShape::new(EM)).is_empty());
+    }
+
+    /// 文字境界でないオフセットで panic しないこと。 日本語は 1 文字 3 バイトなので、
+    /// バイト単位で動かす実装が途中で刻んでも落ちてはいけない。
+    #[test]
+    fn a_mid_character_offset_does_not_panic() {
+        let mut s = shaper();
+        let text = "あいう";
+        let shape = TextShape::new(EM);
+        for off in 0..=text.len() {
+            let c = s.caret_pos(text, off, shape);
+            assert!(c.x.is_finite() && c.y.is_finite());
+        }
+        assert!(!s.range_rects(text, (1, 5), shape).is_empty());
     }
 }

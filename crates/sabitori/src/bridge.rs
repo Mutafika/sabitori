@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use sabitori_core::build::TextMeasure;
+use sabitori_core::build::{CaretPos, TextMeasure, TextShape};
 use sabitori_core::element::{ImageData, ObjectFit, Typography};
 use sabitori_core::render_list::{
     ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw,
@@ -117,6 +117,31 @@ impl TextMeasure for TextRendererMeasurer<'_> {
             .measure_text(content, font_size, bold, monospace, font_family, max_width, max_lines, typo);
         self.cache.borrow_mut().entries.insert(key, metrics);
         metrics
+    }
+
+    // 折り返し系の 3 つは**キャッシュしない**。 キーに (offset / point / range)
+    // まで入れると、 キャレットを 1 文字動かすたびに別のキーになるので、
+    // キャッシュが当たらないまま際限なく太る。 呼ばれるのはフォーカス中の
+    // テキスト欄 1 個ぶんで、 1 フレームに数回なので実測でも問題にならない。
+
+    fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+        self.renderer
+            .borrow_mut()
+            .shaper
+            .caret_pos(content, byte_offset, shape)
+    }
+
+    fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+        self.renderer.borrow_mut().shaper.offset_at(content, point, shape)
+    }
+
+    fn range_rects(
+        &self,
+        content: &str,
+        range: (usize, usize),
+        shape: TextShape<'_>,
+    ) -> Vec<sabitori_core::Rect> {
+        self.renderer.borrow_mut().shaper.range_rects(content, range, shape)
     }
 }
 

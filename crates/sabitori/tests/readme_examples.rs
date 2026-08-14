@@ -104,7 +104,7 @@ impl DeclarativeApp for FourThings {
 
         div().flex_col().w_full().h_full().children([
             // 2. テキスト入力
-            text_input(ctx, "name", &self.name, &Self::input_style()),
+            text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),
             // ウィジェットは全部「自由関数 (ctx, id, &state, &style)」
             table(ctx, "files", &self.files, &TableStyle::default_dark()),
             tree_view(ctx, "tree", &self.tree, &TreeViewStyle::default_dark()),
@@ -145,21 +145,6 @@ impl DeclarativeApp for FourThings {
 }
 
 impl FourThings {
-    fn input_style() -> TextInputStyle {
-        TextInputStyle {
-            bg: Color::from_hex("#202020"),
-            border: Color::from_hex("#404040"),
-            text: Color::WHITE,
-            placeholder: Color::from_hex("#808080"),
-            font_size: 14.0,
-            radius: 4.0,
-            padding: 8.0,
-            focus_border: None,
-            caret: None,
-            preedit: None,
-        }
-    }
-
     fn with_data() -> Self {
         let mut files = TableState::new(vec![
             TableColumn::flex("名前"),
@@ -316,7 +301,7 @@ fn the_text_input_section_needs_no_wiring_as_documented() {
     impl DeclarativeApp for App {
         fn view(&self, ctx: &ViewContext) -> Element {
             div().flex_col().w_full().h_full().children([
-                text_input(ctx, "name", &self.name, &FourThings::input_style()),
+                text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),
                 div().id("save").w(Px(80.0)).h(Px(32.0)),
             ])
         }

@@ -1,4 +1,5 @@
-use sabitori_core::Color;
+use sabitori_core::build::{CaretPos, TextShape};
+use sabitori_core::{Color, ViewContext};
 
 /// IME preedit (composing) state.
 #[derive(Clone, Debug, Default)]
@@ -40,6 +41,45 @@ pub struct TextInputInner {
     /// 実フォントで測って書き込む。 ランタイムが IME 変換候補の位置を出すのに使う
     /// ので、 アプリが `ime_cursor_area` を実装する必要が無くなる。
     pub caret_offset: (f32, f32),
+    /// 折り返す複数行の欄か。 [`text_area`] が立てる。
+    ///
+    /// 立つと Enter が改行になり、 貼り付けが改行を保ち、 ↑↓ と Home/End が
+    /// **視覚行**で動くようになる。
+    pub multiline: bool,
+    /// 直近の [`text_input`] / [`text_area`] が実測したキャレット位置。
+    /// 欄の内側 (padding の内側) が原点。
+    pub caret: CaretPos,
+    /// 「実測してからでないと解けない移動」の予約。
+    ///
+    /// ↑↓ や Home/End は**折り返し後の行**を知らないと解けないが、 キー入力を
+    /// 受ける `on_key` に計測器は無い (計測器が居るのは `view()` の中だけ)。
+    /// なのでここに積んでおき、 次の `view()` が実測して解決する。 `view()` は
+    /// 入力の直後に必ず回るので、 遅れは表に出ない。
+    pub pending: Option<PendingMove>,
+    /// ↑↓ を続けている間そのまま保つ x。
+    ///
+    /// これが無いと、 短い行を 1 度通過した時点で桁が痩せたまま戻らない。
+    pub desired_x: Option<f32>,
+    /// 直近に実測した欄の内側の幅。 [`text_area`] の折り返し幅。
+    ///
+    /// レイアウトが終わるまで決まらないので、 **前フレームの値**を使う。
+    /// 幅が変わった最初の 1 フレームだけ古い幅で折り返し、 次で追いつく。
+    pub measured_width: f32,
+}
+
+/// 実測してからでないと解けない移動。 [`TextInputInner::pending`] に積まれる。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PendingMove {
+    /// 視覚行 1 つぶん上。
+    Up { select: bool },
+    /// 視覚行 1 つぶん下。
+    Down { select: bool },
+    /// 視覚行の先頭。
+    LineStart { select: bool },
+    /// 視覚行の末尾。
+    LineEnd { select: bool },
+    /// この座標 (欄の内側が原点) にキャレットを置く。 クリック用。
+    ToPoint { x: f32, y: f32, select: bool },
 }
 
 impl TextInputInner {
@@ -53,6 +93,11 @@ impl TextInputInner {
             preedit: PreeditState::default(),
             blink: 0.0,
             caret_offset: (0.0, 0.0),
+            multiline: false,
+            caret: CaretPos::default(),
+            pending: None,
+            desired_x: None,
+            measured_width: 0.0,
         }
     }
 
@@ -150,17 +195,23 @@ impl TextInputInner {
 
     /// クリップボードから貼り付ける。 選択があれば置き換える。
     ///
-    /// **改行は空白に潰す。** これは単一行の入力欄なので、 複数行を貼られたときに
-    /// 行の途中で切るより、 1 行に均す方が壊れ方が素直 (URL やパスを貼る用途では
-    /// そもそも改行が入らない)。
+    /// **単一行の欄では改行を空白に潰す。** 行の途中で切るより 1 行に均す方が
+    /// 壊れ方が素直 (URL やパスを貼る用途ではそもそも改行が入らない)。
+    ///
+    /// [`Self::multiline`] が立っていれば改行はそのまま入る。 ただし `\r\n` は
+    /// `\n` に均す — キャレット計算が「1 バイトの `\n` で行が分かれる」前提な
+    /// ので、 `\r` が残ると行末に見えない文字が 1 個ぶら下がる。
     pub fn on_paste(&mut self, text: &str) {
         self.preedit.clear();
         self.delete_selection();
-        let flattened: String = text
-            .chars()
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-            .collect();
-        self.insert_str(&flattened);
+        let normalized: String = if self.multiline {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.chars()
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .collect()
+        };
+        self.insert_str(&normalized);
     }
 
     // ── Keyboard handling ─────────────────────────────────────────
@@ -186,6 +237,19 @@ impl TextInputInner {
         } else {
             modifiers.ctrl
         };
+
+        // 「↑↓ で保つ桁」は縦移動が続いている間だけ有効。 横に動いたり文字を
+        // 打ったりしたら捨てる — 残すと、 左右で移動した後の ↑ が元の桁に飛ぶ。
+        if !matches!(key, Key::Up | Key::Down) {
+            self.desired_x = None;
+        }
+        // **未解決のクリックは捨てる。**
+        //
+        // クリックの着地点は実測が要るので次の `view()` まで持ち越されるが、
+        // その前にキーが来たら、 キーの方が新しい意思。 残すと「押した直後に
+        // 打った文字が入った後で、 カーソルだけ押した場所へ飛ぶ」という順序で
+        // 解決されてしまう。
+        self.cancel_pending_click();
 
         match key {
             Key::Backspace => {
@@ -223,7 +287,10 @@ impl TextInputInner {
                 true
             }
             Key::Home => {
-                if modifiers.shift {
+                if self.multiline {
+                    // 折り返した行の先頭は実測しないと分からない。
+                    self.pending = Some(PendingMove::LineStart { select: modifiers.shift });
+                } else if modifiers.shift {
                     self.extend_selection_to(0);
                 } else {
                     self.collapse_selection();
@@ -232,12 +299,24 @@ impl TextInputInner {
                 true
             }
             Key::End => {
-                if modifiers.shift {
+                if self.multiline {
+                    self.pending = Some(PendingMove::LineEnd { select: modifiers.shift });
+                } else if modifiers.shift {
                     self.extend_selection_to(self.text.len());
                 } else {
                     self.collapse_selection();
                     self.move_end();
                 }
+                true
+            }
+            // ↑↓ は**視覚行**で動く。 論理行 (`\n` 区切り) で動かすと、 折り返した
+            // 長い段落の中で 1 回押しただけで段落ごと飛ぶ。 実測が要るので予約だけ。
+            Key::Up if self.multiline => {
+                self.pending = Some(PendingMove::Up { select: modifiers.shift });
+                true
+            }
+            Key::Down if self.multiline => {
+                self.pending = Some(PendingMove::Down { select: modifiers.shift });
                 true
             }
             Key::A if is_cmd => {
@@ -268,6 +347,13 @@ impl TextInputInner {
                 // Undo is not yet implemented.
                 false
             }
+            // 複数行の欄では Enter が改行。 単一行では**消費せず**アプリへ流す
+            // (検索欄の「決定」やフォーム送信がそこにぶら下がっている)。
+            Key::Enter if self.multiline && !is_cmd => {
+                self.delete_selection();
+                self.insert_char('\n');
+                true
+            }
             Key::Enter | Key::Tab | Key::Escape => {
                 // Bubble up to the app layer.
                 false
@@ -282,8 +368,19 @@ impl TextInputInner {
         if self.preedit.is_active() {
             return;
         }
+        self.cancel_pending_click();
+        self.desired_x = None;
         self.delete_selection();
         self.insert_char(ch);
+    }
+
+    /// 未解決のクリック着地点を捨てる。 [`Self::on_key`] / [`Self::on_char`] が呼ぶ。
+    ///
+    /// ↑↓ / Home / End の予約は捨てない — あれは今まさに積んだものなので。
+    fn cancel_pending_click(&mut self) {
+        if matches!(self.pending, Some(PendingMove::ToPoint { .. })) {
+            self.pending = None;
+        }
     }
 
     // ── Selection helpers ─────────────────────────────────────────
@@ -651,6 +748,107 @@ impl TextInputState {
     pub fn caret_offset(&self) -> (f32, f32) {
         self.0.borrow().caret_offset
     }
+
+    /// 直近に実測したキャレット位置を書き込む。 [`text_input`] / [`text_area`]
+    /// が描くついでに呼ぶ。
+    #[doc(hidden)]
+    pub fn set_caret(&self, caret: CaretPos) {
+        self.0.borrow_mut().caret = caret;
+    }
+
+    /// 直近に実測したキャレット位置。
+    pub fn caret(&self) -> CaretPos {
+        self.0.borrow().caret
+    }
+
+    /// 直近に実測した欄の内側の幅。 [`text_area`] が折り返し幅に使う。
+    #[doc(hidden)]
+    pub fn measured_width(&self) -> Option<f32> {
+        let w = self.0.borrow().measured_width;
+        (w > 0.0).then_some(w)
+    }
+
+    /// 実測した欄の内側の幅を書き込む。 ランタイムが `on_build` 相当の位置で呼ぶ。
+    #[doc(hidden)]
+    pub fn set_measured_width(&self, w: f32) {
+        self.0.borrow_mut().measured_width = w;
+    }
+
+    /// 折り返す複数行の欄にする。 [`text_area`] が呼ぶので、 普通は直に触らない。
+    pub fn set_multiline(&self, on: bool) {
+        self.0.borrow_mut().multiline = on;
+    }
+
+    /// 折り返す複数行の欄か。
+    pub fn is_multiline(&self) -> bool {
+        self.0.borrow().multiline
+    }
+
+    /// この座標 (欄の内側が原点) にキャレットを置くよう予約する。
+    /// クリックでカーソルを置くのに、 ランタイムが呼ぶ。
+    #[doc(hidden)]
+    pub fn request_point(&self, x: f32, y: f32, select: bool) {
+        self.0.borrow_mut().pending = Some(PendingMove::ToPoint { x, y, select });
+    }
+
+    /// 予約された「実測が要る移動」を解決する。
+    ///
+    /// **`view()` の中からしか呼べない** — 計測器 (`ctx`) が居るのがそこだけ
+    /// だから。 `on_key` は予約を積むだけで、 実際にカーソルが動くのはここ。
+    #[doc(hidden)]
+    ///
+    /// `pad` は欄の padding。 クリック座標は**欄の外枠**が原点で来るので、
+    /// 文字が始まる位置に直すのにこれを引く。 引き忘れると、 押した場所より
+    /// 常に padding ぶん右下の文字にカーソルが飛ぶ。
+    pub fn resolve_pending(
+        &self,
+        ctx: &ViewContext,
+        display: &str,
+        shape: TextShape<'_>,
+        pad: f32,
+    ) {
+        let Some(pending) = self.0.borrow_mut().pending.take() else {
+            return;
+        };
+        // 変換中は文字列が preedit を含んでいて、 バイト位置がテキスト本体と
+        // 対応しない。 動かすと変換が壊れるので何もしない。
+        if self.is_composing() {
+            return;
+        }
+
+        let cursor = self.0.borrow().cursor_pos;
+        let here = ctx.caret_pos(display, cursor, shape);
+        let mid = here.line_height * 0.5;
+
+        // ↑↓ は「保っている桁」を優先する。 無ければ今の x から始める。
+        let keep_x = self.0.borrow().desired_x.unwrap_or(here.x);
+
+        let (point, select, remember_x) = match pending {
+            PendingMove::Up { select } => {
+                ((keep_x, here.y - mid), select, true)
+            }
+            PendingMove::Down { select } => {
+                ((keep_x, here.y + here.line_height + mid), select, true)
+            }
+            // 行の先頭 / 末尾は「うんと左 / うんと右」を突けば `offset_at` が
+            // その行の端に丸めてくれる。 行の切れ目を自分で探す必要が無い。
+            PendingMove::LineStart { select } => ((-1.0e6, here.y + mid), select, false),
+            PendingMove::LineEnd { select } => ((1.0e6, here.y + mid), select, false),
+            PendingMove::ToPoint { x, y, select } => ((x - pad, y - pad), select, false),
+        };
+
+        let target = ctx.offset_at(display, point, shape);
+        let mut inner = self.0.borrow_mut();
+        inner.desired_x = if remember_x { Some(keep_x) } else { None };
+        if select {
+            if inner.selection_start.is_none() {
+                inner.selection_start = Some(inner.cursor_pos);
+            }
+        } else {
+            inner.selection_start = None;
+        }
+        inner.cursor_pos = target.min(inner.text.len());
+    }
 }
 
 /// Visual style for the [`text_input`] widget.
@@ -672,6 +870,57 @@ pub struct TextInputStyle {
     ///
     /// 下線を引くのが一般的だが、 現状 text 要素に下線の表現が無いので背景で示す。
     pub preedit: Option<Color>,
+    /// 選択範囲に敷く色。 未指定なら**塗らない**。
+    ///
+    /// 0.4.0 まではこの色そのものが無く、 選択は state に持っているだけで
+    /// 一度も描かれていなかった (Shift+→ で範囲は伸びるのに画面は無反応)。
+    pub selection: Option<Color>,
+}
+
+impl Default for TextInputStyle {
+    fn default() -> Self {
+        Self::default_dark()
+    }
+}
+
+impl TextInputStyle {
+    /// 暗色テーマの既定。
+    ///
+    /// **README が最初からこれを書いていたのに、 関数は存在しなかった。**
+    /// `readme_examples.rs` が README を逐語で写さず自前に構築していたので、
+    /// 「README のコードが通ること」を見ているつもりで通っていなかった。
+    pub fn default_dark() -> Self {
+        Self {
+            bg: Color::from_hex("#202020"),
+            border: Color::from_hex("#404040"),
+            text: Color::WHITE,
+            placeholder: Color::from_hex("#808080"),
+            font_size: 14.0,
+            radius: 4.0,
+            padding: 8.0,
+            focus_border: Some(Color::from_hex("#6c8cff")),
+            caret: None,
+            preedit: Some(Color::from_hex("#33415e")),
+            selection: Some(Color::from_hex("#2d4f7c")),
+        }
+    }
+
+    /// 明色テーマの既定。
+    pub fn default_light() -> Self {
+        Self {
+            bg: Color::WHITE,
+            border: Color::from_hex("#c8c8c8"),
+            text: Color::from_hex("#1a1a1a"),
+            placeholder: Color::from_hex("#9a9a9a"),
+            font_size: 14.0,
+            radius: 4.0,
+            padding: 8.0,
+            focus_border: Some(Color::from_hex("#3b6cd4")),
+            caret: None,
+            preedit: Some(Color::from_hex("#dbe7ff")),
+            selection: Some(Color::from_hex("#b6d3ff")),
+        }
+    }
 }
 
 /// [`TextInputState`] を描く単一行テキスト欄。 **これ 1 本で完結する。**
@@ -684,26 +933,18 @@ pub struct TextInputStyle {
 /// # 使い方
 ///
 /// ```ignore
-/// // view()
-/// text_input(ctx, "name", &self.name, &style)
+/// // App のフィールド
+/// name: TextInputState,
 ///
-/// // DeclarativeApp::on_focused_input
-/// fn on_focused_input(&mut self, id: &str, ev: &InputEvent) -> bool {
-///     match id {
-///         "name" => self.name.on_focused_input(ev),
-///         _ => false,
-///     }
-/// }
-///
-/// // DeclarativeApp::tick — 点滅を進める
-/// fn tick(&mut self, dt: f32) { self.name.tick(dt); }
-///
-/// // DeclarativeApp::ime_cursor_area — 変換候補ウィンドウの位置
-/// //   返さないと候補が画面左上に出る
-/// fn ime_cursor_area(&self) -> Option<(f32, f32, f32, f32)> { self.name_caret }
+/// // view() — 配線はこれだけ
+/// text_input(ctx, "name", &self.name, &TextInputStyle::default_dark())
 /// ```
 ///
-/// 候補ウィンドウの位置に渡す矩形は [`caret_rect`] で作れる。
+/// **アプリ側に書くことは他に何も無い。** キー・IME・ペースト・点滅・
+/// フォーカス・変換候補ウィンドウの位置は、 `view()` に置いた時点で
+/// ランタイムが面倒を見る (0.4.0 の登録機構)。
+///
+/// 折り返す複数行の欄は [`text_area`]。
 ///
 /// # 0.4.0 での統合について
 ///
@@ -723,6 +964,22 @@ pub fn text_input(
     input: &TextInputState,
     style: &TextInputStyle,
 ) -> sabitori_core::element::Element {
+    field(ctx, id, input, style, None, 1.0)
+}
+
+/// [`text_input`] と [`text_area`] の実体。
+///
+/// `wrap_width` が `Some` なら折り返す複数行、 `None` なら単一行。 分岐は
+/// この 1 個だけで、 キャレットも選択も IME も同じ経路を通る — 2 本に割ると、
+/// 片方だけ直る (そして片方は黙って古いまま) が必ず起きる。
+fn field(
+    ctx: &sabitori_core::ViewContext,
+    id: &str,
+    input: &TextInputState,
+    style: &TextInputStyle,
+    wrap_width: Option<f32>,
+    line_height_mult: f32,
+) -> sabitori_core::element::Element {
     use sabitori_core::element::{div, text, Dimension::Px};
 
     // **ここが配線。** ランタイムにこの欄を渡すと、 以後キー・IME・ペーストが
@@ -730,13 +987,26 @@ pub fn text_input(
     // 書くことは何も無い (0.4.0 より前は 3 メソッドの実装が必要だった)。
     ctx.register_managed(id, std::rc::Rc::new(input.clone()));
 
+    // フォーカスは **今フレームの `ctx`** から取る。
+    //
+    // ランタイムがこの欄にフォーカス状態を書き込むのは `view()` が終わって
+    // 登録リストを受け取った後なので、 保存された値は必ず 1 フレーム古い。
+    // それを信じると、 欄を押してからキャレットが出るまで 1 フレーム遅れ、
+    // 枠線の色も遅れて変わる。
+    input.set_focused(ctx.focused.as_deref() == Some(id));
+
     let display = input.display_text_with_preedit();
     let showing_placeholder = input.is_placeholder();
     let color = if showing_placeholder { style.placeholder } else { style.text };
 
     let mut label = text(display.clone())
         .font_size(style.font_size)
-        .color(color);
+        .color(color)
+        .line_height(line_height_mult);
+    if wrap_width.is_some() {
+        // 折り返させるには幅が要る。 中身なりの幅のままだと 1 行に伸び続ける。
+        label = label.w_full();
+    }
 
     // 変換中の範囲に色を敷く。 placeholder 表示中は preedit も無い。
     if let (Some(tint), Some((s0, e0))) = (style.preedit, input.preedit_underline_range()) {
@@ -750,24 +1020,58 @@ pub fn text_input(
 
     let mut layers = vec![label];
 
-    // キャレット。 表示中の文字列に対する x を実フォントで測る。 これが
+    // 折り返し幅。 単一行では `None` で、 このとき `caret_pos` は
+    // `caret_x` と同じ答えを返す (行が 1 本しか無いので)。
+    let shape = TextShape::new(style.font_size).typography(sabitori_core::Typography {
+        line_height: Some(line_height_mult),
+        ..Default::default()
+    });
+    let shape = match wrap_width {
+        Some(w) => shape.wrap(w),
+        None => shape,
+    };
+
+    // **実測が要る移動をここで解決する。** ↑↓ / Home / End / クリックは
+    // 折り返し後の行を知らないと解けないので、 `on_key` は予約だけ積んで
+    // ある。 計測器が居るのはこの `view()` の中だけ。
+    input.resolve_pending(ctx, &display, shape, style.padding);
+
+    // キャレット。 表示中の文字列に対する位置を実フォントで測る。 これが
     // できなかったのが issue #15 で、 そのせいで旧実装は文末固定だった。
-    let caret_x = ctx.caret_x(&display, input.caret_byte_offset(), style.font_size, false);
+    let caret = ctx.caret_pos(&display, input.caret_byte_offset(), shape);
+    input.set_caret(caret);
     // IME 変換候補の位置決めに使う。 実フォントで測れるのはここだけなので、
-    // 描くついでに記録しておく (ランタイムはこれに欄の画面座標を足すだけ)。
+    // 描くついでに記録しておく (ランタイムはこれに欄の画面座標を足す)。
     input.set_caret_offset(
-        style.padding + caret_x,
+        style.padding + caret.x,
         style.font_size * CARET_H_RATIO,
     );
 
+    // 選択範囲。 **文字より下、 キャレットより上**に敷く。
+    //
+    // 0.4.0 まで選択は state に持っているだけで一度も描かれていなかった —
+    // Shift+→ で範囲は伸びるのに画面は何も変わらない、 という状態だった。
+    if let (Some(sel_color), Some(range)) = (style.selection, input.selection_range()) {
+        for r in ctx.range_rects(&display, range, shape) {
+            layers.insert(
+                0,
+                div()
+                    .absolute()
+                    .pos(r.origin.x, r.origin.y)
+                    .w(Px(r.size.width))
+                    .h(Px(r.size.height))
+                    .bg(sel_color),
+            );
+        }
+    }
+
     if input.cursor_visible() {
-        let x = caret_x;
         layers.push(
             div()
                 .absolute()
-                .pos(x, 0.0)
+                .pos(caret.x, caret.y)
                 .w(Px(CARET_W))
-                .h(Px(style.font_size * CARET_H_RATIO))
+                .h(Px(caret_height(caret, style.font_size)))
                 .bg(style.caret.unwrap_or(style.text)),
         );
     }
@@ -796,33 +1100,87 @@ pub fn text_input(
         .child(div().position(sabitori_core::element::Position::Relative).children(layers))
 }
 
+/// 折り返す複数行のテキスト欄。 [`text_input`] の複数行版。
+///
+/// ```ignore
+/// // App のフィールド
+/// memo: TextInputState,
+///
+/// // view()
+/// text_area(ctx, "memo", &self.memo, &TextInputStyle::default_dark(), 6)
+/// ```
+///
+/// `visible_lines` は欄の高さを行数で指定する。 中身がそれを超えたらスクロール
+/// する ([`Element::scroll`] を内側に付けてあるので、 ホイールはランタイムが
+/// 面倒を見る)。
+///
+/// # [`text_input`] との違い
+///
+/// | | `text_input` | `text_area` |
+/// |---|---|---|
+/// | Enter | アプリへ流す (フォーム送信など) | **改行を入れる** |
+/// | 貼り付け | 改行を空白に潰す | **改行を保つ** (`\r\n` は `\n` に均す) |
+/// | ↑ ↓ | アプリへ流す | **視覚行**を 1 つ移動 |
+/// | Home / End | 文字列の先頭 / 末尾 | **視覚行**の先頭 / 末尾 |
+///
+/// ↑↓ が「視覚行」なのが要点。 論理行 (`\n` 区切り) で動かすと、 折り返した
+/// 長い段落の中で 1 回押しただけで段落ごと飛ぶ。
+///
+/// # 配線は要らない
+///
+/// [`text_input`] と同じで、 `view()` に置いた時点でランタイムがキー・IME・
+/// ペースト・点滅・フォーカスを面倒見る。 `Cmd+Enter` は改行にならず
+/// アプリへ流れるので、 「送信」をそこに割り当てられる。
+pub fn text_area(
+    ctx: &sabitori_core::ViewContext,
+    id: &str,
+    input: &TextInputState,
+    style: &TextInputStyle,
+    visible_lines: u32,
+) -> sabitori_core::element::Element {
+    use sabitori_core::element::{div, Dimension::Px};
+
+    input.set_multiline(true);
+
+    // 折り返し幅 = 欄の内側の幅。 `ctx.width` ではなく実際の欄の幅が要るが、
+    // それはレイアウトが終わるまで決まらない。 前フレームの実測値を使う —
+    // 幅が変わった最初の 1 フレームだけ古い幅で折り返すが、 次で追いつく。
+    // (初回は `ctx.width` からの見積もり。)
+    let wrap = (input.measured_width().unwrap_or(ctx.width) - style.padding * 2.0).max(1.0);
+
+    let line_h = style.font_size * TEXTAREA_LINE_HEIGHT;
+    let inner = field(ctx, id, input, style, Some(wrap), TEXTAREA_LINE_HEIGHT);
+
+    div()
+        .id(format!("{id}::viewport"))
+        .w_full()
+        .h(Px(line_h * visible_lines as f32 + style.padding * 2.0))
+        .scroll(format!("{id}::viewport"))
+        .child(inner)
+}
+
+/// [`text_area`] の行の高さ / font_size。 単一行の欄より広く取る — 折り返した
+/// 本文は行間が詰まっていると読めない。
+const TEXTAREA_LINE_HEIGHT: f32 = 1.5;
+
 /// キャレットの幅 (logical px)。 高 DPI でも 1px 幅は細すぎて消えるので気持ち太め。
 const CARET_W: f32 = 1.5;
+
+/// キャレットの縦棒の高さ。
+///
+/// 単一行 (`line_height` が実測されていない = 0) では `font_size` から出し、
+/// 複数行では**その行の高さ**を使う。 折り返した欄で font_size 基準のままだと、
+/// 行間が広いときにキャレットだけ短くて浮いて見える。
+fn caret_height(caret: CaretPos, font_size: f32) -> f32 {
+    if caret.line_height > 0.0 {
+        caret.line_height
+    } else {
+        font_size * CARET_H_RATIO
+    }
+}
 /// キャレットの高さ / font_size。 行の高さいっぱいだと窮屈なので少し詰める。
 const CARET_H_RATIO: f32 = 1.2;
 
-/// `ime_cursor_area` に渡す矩形を組む。
-///
-/// `field_origin` は [`text_input`] を置いた要素の画面上の左上 (`on_build` で
-/// `hit_regions` から引ける)。 変換候補ウィンドウはこの矩形の下に出る。
-///
-/// これを返さないと winit は候補位置をウィンドウ原点のままにするので、
-/// **変換候補が画面の左上に出る**。
-pub fn caret_rect(
-    ctx: &sabitori_core::ViewContext,
-    field_origin: (f32, f32),
-    input: &TextInputState,
-    style: &TextInputStyle,
-) -> (f32, f32, f32, f32) {
-    let display = input.display_text_with_preedit();
-    let x = ctx.caret_x(&display, input.caret_byte_offset(), style.font_size, false);
-    (
-        field_origin.0 + style.padding + x,
-        field_origin.1 + style.padding,
-        CARET_W,
-        style.font_size * CARET_H_RATIO,
-    )
-}
 
 // 0.4.0 で retained 版の `TextInput` (`bounds: Rect` を自前で持ち、 自前の
 // blink カウンタを回す) を削除した。 #16 で `text_input(ctx, ..)` +

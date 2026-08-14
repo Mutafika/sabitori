@@ -36,7 +36,10 @@ pub use element::{
     EasingFn, StateStyle, Transition, TransitionKind, TransitionProperty,
 };
 pub use render_list::{RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
-pub use build::{build_tree, build_tree_measured, BuildResult, HitRegion, ScrollMeasure, TextMeasure};
+pub use build::{
+    build_tree, build_tree_measured, BuildResult, CaretPos, HitRegion, ScrollMeasure, TextMeasure,
+    TextShape,
+};
 pub use tui::{
     block, hsep, vsep, status_bar, status_segment, key_hint, BlockBuilder,
     typewriter, spinner, progress_bar, gradient_text, wave_text, easing_bar,
@@ -273,6 +276,77 @@ pub struct ScrollInfo {
 }
 
 impl ViewContext<'_> {
+    /// 折り返しを考慮したキャレットの位置。
+    ///
+    /// [`ViewContext::caret_x`] の複数行版。 あちらは x しか返さないので、
+    /// 折り返す欄では使えない (キャレットが 1 行目に貼り付く)。
+    ///
+    /// ```ignore
+    /// let shape = TextShape::new(14.0).wrap(inner_width);
+    /// let c = ctx.caret_pos(&state.text(), state.cursor(), shape);
+    /// div().absolute().pos(c.x, c.y).w(Px(1.5)).h(Px(c.line_height))
+    /// ```
+    ///
+    /// 計測器を持たないホストでは [`build::approx_caret`] の等幅近似に落ちる。
+    /// 近似は折り返しを模さないので、 **ヘッドレスでは `\n` の論理行だけ**が
+    /// 数えられる。
+    pub fn caret_pos(
+        &self,
+        text: &str,
+        byte_offset: usize,
+        shape: build::TextShape<'_>,
+    ) -> build::CaretPos {
+        match self.measurer {
+            Some(m) => m.caret_pos(text, byte_offset, shape),
+            None => build::approx_caret::caret_pos(
+                text,
+                byte_offset,
+                shape.font_size * self.mono_advance,
+                shape.typo.line_height_px(shape.font_size),
+            ),
+        }
+    }
+
+    /// テキスト原点からの相対座標に最も近いキャレット位置のバイト添字。
+    /// クリックでカーソルを置く / ドラッグで選択するのに使う。
+    ///
+    /// 範囲外の座標でも必ず何かを返す (上なら先頭、 下なら末尾)。
+    pub fn offset_at(
+        &self,
+        text: &str,
+        point: (f32, f32),
+        shape: build::TextShape<'_>,
+    ) -> usize {
+        match self.measurer {
+            Some(m) => m.offset_at(text, point, shape),
+            None => build::approx_caret::offset_at(
+                text,
+                point,
+                shape.font_size * self.mono_advance,
+                shape.typo.line_height_px(shape.font_size),
+            ),
+        }
+    }
+
+    /// バイト範囲が占める矩形を**視覚行ごとに**返す。 選択範囲の塗りと、
+    /// IME 変換中の下線に使う。
+    pub fn range_rects(
+        &self,
+        text: &str,
+        range: (usize, usize),
+        shape: build::TextShape<'_>,
+    ) -> Vec<Rect> {
+        match self.measurer {
+            Some(m) => m.range_rects(text, range, shape),
+            None => build::approx_caret::range_rects(
+                text,
+                range,
+                shape.font_size * self.mono_advance,
+                shape.typo.line_height_px(shape.font_size),
+            ),
+        }
+    }
+
     /// `text` を 1 行で描いたときの幅 (logical px)。
     ///
     /// 折り返しは考えない。 ラベル幅に合わせて箱を作る、 区切り線の長さを決める、
@@ -497,6 +571,23 @@ mod view_context_tests {
                 },
                 baseline: font_size * 0.8,
             }
+        }
+
+        fn caret_pos(&self, content: &str, byte_offset: usize, shape: build::TextShape<'_>) -> build::CaretPos {
+            build::approx_caret::caret_pos(content, byte_offset, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn offset_at(&self, content: &str, point: (f32, f32), shape: build::TextShape<'_>) -> usize {
+            build::approx_caret::offset_at(content, point, shape.font_size * 0.5, shape.font_size * 1.0)
+        }
+
+        fn range_rects(
+            &self,
+            content: &str,
+            range: (usize, usize),
+            shape: build::TextShape<'_>,
+        ) -> Vec<crate::Rect> {
+            build::approx_caret::range_rects(content, range, shape.font_size * 0.5, shape.font_size * 1.0)
         }
     }
 
