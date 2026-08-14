@@ -394,7 +394,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     if let Some(ref build) = self.last_build {
                         let mut focus_set = false;
                         for region in &build.hit_regions {
-                            if region.rect.contains(pos) {
+                            // 意味だけの領域 (role/label のみ) は透過する。 declarative
+                            // 側と同じ扱い (`HitRegion::is_interactive` の doc を参照)。
+                            if region.is_interactive() && region.rect.contains(pos) {
                                 if region.focusable {
                                     self.focused_id = region.id.clone();
                                     focus_set = true;
@@ -567,7 +569,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             if let Some(ref build) = self.last_build {
                                 let mut focus_set = false;
                                 for region in &build.hit_regions {
-                                    if region.rect.contains(pos) {
+                                    // タッチも同様に、 意味だけの領域は透過する。
+                                    if region.is_interactive() && region.rect.contains(pos) {
                                         if region.focusable {
                                             self.focused_id = region.id.clone();
                                             focus_set = true;

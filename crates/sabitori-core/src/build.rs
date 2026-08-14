@@ -70,6 +70,29 @@ pub struct HitRegion {
     pub heading_level: Option<u8>,
 }
 
+impl HitRegion {
+    /// この領域がポインタ入力を**受け取れる**か。
+    ///
+    /// `false` を返すのは、 `.role()` / `.label()` だけを持つ「意味のためだけ」の
+    /// 領域。 表のセル、 見出し、 画像の alt など、 押す先ではないもの。
+    ///
+    /// # なぜこの区別が要るか
+    ///
+    /// issue #21 で、 役割やラベルを持つ要素も `hit_regions` に出すようにした
+    /// (支援技術に渡すには意味を持つものが全部並んでいる必要がある)。 ところが
+    /// 押下解決は「点を含む最前面の領域」で打ち切っていたので、 **意味だけの子が
+    /// 手前に居ると、 id を持つ親のクリックが死ぬ**ようになっていた。
+    ///
+    /// 実際 0.4.0 の `table` で踏んだ: セルに `Role::Cell` を付けた瞬間、
+    /// 行のクリックが一切通らなくなった。 「役割を書き足しただけで動かなくなる」
+    /// のは最悪の壊れ方なので、 ポインタを解決する側が意味だけの領域を
+    /// 透過するようにした。
+    pub fn is_interactive(&self) -> bool {
+        self.clickable || self.focusable || self.hoverable || self.drop_zone
+            || self.drag_data.is_some()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Build result
 // ---------------------------------------------------------------------------
@@ -109,11 +132,17 @@ pub struct BuildResult {
 }
 
 impl BuildResult {
-    /// Topmost hit region under `(x, y)`, if any. Regions are stored
-    /// front-to-back, so the first match is the visually topmost one.
+    /// Topmost **interactive** hit region under `(x, y)`, if any. Regions are
+    /// stored front-to-back, so the first match is the visually topmost one.
+    ///
+    /// `.role()` / `.label()` だけを持つ意味専用の領域は透過する
+    /// ([`HitRegion::is_interactive`])。 意味の側を舐めたいときは
+    /// [`BuildResult::hit_regions`] を直に見ること。
     pub fn hit_region_at(&self, x: f32, y: f32) -> Option<&HitRegion> {
         let pt = Point::new(x, y);
-        self.hit_regions.iter().find(|r| r.rect.contains(pt))
+        self.hit_regions
+            .iter()
+            .find(|r| r.is_interactive() && r.rect.contains(pt))
     }
 
     /// Whether the UI wants pointer input at `(x, y)` — i.e. the point is
@@ -2450,5 +2479,54 @@ mod a11y_tests {
             .child(div().id("wrap").w(Px(50.0)).h(Px(50.0)).child(text("x")));
         let b = build_tree(&root, 200.0, 100.0);
         assert_eq!(region(&b, "wrap").role, None);
+    }
+
+    /// **役割を足しただけで、 親のクリックが死んではいけない。**
+    ///
+    /// `.role()` / `.label()` だけを持つ子は hit region に出る (支援技術に
+    /// 渡すため) が、 ポインタは透過しなければならない。 これを間違えると、
+    /// 表のセルに `Role::Cell` を書いた瞬間に行が押せなくなる。
+    #[test]
+    fn semantic_only_regions_are_transparent_to_the_pointer() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("row")
+                .w(Px(200.0))
+                .h(Px(40.0))
+                // 意味だけの子。 id もハンドラも持たない。
+                .child(div().role(Role::Cell).w(Px(200.0)).h(Px(40.0))),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+
+        // セルは hit_regions には居る (支援技術のために必要)。
+        assert!(
+            b.hit_regions.iter().any(|r| r.role == Some(Role::Cell)),
+            "意味の領域は出ていること"
+        );
+        // でもポインタ解決には出てこない。
+        let hit = b.hit_region_at(100.0, 20.0).expect("何かに当たること");
+        assert_eq!(
+            hit.id.as_deref(),
+            Some("row"),
+            "セルを透過して行に当たること"
+        );
+    }
+
+    /// 逆に、 役割を持っていても押せる要素 (`role` + `id`) は透過しない。
+    #[test]
+    fn a_region_that_is_both_semantic_and_clickable_still_takes_the_click() {
+        let root = div().w(Px(200.0)).h(Px(100.0)).child(
+            div()
+                .id("outer")
+                .w(Px(200.0))
+                .h(Px(40.0))
+                .child(div().id("inner").role(Role::Button).w(Px(200.0)).h(Px(40.0))),
+        );
+        let b = build_tree(&root, 200.0, 100.0);
+        assert_eq!(
+            b.hit_region_at(100.0, 20.0).and_then(|r| r.id.as_deref()),
+            Some("inner"),
+            "id を持つ手前の要素が勝つ"
+        );
     }
 }
