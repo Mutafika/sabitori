@@ -1132,10 +1132,12 @@ const THEMES: [(&str, &str); 4] = [
     ("Amber Dusk", ACCENT_AMBER),
 ];
 
-const WIDGET_NAMES: [&str; 20] = [
-    "Table", "TreeView", "Modal", "Dropdown", "Select", "DatePicker", "ColorPicker",
-    "Slider", "Tabs", "Toast", "Tooltip", "ContextMenu", "TextInput", "SplitPane",
-    "ScrollView", "NumericInput", "MenuBar", "Panel", "Card", "VirtualList",
+/// 実在するものだけを並べること。 0.4.0 より前は、 `view()` から使えない
+/// retained ウィジェット (`Card` / `Tabs` / 旧 `Table` など) もここに数えていた。
+const WIDGET_NAMES: [&str; 16] = [
+    "Table", "TreeView", "Modal", "Select", "DatePicker", "ColorPicker",
+    "Slider", "Toast", "Tooltip", "ContextMenu", "TextInput", "SplitPane",
+    "NumericInput", "MenuBar", "Panel", "VirtualList",
 ];
 
 fn mac_dots(title: &str) -> Element {

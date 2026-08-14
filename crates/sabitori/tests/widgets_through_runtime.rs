@@ -340,3 +340,98 @@ fn the_divider_does_not_swallow_clicks_meant_for_the_panes() {
     assert_eq!(h.app().left_clicks, 1, "左ペインのクリックが届くこと");
     assert!(!h.app().split.is_dragging(), "ドラッグ状態になっていないこと");
 }
+
+// ---------------------------------------------------------------------------
+// `examples/filer.rs` が使っている形 (spacer + visible_range + scroll_intents)
+// ---------------------------------------------------------------------------
+
+/// filer と同じ組み方をした最小のリスト。 0.4.0 で手動 `ScrollView` から
+/// ランタイム管理へ移した形が、 実際に成立していることを確かめる。
+struct FilerShape {
+    rows: usize,
+    pending_scroll: Option<f32>,
+}
+
+const ROW_H: f32 = 32.0;
+
+impl sabitori::DeclarativeApp for FilerShape {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        let (first, count) = ctx.visible_range("file-list", ROW_H);
+        let last = (first + count).min(self.rows);
+        let first = first.min(last);
+
+        let mut children: Vec<Element> = Vec::new();
+        if first > 0 {
+            children.push(div().h(Px(first as f32 * ROW_H)).shrink(0.0));
+        }
+        for i in first..last {
+            children.push(div().id(format!("f-{i}")).w_full().h(Px(ROW_H)).shrink(0.0));
+        }
+        let tail = self.rows.saturating_sub(last);
+        if tail > 0 {
+            children.push(div().h(Px(tail as f32 * ROW_H)).shrink(0.0));
+        }
+
+        div()
+            .scroll("file-list")
+            .w_full()
+            .h_full()
+            .flex_col()
+            .children(children)
+    }
+
+    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+        self.pending_scroll
+            .take()
+            .map(|y| ("file-list".to_string(), y))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// 仮想化していても、 **スクロール可能な総量が実データぶんある**こと。
+///
+/// spacer を積み忘れると、 中身の高さが「見えている数行ぶん」しか無いことに
+/// なり、 少し回しただけで最下部に着く。 filer の旧実装は `mt(top_offset)` で
+/// これを避けていたが、 その方式はランタイム管理と両立しない。
+#[test]
+fn the_spacers_give_the_scroller_the_full_content_height() {
+    let mut h = Harness::new(FilerShape { rows: 1000, pending_scroll: None }, 500.0, 400.0);
+    h.frame();
+
+    // 深いところまでスクロールできること。
+    h.scroll("file-list", 20_000.0);
+    h.frame();
+
+    let y = h.scroll_y("file-list").unwrap_or(0.0);
+    assert!(
+        y > 15_000.0,
+        "1000 行 x 32px = 32000px 相当までスクロールできるはず (実際: {y})"
+    );
+    assert!(
+        h.visible_ids().iter().any(|id| id.starts_with("f-")),
+        "その位置にも行が作られていること"
+    );
+}
+
+/// `scroll_intents` からのプログラム的スクロールが効くこと。
+///
+/// filer の「ディレクトリを移動したら先頭へ戻す」「キーボード選択を画面内に
+/// 入れる」がこの口を通る。
+#[test]
+fn scroll_intents_move_a_runtime_owned_container() {
+    let mut h = Harness::new(FilerShape { rows: 1000, pending_scroll: None }, 500.0, 400.0);
+    h.frame();
+    h.scroll("file-list", 5_000.0);
+    h.frame();
+    assert!(h.scroll_y("file-list").unwrap_or(0.0) > 0.0);
+
+    // 先頭へ戻す要求を出す。 intent は `smooth_scroll_to` (ばねの目標) なので、
+    // frame() だけでは動かない — 時間を進める必要がある。
+    h.app_mut().pending_scroll = Some(0.0);
+    h.frame();
+    h.settle();
+
+    let y = h.scroll_y("file-list").unwrap_or(-1.0);
+    assert!(y < 1.0, "intent どおり先頭に戻ること (実際: {y})");
+}

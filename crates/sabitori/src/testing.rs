@@ -90,6 +90,47 @@ impl<A: DeclarativeApp> Harness<A> {
         }
     }
 
+    /// 時間を `dt` 秒進める。
+    ///
+    /// アプリの `tick` と、 ランタイムのアニメーション (スクロールのばね・慣性、
+    /// tooltip の遅延、 style / presence) が進む。 実装はランタイムと同じ
+    /// `AppState::advance` を通るので、 tick 対象が増えても勝手に付いてくる。
+    ///
+    /// **ばねを使う挙動はこれを呼ばないと動かない。** 代表例が
+    /// `scroll_intents()` — あれは `smooth_scroll_to` で目標を置くだけなので、
+    /// 時間を進めないと位置は 1px も変わらない。
+    ///
+    /// ```ignore
+    /// h.app_mut().pending_scroll = Some(0.0);
+    /// h.frame();          // intent がランタイムへ渡る
+    /// h.settle();         // ばねが目標に着くまで進める
+    /// assert_eq!(h.scroll_y("list"), Some(0.0));
+    /// ```
+    pub fn tick(&mut self, dt: f32) {
+        self.state.advance(dt);
+    }
+
+    /// アニメーションが落ち着くまでフレームを回す。
+    ///
+    /// 1 フレーム 16ms 換算で最大 `max_frames` 回。 ばねは漸近するので
+    /// 「完全静止」は待たず、 実用上ふつうの上限で打ち切る。 何フレーム
+    /// 回ったかを返す。
+    pub fn settle_for(&mut self, max_frames: usize) -> usize {
+        for i in 0..max_frames {
+            self.tick(0.016);
+            self.frame();
+            if !self.state.is_animating() {
+                return i + 1;
+            }
+        }
+        max_frames
+    }
+
+    /// [`Self::settle_for`] を既定の上限 (120 フレーム ≒ 2 秒) で回す。
+    pub fn settle(&mut self) -> usize {
+        self.settle_for(120)
+    }
+
     /// ビューポートサイズを変える。 次の [`Self::frame`] から効く。
     pub fn resize(&mut self, width: f32, height: f32) {
         self.width = width;

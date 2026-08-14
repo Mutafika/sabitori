@@ -9,6 +9,10 @@ use sabitori::element::Px;
 use sabitori::file_browser::{self, FileEntry, SortBy, SortOrder};
 
 const ROW_H: f32 = 32.0;
+/// ファイル一覧のスクロールコンテナ id。 `.scroll(FILE_SCROLL_ID)` を付けると、
+/// ホイール・慣性・位置の保持をランタイムが持つ。 アプリ側は `ctx.scroll_info()`
+/// で読むだけ (issue #14 の「所有者を 1 つに決める」)。
+const FILE_SCROLL_ID: &str = "file-list";
 const HEADER_H: f32 = 45.0;
 const TOOLBAR_H: f32 = 35.0;
 const TAB_BAR_H: f32 = 32.0;
@@ -192,7 +196,10 @@ struct Tab {
     filtered: Vec<usize>,
     selected: BTreeSet<usize>,
     last_selected: Option<usize>,
-    scroll: ScrollView,
+    /// 次のフレームでスクロールしたい位置。 ランタイムへ `scroll_intents()` で
+    /// 渡して消す。 **スクロール位置そのものは持たない** — それは `.scroll(id)`
+    /// を付けた時点でランタイムの持ち物になる (issue #14)。
+    pending_scroll: Option<f32>,
     history: Vec<PathBuf>,
     history_pos: usize, // points to current entry in history
 }
@@ -201,7 +208,6 @@ impl Tab {
     fn new(path: PathBuf, show_hidden: bool, sort_by: SortBy, sort_order: SortOrder) -> Self {
         let files = file_browser::read_directory(&path, show_hidden, sort_by, sort_order);
         let filtered: Vec<usize> = (0..files.len()).collect();
-        let content_h = filtered.len() as f32 * ROW_H;
         let history = vec![path.clone()];
         Self {
             path,
@@ -209,7 +215,7 @@ impl Tab {
             filtered,
             selected: BTreeSet::new(),
             last_selected: None,
-            scroll: ScrollView::new(500.0, content_h),
+            pending_scroll: None,
             history,
             history_pos: 0,
         }
@@ -218,7 +224,6 @@ impl Tab {
     fn refresh(&mut self, show_hidden: bool, sort_by: SortBy, sort_order: SortOrder) {
         self.files = file_browser::read_directory(&self.path, show_hidden, sort_by, sort_order);
         self.filtered = (0..self.files.len()).collect();
-        self.scroll.set_content_height(self.filtered.len() as f32 * ROW_H);
     }
 
     fn apply_filter(&mut self, query: &str) {
@@ -231,7 +236,6 @@ impl Tab {
                 .map(|(i, _)| i)
                 .collect();
         }
-        self.scroll.set_content_height(self.filtered.len() as f32 * ROW_H);
     }
 
     fn display_name(&self) -> &str {
@@ -288,6 +292,9 @@ struct FilerApp {
     bg_opacity: f32,
     opacity_dragging: bool,
     last_width: std::cell::Cell<f32>,
+    /// 前フレームの `(scroll_y, viewport_height)`。 キーボード選択の auto-scroll は
+    /// `&mut self` から呼ばれて `ctx` を持たないので、 `view()` で控えておく。
+    last_scroll: std::cell::Cell<(f32, f32)>,
     last_shift: std::cell::Cell<bool>,
     last_cmd: std::cell::Cell<bool>,
     ql_open: bool,
@@ -347,6 +354,7 @@ impl FilerApp {
             bg_opacity: 1.0,
             opacity_dragging: false,
             last_width: std::cell::Cell::new(1100.0),
+            last_scroll: std::cell::Cell::new((0.0, 0.0)),
             last_shift: std::cell::Cell::new(false),
             last_cmd: std::cell::Cell::new(false),
             ql_open: false,
@@ -382,7 +390,7 @@ impl FilerApp {
             tab.refresh(sh, sb, so);
             tab.selected.clear();
             tab.last_selected = None;
-            tab.scroll.scroll_to(0.0);
+            tab.pending_scroll = Some(0.0);
             self.search_query.clear();
             self.search_active = false;
             self.ql_close();
@@ -401,7 +409,7 @@ impl FilerApp {
         tab.refresh(sh, sb, so);
         tab.selected.clear();
         tab.last_selected = None;
-        tab.scroll.scroll_to(0.0);
+        tab.pending_scroll = Some(0.0);
     }
 
     fn go_forward(&mut self) {
@@ -416,7 +424,7 @@ impl FilerApp {
         tab.refresh(sh, sb, so);
         tab.selected.clear();
         tab.last_selected = None;
-        tab.scroll.scroll_to(0.0);
+        tab.pending_scroll = Some(0.0);
     }
 
     fn refresh_all_tabs(&mut self) {
@@ -1197,8 +1205,9 @@ impl DeclarativeApp for FilerApp {
         None
     }
 
-    fn tick(&mut self, dt: f32) {
-        for tab in &mut self.tabs { tab.scroll.tick(dt); }
+    fn tick(&mut self, _dt: f32) {
+        // スクロールのばねはランタイムが回す (`.scroll(id)` に付けた時点で
+        // 位置も速度もランタイムの持ち物)。 ここで tick する必要は無い。
         // Clear toast after 2 seconds
         if let Some((_, time)) = &self.toast {
             if time.elapsed().as_secs_f32() > 2.0 { self.toast = None; }
@@ -1456,7 +1465,26 @@ impl DeclarativeApp for FilerApp {
 
         // ── File area ──
         let list_h = self.list_height(ctx);
-        let scroll_y = tab.scroll.scroll_y.value();
+        // スクロール位置と viewport はランタイムの計測値から読む。 初回フレームは
+        // まだ測れていないので、 chrome 高さから引いた概算 (`list_h`) で代用する。
+        let sinfo = ctx.scroll_info(FILE_SCROLL_ID).unwrap_or_default();
+        let scroll_y = sinfo.scroll_y;
+        let viewport_h = if sinfo.viewport_height > 0.0 { sinfo.viewport_height } else { list_h };
+        self.last_scroll.set((scroll_y, viewport_h));
+        // スクロールバーの位置と長さ。 中身が収まっていれば出さない。
+        let scrollbar_for = |content_h: f32| -> Element {
+            if content_h <= viewport_h || content_h <= 0.0 {
+                return div();
+            }
+            let ratio = viewport_h / content_h;
+            let max_scroll = (content_h - viewport_h).max(1.0);
+            let pos = (scroll_y / max_scroll).clamp(0.0, 1.0) * (1.0 - ratio);
+            div().w(Px(6.0)).shrink(0.0).flex_col().children([
+                div().h(Px(pos * viewport_h)).shrink(0.0),
+                div().w(Px(4.0)).h(Px((ratio * viewport_h).max(20.0))).shrink(0.0)
+                    .bg(Color::from_hex("#ffffff20")).rounded_px(2.0),
+            ])
+        };
         let file_area = if self.view_mode == ViewMode::List {
             // Sort indicator
             let sn = self.sort_indicator(SortBy::Name);
@@ -1480,10 +1508,11 @@ impl DeclarativeApp for FilerApp {
                 div().h(Px(1.0)).shrink(0.0).bg(c(t.border)),
             ]);
 
-            let first = (scroll_y / ROW_H).floor() as usize;
-            let count = (list_h / ROW_H).ceil() as usize + 2;
+            // 可視範囲はランタイムの計測から。 上下に spacer を積むので、
+            // スクロール量が実データの長さと一致する。
+            let (first, count) = ctx.visible_range(FILE_SCROLL_ID, ROW_H);
             let last = (first + count).min(tab.filtered.len());
-            let top_offset = (first as f32 * ROW_H) - scroll_y;
+            let first = first.min(last);
 
             let mut file_rows: Vec<Element> = Vec::new();
             for fi in first..last {
@@ -1536,20 +1565,24 @@ impl DeclarativeApp for FilerApp {
                 );
             }
 
-            let (sb_pos, sb_ratio) = tab.scroll.scrollbar();
-            let scrollbar = if sb_ratio < 1.0 {
-                div().w(Px(6.0)).shrink(0.0).flex_col().children([
-                    div().h(Px(sb_pos * list_h)).shrink(0.0),
-                    div().w(Px(4.0)).h(Px((sb_ratio * list_h).max(20.0))).shrink(0.0)
-                        .bg(Color::from_hex("#ffffff20")).rounded_px(2.0),
-                ])
-            } else { div() };
+            let content_h = tab.filtered.len() as f32 * ROW_H;
+            let mut rows: Vec<Element> = Vec::with_capacity(file_rows.len() + 2);
+            if first > 0 {
+                rows.push(div().h(Px(first as f32 * ROW_H)).shrink(0.0));
+            }
+            rows.extend(file_rows);
+            let tail = tab.filtered.len().saturating_sub(last);
+            if tail > 0 {
+                rows.push(div().h(Px(tail as f32 * ROW_H)).shrink(0.0));
+            }
 
             div().flex_1().flex_col().bg(bg).children([
                 col_header,
                 div().flex_1().flex_row().children([
-                    div().flex_1().flex_col().mt(Px(top_offset)).children(file_rows),
-                    scrollbar,
+                    // ここが唯一のスクロール宣言。 ホイールも慣性も位置の保持も
+                    // ランタイムが持つ。
+                    div().scroll(FILE_SCROLL_ID).flex_1().flex_col().children(rows),
+                    scrollbar_for(content_h),
                 ]),
             ])
         } else {
@@ -1564,9 +1597,7 @@ impl DeclarativeApp for FilerApp {
             let cols = ((avail_w + GG) / (GW + GG)).floor().max(1.0) as usize;
             let total_rows = (tab.filtered.len() + cols - 1) / cols;
             let row_h = GH + GG;
-            let first_row = (scroll_y / row_h).floor() as usize;
-            let visible_rows = (list_h / row_h).ceil() as usize + 2;
-            let top_offset = (first_row as f32 * row_h) - scroll_y;
+            let (first_row, visible_rows) = ctx.visible_range(FILE_SCROLL_ID, row_h);
 
             let mut grid_rows: Vec<Element> = Vec::new();
             for row in first_row..(first_row + visible_rows).min(total_rows) {
@@ -1608,19 +1639,22 @@ impl DeclarativeApp for FilerApp {
                 grid_rows.push(div().h(Px(GH)).shrink(0.0).flex_row().gap(GG).px_pad(Px(GP)).children(items));
             }
 
-            let (sb_pos, sb_ratio) = tab.scroll.scrollbar();
-            let scrollbar = if sb_ratio < 1.0 {
-                div().w(Px(6.0)).shrink(0.0).flex_col().children([
-                    div().h(Px(sb_pos * list_h)).shrink(0.0),
-                    div().w(Px(4.0)).h(Px((sb_ratio * list_h).max(20.0))).shrink(0.0)
-                        .bg(Color::from_hex("#ffffff20")).rounded_px(2.0),
-                ])
-            } else { div() };
+            let last_row = (first_row + visible_rows).min(total_rows);
+            let content_h = total_rows as f32 * row_h + GP;
+            let mut rows: Vec<Element> = Vec::with_capacity(grid_rows.len() + 2);
+            if first_row > 0 {
+                rows.push(div().h(Px(first_row as f32 * row_h)).shrink(0.0));
+            }
+            rows.extend(grid_rows);
+            let tail_rows = total_rows.saturating_sub(last_row);
+            if tail_rows > 0 {
+                rows.push(div().h(Px(tail_rows as f32 * row_h)).shrink(0.0));
+            }
 
             div().flex_1().flex_col().bg(bg).children([
                 div().flex_1().flex_row().children([
-                    div().flex_1().flex_col().mt(Px(top_offset)).pt(Px(GP)).gap(GG).children(grid_rows),
-                    scrollbar,
+                    div().scroll(FILE_SCROLL_ID).flex_1().flex_col().pt(Px(GP)).gap(GG).children(rows),
+                    scrollbar_for(content_h),
                 ]),
             ])
         };
@@ -1992,8 +2026,17 @@ impl DeclarativeApp for FilerApp {
         self.transfer_files(paths, dest, false); // external drop = copy
     }
 
-    fn on_scroll(&mut self, delta_y: f32) {
-        self.tab_mut().scroll.on_scroll(delta_y);
+    // `on_scroll` は実装しない。 ホイールはランタイムがポインタ直下の
+    // `.scroll(id)` コンテナへ配る。 自前で受けて足し込むと二重に動く。
+
+    /// 溜めておいたスクロール要求をランタイムへ渡す。 `.scroll(id)` コンテナへの
+    /// プログラム的なスクロールはこの口から行う (自分で位置を書き換えない)。
+    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+        self.tabs
+            .iter_mut()
+            .filter_map(|t| t.pending_scroll.take())
+            .map(|y| (FILE_SCROLL_ID.to_string(), y))
+            .collect()
     }
 
     fn on_navigate_back(&mut self) { self.go_back(); }
@@ -2149,24 +2192,14 @@ impl FilerApp {
         self.refresh_all_tabs();
     }
 
+    /// 表示モードを切り替えたら先頭へ戻す。 中身の高さはレイアウトが測るので、
+    /// アプリが content_height を計算して渡す必要は無くなった。
     fn update_grid_scroll(&mut self) {
-        let w = self.last_width.get();
-        let sw = self.sidebar_width;
-        let vm = self.view_mode;
-        let tab = self.tab_mut();
-        let h = match vm {
-            ViewMode::List => tab.filtered.len() as f32 * ROW_H,
-            ViewMode::Grid => {
-                let avail = w - sw - 30.0;
-                let cols = ((avail + 4.0) / 94.0).floor().max(1.0) as usize;
-                let rows = (tab.filtered.len() + cols - 1) / cols;
-                rows as f32 * 94.0
-            }
-        };
-        tab.scroll.set_content_height(h);
+        self.tab_mut().pending_scroll = Some(0.0);
     }
 
     fn move_selection(&mut self, delta: i32, extend: bool) {
+        let last_scroll = self.last_scroll.get();
         let tab = self.tab_mut();
         if tab.filtered.is_empty() { return; }
         let max = tab.filtered.len() - 1;
@@ -2186,14 +2219,16 @@ impl FilerApp {
         }
         tab.last_selected = Some(new_real);
 
-        // Auto-scroll
+        // Auto-scroll: 選択が画面外なら見える位置を要求する。 いまのスクロール
+        // 位置と viewport は前フレームの計測値 (`ScrollInfo`) から取る。
         let sel_y = new_fi as f32 * ROW_H;
-        let scroll_y = tab.scroll.scroll_y.value();
-        let viewport = tab.scroll.viewport_height;
-        if sel_y + ROW_H > scroll_y + viewport {
-            tab.scroll.smooth_scroll_to(sel_y + ROW_H - viewport);
-        } else if sel_y < scroll_y {
-            tab.scroll.smooth_scroll_to(sel_y);
+        let (scroll_y, viewport) = last_scroll;
+        if viewport > 0.0 {
+            if sel_y + ROW_H > scroll_y + viewport {
+                tab.pending_scroll = Some(sel_y + ROW_H - viewport);
+            } else if sel_y < scroll_y {
+                tab.pending_scroll = Some(sel_y);
+            }
         }
     }
 }

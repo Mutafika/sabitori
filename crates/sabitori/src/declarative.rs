@@ -1703,7 +1703,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // (style spring, scroll spring, presence) and app-side async
         // drains (e.g. mpsc channel polls). Cheap enough to run every
         // frame even when we end up not redrawing.
-        self.app.tick(dt);
+        self.advance(dt);
         // After tick: let the app reassert its desired focus. Popups
         // that open with a known input (e.g. command palette) use
         // this to grab focus the first frame they're rendered,
@@ -1741,14 +1741,6 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Layout / focus may have changed since the last pointer event —
         // keep the capture snapshot current once per tick.
         self.push_ui_capture();
-        for sv in self.scroll_states.values_mut() {
-            sv.tick(dt);
-        }
-        self.tooltip_state.tick(dt);
-        self.drag_manager.tick(dt);
-        self.style_animator.tick(dt);
-        self.presence_animator.tick(dt);
-
         let app_dirty = self.app.poll_dirty();
         // Scroll spring / fling keeps animating after the user lets go of the
         // wheel. Without this check, lazy_render parks the loop and the
@@ -2102,6 +2094,41 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 切り出しは [`crate::testing`] のためでもある — ヘッドレスでクリックを
     /// 流せないと、 消費側は自分のアプリに回帰テストを書けない (issue #19)。
     /// 座標は呼び出し前に `mouse_x` / `mouse_y` へ入れておくこと。
+    /// 時間を `dt` 秒ぶん進める。 アプリの `tick` と、 ランタイムが持つ
+    /// アニメーション状態 (スクロールのばね・慣性、 tooltip の遅延、 ドラッグ、
+    /// style / presence) を **1 箇所で**まとめて回す。
+    ///
+    /// ## なぜ関数に括り出すか
+    ///
+    /// 以前はこの並びが `about_to_wait` にベタ書きされていた。 そのため
+    /// [`testing::Harness`](crate::testing::Harness) には**時間が無く**、
+    /// ばねが 1mm も動かなかった。 `scroll_intents()` は `smooth_scroll_to`
+    /// (= ばねの目標を置くだけ) なので、 プログラム的スクロールを使うアプリは
+    /// **テストすると必ず「動かない」ように見える**。 実機では動くのに。
+    ///
+    /// tick する対象が増えたときに、 ランタイムだけ更新されて Harness が
+    /// 置き去りになるのも防ぐ。
+    pub(crate) fn advance(&mut self, dt: f32) {
+        self.app.tick(dt);
+        for sv in self.scroll_states.values_mut() {
+            sv.tick(dt);
+        }
+        self.tooltip_state.tick(dt);
+        self.drag_manager.tick(dt);
+        self.style_animator.tick(dt);
+        self.presence_animator.tick(dt);
+    }
+
+    /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
+    /// 回し続けるべきかの判定で、 テストの「落ち着くまで待つ」もこれを見る。
+    pub(crate) fn is_animating(&self) -> bool {
+        self.app.is_animating()
+            || self.scroll_states.values().any(|sv| sv.is_animating())
+            || self.style_animator.is_animating()
+            || self.drag_manager.is_active()
+            || self.tooltip_state.is_pending()
+    }
+
     pub(crate) fn press_primary(&mut self) {
         // マウス押下もタッチ同様 InputEvent::Pointer* としてアプリへ転送する
         // （キャンバスのドラッグパン等が押下状態を観測できるように）。#62
