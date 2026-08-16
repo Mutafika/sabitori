@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# wasm32 ビルドにだけ Hack-Regular を埋め込む (assets/LICENSE-Hack.txt)。
+# ブラウザにはシステムフォントが無いので、これが無いと最初のシェープで
+# cosmic-text が `no default font found` で panic する。
+#
+# ここでは default に入れない — facade の `sabitori` が default で有効に
+# する。ワークスペースの依存宣言を継承する側は `default-features = false`
+# を上書きできないので、切り替え口を facade に 1 つ置く形にしてある。
+builtin-font = []
+
 [dependencies]
 sabitori-core.workspace = true
 cosmic-text.workspace = true
