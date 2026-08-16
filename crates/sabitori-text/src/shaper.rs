@@ -110,6 +110,64 @@ pub(crate) fn apply_align(buffer: &mut cosmic_text::Buffer, align: TextAlign) {
     }
 }
 
+/// wasm32 に埋め込む最終フォールバックフォント (Hack Regular, 約 310KB)。
+///
+/// ## なぜ埋め込むか
+///
+/// ブラウザにはシステムフォントが無い。 `load_system_fonts()` は wasm では
+/// 何も積まないので、 アプリが [`TextShaper::load_font`] で 1 つも渡さないと
+/// フォント DB が空のまま最初のシェープに入り、 **cosmic-text の奥で
+/// `no default font found` が panic する** (`shape.rs:251` の `expect`)。
+///
+/// 出てくるのは依存クレート内部のメッセージで、 sabitori の名前も
+/// `fonts()` の名前も出ない。 しかも native では system fonts があるので
+/// 再現しない ── **wasm に持っていって初めて、 何も描かれない画面と
+/// 読めないスタックトレースが出る**。 毎回同じ所で足を取られる。
+///
+/// なので wasm では常に 1 つ積んでおく。 `default-features = false` で外せる。
+///
+/// ## 何が直って、 何が直らないか
+///
+/// Hack は Latin + 記号 + 罫線素片で、 **CJK は入っていない**。 日本語 UI を
+/// web に出すなら結局 CJK フォントを [`crate::TextRenderer::load_font`] で
+/// 渡す必要がある。 ただし失敗の形は変わる ── panic して真っ白ではなく、
+/// レイアウトは出て日本語だけが豆腐になるので、 何が足りないか画面で分かる。
+///
+/// ライセンスは `crates/sabitori-text/assets/LICENSE-Hack.txt`。
+///
+/// `test` でも取り込むのは、 wasm に載せる**そのバイト列**が本当にシェープ
+/// できることを native のテストから確かめるため。 native の実ビルドには
+/// 入らない。
+#[cfg(any(all(feature = "builtin-font", target_arch = "wasm32"), test))]
+pub(crate) const BUILTIN_FONT: &[u8] = include_bytes!("../assets/Hack-Regular.ttf");
+
+/// フォントが 1 つも無いまま呼ばれたときの説明。
+///
+/// cosmic-text は `expect("no default font found")` で落ちる。 それ自体は
+/// 正しい診断だが、 **どこに何を書けば直るのかが書いていない**。 wasm で
+/// これを踏むのはほぼ必ず「`fonts()` を実装し忘れた」なので、 そう言う。
+const NO_FONTS: &str = "sabitori: フォントが 1 つも読み込まれていない。\n\
+     テキストをシェープできないので、 このままでは cosmic-text が\n\
+     `no default font found` で落ちる。\n\
+     \n\
+     wasm では system fonts が使えない。 `DeclarativeApp::fonts()` で\n\
+     最低 1 つ TTF/OTF を返すこと:\n\
+     \n\
+         fn fonts(&self) -> Vec<Vec<u8>> {\n\
+             vec![include_bytes!(\"../assets/fonts/YourFont.ttf\").to_vec()]\n\
+         }\n\
+     \n\
+     (sabitori-text の `builtin-font` feature が有効なら wasm には\n\
+     Hack Regular が自動で積まれる。 これが出ているなら feature が\n\
+     切られているか、 native で system fonts が 1 つも無い環境。)";
+
+/// [`BUILTIN_FONT`] を DB に積む。 feature が切られている / native の実ビルド
+/// では何もしない。
+fn load_builtin_font(_db: &mut cosmic_text::fontdb::Database) {
+    #[cfg(all(feature = "builtin-font", target_arch = "wasm32"))]
+    _db.load_font_data(BUILTIN_FONT.to_vec());
+}
+
 /// The font stack, and everything that can be answered without a GPU.
 ///
 /// [`crate::TextRenderer`] owns one of these and delegates to it, so on-screen
@@ -154,17 +212,13 @@ impl TextShaper {
     /// normalized the same way, so passing "ja-JP" is safe.
     pub fn with_locale(locale: &str) -> Self {
         let locale = normalize_han_locale(locale.to_string());
+        let mut db = cosmic_text::fontdb::Database::new();
         #[cfg(not(target_arch = "wasm32"))]
-        let font_system = {
-            let mut db = cosmic_text::fontdb::Database::new();
-            db.load_system_fonts();
-            FontSystem::new_with_locale_and_db(locale, db)
-        };
-        #[cfg(target_arch = "wasm32")]
-        let font_system =
-            FontSystem::new_with_locale_and_db(locale, cosmic_text::fontdb::Database::new());
+        db.load_system_fonts();
+        // wasm には system fonts が無い。 [`BUILTIN_FONT`] を参照。
+        load_builtin_font(&mut db);
         Self {
-            font_system,
+            font_system: FontSystem::new_with_locale_and_db(locale, db),
             preferred_family: None,
             preferred_monospace_family: None,
         }
@@ -192,7 +246,27 @@ impl TextShaper {
         }
         #[cfg(not(target_arch = "wasm32"))]
         db.load_system_fonts();
+        // user fonts の**後ろ**。 挿入順が優先順なので、 アプリが渡した face
+        // が常に勝ち、 組み込みは穴埋めにしか使われない。
+        load_builtin_font(&mut db);
         self.font_system = FontSystem::new_with_locale_and_db(locale, db);
+    }
+
+    /// フォントが 1 つでも読み込まれているか。
+    ///
+    /// `false` のままシェープすると cosmic-text の奥で panic する。 ホストが
+    /// 起動時に確かめて、 自前の案内を出したいとき用。
+    pub fn has_fonts(&self) -> bool {
+        self.font_system.db().len() > 0
+    }
+
+    /// シェープに入る手前で止める。 メッセージは [`NO_FONTS`]。
+    ///
+    /// このまま進むと cosmic-text の `expect` に到達するので、 どちらにせよ
+    /// 落ちる。 落ちる場所を**直し方が書いてある方**に寄せているだけ。
+    /// 比較 1 回なので毎回呼んでよい。
+    fn require_fonts(&self) {
+        assert!(self.has_fonts(), "{NO_FONTS}");
     }
 
     /// Set the proportional family. Returns whether it actually changed, so the
@@ -241,6 +315,7 @@ impl TextShaper {
         max_lines: Option<u32>,
         typo: Typography,
     ) -> TextMetrics {
+        self.require_fonts();
         // Snap so the measured box matches the (quantized) shaped result exactly.
         let font_size = quantize_font_size(font_size);
         let line_height = typo.line_height_px(font_size);
@@ -302,6 +377,7 @@ impl TextShaper {
     /// 手順を踏むこと — ここがずれると、 測った箱と実際のキャレット位置が
     /// 食い違う。
     fn shaped(&mut self, text: &str, shape: TextShape<'_>) -> Buffer {
+        self.require_fonts();
         let font_size = quantize_font_size(shape.font_size);
         let metrics = Metrics::new(font_size, shape.typo.line_height_px(font_size));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
@@ -700,6 +776,159 @@ mod tests {
         assert_eq!(normalize_han_locale("zh-HK".into()), "zh-HK");
         assert_eq!(normalize_han_locale("zh-TW".into()), "zh-TW");
         assert_eq!(normalize_han_locale("zh-CN".into()), "zh-CN");
+    }
+}
+
+/// wasm に積む組み込みフォントと、 フォントが 1 つも無いときの落ち方。
+///
+/// ここは **native から wasm の挙動を検証している**。 `BUILTIN_FONT` は
+/// `cfg(test)` でも取り込まれるので、 「ブラウザに送るまさにそのバイト列」を
+/// そのまま組んで確かめられる。 wasm でしか再現しない不具合を wasm に
+/// 持っていく前に捕まえるのが目的。
+#[cfg(test)]
+mod builtin_font_tests {
+    use super::*;
+
+    /// 組み込みフォント **だけ** の DB。 wasm の初期状態そのもの
+    /// (system fonts が無く、 アプリも何も渡していない)。
+    fn wasm_like_shaper() -> TextShaper {
+        let mut db = cosmic_text::fontdb::Database::new();
+        db.load_font_data(BUILTIN_FONT.to_vec());
+        TextShaper {
+            font_system: FontSystem::new_with_locale_and_db("ja".to_string(), db),
+            preferred_family: None,
+            preferred_monospace_family: None,
+        }
+    }
+
+    /// フォントが 1 つも無い DB。 `builtin-font` を切った wasm ビルドと、
+    /// system fonts が 1 つも無い native 環境がこれ。
+    fn empty_shaper() -> TextShaper {
+        TextShaper {
+            font_system: FontSystem::new_with_locale_and_db(
+                "ja".to_string(),
+                cosmic_text::fontdb::Database::new(),
+            ),
+            preferred_family: None,
+            preferred_monospace_family: None,
+        }
+    }
+
+    fn measure(s: &mut TextShaper, text: &str) -> TextMetrics {
+        s.measure_text(text, 16.0, false, false, None, None, None, Typography::default())
+    }
+
+    /// 実際に選ばれたグリフ ID。 **0 は .notdef (豆腐)** なので、 「幅が出た」
+    /// では見分けられない「字が出ているか」をこれで見る。
+    fn glyph_ids(s: &mut TextShaper, text: &str) -> Vec<u16> {
+        let shape = TextShape {
+            font_size: 16.0,
+            bold: false,
+            monospace: false,
+            font_family: None,
+            wrap_width: None,
+            typo: Typography::default(),
+        };
+        let buffer = s.shaped(text, shape);
+        buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter().map(|g| g.glyph_id))
+            .collect()
+    }
+
+    /// **これが本題。** wasm に積むバイト列が、 単独で本当にシェープできること。
+    ///
+    /// 積んであっても壊れていれば結局 `no default font found` に戻るので、
+    /// 「ファイルが存在する」ではなく「幅が出る」まで見る。
+    #[test]
+    fn the_bundled_font_shapes_latin_on_its_own() {
+        let mut s = wasm_like_shaper();
+        assert!(s.has_fonts());
+        let m = measure(&mut s, "Hello, sabitori");
+        assert!(m.size.width > 0.0, "幅が出ないなら積めていない: {m:?}");
+        assert!(m.size.height > 0.0, "{m:?}");
+        assert!(m.baseline > 0.0, "{m:?}");
+    }
+
+    /// 罫線素片が出ること。 TUI 風の枠は sabitori の看板なので、 Latin だけ
+    /// 出て枠が消える組み合わせは選べない。
+    #[test]
+    fn the_bundled_font_covers_box_drawing() {
+        let mut s = wasm_like_shaper();
+        let ids = glyph_ids(&mut s, "┌──┐│└┘");
+        assert!(!ids.is_empty(), "グリフが 1 つも出ていない");
+        assert!(
+            ids.iter().all(|&id| id != 0),
+            "豆腐が混ざっている (glyph_id: {ids:?})"
+        );
+    }
+
+    /// **CJK は入っていない。** 日本語 UI を web に出すなら、 アプリ側で
+    /// CJK フォントを渡す必要があることを固定しておく。
+    ///
+    /// ただし panic はしない ── レイアウトは出て、 日本語だけが豆腐になる。
+    /// 「真っ白で読めないスタックトレース」から「画面を見れば足りない物が
+    /// 分かる」への移動が、 組み込みフォントの効き目そのもの。
+    #[test]
+    fn the_bundled_font_does_not_cover_cjk_but_still_lays_out() {
+        let mut s = wasm_like_shaper();
+        let m = measure(&mut s, "日本語のテキスト");
+        assert!(m.size.height > 0.0, "落ちずに行の高さは出ること: {m:?}");
+
+        let ids = glyph_ids(&mut s, "日本語");
+        assert!(
+            ids.iter().all(|&id| id == 0),
+            "CJK が出てしまっている。 Hack に入っていないはずなので、 \
+             フォントを差し替えたならこのテストの前提を書き直すこと (glyph_id: {ids:?})"
+        );
+    }
+
+    /// フォントが 0 個のときは、 cosmic-text の `no default font found` ではなく
+    /// **直し方が書いてあるメッセージ**で落ちること。
+    ///
+    /// 落ちること自体は変わらない。 変えたのは、 依存クレート内部の 1 行から
+    /// 「`fonts()` に何を書けばいいか」へ、 読む場所を寄せたところ。
+    #[test]
+    #[should_panic(expected = "fonts()")]
+    fn an_empty_font_stack_says_what_to_write() {
+        let mut s = empty_shaper();
+        let _ = measure(&mut s, "これは落ちる");
+    }
+
+    /// 折り返し系のクエリ (`caret_pos` / `offset_at` / `range_rects`) も
+    /// 同じ入口で止まること。 `measure_text` だけ直しても、 キャレットを
+    /// 引いた瞬間に元の panic に戻るのでは意味がない。
+    #[test]
+    #[should_panic(expected = "fonts()")]
+    fn the_caret_queries_stop_at_the_same_place() {
+        let mut s = empty_shaper();
+        let shape = TextShape {
+            font_size: 16.0,
+            bold: false,
+            monospace: false,
+            font_family: None,
+            wrap_width: None,
+            typo: Typography::default(),
+        };
+        let _ = s.caret_pos("abc", 1, shape);
+    }
+
+    /// アプリが渡したフォントが組み込みより先に来ること。
+    ///
+    /// 順序が逆だと、 CJK フォントをバンドルしても Hack が先に当たって
+    /// **日本語が豆腐のまま直らない**。 バンドルの意味が消える。
+    #[test]
+    fn user_fonts_still_win_over_the_bundled_one() {
+        let mut s = wasm_like_shaper();
+        let jp = std::fs::read("../../assets/fonts/NotoSansJP-Regular.otf")
+            .expect("リポジトリ同梱の JP フォント");
+        s.prefer_user_fonts(&[jp]);
+        let m = measure(&mut s, "日本語");
+        assert!(m.size.width > 0.0, "{m:?}");
+        assert!(
+            s.font_system.db().len() >= 2,
+            "user font と組み込みの両方が居ること"
+        );
     }
 }
 

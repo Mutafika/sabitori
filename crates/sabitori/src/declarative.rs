@@ -419,6 +419,16 @@ pub trait DeclarativeApp: 'static {
     /// These are registered before the first frame, so they're available
     /// to cosmic-text for text shaping and measurement.
     ///
+    /// ## wasm では
+    ///
+    /// ブラウザにシステムフォントは無い。 `builtin-font` feature (既定で有効)
+    /// が wasm ビルドに Hack Regular を積むので、 **何も返さなくても Latin と
+    /// 罫線素片は出る**。 ただし CJK は入っていないので、 日本語 UI なら
+    /// ここで CJK フォントを渡すこと — 返さないと日本語だけが豆腐になる。
+    ///
+    /// ここで返したフォントは組み込みより**先**に当たるので、 上書きの心配は
+    /// 要らない。 組み込みは穴埋めにしか使われない。
+    ///
     /// ```ignore
     /// fn fonts(&self) -> Vec<Vec<u8>> {
     ///     vec![

@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["builtin-font"]
+# wasm32 ビルドに最終フォールバックのフォントを埋め込む (約 310KB)。
+# 自前でフォントをバンドルする前提なら `default-features = false` で外せる。
+# 詳細は `sabitori-text` の `BUILTIN_FONT`。
+builtin-font = ["sabitori-text/builtin-font"]
+
 [dependencies]
 sabitori-core.workspace = true
 sabitori-gpu.workspace = true
