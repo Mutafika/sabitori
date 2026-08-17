@@ -1859,10 +1859,12 @@ impl DeclarativeApp for Gallery {
     fn size(&self) -> (f32, f32) { (1000.0, 660.0) }
     fn transparent(&self) -> bool { true }
 
+    /// HackGen (白源)。 理由は `tui_demo.rs` の同じ関数を参照 — Hack だけだと
+    /// wasm で日本語が豆腐になる。 Latin は Hack のままなので見た目は変わらない。
     fn fonts(&self) -> Vec<Vec<u8>> {
         vec![
-            include_bytes!("../assets/fonts/Hack-Regular.ttf").to_vec(),
-            include_bytes!("../assets/fonts/Hack-Bold.ttf").to_vec(),
+            include_bytes!("../assets/fonts/HackGen-Regular.ttf").to_vec(),
+            include_bytes!("../assets/fonts/HackGen-Bold.ttf").to_vec(),
         ]
     }
 

@@ -12,6 +12,11 @@ impl DeclarativeApp for Dashboard {
     fn title(&self) -> &str { "Sabitori TUI" }
     fn size(&self) -> (f32, f32) { (900.0, 580.0) }
 
+    /// この example が描く文字は Latin と罫線素片だけなので Hack で足りる。
+    /// 日本語を足すなら `tui_gallery.rs` と同じく HackGen へ差し替えること —
+    /// Hack のままだと wasm で日本語が豆腐になる (ブラウザにシステムフォントは
+    /// 無く、 native では OS が拾ってしまうので気づけない)。
+    /// `crates/sabitori-text/tests/example_fonts.rs` がそれを見張っている。
     fn fonts(&self) -> Vec<Vec<u8>> {
         vec![
             include_bytes!("../assets/fonts/Hack-Regular.ttf").to_vec(),

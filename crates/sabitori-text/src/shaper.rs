@@ -252,6 +252,59 @@ impl TextShaper {
         self.font_system = FontSystem::new_with_locale_and_db(locale, db);
     }
 
+    /// システムフォントを**一切使わず**、 渡したフォントだけで組む。
+    ///
+    /// wasm と同じ条件を native で再現するためのもの。 ブラウザには
+    /// システムフォントが無いので、 アプリが `fonts()` で渡した物だけが
+    /// 使える ── native で動かしている限り、 その不足はシステムフォントが
+    /// 埋めてしまって**気づけない**。
+    ///
+    /// ```ignore
+    /// // 自分のアプリの fonts() が、 自分の UI の文字を全部持っているか
+    /// let mut s = TextShaper::with_fonts_only("ja", &my_app.fonts());
+    /// assert!(s.missing_glyphs("設定を保存", shape).is_empty());
+    /// ```
+    pub fn with_fonts_only(locale: &str, fonts: &[Vec<u8>]) -> Self {
+        let locale = normalize_han_locale(locale.to_string());
+        let mut db = cosmic_text::fontdb::Database::new();
+        for data in fonts {
+            db.load_font_data(data.clone());
+        }
+        Self {
+            font_system: FontSystem::new_with_locale_and_db(locale, db),
+            preferred_family: None,
+            preferred_monospace_family: None,
+        }
+    }
+
+    /// `text` のうち、 いまのフォント構成では**描けない**文字。 重複は畳む。
+    ///
+    /// 「豆腐 (.notdef) になる文字」を返す。 幅は豆腐でも出るので、 測って
+    /// 0 でないことを確かめても**字が出ているかは分からない**。 グリフ ID が
+    /// 0 かどうかで見るしかない。
+    pub fn missing_glyphs(&mut self, text: &str, shape: TextShape<'_>) -> Vec<char> {
+        let buffer = self.shaped(text, shape);
+        let starts = logical_line_starts(&buffer);
+        let mut out: Vec<char> = Vec::new();
+        for run in buffer.layout_runs() {
+            let base = starts.get(run.line_i).copied().unwrap_or(0);
+            for g in run.glyphs {
+                if g.glyph_id != 0 {
+                    continue;
+                }
+                let lo = (base + g.start).min(text.len());
+                let hi = (base + g.end).min(text.len());
+                let Some(slice) = text.get(lo..hi) else { continue };
+                for c in slice.chars() {
+                    if !out.contains(&c) {
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// フォントが 1 つでも読み込まれているか。
     ///
     /// `false` のままシェープすると cosmic-text の奥で panic する。 ホストが
@@ -792,26 +845,13 @@ mod builtin_font_tests {
     /// 組み込みフォント **だけ** の DB。 wasm の初期状態そのもの
     /// (system fonts が無く、 アプリも何も渡していない)。
     fn wasm_like_shaper() -> TextShaper {
-        let mut db = cosmic_text::fontdb::Database::new();
-        db.load_font_data(BUILTIN_FONT.to_vec());
-        TextShaper {
-            font_system: FontSystem::new_with_locale_and_db("ja".to_string(), db),
-            preferred_family: None,
-            preferred_monospace_family: None,
-        }
+        TextShaper::with_fonts_only("ja", &[BUILTIN_FONT.to_vec()])
     }
 
     /// フォントが 1 つも無い DB。 `builtin-font` を切った wasm ビルドと、
     /// system fonts が 1 つも無い native 環境がこれ。
     fn empty_shaper() -> TextShaper {
-        TextShaper {
-            font_system: FontSystem::new_with_locale_and_db(
-                "ja".to_string(),
-                cosmic_text::fontdb::Database::new(),
-            ),
-            preferred_family: None,
-            preferred_monospace_family: None,
-        }
+        TextShaper::with_fonts_only("ja", &[])
     }
 
     fn measure(s: &mut TextShaper, text: &str) -> TextMetrics {
