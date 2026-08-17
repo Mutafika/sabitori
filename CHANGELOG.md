@@ -17,7 +17,8 @@
 
 ### Added
 
-- **wasm32 ビルドにフォールバックフォント (Hack Regular) を埋め込むようにした。**
+- **wasm32 ビルドにフォールバックフォントを埋め込むようにした。既定は日本語込み
+  (HackGen / 白源)。**
   ブラウザにはシステムフォントが無いので、`load_system_fonts()` は wasm では
   何も積まない。アプリが `DeclarativeApp::fonts()` を実装し忘れると、フォント DB が
   空のまま最初のシェープに入り、**cosmic-text の奥（`shape.rs:251` の
@@ -30,16 +31,36 @@
 
   wasm では常に 1 つ積んでおくことにした。`#[cfg(target_arch = "wasm32")]` で
   囲ってあるので **native のビルドにはバイト 1 つ入らない**（rlib をバイト単位で
-  確認済み）。wasm は 302KB（gzip 144KB）増える。
+  確認済み）。
 
-  **Hack に CJK は入っていない**ので、日本語 UI なら結局 `fonts()` で CJK
-  フォントを渡す必要がある。ただし失敗の形が変わる — panic して真っ白ではなく、
-  レイアウトは出て日本語だけが豆腐になるので、何が足りないか画面で分かる。
+  | feature | フォント | raw | gzip | 日本語 |
+  |---|---|---|---|---|
+  | `builtin-font-jp`（**既定**） | HackGen (白源) | 10.2MB | 4.9MB | **出る** |
+  | `builtin-font-latin` | Hack | 302KB | 144KB | 豆腐 |
+
+  既定を日本語込みにしたのは、**Latin だけの組み込みは「日本語を描かないアプリ」に
+  最適化した既定**だから。sabitori で書く UI はまず日本語を出すので、その既定だと
+  結局アプリ側が CJK フォントを積むことになり、組み込みの 302KB は**一度も字を
+  描かないまま同梱される**。既定のままなら、wasm でも `fonts()` を 1 行も書かずに
+  日本語 UI が出る。
+
+  HackGen は**半角 2 文字が全角 1 文字にちょうど乗る**ので、罫線・日本語・英数字が
+  同じ桁に揃う。ただし字形が Hack でも **advance は詰まっている**（0.602em →
+  0.527em）ので、`-latin` から `-jp` へ切り替えると英数字は約 12% 細くなる。
+  字形が同じでもレイアウトは同じにならない。
+
   アプリが渡したフォントは組み込みより**先**に当たるので、上書きは起きない。
 
-  外したい場合は `sabitori = { default-features = false }`。切り替え口は facade に
-  1 つだけ置いてある（ワークスペースの依存宣言を継承する側は
-  `default-features = false` を上書きできないため）。
+  ```toml
+  sabitori = "0.5"                                     # HackGen（日本語込み）
+  sabitori = { version = "0.5", default-features = false,
+               features = ["builtin-font-latin"] }     # Hack（軽い）
+  sabitori = { version = "0.5", default-features = false }  # 組み込み無し
+  ```
+
+  切り替え口は facade に 1 つだけ置いてある（ワークスペースの依存宣言を継承する側は
+  `default-features = false` を上書きできないため）。Cargo の feature は加算的で
+  排他にできないので、両方立っていれば `-jp` が勝つ。
 
 - `TextShaper::has_fonts()` — フォントが 1 つでも読み込まれているか。ホストが
   起動時に確かめて自前の案内を出したいとき用。
@@ -65,8 +86,12 @@
 - **`examples/tui_gallery.rs` が、自分で描くカタカナを描けないフォント構成だった。**
   Hack (Latin のみ) を 2 つ積んだきりで、カタカナはシステムフォント任せ。native では
   OS が拾うので画面はふつうに出るが、**wasm に持っていくとカタカナ 20 種が全部
-  豆腐になる**。HackGen (白源) へ差し替えた — Latin 部分は Hack そのものなので、
-  見た目は 1px も変わらない。日本語が全角グリッドに乗るぶん TUI の桁は揃う。
+  豆腐になる**。HackGen (白源) へ差し替えた。
+
+  字形は Hack のままだが **advance は詰まっている**（0.602em → 0.527em）ので、
+  英数字は約 12% 細く出る。その代わり**半角 2 文字が全角 1 文字にちょうど乗る**ので、
+  罫線・日本語・英数字が同じ桁に揃う。Hack + システム日本語フォントの組み合わせでは
+  この保証が無く、枠の中の日本語が 1 文字ずつずれていく。TUI を名乗る以上こちらが正しい。
 
   `crates/sabitori-text/tests/example_fonts.rs` を追加した。`fonts()` を実装している
   example について、**wasm と同じ条件**（システムフォント無し、その example が

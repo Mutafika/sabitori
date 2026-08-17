@@ -5,11 +5,25 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["builtin-font"]
-# wasm32 ビルドに最終フォールバックのフォントを埋め込む (約 310KB)。
-# 自前でフォントをバンドルする前提なら `default-features = false` で外せる。
-# 詳細は `sabitori-text` の `BUILTIN_FONT`。
-builtin-font = ["sabitori-text/builtin-font"]
+# 既定は日本語込み。sabitori で書く UI はまず日本語を出すので、Latin だけの
+# 組み込みは「日本語を描かないアプリ」に最適化した既定になってしまう。
+default = ["builtin-font-jp"]
+
+# wasm32 ビルドに最終フォールバックのフォントを埋め込む。native のビルドには
+# バイト 1 つ入らない。詳細は `sabitori-text` の `BUILTIN_FONT`。
+#
+#   sabitori = "0.5"
+#       → HackGen (日本語込み) 10.2MB / gzip 4.9MB。`fonts()` を書かなくても
+#         日本語がそのまま出る。
+#
+#   sabitori = { version = "0.5", default-features = false,
+#                features = ["builtin-font-latin"] }
+#       → Hack (Latin と罫線素片のみ) 302KB / gzip 144KB。日本語は豆腐になる。
+#
+#   sabitori = { version = "0.5", default-features = false }
+#       → 組み込み無し。`fonts()` を書き忘れると、書き方を出して停止する。
+builtin-font-jp = ["sabitori-text/builtin-font-jp"]
+builtin-font-latin = ["sabitori-text/builtin-font-latin"]
 
 [dependencies]
 sabitori-core.workspace = true

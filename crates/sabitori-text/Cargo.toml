@@ -5,14 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# wasm32 ビルドにだけ Hack-Regular を埋め込む (assets/LICENSE-Hack.txt)。
-# ブラウザにはシステムフォントが無いので、これが無いと最初のシェープで
-# cosmic-text が `no default font found` で panic する。
+# wasm32 ビルドに最終フォールバックのフォントを埋め込む。ブラウザには
+# システムフォントが無いので、これが無いと最初のシェープで cosmic-text が
+# `no default font found` で panic する。
 #
-# ここでは default に入れない — facade の `sabitori` が default で有効に
-# する。ワークスペースの依存宣言を継承する側は `default-features = false`
-# を上書きできないので、切り替え口を facade に 1 つ置く形にしてある。
-builtin-font = []
+# 2 つは排他ではなく (Cargo の feature は加算的なので排他にできない)、
+# 両方立っていれば -jp が勝つ。
+#
+# ここでは default に入れない — facade の `sabitori` が default で -jp を
+# 有効にする。ワークスペースの依存宣言を継承する側は
+# `default-features = false` を上書きできないので、切り替え口を facade に
+# 1 つ置く形にしてある。
+builtin-font-jp = []     # HackGen Regular  10.2MB / gzip 4.9MB  (OFL 1.1)
+builtin-font-latin = []  # Hack Regular      302KB / gzip 144KB  (MIT + Bitstream Vera)
 
 [dependencies]
 sabitori-core.workspace = true

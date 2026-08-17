@@ -1859,8 +1859,12 @@ impl DeclarativeApp for Gallery {
     fn size(&self) -> (f32, f32) { (1000.0, 660.0) }
     fn transparent(&self) -> bool { true }
 
-    /// HackGen (白源)。 理由は `tui_demo.rs` の同じ関数を参照 — Hack だけだと
-    /// wasm で日本語が豆腐になる。 Latin は Hack のままなので見た目は変わらない。
+    /// HackGen (白源)。 Hack だけだと wasm で日本語が豆腐になる。
+    ///
+    /// 字形は Hack のままだが **advance は詰まっている** (0.602em → 0.527em)
+    /// ので、 英数字は Hack より約 12% 細く出る。 その代わり半角 2 文字が
+    /// 全角 1 文字にちょうど乗るので、 罫線・日本語・英数字が同じ桁に揃う ──
+    /// TUI を名乗る以上こちらが正しい。
     fn fonts(&self) -> Vec<Vec<u8>> {
         vec![
             include_bytes!("../assets/fonts/HackGen-Regular.ttf").to_vec(),
