@@ -44,7 +44,38 @@
 - `TextShaper::has_fonts()` — フォントが 1 つでも読み込まれているか。ホストが
   起動時に確かめて自前の案内を出したいとき用。
 
+- **`TextShaper::with_fonts_only()` / `missing_glyphs()`** — 「wasm と同じ条件を
+  native で作って、自分の `fonts()` が自分の UI の文字を全部持っているか確かめる」
+  ための 2 つ。
+
+  ```rust
+  let mut s = TextShaper::with_fonts_only("ja", &my_app.fonts());
+  assert!(s.missing_glyphs("設定を保存", shape).is_empty());
+  ```
+
+  native にはシステムフォントがあるので、`fonts()` に日本語フォントを入れ忘れても
+  **画面はふつうに日本語で出る** — OS が拾ってしまうため。足りないことに気づくのは
+  wasm に持っていった時で、そこには何も無いから日本語だけが一斉に豆腐になる。
+  `with_fonts_only` はその条件を native で再現する。`missing_glyphs` が
+  グリフ ID で見ているのは、**豆腐にも幅があるから** — 測って 0 でないことを
+  確かめても、字が出ているかは分からない。
+
 ### Fixed
+
+- **`examples/tui_gallery.rs` が、自分で描くカタカナを描けないフォント構成だった。**
+  Hack (Latin のみ) を 2 つ積んだきりで、カタカナはシステムフォント任せ。native では
+  OS が拾うので画面はふつうに出るが、**wasm に持っていくとカタカナ 20 種が全部
+  豆腐になる**。HackGen (白源) へ差し替えた — Latin 部分は Hack そのものなので、
+  見た目は 1px も変わらない。日本語が全角グリッドに乗るぶん TUI の桁は揃う。
+
+  `crates/sabitori-text/tests/example_fonts.rs` を追加した。`fonts()` を実装している
+  example について、**wasm と同じ条件**（システムフォント無し、その example が
+  `include_bytes!` した物だけ）を native で作り、ソースの文字列リテラルに出てくる
+  日本語が全部描けるかを見る。同じ抜けが次の example で再発しても、ここで止まる。
+  抽出が壊れて「0 件検査して合格」に化けないよう、対象数の下限と抽出そのものの
+  テストも付けてある。
+
+  なお `tui_demo.rs` は Latin と罫線素片しか描いていないので Hack のまま。
 
 - **フォントが 0 個のときの落ち方**。cosmic-text の `no default font found` は
   診断としては正しいが、**どこに何を書けば直るのかが書いていない**。シェープに
