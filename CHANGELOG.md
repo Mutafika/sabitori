@@ -15,6 +15,20 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-17
+
+wasm でフォントに足を取られるのをやめた版。
+
+ブラウザにはシステムフォントが無い。それを忘れて `fonts()` を書かずに wasm へ
+持っていくと、依存クレートの奥で `no default font found` が飛ぶ。native では
+システムフォントが埋めてしまうので**再現しない** — 毎回、wasm に持っていって
+初めて真っ白な画面が出る。
+
+組み込みフォントを積んで、それを既定で**日本語込み**にした。`fonts()` を 1 行も
+書かずに日本語 UI が wasm で出る。同じ穴が example にも空いていた
+（`tui_gallery` が自分で描くカタカナを描けないフォント構成だった）ので、それも
+潰して、再発を止めるテストを足してある。
+
 ### Added
 
 - **wasm32 ビルドにフォールバックフォントを埋め込むようにした。既定は日本語込み
@@ -2196,7 +2210,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Mutafika/sabitori/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Mutafika/sabitori/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Mutafika/sabitori/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Mutafika/sabitori/compare/v0.3.21...v0.4.0

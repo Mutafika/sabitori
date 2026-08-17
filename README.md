@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**Status**: pre-release (`0.5.1`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.5.0` fills the CSS-shaped gaps — grid, `align-self`, `aspect-ratio`, `z-index`, `text-align` — and adds a wrapping multi-line text field; `0.5.1` makes `desired_focus()` reach `Harness`, so "focused without a click" is testable. See [CHANGELOG.md](CHANGELOG.md).
+**Status**: pre-release (`0.6.0`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.5.0` fills the CSS-shaped gaps — grid, `align-self`, `aspect-ratio`, `z-index`, `text-align` — and adds a wrapping multi-line text field; `0.6.0` bundles a Japanese-capable fallback font into WASM builds, so a Japanese UI renders on the web without writing `fonts()` at all. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
