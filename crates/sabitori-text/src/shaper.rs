@@ -110,7 +110,23 @@ pub(crate) fn apply_align(buffer: &mut cosmic_text::Buffer, align: TextAlign) {
     }
 }
 
-/// wasm32 に埋め込む最終フォールバックフォント (Hack Regular, 約 310KB)。
+/// wasm32 に埋め込む最終フォールバックフォント。
+///
+/// | feature | フォント | raw | gzip | 日本語 |
+/// |---|---|---|---|---|
+/// | `builtin-font-jp` (既定) | HackGen (白源) | 10.2MB | 4.9MB | **出る** |
+/// | `builtin-font-latin` | Hack | 302KB | 144KB | 豆腐 |
+///
+/// 既定が日本語込みなのは、 **Latin だけの組み込みは「日本語を描かない
+/// アプリ」に最適化した既定**だから。 sabitori で書く UI はまず日本語を
+/// 出すので、 その既定だと結局アプリ側が CJK フォントを積むことになり、
+/// 組み込みの 302KB は**一度も字を描かないまま同梱される**。
+///
+/// HackGen の字形は Hack そのものだが、 **advance は詰めてある**
+/// (Hack 0.602em → HackGen 0.527em)。 半角 2 文字が全角 1 文字にちょうど
+/// 乗るようにするためで、 TUI の桁が揃うのはこの性質による。 裏を返すと
+/// **feature を切り替えると英数字のレイアウトは動く** — 字形が同じでも
+/// 幅は同じにならない。
 ///
 /// ## なぜ埋め込むか
 ///
@@ -126,20 +142,36 @@ pub(crate) fn apply_align(buffer: &mut cosmic_text::Buffer, align: TextAlign) {
 ///
 /// なので wasm では常に 1 つ積んでおく。 `default-features = false` で外せる。
 ///
-/// ## 何が直って、 何が直らないか
+/// ## `-latin` を選んだ場合に何が残るか
 ///
 /// Hack は Latin + 記号 + 罫線素片で、 **CJK は入っていない**。 日本語 UI を
-/// web に出すなら結局 CJK フォントを [`crate::TextRenderer::load_font`] で
-/// 渡す必要がある。 ただし失敗の形は変わる ── panic して真っ白ではなく、
+/// web に出すなら CJK フォントを [`crate::TextRenderer::load_font`] で渡す
+/// 必要がある。 ただし失敗の形は変わる ── panic して真っ白ではなく、
 /// レイアウトは出て日本語だけが豆腐になるので、 何が足りないか画面で分かる。
 ///
-/// ライセンスは `crates/sabitori-text/assets/LICENSE-Hack.txt`。
+/// ライセンスは `crates/sabitori-text/assets/LICENSE-{Hack,HackGen}.txt`。
 ///
 /// `test` でも取り込むのは、 wasm に載せる**そのバイト列**が本当にシェープ
 /// できることを native のテストから確かめるため。 native の実ビルドには
 /// 入らない。
-#[cfg(any(all(feature = "builtin-font", target_arch = "wasm32"), test))]
+///
+/// 両方の feature が立っていれば `-jp` が勝つ ── Cargo の feature は
+/// 加算的で排他にできないので、 「広い方を採る」で決めておく。
+#[cfg(any(all(feature = "builtin-font-jp", target_arch = "wasm32"), test))]
+pub(crate) const BUILTIN_FONT: &[u8] = include_bytes!("../assets/HackGen-Regular.ttf");
+
+#[cfg(all(
+    not(feature = "builtin-font-jp"),
+    not(test),
+    feature = "builtin-font-latin",
+    target_arch = "wasm32"
+))]
 pub(crate) const BUILTIN_FONT: &[u8] = include_bytes!("../assets/Hack-Regular.ttf");
+
+/// `-latin` 側のバイト列。 native のテストから、 こちらも単独でシェープ
+/// できることを確かめるために取り込む (実ビルドには入らない)。
+#[cfg(test)]
+pub(crate) const BUILTIN_FONT_LATIN: &[u8] = include_bytes!("../assets/Hack-Regular.ttf");
 
 /// フォントが 1 つも無いまま呼ばれたときの説明。
 ///
@@ -157,14 +189,17 @@ const NO_FONTS: &str = "sabitori: フォントが 1 つも読み込まれてい�
              vec![include_bytes!(\"../assets/fonts/YourFont.ttf\").to_vec()]\n\
          }\n\
      \n\
-     (sabitori-text の `builtin-font` feature が有効なら wasm には\n\
-     Hack Regular が自動で積まれる。 これが出ているなら feature が\n\
-     切られているか、 native で system fonts が 1 つも無い環境。)";
+     (既定では wasm に HackGen が自動で積まれる。 これが出ているなら\n\
+     `builtin-font-jp` / `builtin-font-latin` の両方が切られているか、\n\
+     native で system fonts が 1 つも無い環境。)";
 
 /// [`BUILTIN_FONT`] を DB に積む。 feature が切られている / native の実ビルド
 /// では何もしない。
 fn load_builtin_font(_db: &mut cosmic_text::fontdb::Database) {
-    #[cfg(all(feature = "builtin-font", target_arch = "wasm32"))]
+    #[cfg(all(
+        any(feature = "builtin-font-jp", feature = "builtin-font-latin"),
+        target_arch = "wasm32"
+    ))]
     _db.load_font_data(BUILTIN_FONT.to_vec());
 }
 
@@ -858,18 +893,21 @@ mod builtin_font_tests {
         s.measure_text(text, 16.0, false, false, None, None, None, Typography::default())
     }
 
-    /// 実際に選ばれたグリフ ID。 **0 は .notdef (豆腐)** なので、 「幅が出た」
-    /// では見分けられない「字が出ているか」をこれで見る。
-    fn glyph_ids(s: &mut TextShaper, text: &str) -> Vec<u16> {
-        let shape = TextShape {
+    fn shape() -> TextShape<'static> {
+        TextShape {
             font_size: 16.0,
             bold: false,
             monospace: false,
             font_family: None,
             wrap_width: None,
             typo: Typography::default(),
-        };
-        let buffer = s.shaped(text, shape);
+        }
+    }
+
+    /// 実際に選ばれたグリフ ID。 **0 は .notdef (豆腐)** なので、 「幅が出た」
+    /// では見分けられない「字が出ているか」をこれで見る。
+    fn glyph_ids(s: &mut TextShaper, text: &str) -> Vec<u16> {
+        let buffer = s.shaped(text, shape());
         buffer
             .layout_runs()
             .flat_map(|run| run.glyphs.iter().map(|g| g.glyph_id))
@@ -903,23 +941,81 @@ mod builtin_font_tests {
         );
     }
 
-    /// **CJK は入っていない。** 日本語 UI を web に出すなら、 アプリ側で
-    /// CJK フォントを渡す必要があることを固定しておく。
-    ///
-    /// ただし panic はしない ── レイアウトは出て、 日本語だけが豆腐になる。
-    /// 「真っ白で読めないスタックトレース」から「画面を見れば足りない物が
-    /// 分かる」への移動が、 組み込みフォントの効き目そのもの。
+    /// **既定の組み込みは日本語を描ける。** これが `-jp` を既定にした理由
+    /// そのもの ── wasm でも `fonts()` を 1 行も書かずに日本語 UI が出る。
     #[test]
-    fn the_bundled_font_does_not_cover_cjk_but_still_lays_out() {
+    fn the_bundled_font_covers_japanese() {
         let mut s = wasm_like_shaper();
+        let missing = s.missing_glyphs("日本語のテキスト、ひらがなとカタカナ。", shape());
+        assert!(
+            missing.is_empty(),
+            "既定の組み込みで日本語が描けない: {missing:?}"
+        );
+    }
+
+    /// `-latin` を選んだ場合は日本語が豆腐になる。 **ただし panic はしない** ──
+    /// レイアウトは出て、 日本語だけが描けない。 「真っ白で読めないスタック
+    /// トレース」から「画面を見れば足りない物が分かる」への移動が、 組み込み
+    /// フォントの効き目そのもの。
+    #[test]
+    fn the_latin_variant_lays_out_japanese_without_drawing_it() {
+        let mut s = TextShaper::with_fonts_only("ja", &[BUILTIN_FONT_LATIN.to_vec()]);
         let m = measure(&mut s, "日本語のテキスト");
         assert!(m.size.height > 0.0, "落ちずに行の高さは出ること: {m:?}");
-
-        let ids = glyph_ids(&mut s, "日本語");
         assert!(
-            ids.iter().all(|&id| id == 0),
-            "CJK が出てしまっている。 Hack に入っていないはずなので、 \
-             フォントを差し替えたならこのテストの前提を書き直すこと (glyph_id: {ids:?})"
+            !s.missing_glyphs("日本語", shape()).is_empty(),
+            "Hack に CJK は入っていないはず。 差し替えたならこの前提を書き直すこと"
+        );
+    }
+
+    /// `-latin` 側も単独でシェープできること。 既定から外れた経路は誰も
+    /// 通らないまま腐るので、 バイト列が生きているかはここで見る。
+    #[test]
+    fn the_latin_variant_still_shapes_on_its_own() {
+        let mut s = TextShaper::with_fonts_only("ja", &[BUILTIN_FONT_LATIN.to_vec()]);
+        let m = measure(&mut s, "Hello, sabitori");
+        assert!(m.size.width > 0.0, "{m:?}");
+        assert!(s.missing_glyphs("┌──┐ Hello", shape()).is_empty());
+    }
+
+    /// **Latin 2 文字 = 全角 1 文字** に乗っていること。
+    ///
+    /// TUI の見た目はこれが全て ── 罫線と日本語と英数字が同じ桁に揃うのは、
+    /// 全角の advance が半角のちょうど 2 倍だから。 Hack + システム日本語
+    /// フォントの組み合わせでは**この保証が無い**ので、 枠の中の日本語が
+    /// 1 文字ずつずれていく。 HackGen を選んだ理由はここ。
+    #[test]
+    fn the_bundled_font_puts_latin_and_cjk_on_one_grid() {
+        let mut s = wasm_like_shaper();
+        let two_latin = measure(&mut s, "AA").size.width;
+        let one_cjk = measure(&mut s, "あ").size.width;
+        assert!(
+            (two_latin - one_cjk).abs() <= 1.0,
+            "半角 2 文字 ({two_latin}) と全角 1 文字 ({one_cjk}) が揃っていない"
+        );
+    }
+
+    /// **組み込みを切り替えると英数字の幅は変わる。**
+    ///
+    /// HackGen の字形は Hack そのものだが、 advance は詰めてある
+    /// (Hack 0.602em → HackGen 0.527em)。 上のグリッドに乗せるためで、
+    /// 字形が同じでも**レイアウトは同じにならない**。
+    ///
+    /// 「Latin は Hack だから見た目は変わらない」は**誤り**。 feature を
+    /// 変えると桁は動く。 それを承知で切り替えるためにここに書いてある。
+    #[test]
+    fn switching_the_builtin_changes_latin_width() {
+        const SAMPLE: &str = "Hello, sabitori 0123";
+        let mut jp = wasm_like_shaper();
+        let mut latin = TextShaper::with_fonts_only("ja", &[BUILTIN_FONT_LATIN.to_vec()]);
+        let w_jp = measure(&mut jp, SAMPLE).size.width;
+        let w_latin = measure(&mut latin, SAMPLE).size.width;
+
+        assert!(w_jp < w_latin, "jp={w_jp} latin={w_latin}");
+        let ratio = w_jp / w_latin;
+        assert!(
+            (0.85..0.90).contains(&ratio),
+            "advance 比が想定 (0.527/0.602 ≒ 0.875) から外れた: {ratio:.3}"
         );
     }
 
