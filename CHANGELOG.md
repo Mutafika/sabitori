@@ -15,6 +15,17 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-20
+
+テキスト欄が修飾キーを見ていなかったのを直した版。
+
+⌥← / ⌘← / ⌥⌫ が全部「1 文字ぶん」だった。しかも `true` を返して消費していたので、
+アプリが自分で実装することもできなかった。ついでに ⇧⌘A と ⌃Enter も欄が食っていて、
+欄にフォーカスがある間だけアプリの独自ショートカットが死んでいた。
+
+[0.6.1](#061---2026-08-20) の ⌘C / ⌘X とまったく同じ「主張はするが実務はしない」
+構図が、同じ `match` の隣の arm に残っていたもの。
+
 ### Fixed
 
 - **テキスト欄の ⌥← / ⌘← / ⌥⌫ が「1 文字ぶん」しか動かなかった**
@@ -2317,7 +2328,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/Mutafika/sabitori/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Mutafika/sabitori/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Mutafika/sabitori/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Mutafika/sabitori/compare/v0.5.0...v0.5.1
