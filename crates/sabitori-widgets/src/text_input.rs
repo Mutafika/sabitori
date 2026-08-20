@@ -328,26 +328,29 @@ impl TextInputInner {
                 self.select_all();
                 true
             }
-            // Cmd+C / Cmd+X / Cmd+V are typically handled at a higher level
-            // (clipboard access requires platform APIs). We signal consumption
-            // so the app layer knows the intent.
-            Key::C if is_cmd => true,
-            Key::X if is_cmd => {
-                self.delete_selection();
-                true
-            }
-            // ⚠️ Cmd/Ctrl+V は **消費しない** (`false` を返す)。
+            // ⚠️ Cmd/Ctrl + C / X / V は **消費しない** (`false` を返す)。
             //
-            // ペーストの実体はランタイムがクリップボードを読んで
-            // `InputEvent::Paste` として配る (issue #20)。 ここで `true` を返すと
-            // 「このキーは処理済み」 とみなされてランタイムの既定動作 (= まさに
-            // そのクリップボード読み) が止まり、 **ペーストが永久に起きない**。
+            // **欄はクリップボードに触れない。** `sabitori-widgets` の依存は
+            // core / style / anim / input だけで、 `arboard` を持つのは 1 階層上の
+            // ランタイム (`sabitori`) だけ。 実務ができないのだから、 **主張も
+            // しない** — コピー / 切り取り / ペーストはランタイムが 1 箇所で
+            // やる。 材料はランタイムが全部持っている (クリップボードと、
+            // フォーカス中の欄のハンドル)。
             //
-            // 0.4.0 より前はここが `true` を返し、 コメントは「実際のペースト
+            // `true` を返すと逆に壊れる。 `true` は「処理済み、 以降不要」なので、
+            // ランタイムの既定動作 (= まさにそのクリップボード操作) が #18 の
+            // 仕組みで止まる。 **消費を通知する行為そのものが通知先を呼ばなく
+            // する**。 「担当は自分だが実務は上でやってくれ」 を表す値が `bool` に
+            // 無い以上、 主張しないことが唯一の委譲手段。
+            //
+            // 実際、 0.4.0 より前は V がこれで、 コメントは「実際のペースト
             // テキストは CharInput か ImeCommit で届く」 と言っていた。 が、
             // クリップボードを読むコードが repo に存在しなかったので何も届かず、
-            // 戻り値も誰も読んでいなかったので誰も気づかなかった。
-            Key::V if is_cmd => false,
+            // 戻り値も誰も読んでいなかったので誰も気づかなかった (issue #20)。
+            // C / X は同じ形のまま残っていて、 **⌘C は無反応、 ⌘X は選択が
+            // 消えるだけでクリップボードには何も入らない** (= 切り取った文字列が
+            // どこにも残らない) 状態だった (issue #33)。
+            Key::C | Key::X | Key::V if is_cmd => false,
             Key::Z if is_cmd => {
                 // Undo is not yet implemented.
                 false
@@ -561,8 +564,8 @@ impl TextInputInner {
 /// # 配線は要らない
 ///
 /// [`text_input`] を `view()` に置いた時点で、 **ランタイムがこの欄を面倒見ます**。
-/// キー入力も IME もペーストもここへ届き、 キャレットの点滅も進み、 フォーカス
-/// 状態も反映される。 アプリ側に書くことは何もありません。
+/// キー入力も IME もクリップボード (⌘C / ⌘X / ⌘V) もここへ届き、 キャレットの
+/// 点滅も進み、 フォーカス状態も反映される。 アプリ側に書くことは何もありません。
 ///
 /// ```ignore
 /// struct App { name: TextInputState }
@@ -696,6 +699,26 @@ impl TextInputState {
         self.0.borrow_mut().on_focused_input(event)
     }
 
+    /// 選択を切り取って、 消した文字列を返す。 選択が無ければ `None` で、
+    /// 本文は変わらない。
+    ///
+    /// **クリップボードへ入れるのは呼び手 (ランタイム)。** 欄は arboard を
+    /// 持たないので、 「消す」 と「クリップボードに入れる」 を 1 つの関数には
+    /// できない。 消した文字列を返すことで、 ⌘X が「消えるのにどこにも残らない」
+    /// 形になるのを防ぐ (issue #33)。
+    #[doc(hidden)]
+    pub fn cut_selection(&self) -> Option<String> {
+        let mut inner = self.0.borrow_mut();
+        let (lo, hi) = inner.selection_range()?;
+        let cut = inner.text.get(lo..hi)?.to_string();
+        // 打鍵と同じ扱い — 未解決のクリックは捨てる。 残すと、 切り取った後で
+        // カーソルだけ押した場所へ飛ぶ ([`TextInputInner::on_key`] と同じ理由)。
+        inner.cancel_pending_click();
+        inner.preedit.clear();
+        inner.delete_selection();
+        Some(cut)
+    }
+
     /// キャレット点滅を進める。
     #[doc(hidden)]
     pub fn advance(&self, dt: f32) {
@@ -743,6 +766,17 @@ impl TextInputState {
     /// 選択範囲 (バイト)。 描画用。
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         self.0.borrow().selection_range()
+    }
+
+    /// 選択されている文字列。 選択が無ければ `None`。
+    ///
+    /// ランタイムがコピー (⌘C) で呼ぶ。 **バイト範囲の切り出しは欄の中に閉じて
+    /// おく** — 範囲を持っているのは欄なので、 外で `text()[lo..hi]` をやると
+    /// char 境界の責任が 2 箇所に分かれる。
+    pub fn selected_text(&self) -> Option<String> {
+        let inner = self.0.borrow();
+        let (lo, hi) = inner.selection_range()?;
+        inner.text.get(lo..hi).map(str::to_string)
     }
 
     /// 実測したキャレット位置を記録する ([`text_input`] が呼ぶ)。
@@ -1353,8 +1387,10 @@ mod caret_tests {
     }
 }
 
+/// クリップボード系 (ペースト / コピー / 切り取り)。 欄は**触れない**ので、
+/// ここで見るのは「主張しないこと」と「上に渡す材料が正しいこと」の 2 点。
 #[cfg(test)]
-mod paste_tests {
+mod clipboard_tests {
     use super::*;
     use sabitori_input::{InputEvent, Key, Modifiers};
 
@@ -1390,6 +1426,74 @@ mod paste_tests {
         let mut s = TextInputInner::new("placeholder");
         s.on_focused_input(&InputEvent::Paste { text: "a\r\nb\nc".into() });
         assert_eq!(s.text, "a  b c");
+    }
+
+    /// **issue #33 の要点。** Cmd/Ctrl + C / X も消費してはいけない。
+    ///
+    /// 欄はクリップボードに触れない (arboard はランタイム側の依存) ので、
+    /// 実務は上でやるしかない。 なのに `true` を返すと #18 の仕組みで上の
+    /// 既定動作が止まり、 **主張した本人だけが呼ばれない**状態になる。
+    ///
+    /// ⌘X が選択を消していたのは特に悪い — 消えるのにクリップボードには入って
+    /// いないので、 切り取った文字列がどこにも残らなかった。 消すのは
+    /// [`TextInputState::cut_selection`] の仕事で、 呼ぶのはランタイム。
+    #[test]
+    fn the_copy_and_cut_shortcuts_are_not_consumed() {
+        let mut s = TextInputInner::new("placeholder");
+        for ch in "abcd".chars() {
+            s.on_char(ch);
+        }
+        s.select_all();
+        let primary = if cfg!(target_os = "macos") {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        assert!(
+            !s.on_key(Key::C, primary),
+            "消費するとランタイムがクリップボードに書かなくなる"
+        );
+        assert!(
+            !s.on_key(Key::X, primary),
+            "消費するとランタイムがクリップボードに書かなくなる"
+        );
+        assert_eq!(
+            s.text, "abcd",
+            "欄が自分で消してはいけない — クリップボードに入る前に消えると、 \
+             切り取った文字列がどこにも残らない"
+        );
+    }
+
+    /// 切り取りは「消した文字列を返す」。 クリップボードへ入れるのは呼び手。
+    #[test]
+    fn cut_selection_returns_what_it_removed() {
+        let s = TextInputState::new("placeholder");
+        s.set_text("abcd");
+        assert_eq!(s.cut_selection(), None, "選択が無ければ何も起きない");
+        assert_eq!(s.text(), "abcd");
+
+        s.with_mut(|inner| {
+            inner.selection_start = Some(1);
+            inner.cursor_pos = 3;
+        });
+        assert_eq!(s.selected_text().as_deref(), Some("bc"));
+        assert_eq!(s.cut_selection().as_deref(), Some("bc"));
+        assert_eq!(s.text(), "ad");
+        assert_eq!(s.selected_text(), None, "切り取った後に選択は残らない");
+    }
+
+    /// マルチバイトでも文字境界で切れること (`text()[lo..hi]` を欄の外でやると
+    /// ここが呼び手の責任になる)。
+    #[test]
+    fn cut_selection_handles_multibyte() {
+        let s = TextInputState::new("placeholder");
+        s.set_text("あいう");
+        s.with_mut(|inner| {
+            inner.selection_start = Some(3);
+            inner.cursor_pos = 9;
+        });
+        assert_eq!(s.cut_selection().as_deref(), Some("いう"));
+        assert_eq!(s.text(), "あ");
     }
 
     /// **issue #20 の要点。** Cmd/Ctrl+V は消費してはいけない。
