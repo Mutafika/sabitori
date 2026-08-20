@@ -530,7 +530,11 @@ impl TextInputInner {
                 self.pending = Some(PendingMove::Down { select: modifiers.shift });
                 true
             }
-            Key::A if is_cmd => {
+            // ⌘A / Ctrl+A = 全選択。 **余分な修飾キーが乗っていたら主張しない** —
+            // ⇧⌘A や ⌥⌘A は全選択ではないし、 アプリの独自ショートカットとして
+            // ごく普通に使われる。 `is_cmd` だけ見ていると、 欄にフォーカスが
+            // ある間そのバインドが死ぬ。
+            Key::A if is_cmd && !modifiers.shift && !modifiers.alt => {
                 self.select_all();
                 true
             }
@@ -563,7 +567,12 @@ impl TextInputInner {
             }
             // 複数行の欄では Enter が改行。 単一行では**消費せず**アプリへ流す
             // (検索欄の「決定」やフォーム送信がそこにぶら下がっている)。
-            Key::Enter if self.multiline && !is_cmd => {
+            //
+            // 改行にするのは**素の Enter と ⇧Enter だけ**。 ⌘/⌃/⌥ が乗った
+            // Enter は「送信」「実行」に割り当てられているのが普通なので、
+            // アプリに渡す (0.6.1 までは `!is_cmd` しか見ておらず、 macOS の
+            // ⌃Enter と ⌥Enter を改行として食っていた)。
+            Key::Enter if self.multiline && !modified => {
                 self.delete_selection();
                 self.insert_char('\n');
                 true
@@ -1841,6 +1850,62 @@ mod nav_tests {
         }
         assert_eq!(s.text, "hello world", "本文が変わっていないこと");
         assert_eq!(s.cursor_pos, 5, "キャレットが動いていないこと");
+    }
+
+    /// **アプリが自分のショートカットに使える組み合わせ**を固定する。
+    ///
+    /// 欄が食ってしまうと、 ランタイムは「消費済み」として `on_focused_input` も
+    /// `on_input` も呼ばない (#18) ので、 **欄にフォーカスがある間だけアプリの
+    /// バインドが死ぬ**。 気づきにくく、 アプリ側では回避できない。
+    #[test]
+    fn the_field_leaves_app_shortcuts_alone() {
+        let cmd = if MAC {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        let cases: [(Key, Modifiers); 8] = [
+            // 文字キーは修飾キーが何であれ欄の担当ではない。
+            (Key::K, cmd),
+            (Key::K, with_shift(cmd)),
+            (Key::Z, cmd),
+            // ⌘A は全選択だが、 ⇧ や ⌥ が足されたらもう全選択ではない。
+            (Key::A, with_shift(cmd)),
+            (Key::A, { let mut m = cmd; m.alt = true; m }),
+            // 実装していない修飾キー付きの移動。
+            (Key::Left, unimplemented_mod()),
+            // 「送信」に使われる Enter たち。
+            (Key::Enter, cmd),
+            (Key::Enter, { let mut m = Modifiers::default(); m.alt = true; m }),
+        ];
+        for (key, mods) in cases {
+            let mut s = field("hello world", 5);
+            s.multiline = true;
+            assert!(
+                !s.on_key(key, mods),
+                "{key:?} + {mods:?} は欄の担当ではない — 食うとアプリのバインドが死ぬ"
+            );
+        }
+    }
+
+    /// 逆に、 **欄が責任を持つ組み合わせ**は食うこと。 上の裏返しで、
+    /// 「全部落とせば安全」に倒れていないことを見る。
+    #[test]
+    fn the_field_owns_its_own_editing_keys() {
+        let none = Modifiers::default();
+        let cases: [(Key, Modifiers); 6] = [
+            (Key::Left, none),
+            (Key::Left, with_shift(none)),
+            (Key::Left, word()),
+            (Key::Backspace, none),
+            (Key::Backspace, word()),
+            (Key::Enter, with_shift(none)),
+        ];
+        for (key, mods) in cases {
+            let mut s = field("hello world", 5);
+            s.multiline = true;
+            assert!(s.on_key(key, mods), "{key:?} + {mods:?} は欄の担当");
+        }
     }
 
     /// 素のキーは今までどおり 1 文字ぶん動く (回帰よけ)。
