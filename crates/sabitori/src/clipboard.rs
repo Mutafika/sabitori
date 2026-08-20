@@ -37,22 +37,33 @@ pub fn read_text() -> Option<String> {
     }
 }
 
-/// クリップボードにテキストを書く。 失敗は握りつぶす（コピーできないだけで、
-/// アプリを止める理由にはならない）。
-pub fn write_text(text: &str) {
+/// クリップボードにテキストを書く。 **書けたら `true`**。
+///
+/// エラーそのものは握りつぶす（コピーできないだけで、 アプリを止める理由には
+/// ならない）が、 **成否は返す**。 切り取りが「書いてから消す」を守れるように
+/// するため — 消してから書きに行くと、 書けなかったときに切り取った文字列が
+/// どこにも残らない (issue #33 の症状そのもの)。 wasm はまだ書けないので
+/// 常に `false`。
+pub fn write_text(text: &str) -> bool {
     #[cfg(test)]
     {
+        if !TEST_WRITABLE.with(|w| w.get()) {
+            return false;
+        }
         TEST_CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
+        true
     }
     #[cfg(all(not(test), not(target_arch = "wasm32")))]
     {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(text.to_string());
+        match arboard::Clipboard::new() {
+            Ok(mut cb) => cb.set_text(text.to_string()).is_ok(),
+            Err(_) => false,
         }
     }
     #[cfg(all(not(test), target_arch = "wasm32"))]
     {
         let _ = text;
+        false
     }
 }
 
@@ -71,11 +82,26 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// テスト用: 「クリップボード」を空にする。 テストは同じスレッドで連続して
-/// 走るので、 前のテストが書いた値が残る。
+/// テスト用: 書き込みが成功するかどうか。 `false` にすると
+/// [`write_text`] が「書けなかった」を返す (wasm や、 arboard がハンドルを
+/// 開けない環境の再現)。
+#[cfg(test)]
+thread_local! {
+    static TEST_WRITABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// テスト用: 「クリップボード」を空にして、 書き込みを成功に戻す。 テストは
+/// 同じスレッドで連続して走るので、 前のテストが書いた値と設定が残る。
 #[cfg(test)]
 pub(crate) fn test_clear() {
     TEST_CLIPBOARD.with(|c| *c.borrow_mut() = None);
+    TEST_WRITABLE.with(|w| w.set(true));
+}
+
+/// テスト用: 以降の [`write_text`] を失敗させる / 戻す。
+#[cfg(test)]
+pub(crate) fn test_set_writable(writable: bool) {
+    TEST_WRITABLE.with(|w| w.set(writable));
 }
 
 /// このキー入力がペーストの要求か。 macOS は Cmd、 他は Ctrl。

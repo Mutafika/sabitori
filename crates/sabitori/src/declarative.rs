@@ -2511,6 +2511,10 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 切り取りは成立しない。 クリップボードにだけ入れて元が残る形にはしない —
     /// それはコピーを切り取りと名乗らせるのと同じで、 「切り取ったのに残っている」
     /// という嘘になる。 何も起きない方が正直。
+    ///
+    /// 切り取りは **書けてから消す**。 順序が逆だと、 クリップボードに書けなかった
+    /// とき (wasm、 arboard がハンドルを開けない環境) に切り取った文字列がどこにも
+    /// 残らない — issue #33 で報告された症状そのものを、 別の原因で再現してしまう。
     fn copy_or_cut(&mut self, cut: bool) {
         // 欄は `Rc` なので、 ハンドルを 1 つ複製して `self` の借用から外す
         // (`&mut self` と `managed_text_field` の借用が重なるため)。
@@ -2522,9 +2526,11 @@ impl<A: DeclarativeApp> AppState<A> {
             Some(field) => {
                 // 切り出しは欄の中でやる — 選択範囲を持っているのは欄なので、
                 // char 境界の責任をここに持ち込まない。
-                let text = if cut { field.cut_selection() } else { field.selected_text() };
-                if let Some(text) = text.filter(|t| !t.is_empty()) {
-                    crate::clipboard::write_text(&text);
+                let Some(text) = field.selected_text().filter(|t| !t.is_empty()) else {
+                    return;
+                };
+                if crate::clipboard::write_text(&text) && cut {
+                    field.cut_selection();
                 }
             }
             None if !cut => {
@@ -4568,6 +4574,20 @@ mod clipboard_tests {
         h.key(Key::V, primary());
 
         assert_eq!(h.app().name.text(), "abcd");
+    }
+
+    /// **書けなかったら消さない。** 順序が逆だと、 クリップボードに書けない環境
+    /// (wasm、 arboard がハンドルを開けない環境) で「消えたのにどこにも残らない」
+    /// が復活する — issue #33 で報告された症状そのもの。
+    #[test]
+    fn cut_keeps_the_text_when_the_clipboard_write_fails() {
+        let mut h = selected_field();
+        crate::clipboard::test_set_writable(false);
+
+        h.key(Key::X, primary());
+
+        assert_eq!(h.app().name.text(), "abcd", "書けなかったのだから消さない");
+        crate::clipboard::test_set_writable(true);
     }
 
     /// 選択が無ければクリップボードは書き換えない。 「⌘C を押したら手元の
