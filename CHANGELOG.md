@@ -15,6 +15,15 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-20
+
+⌘C / ⌘X がテキスト欄で効かなかったのを直した版。
+
+⌘C は無反応、⌘X は選択が消えるだけでクリップボードには何も入らない。切り取った
+文字列がどこにも残らないので、戻す手段が無かった。原因は「消費を通知する行為
+そのものが通知先を呼ばなくする」形になっていたこと — 欄は `true`（＝「意図を上に
+知らせる」つもり）を返していたが、その `true` がランタイムの既定動作を止めていた。
+
 ### Fixed
 
 - **⌘C / ⌘X がテキスト欄で効かなかった。⌘C は無反応、⌘X は選択が消えるだけで
@@ -2259,7 +2268,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Mutafika/sabitori/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Mutafika/sabitori/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Mutafika/sabitori/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Mutafika/sabitori/compare/v0.4.0...v0.5.0
