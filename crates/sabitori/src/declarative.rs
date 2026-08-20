@@ -2495,6 +2495,47 @@ impl<A: DeclarativeApp> AppState<A> {
     
     }
 
+    /// ⌘/Ctrl + C・X の実務。 `cut` が立っていれば切り取り、 でなければコピー。
+    ///
+    /// **能力を持つ層はここだけ。** 欄 (`sabitori-widgets`) の依存は
+    /// core / style / anim / input で、 `arboard` はこの crate にしか無い。
+    /// 欄はキーを消費せずに降ろしてくる (`TextInputInner::on_key`) ので、
+    /// 受け取ってここで完結させる (issue #33)。
+    ///
+    /// | フォーカス | コピー元 | 切り取り |
+    /// |---|---|---|
+    /// | 登録済みの欄 | その欄の選択範囲 | できる |
+    /// | それ以外 | 画面の視覚選択 (`selected_text`) | **しない** |
+    ///
+    /// 視覚選択 (画面のテキストをドラッグでなぞったもの) は**読み取り専用**なので、
+    /// 切り取りは成立しない。 クリップボードにだけ入れて元が残る形にはしない —
+    /// それはコピーを切り取りと名乗らせるのと同じで、 「切り取ったのに残っている」
+    /// という嘘になる。 何も起きない方が正直。
+    fn copy_or_cut(&mut self, cut: bool) {
+        // 欄は `Rc` なので、 ハンドルを 1 つ複製して `self` の借用から外す
+        // (`&mut self` と `managed_text_field` の借用が重なるため)。
+        let field = self
+            .focused_id
+            .clone()
+            .and_then(|id| self.managed_text_field(&id).cloned());
+        match field {
+            Some(field) => {
+                // 切り出しは欄の中でやる — 選択範囲を持っているのは欄なので、
+                // char 境界の責任をここに持ち込まない。
+                let text = if cut { field.cut_selection() } else { field.selected_text() };
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
+                    crate::clipboard::write_text(&text);
+                }
+            }
+            None if !cut => {
+                if let Some(text) = self.selected_text() {
+                    crate::clipboard::write_text(&text);
+                }
+            }
+            None => {}
+        }
+    }
+
     pub(crate) fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
         // 配る順が要点: **アプリが先、既定動作があと**。
         //
@@ -2527,14 +2568,26 @@ impl<A: DeclarativeApp> AppState<A> {
         // 既定動作は押下のみ、 かつ誰も消費しなかったときだけ。 解放でも走らせると
         // ⇧を離しただけで選択が消える、といった挙動になる。
         if pressed && !handled {
-            // Cmd+C (macOS) / Ctrl+C (other): 選択テキストをクリップボードへ。
-            // 0.4.0 より前は macOS 専用 (pbcopy サブプロセス) で、 他は
-            // `let _ = text;` と捨てていた (issue #20)。
+            // ── クリップボード (⌘/Ctrl + C / X / V) ─────────────────────
+            //
+            // **3 つともここに置く。** クリップボード (`arboard`) を触れる層は
+            // ランタイムだけなので、 欄 (`sabitori-widgets`) は主張せずに降って
+            // くるのを待つ。 欄が `true` を返して「上でやってくれ」を表そうとすると、
+            // その `true` が #18 の仕組みでここを止めてしまい、 **通知先が消える**
+            // (issue #33 — ⌘C が無反応、 ⌘X は消えるだけだった)。
+            //
+            // 対象の決め方は 3 つで揃えてある:
+            //
+            // | フォーカス | 対象 |
+            // |---|---|
+            // | 登録済みの欄 | その欄の選択範囲 |
+            // | それ以外 | 画面の視覚選択 / アプリ |
             let is_copy = crate::clipboard::is_copy_shortcut(key, self.modifiers);
-            if is_copy {
-                if let Some(text) = self.selected_text() {
-                    crate::clipboard::write_text(&text);
-                }
+            let is_cut = crate::clipboard::is_cut_shortcut(key, self.modifiers);
+            if is_copy || is_cut {
+                // 0.4.0 より前のコピーは macOS 専用 (pbcopy サブプロセス) で、
+                // 他は `let _ = text;` と捨てていた (issue #20)。
+                self.copy_or_cut(is_cut);
             }
             // Cmd+V (macOS) / Ctrl+V (other): クリップボードを読んで 1 イベントで配る。
             //
@@ -4401,5 +4454,151 @@ mod highlight_tests {
         fn view(&self, _ctx: &ViewContext) -> Element {
             sabitori_core::div()
         }
+    }
+}
+
+/// クリップボード (⌘C / ⌘X / ⌘V) を**ランタイム経由で**通す。
+///
+/// unit test に置いてあるのは、 `clipboard::write_text` / `read_text` が
+/// `cfg(test)` のときだけスレッドローカルの偽クリップボードを見るため
+/// (`tests/` の integration test からは実物が見える)。 実クリップボードを叩くと、
+/// `cargo test` で開発者の手元の内容が消え、 ヘッドレスな CI では結果が環境依存に
+/// なる。
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use crate::testing::Harness;
+    use sabitori_core::Px;
+    use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
+
+    struct Form {
+        name: TextInputState,
+    }
+
+    impl Form {
+        fn new() -> Self {
+            Self { name: TextInputState::new("名前") }
+        }
+
+        fn style() -> TextInputStyle {
+            TextInputStyle {
+                bg: sabitori_core::Color::from_hex("#202020"),
+                border: sabitori_core::Color::from_hex("#404040"),
+                text: sabitori_core::Color::WHITE,
+                placeholder: sabitori_core::Color::from_hex("#808080"),
+                font_size: 14.0,
+                radius: 4.0,
+                padding: 8.0,
+                focus_border: None,
+                caret: None,
+                preedit: None,
+                selection: None,
+            }
+        }
+    }
+
+    impl DeclarativeApp for Form {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            sabitori_core::div()
+                .flex_col()
+                .w_full()
+                .h_full()
+                .children([
+                    text_input(ctx, "name", &self.name, &Self::style()),
+                    sabitori_core::div().id("elsewhere").w_full().h(Px(40.0)),
+                ])
+        }
+    }
+
+    fn primary() -> Modifiers {
+        if cfg!(target_os = "macos") {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        }
+    }
+
+    /// 欄にフォーカスを置いて "abcd" を全選択した状態を作る。
+    fn selected_field() -> Harness<Form> {
+        crate::clipboard::test_clear();
+        let mut h = Harness::new(Form::new(), 400.0, 200.0);
+        h.frame();
+        h.click("name");
+        h.text("abcd");
+        h.key(Key::A, primary()); // Select all.
+        h
+    }
+
+    /// **issue #33 の本体。** ⌘C が実際にクリップボードへ書くこと。
+    ///
+    /// 以前は欄が `Key::C` を消費して `true` を返し、 ランタイムのコピーが
+    /// `!handled` の内側で止まっていたので、 **何も起きなかった**。
+    #[test]
+    fn copy_writes_the_field_selection() {
+        let mut h = selected_field();
+
+        h.key(Key::C, primary());
+
+        assert_eq!(crate::clipboard::read_text().as_deref(), Some("abcd"));
+        assert_eq!(h.app().name.text(), "abcd", "コピーは本文を変えない");
+    }
+
+    /// **issue #33 の本体。** ⌘X が「消す」だけでなく「残す」こと。
+    ///
+    /// 以前は欄が自分で `delete_selection()` してから `true` を返していたので、
+    /// 選択は消えるのにクリップボードには何も入らず、 切り取った文字列が
+    /// どこにも残らなかった。
+    #[test]
+    fn cut_removes_the_selection_and_keeps_it() {
+        let mut h = selected_field();
+
+        h.key(Key::X, primary());
+
+        assert_eq!(h.app().name.text(), "", "切り取ったので本文からは消える");
+        assert_eq!(crate::clipboard::read_text().as_deref(), Some("abcd"));
+    }
+
+    /// 切り取ったものが**戻せる**こと。 C・X・V が 1 本の経路に乗っている
+    /// ことの確認でもある。
+    #[test]
+    fn cut_then_paste_restores_the_text() {
+        let mut h = selected_field();
+
+        h.key(Key::X, primary());
+        h.key(Key::V, primary());
+
+        assert_eq!(h.app().name.text(), "abcd");
+    }
+
+    /// 選択が無ければクリップボードは書き換えない。 「⌘C を押したら手元の
+    /// コピー内容が空文字で消えた」 を防ぐ。
+    #[test]
+    fn copy_without_a_selection_leaves_the_clipboard_alone() {
+        crate::clipboard::test_clear();
+        crate::clipboard::write_text("前に入れたもの");
+        let mut h = Harness::new(Form::new(), 400.0, 200.0);
+        h.frame();
+        h.click("name");
+        h.text("abcd"); // 打っただけ。 選択はしていない。
+
+        h.key(Key::C, primary());
+        h.key(Key::X, primary());
+
+        assert_eq!(crate::clipboard::read_text().as_deref(), Some("前に入れたもの"));
+        assert_eq!(h.app().name.text(), "abcd");
+    }
+
+    /// 欄にフォーカスが無いときの ⌘X は**何もしない**。 画面の視覚選択は
+    /// 読み取り専用なので、 消せないものを「切り取った」ことにはしない。
+    #[test]
+    fn cut_without_a_focused_field_does_nothing() {
+        crate::clipboard::test_clear();
+        crate::clipboard::write_text("前に入れたもの");
+        let mut h = Harness::new(Form::new(), 400.0, 200.0);
+        h.frame();
+
+        h.key(Key::X, primary());
+
+        assert_eq!(crate::clipboard::read_text().as_deref(), Some("前に入れたもの"));
     }
 }

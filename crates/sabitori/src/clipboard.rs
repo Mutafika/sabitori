@@ -15,7 +15,11 @@
 /// 呼ぶたびにハンドルを作る。 ペーストはユーザ操作の頻度なので、 ハンドルを
 /// 持ち回してライフタイムを増やすより素直。
 pub fn read_text() -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(test)]
+    {
+        TEST_CLIPBOARD.with(|c| c.borrow().clone())
+    }
+    #[cfg(all(not(test), not(target_arch = "wasm32")))]
     {
         let mut cb = arboard::Clipboard::new().ok()?;
         let text = cb.get_text().ok()?;
@@ -25,7 +29,7 @@ pub fn read_text() -> Option<String> {
             Some(text)
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(not(test), target_arch = "wasm32"))]
     {
         // navigator.clipboard.readText() は Promise を返すので、 この同期 API には
         // 載らない。 wasm でのペーストは別の形（イベント経由）が要る。
@@ -36,16 +40,42 @@ pub fn read_text() -> Option<String> {
 /// クリップボードにテキストを書く。 失敗は握りつぶす（コピーできないだけで、
 /// アプリを止める理由にはならない）。
 pub fn write_text(text: &str) {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(test)]
+    {
+        TEST_CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
+    }
+    #[cfg(all(not(test), not(target_arch = "wasm32")))]
     {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             let _ = cb.set_text(text.to_string());
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(not(test), target_arch = "wasm32"))]
     {
         let _ = text;
     }
+}
+
+/// テスト中の「クリップボード」。 **実クリップボードには触らない。**
+///
+/// 2 つ理由がある。 `cargo test` を回しただけで開発者のクリップボードが黙って
+/// 書き換わるのは事故だし、 CI (ヘッドレス) にはそもそもクリップボードが無い
+/// ので、 実物を叩くテストは環境で結果が変わる。
+///
+/// この差し替えが効くのは **`sabitori` 自身の unit test だけ** (`cfg(test)` は
+/// crate 単位)。 `tests/` の integration test からは実物が見えるので、
+/// クリップボードの中身を assert するテストは unit test 側に置くこと。
+#[cfg(test)]
+thread_local! {
+    static TEST_CLIPBOARD: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// テスト用: 「クリップボード」を空にする。 テストは同じスレッドで連続して
+/// 走るので、 前のテストが書いた値が残る。
+#[cfg(test)]
+pub(crate) fn test_clear() {
+    TEST_CLIPBOARD.with(|c| *c.borrow_mut() = None);
 }
 
 /// このキー入力がペーストの要求か。 macOS は Cmd、 他は Ctrl。
@@ -70,6 +100,18 @@ pub fn is_copy_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Mod
     key == sabitori_input::Key::C && primary
 }
 
+/// このキー入力が切り取りの要求か。
+///
+/// ⇧+Delete（Windows の古い慣習）は見ていない。 必要なら足すこと。
+pub fn is_cut_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.meta
+    } else {
+        modifiers.ctrl
+    };
+    key == sabitori_input::Key::X && primary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +124,7 @@ mod tests {
         let none = Modifiers::default();
         assert!(!is_paste_shortcut(Key::V, none));
         assert!(!is_copy_shortcut(Key::C, none));
+        assert!(!is_cut_shortcut(Key::X, none));
     }
 
     /// プラットフォームの主修飾キーと組んだときだけ成立すること。
@@ -94,6 +137,7 @@ mod tests {
         };
         assert!(is_paste_shortcut(Key::V, primary));
         assert!(is_copy_shortcut(Key::C, primary));
+        assert!(is_cut_shortcut(Key::X, primary));
         // 別のキーは巻き込まない。
         assert!(!is_paste_shortcut(Key::B, primary));
     }
@@ -107,5 +151,6 @@ mod tests {
             Modifiers { meta: true, ..Default::default() }
         };
         assert!(!is_paste_shortcut(Key::V, other));
+        assert!(!is_cut_shortcut(Key::X, other));
     }
 }
