@@ -80,8 +80,99 @@ pub enum PendingMove {
     LineStart { select: bool },
     /// 視覚行の末尾。
     LineEnd { select: bool },
+    /// 視覚行の先頭までを**削除**する (⌘⌫)。 折り返した行の先頭は実測しないと
+    /// 分からないので、 移動と同じ経路に乗せる。
+    DeleteToLineStart,
     /// この座標 (欄の内側が原点) にキャレットを置く。 クリック用。
     ToPoint { x: f32, y: f32, select: bool },
+}
+
+/// 単語境界の判定に使う文字の種別。
+///
+/// **日本語には単語を区切る空白が無い。** 空白だけを境界にすると
+/// 「今日は良い天気ですね」が丸ごと 1 単語になり、 ⌥← が Home と同じ動きに
+/// なってしまう。 macOS のネイティブな欄と同じく、 **文字種の変わり目**を
+/// 境界として扱う — 「私はカタカナとひらがな」なら 私 / は / カタカナ / と /
+/// ひらがな で止まる。
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum CharClass {
+    /// 空白。 単語の一部にはならず、 常に飛ばされる。
+    Space,
+    /// ラテン・数字・ハングル・キリルなど、 空白で区切られる文字。
+    Word,
+    Hiragana,
+    Katakana,
+    Han,
+    /// 記号・句読点。 空白と同じく飛ばされる (macOS の ⌥→ は `foo, bar` で
+    /// `,` に止まらず `bar` の末尾まで行く)。
+    Other,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_whitespace() {
+        return CharClass::Space;
+    }
+    if !c.is_alphanumeric() {
+        return CharClass::Other;
+    }
+    match c {
+        // 繰り返し記号・長音符は直前の文字種に付くのが自然だが、 単独で
+        // 判定できる方が単純なので、 それぞれの仮名に寄せる。
+        '\u{3041}'..='\u{309F}' => CharClass::Hiragana,
+        '\u{30A0}'..='\u{30FF}' | '\u{FF66}'..='\u{FF9F}' => CharClass::Katakana,
+        '\u{3005}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}'
+        | '\u{F900}'..='\u{FAFF}' => CharClass::Han,
+        _ => CharClass::Word,
+    }
+}
+
+/// 空白と記号は「単語ではない」。 単語移動はこれらを飛ばしてから run を取る。
+fn is_skippable(class: CharClass) -> bool {
+    matches!(class, CharClass::Space | CharClass::Other)
+}
+
+/// `i` より前にある単語の先頭。
+fn prev_word_boundary(text: &str, i: usize) -> usize {
+    let mut i = floor_boundary(text, i.min(text.len()));
+    let prev = |i: usize| text[..i].chars().next_back();
+    let step_back = |i: usize| i - text[..i].chars().next_back().map_or(0, char::len_utf8);
+    // 1. 単語でないもの (空白・記号) を飛ばす。
+    while i > 0 && prev(i).map(char_class).is_some_and(is_skippable) {
+        i = step_back(i);
+    }
+    // 2. 同じ文字種が続くあいだ戻る。
+    let Some(class) = prev(i).map(char_class) else {
+        return i;
+    };
+    while i > 0 && prev(i).map(char_class) == Some(class) {
+        i = step_back(i);
+    }
+    i
+}
+
+/// `i` より後にある単語の末尾。
+fn next_word_boundary(text: &str, i: usize) -> usize {
+    let mut i = floor_boundary(text, i.min(text.len()));
+    let next = |i: usize| text[i..].chars().next();
+    let step_fwd = |i: usize| i + text[i..].chars().next().map_or(0, char::len_utf8);
+    while i < text.len() && next(i).map(char_class).is_some_and(is_skippable) {
+        i = step_fwd(i);
+    }
+    let Some(class) = next(i).map(char_class) else {
+        return i;
+    };
+    while i < text.len() && next(i).map(char_class) == Some(class) {
+        i = step_fwd(i);
+    }
+    i
+}
+
+/// `i` を char 境界まで切り下げる。 バイト位置を扱う計算の保険。
+fn floor_boundary(text: &str, mut i: usize) -> usize {
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 impl TextInputInner {
@@ -156,6 +247,47 @@ impl TextInputInner {
                 .map(|(i, _)| self.cursor_pos + i)
                 .unwrap_or(self.text.len());
         }
+    }
+
+    /// `lo..hi` を消してキャレットを `lo` に置く。 選択は畳む。
+    ///
+    /// 単語削除 (⌥⌫) や行頭まで削除 (⌘⌫) の実体。 範囲は呼び手が
+    /// [`prev_word_boundary`] などで出すので、 ここは char 境界の保険だけ見る。
+    pub fn delete_range(&mut self, lo: usize, hi: usize) {
+        let lo = floor_boundary(&self.text, lo.min(self.text.len()));
+        let hi = floor_boundary(&self.text, hi.min(self.text.len()));
+        if lo >= hi {
+            return;
+        }
+        self.text.drain(lo..hi);
+        self.cursor_pos = lo;
+        self.selection_start = None;
+    }
+
+    /// キャレットから見て前の単語の先頭 (⌥← / Ctrl+← の行き先)。
+    pub fn prev_word(&self) -> usize {
+        prev_word_boundary(&self.text, self.cursor_pos)
+    }
+
+    /// キャレットから見て次の単語の末尾 (⌥→ / Ctrl+→ の行き先)。
+    pub fn next_word(&self) -> usize {
+        next_word_boundary(&self.text, self.cursor_pos)
+    }
+
+    /// キャレットの居る段落 (`\n` 区切り) の先頭。
+    pub fn paragraph_start(&self) -> usize {
+        self.text[..self.cursor_pos]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    /// キャレットの居る段落の末尾。
+    pub fn paragraph_end(&self) -> usize {
+        self.text[self.cursor_pos..]
+            .find('\n')
+            .map(|i| self.cursor_pos + i)
+            .unwrap_or(self.text.len())
     }
 
     pub fn move_home(&mut self) {
@@ -242,6 +374,26 @@ impl TextInputInner {
         } else {
             modifiers.ctrl
         };
+        // 移動・削除の「単位」を決める修飾キー。 プラットフォームで名前が違う
+        // だけで、 意味は同じ:
+        //
+        // |          | macOS | Windows / Linux |
+        // |---|---|---|
+        // | 単語単位 | ⌥ | Ctrl |
+        // | 行頭・行末 | ⌘ | Home / End キー |
+        // | 文書の先頭・末尾 | ⌘↑ / ⌘↓ | Ctrl+Home / Ctrl+End |
+        //
+        // Windows / Linux に「行頭へ動く修飾キー」は無い (Home キーが担当) ので
+        // `line_mod` は macOS でしか立たない。 ここで嘘の対応表を作ると、
+        // Ctrl+← が単語移動ではなく行頭移動になる。
+        let word_mod = if cfg!(target_os = "macos") { modifiers.alt } else { modifiers.ctrl };
+        let line_mod = cfg!(target_os = "macos") && modifiers.meta;
+        let doc_mod = is_cmd;
+        // ⇧ 以外の修飾キーが乗っているか。 **乗っているのに対応する操作を
+        // 実装していないなら、 消費してはいけない** (issue #33 と同じ規律) —
+        // 消費すると素のキーの動作が起きて、 しかもアプリが引き取ることも
+        // できなくなる。 ⌥← が 1 文字ぶんしか動かなかったのはこれ。
+        let modified = modifiers.ctrl || modifiers.alt || modifiers.meta;
 
         // 「↑↓ で保つ桁」は縦移動が続いている間だけ有効。 横に動いたり文字を
         // 打ったりしたら捨てる — 残すと、 左右で移動した後の ↑ が元の桁に飛ぶ。
@@ -257,22 +409,62 @@ impl TextInputInner {
         self.cancel_pending_click();
 
         match key {
+            // 削除の単位も移動と同じ表に従う。 ⌥⌫ = 単語、 ⌘⌫ = 行頭まで。
             Key::Backspace => {
                 if self.has_selection() {
                     self.delete_selection();
+                    true
+                } else if line_mod {
+                    if self.multiline {
+                        // 折り返した行の先頭は実測しないと分からない。
+                        self.pending = Some(PendingMove::DeleteToLineStart);
+                    } else {
+                        self.delete_range(0, self.cursor_pos);
+                    }
+                    true
+                } else if word_mod {
+                    self.delete_range(self.prev_word(), self.cursor_pos);
+                    true
+                } else if modified {
+                    false
                 } else {
                     self.backspace();
+                    true
                 }
-                true
             }
             Key::Delete => {
                 if self.has_selection() {
                     self.delete_selection();
+                    true
+                } else if word_mod {
+                    self.delete_range(self.cursor_pos, self.next_word());
+                    true
+                } else if modified {
+                    // ⌘⌦ は macOS の標準操作に無い。 主張しない。
+                    false
                 } else {
                     self.delete();
+                    true
                 }
+            }
+            Key::Left if line_mod => {
+                self.move_to_line_edge(false, modifiers.shift);
                 true
             }
+            Key::Right if line_mod => {
+                self.move_to_line_edge(true, modifiers.shift);
+                true
+            }
+            Key::Left if word_mod => {
+                self.move_to(self.prev_word(), modifiers.shift);
+                true
+            }
+            Key::Right if word_mod => {
+                self.move_to(self.next_word(), modifiers.shift);
+                true
+            }
+            // 実装していない修飾キー付き (macOS の ⌃← など) は主張しない。
+            Key::Left | Key::Right if modified => false,
             Key::Left => {
                 if modifiers.shift {
                     self.extend_selection_left();
@@ -291,31 +483,45 @@ impl TextInputInner {
                 }
                 true
             }
+            // Ctrl+Home / Ctrl+End (macOS では ⌘Home) は文書の端。
+            Key::Home if doc_mod => {
+                self.move_to(0, modifiers.shift);
+                true
+            }
+            Key::End if doc_mod => {
+                self.move_to(self.text.len(), modifiers.shift);
+                true
+            }
+            Key::Home | Key::End if modified => false,
             Key::Home => {
-                if self.multiline {
-                    // 折り返した行の先頭は実測しないと分からない。
-                    self.pending = Some(PendingMove::LineStart { select: modifiers.shift });
-                } else if modifiers.shift {
-                    self.extend_selection_to(0);
-                } else {
-                    self.collapse_selection();
-                    self.move_home();
-                }
+                self.move_to_line_edge(false, modifiers.shift);
                 true
             }
             Key::End => {
-                if self.multiline {
-                    self.pending = Some(PendingMove::LineEnd { select: modifiers.shift });
-                } else if modifiers.shift {
-                    self.extend_selection_to(self.text.len());
-                } else {
-                    self.collapse_selection();
-                    self.move_end();
-                }
+                self.move_to_line_edge(true, modifiers.shift);
                 true
             }
             // ↑↓ は**視覚行**で動く。 論理行 (`\n` 区切り) で動かすと、 折り返した
             // 長い段落の中で 1 回押しただけで段落ごと飛ぶ。 実測が要るので予約だけ。
+            // ⌘↑ / ⌘↓ は文書の先頭 / 末尾、 ⌥↑ / ⌥↓ は段落 (`\n` 区切り) の端。
+            // どちらも実測が要らないので予約せずその場で動かす。
+            Key::Up if self.multiline && doc_mod => {
+                self.move_to(0, modifiers.shift);
+                true
+            }
+            Key::Down if self.multiline && doc_mod => {
+                self.move_to(self.text.len(), modifiers.shift);
+                true
+            }
+            Key::Up if self.multiline && word_mod => {
+                self.move_to(self.paragraph_start(), modifiers.shift);
+                true
+            }
+            Key::Down if self.multiline && word_mod => {
+                self.move_to(self.paragraph_end(), modifiers.shift);
+                true
+            }
+            Key::Up | Key::Down if self.multiline && modified => false,
             Key::Up if self.multiline => {
                 self.pending = Some(PendingMove::Up { select: modifiers.shift });
                 true
@@ -324,7 +530,11 @@ impl TextInputInner {
                 self.pending = Some(PendingMove::Down { select: modifiers.shift });
                 true
             }
-            Key::A if is_cmd => {
+            // ⌘A / Ctrl+A = 全選択。 **余分な修飾キーが乗っていたら主張しない** —
+            // ⇧⌘A や ⌥⌘A は全選択ではないし、 アプリの独自ショートカットとして
+            // ごく普通に使われる。 `is_cmd` だけ見ていると、 欄にフォーカスが
+            // ある間そのバインドが死ぬ。
+            Key::A if is_cmd && !modifiers.shift && !modifiers.alt => {
                 self.select_all();
                 true
             }
@@ -357,7 +567,12 @@ impl TextInputInner {
             }
             // 複数行の欄では Enter が改行。 単一行では**消費せず**アプリへ流す
             // (検索欄の「決定」やフォーム送信がそこにぶら下がっている)。
-            Key::Enter if self.multiline && !is_cmd => {
+            //
+            // 改行にするのは**素の Enter と ⇧Enter だけ**。 ⌘/⌃/⌥ が乗った
+            // Enter は「送信」「実行」に割り当てられているのが普通なので、
+            // アプリに渡す (0.6.1 までは `!is_cmd` しか見ておらず、 macOS の
+            // ⌃Enter と ⌥Enter を改行として食っていた)。
+            Key::Enter if self.multiline && !modified => {
                 self.delete_selection();
                 self.insert_char('\n');
                 true
@@ -444,6 +659,33 @@ impl TextInputInner {
             self.selection_start = Some(self.cursor_pos);
         }
         self.move_right();
+    }
+
+    /// キャレットを `pos` へ。 `select` なら選択を伸ばし、 でなければ畳む。
+    ///
+    /// 単語移動・行移動・文書移動が全部これを通る。 「⇧ が付いていたら
+    /// 伸ばす」を各 arm で書くと、 1 つ書き忘れたときに**その操作だけ選択が
+    /// できない**という気づきにくい穴になる。
+    fn move_to(&mut self, pos: usize, select: bool) {
+        if select {
+            self.extend_selection_to(pos);
+        } else {
+            self.collapse_selection();
+            self.cursor_pos = pos.min(self.text.len());
+        }
+    }
+
+    /// 行頭 / 行末へ。 複数行では**視覚行**の端なので実測が要る (予約に積む)。
+    fn move_to_line_edge(&mut self, end: bool, select: bool) {
+        if self.multiline {
+            self.pending = Some(if end {
+                PendingMove::LineEnd { select }
+            } else {
+                PendingMove::LineStart { select }
+            });
+        } else {
+            self.move_to(if end { self.text.len() } else { 0 }, select);
+        }
     }
 
     fn extend_selection_to(&mut self, pos: usize) {
@@ -881,23 +1123,31 @@ impl TextInputState {
         // ↑↓ は「保っている桁」を優先する。 無ければ今の x から始める。
         let keep_x = self.0.borrow().desired_x.unwrap_or(here.x);
 
-        let (point, select, remember_x) = match pending {
+        let (point, select, remember_x, delete) = match pending {
             PendingMove::Up { select } => {
-                ((keep_x, here.y - mid), select, true)
+                ((keep_x, here.y - mid), select, true, false)
             }
             PendingMove::Down { select } => {
-                ((keep_x, here.y + here.line_height + mid), select, true)
+                ((keep_x, here.y + here.line_height + mid), select, true, false)
             }
             // 行の先頭 / 末尾は「うんと左 / うんと右」を突けば `offset_at` が
             // その行の端に丸めてくれる。 行の切れ目を自分で探す必要が無い。
-            PendingMove::LineStart { select } => ((-1.0e6, here.y + mid), select, false),
-            PendingMove::LineEnd { select } => ((1.0e6, here.y + mid), select, false),
-            PendingMove::ToPoint { x, y, select } => ((x - pad, y - pad), select, false),
+            PendingMove::LineStart { select } => ((-1.0e6, here.y + mid), select, false, false),
+            PendingMove::LineEnd { select } => ((1.0e6, here.y + mid), select, false, false),
+            // 行頭の位置の出し方は LineStart と同じ。 違うのは、 そこへ動く
+            // 代わりに**そこまでを消す**こと。
+            PendingMove::DeleteToLineStart => ((-1.0e6, here.y + mid), false, false, true),
+            PendingMove::ToPoint { x, y, select } => ((x - pad, y - pad), select, false, false),
         };
 
         let target = ctx.offset_at(display, point, shape);
         let mut inner = self.0.borrow_mut();
         inner.desired_x = if remember_x { Some(keep_x) } else { None };
+        if delete {
+            let cursor = inner.cursor_pos;
+            inner.delete_range(target.min(cursor), cursor);
+            return;
+        }
         if select {
             if inner.selection_start.is_none() {
                 inner.selection_start = Some(inner.cursor_pos);
@@ -1384,6 +1634,289 @@ mod caret_tests {
         let s = TextInputInner::new("名前を入力");
         assert!(s.is_placeholder());
         assert_eq!(s.caret_byte_offset(), 0);
+    }
+}
+
+/// 修飾キー付きの移動・削除 (⌥ = 単語、 ⌘ = 行 / 文書)。
+///
+/// **ここが空だったので、 ⌥← が 1 文字ぶんしか動かないことに誰も気づかなかった。**
+/// 素のキーだけを見るテストは、 修飾キーが無視されていても緑になる。
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+    use sabitori_input::{Key, Modifiers};
+
+    const MAC: bool = cfg!(target_os = "macos");
+
+    /// 単語単位の修飾キー。 macOS は ⌥、 他は Ctrl。
+    fn word() -> Modifiers {
+        if MAC {
+            Modifiers { alt: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        }
+    }
+
+    /// 行頭・行末の修飾キー。 **macOS にしか無い** (他は Home / End キーが担当)。
+    fn line() -> Modifiers {
+        Modifiers { meta: true, ..Default::default() }
+    }
+
+    /// 文書の端。 macOS は ⌘、 他は Ctrl。
+    fn doc() -> Modifiers {
+        if MAC {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        }
+    }
+
+    /// このプラットフォームで**操作を持たない**修飾キー。
+    fn unimplemented_mod() -> Modifiers {
+        if MAC {
+            Modifiers { ctrl: true, ..Default::default() }
+        } else {
+            Modifiers { alt: true, ..Default::default() }
+        }
+    }
+
+    fn with_shift(mut m: Modifiers) -> Modifiers {
+        m.shift = true;
+        m
+    }
+
+    fn field(text: &str, cursor: usize) -> TextInputInner {
+        let mut s = TextInputInner::new("placeholder");
+        s.text = text.to_string();
+        s.cursor_pos = cursor;
+        s
+    }
+
+    /// 英語は空白で切れる。 ⌥← は単語の先頭、 ⌥→ は単語の末尾。
+    #[test]
+    fn word_movement_latin() {
+        let mut s = field("hello world foo", 15);
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(s.cursor_pos, 12, "foo の先頭");
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(s.cursor_pos, 6, "world の先頭");
+
+        assert!(s.on_key(Key::Right, word()));
+        assert_eq!(s.cursor_pos, 11, "world の末尾");
+        assert!(s.on_key(Key::Right, word()));
+        assert_eq!(s.cursor_pos, 15, "foo の末尾");
+    }
+
+    /// **日本語は空白で切れない。** 文字種の変わり目で止まること。
+    ///
+    /// 空白だけを境界にすると、 この文字列は丸ごと 1 単語になって ⌥← が
+    /// Home と同じ動きになる。
+    ///
+    /// ⚠️ **形態素解析はしない。** 「とひらがな」は助詞と名詞だが、 どちらも
+    /// ひらがななので 1 つの塊として扱う。 macOS のネイティブな欄は辞書を
+    /// 持っていて「と」で切るが、 それは同じ土俵ではない。 ここが期待値の
+    /// 上限だと分かるように、 あえてその並びをテストに入れてある。
+    #[test]
+    fn word_movement_japanese() {
+        let text = "私はカタカナとひらがな";
+        let mut s = field(text, text.len());
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(&text[s.cursor_pos..], "とひらがな", "ひらがなの塊 (形態素では切らない)");
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(&text[s.cursor_pos..], "カタカナとひらがな");
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(&text[s.cursor_pos..], "はカタカナとひらがな");
+        assert!(s.on_key(Key::Left, word()));
+        assert_eq!(s.cursor_pos, 0, "漢字も 1 つの文字種");
+    }
+
+    /// 日本語と英数字が混ざっていても、 変わり目で切れること。
+    #[test]
+    fn word_movement_mixed_scripts() {
+        let text = "変数nameを123に";
+        let mut s = field(text, 0);
+        let mut stops = Vec::new();
+        while s.cursor_pos < text.len() {
+            assert!(s.on_key(Key::Right, word()));
+            stops.push(&text[..s.cursor_pos]);
+        }
+        assert_eq!(
+            stops,
+            vec!["変数", "変数name", "変数nameを", "変数nameを123", "変数nameを123に"]
+        );
+    }
+
+    /// 記号は単語ではない。 `foo, bar` の ⌥→ は `,` に止まらない (macOS と同じ)。
+    #[test]
+    fn punctuation_is_skipped() {
+        let mut s = field("foo, bar", 0);
+        assert!(s.on_key(Key::Right, word()));
+        assert_eq!(s.cursor_pos, 3, "foo の末尾");
+        assert!(s.on_key(Key::Right, word()));
+        assert_eq!(s.cursor_pos, 8, "`, ` を飛ばして bar の末尾");
+    }
+
+    /// ⇧ を足したら選択が伸びること。 移動が全部 `move_to` を通るので、
+    /// 1 つでも選択できない操作があればここで落ちる。
+    #[test]
+    fn shift_extends_for_every_unit() {
+        let mut s = field("hello world", 11);
+        assert!(s.on_key(Key::Left, with_shift(word())));
+        assert_eq!(s.selection_range(), Some((6, 11)), "⇧⌥← で world を選択");
+
+        let mut s = field("hello world", 11);
+        if MAC {
+            assert!(s.on_key(Key::Left, with_shift(line())));
+        } else {
+            assert!(s.on_key(Key::Home, with_shift(Modifiers::default())));
+        }
+        assert_eq!(s.selection_range(), Some((0, 11)), "行頭まで選択");
+    }
+
+    /// ⌥⌫ は直前の単語を消す。 1 文字ではなく。
+    #[test]
+    fn word_delete_backwards() {
+        let mut s = field("hello world", 11);
+        assert!(s.on_key(Key::Backspace, word()));
+        assert_eq!(s.text, "hello ");
+        assert_eq!(s.cursor_pos, 6);
+    }
+
+    /// ⌥⌦ は次の単語を消す。
+    #[test]
+    fn word_delete_forwards() {
+        let mut s = field("hello world", 5);
+        assert!(s.on_key(Key::Delete, word()));
+        assert_eq!(s.text, "hello");
+    }
+
+    /// ⌘⌫ は行頭まで消す (単一行なので先頭まで)。 macOS だけの操作。
+    #[test]
+    fn delete_to_line_start() {
+        if !MAC {
+            return;
+        }
+        let mut s = field("hello world", 6);
+        assert!(s.on_key(Key::Backspace, line()));
+        assert_eq!(s.text, "world");
+        assert_eq!(s.cursor_pos, 0);
+    }
+
+    /// ⌘← / ⌘→ は行頭・行末 (単一行なので端まで)。 macOS だけの操作。
+    #[test]
+    fn line_movement_on_macos() {
+        if !MAC {
+            return;
+        }
+        let mut s = field("hello world", 5);
+        assert!(s.on_key(Key::Left, line()));
+        assert_eq!(s.cursor_pos, 0);
+        assert!(s.on_key(Key::Right, line()));
+        assert_eq!(s.cursor_pos, 11);
+    }
+
+    /// 複数行: ⌘↑ / ⌘↓ は文書の端、 ⌥↑ / ⌥↓ は段落の端。
+    #[test]
+    fn document_and_paragraph_movement() {
+        let text = "one\ntwo\nthree";
+        let mut s = field(text, 5);
+        s.multiline = true;
+
+        assert!(s.on_key(Key::Up, word()));
+        assert_eq!(s.cursor_pos, 4, "段落 (行) の先頭");
+        assert!(s.on_key(Key::Down, word()));
+        assert_eq!(s.cursor_pos, 7, "段落の末尾");
+
+        assert!(s.on_key(Key::Up, doc()));
+        assert_eq!(s.cursor_pos, 0, "文書の先頭");
+        assert!(s.on_key(Key::Down, doc()));
+        assert_eq!(s.cursor_pos, text.len(), "文書の末尾");
+    }
+
+    /// **issue の本体。** 操作を実装していない修飾キーの組み合わせは
+    /// **消費しない**。
+    ///
+    /// 消費すると 2 つ壊れる — 素のキーの動作 (1 文字ぶん) が起きてしまい、
+    /// しかも `true` が返るのでアプリが引き取ることもできない。 #33 で欄から
+    /// クリップボードの arm を消したのと同じ規律。
+    #[test]
+    fn unimplemented_modifier_combinations_are_not_consumed() {
+        let mut s = field("hello world", 5);
+        for key in [Key::Left, Key::Right, Key::Backspace, Key::Delete, Key::Home, Key::End] {
+            assert!(
+                !s.on_key(key, unimplemented_mod()),
+                "{key:?} + 未実装の修飾キーを消費してはいけない"
+            );
+        }
+        assert_eq!(s.text, "hello world", "本文が変わっていないこと");
+        assert_eq!(s.cursor_pos, 5, "キャレットが動いていないこと");
+    }
+
+    /// **アプリが自分のショートカットに使える組み合わせ**を固定する。
+    ///
+    /// 欄が食ってしまうと、 ランタイムは「消費済み」として `on_focused_input` も
+    /// `on_input` も呼ばない (#18) ので、 **欄にフォーカスがある間だけアプリの
+    /// バインドが死ぬ**。 気づきにくく、 アプリ側では回避できない。
+    #[test]
+    fn the_field_leaves_app_shortcuts_alone() {
+        let cmd = if MAC {
+            Modifiers { meta: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        let cases: [(Key, Modifiers); 8] = [
+            // 文字キーは修飾キーが何であれ欄の担当ではない。
+            (Key::K, cmd),
+            (Key::K, with_shift(cmd)),
+            (Key::Z, cmd),
+            // ⌘A は全選択だが、 ⇧ や ⌥ が足されたらもう全選択ではない。
+            (Key::A, with_shift(cmd)),
+            (Key::A, { let mut m = cmd; m.alt = true; m }),
+            // 実装していない修飾キー付きの移動。
+            (Key::Left, unimplemented_mod()),
+            // 「送信」に使われる Enter たち。
+            (Key::Enter, cmd),
+            (Key::Enter, { let mut m = Modifiers::default(); m.alt = true; m }),
+        ];
+        for (key, mods) in cases {
+            let mut s = field("hello world", 5);
+            s.multiline = true;
+            assert!(
+                !s.on_key(key, mods),
+                "{key:?} + {mods:?} は欄の担当ではない — 食うとアプリのバインドが死ぬ"
+            );
+        }
+    }
+
+    /// 逆に、 **欄が責任を持つ組み合わせ**は食うこと。 上の裏返しで、
+    /// 「全部落とせば安全」に倒れていないことを見る。
+    #[test]
+    fn the_field_owns_its_own_editing_keys() {
+        let none = Modifiers::default();
+        let cases: [(Key, Modifiers); 6] = [
+            (Key::Left, none),
+            (Key::Left, with_shift(none)),
+            (Key::Left, word()),
+            (Key::Backspace, none),
+            (Key::Backspace, word()),
+            (Key::Enter, with_shift(none)),
+        ];
+        for (key, mods) in cases {
+            let mut s = field("hello world", 5);
+            s.multiline = true;
+            assert!(s.on_key(key, mods), "{key:?} + {mods:?} は欄の担当");
+        }
+    }
+
+    /// 素のキーは今までどおり 1 文字ぶん動く (回帰よけ)。
+    #[test]
+    fn bare_keys_still_move_by_one() {
+        let mut s = field("abc", 3);
+        let none = Modifiers::default();
+        assert!(s.on_key(Key::Left, none));
+        assert_eq!(s.cursor_pos, 2);
+        assert!(s.on_key(Key::Backspace, none));
+        assert_eq!(s.text, "ac");
     }
 }
 
