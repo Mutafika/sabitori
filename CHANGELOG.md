@@ -17,6 +17,40 @@
 
 ### Fixed
 
+- **Harness からドラッグを最後まで運べなかった**
+  ([#48](https://github.com/Mutafika/sabitori/issues/48))。
+
+  `Harness::move_to` はホバーの更新しかしておらず、`DragManager` を前に進めて
+  いなかった。`DragManager` は 5px の閾値を `on_move` の中で見て `Pending` →
+  `Active` に上げるので、**Harness からはドラッグが永遠に成立しない**。
+  `press_at` → `move_to` → `release` と書いても「押しっぱなしで動かしただけ」で、
+  `ctx.drag` は `None` のまま、`on_drop` も `drag_ghost` も呼ばれなかった。
+
+  **[#44](https://github.com/Mutafika/sabitori/issues/44) がテストの外に居座って
+  いたのはこれが理由。** `drag_ghost` を書いてもテストから踏めないので、固定できた
+  のは「掴める物として組まれているか」と「`on_drop` が正しく動かすか」の両端だけ
+  だった。真ん中は実機で目視するしかなく、そこで落ちていた。
+
+  実機の `CursorMoved` の中身を `pointer_moved_to` として括り出し、ランタイムと
+  Harness が同じ 1 本を通るようにした。片方にしか無い処理を作れなくするため —
+  `tick` を `advance` に括り出したのと同じ理由
+  ([#28](https://github.com/Mutafika/sabitori/issues/28))。
+
+### Added
+
+- **`Harness::hovered_id`** — いまポインタの下にある要素の id
+  ([#49](https://github.com/Mutafika/sabitori/issues/49))。`focused_id` と対称。
+
+  「ホバーしても光らない」は**塗りが弱い**のか**追跡が死んでいる**のかに分かれる。
+  これはその 2 つを分けるための口。アプリが `view()` の中で `ctx.hovered` を控えに
+  書き写して読む手もあるが、それでは確かめているのがランタイムの状態ではなく
+  アプリの控えになる。
+
+- **`Harness::drag_info` / `Harness::dragging`** — 運搬中の状態を外から読む。
+  上のドラッグ経路をテストで検査するために必要。
+
+### Fixed
+
 - **画像テクスチャが一度も解放されず、GPU メモリが単調に増えていた**
   ([#43](https://github.com/Mutafika/sabitori/issues/43))。
 

@@ -635,7 +635,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) last_build: Option<BuildResult>,
     pub(crate) mouse_x: f32,
     pub(crate) mouse_y: f32,
-    hovered_id: Option<String>,
+    /// `focused_id` と同じく Harness から読めるようにしてある (#49)。
+    pub(crate) hovered_id: Option<String>,
     /// 現在押されている要素の id。`active_style` (= `.active()` / `.pressable()`)
     /// を畳むのに使う。押下で入り、解放・キャンセル・ウィンドウ外への離脱で消える。
     /// hover と同じく「id を 1 つ持つ」だけの単純な状態で、押したまま外へ払っても
@@ -681,7 +682,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Managed tooltip hover-delay state.
     tooltip_state: sabitori_widgets::TooltipState,
     /// Managed drag & drop state.
-    drag_manager: sabitori_widgets::DragManager,
+    /// Harness からも状態を読めるようにしてある (#48)。
+    pub(crate) drag_manager: sabitori_widgets::DragManager,
     /// Animated style transitions (hover spring animations).
     style_animator: sabitori_widgets::StyleAnimator,
     /// Presence (mount/unmount) animator.
@@ -905,45 +907,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if self.primary_input == PrimaryInput::Touch {
                     return;
                 }
-                if let Some(r) = self.renderer.as_ref() {
-                    let s = r.scale_factor;
-                    self.mouse_x = position.x as f32 / s;
-                    self.mouse_y = position.y as f32 / s;
-                }
-                self.update_hover();
-                self.app.on_pointer_move(self.mouse_x, self.mouse_y);
-                // マウスの移動も `PointerMoved` として配る。 `InputEvent::PointerMoved`
-                // の doc は "For mouse, fires for both hover and drag" と言っているのに、
-                // このランタイムは touch 分しか出していなかった (`SabitoriApp` は出す)。
-                // `on_pointer_move` は座標しか渡さないので、 修飾キーを見るには
-                // こちらが要る — ⇧ドラッグの直交スナップのような「押している間だけ」の
-                // 操作は、 動いている最中の状態が取れないと書けない。
-                self.app.on_input(&InputEvent::PointerMoved {
-                    id: MOUSE_POINTER_ID,
-                    kind: PointerKind::Mouse,
-                    position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
-                    modifiers: self.modifiers,
-                });
-                self.drag_manager.on_move(self.mouse_x, self.mouse_y);
-                // text selection drag: button held + selecting=true なら head を更新。
-                // hit_test_text が None でも head は前の値を保持 (= 端の text 上で
-                // 止まる、 巻き戻りで戻れる)。
-                if self.selecting {
-                    // drag 中は最近傍 snap (strict=false)。 anchor は既に実テキスト上に
-                    // 立っているので、 段落の外へ払っても選択が伸び続けてよい。
-                    if let Some(head) = self.hit_test_text(self.mouse_x, self.mouse_y, false) {
-                        let snap = self
-                            .text_layouts
-                            .iter()
-                            .find(|l| l.text_idx == head.0)
-                            .map(|l| l.content.clone())
-                            .unwrap_or_default();
-                        if let Some(ref mut sel) = self.selection {
-                            sel.head = head;
-                            sel.head_content = snap;
-                        }
-                    }
-                }
+                // 論理座標に直す。renderer が無い間は前の値のまま
+                // (`pointer_moved_to` への代入が no-op になる)。
+                let (x, y) = match self.renderer.as_ref() {
+                    Some(r) => (position.x as f32 / r.scale_factor, position.y as f32 / r.scale_factor),
+                    None => (self.mouse_x, self.mouse_y),
+                };
+                self.pointer_moved_to(x, y);
             }
             WindowEvent::CursorEntered { .. } => {
                 // The pointer enters carrying whatever OS cursor the previous
@@ -2014,6 +1984,60 @@ impl<A: DeclarativeApp> AppState<A> {
                     extra.window.request_redraw();
                 }
                 None => self.spawn_extra(event_loop, spec),
+            }
+        }
+    }
+
+    /// ポインタが論理座標 `(x, y)` へ動いたときにランタイムがすること。
+    ///
+    /// 実機の `CursorMoved` と [`Harness::move_to`](crate::testing::Harness::move_to)
+    /// の両方がここを通る。**片方にしか無い処理を作らないため**に括り出してある。
+    ///
+    /// 実際そうなっていた: Harness 側は `update_hover` しか呼んでおらず、
+    /// `drag_manager.on_move` が無かった。`DragManager` は 5px の閾値をそこで見て
+    /// `Pending` → `Active` に上げるので、Harness からはドラッグが永遠に成立せず、
+    /// `on_drop` も `drag_ghost` も踏めなかった。おかげで「画像だけの overlay が
+    /// 描かれない」がテストの外に居座り、実機で目視するまで見つからなかった
+    /// ([#48](https://github.com/Mutafika/sabitori/issues/48),
+    /// [#44](https://github.com/Mutafika/sabitori/issues/44))。
+    ///
+    /// `tick` を `advance` に括り出したのと同じ理由
+    /// ([#28](https://github.com/Mutafika/sabitori/issues/28))。
+    pub(crate) fn pointer_moved_to(&mut self, x: f32, y: f32) {
+        self.mouse_x = x;
+        self.mouse_y = y;
+        self.update_hover();
+        self.app.on_pointer_move(self.mouse_x, self.mouse_y);
+        // マウスの移動も `PointerMoved` として配る。 `InputEvent::PointerMoved`
+        // の doc は "For mouse, fires for both hover and drag" と言っているのに、
+        // このランタイムは touch 分しか出していなかった (`SabitoriApp` は出す)。
+        // `on_pointer_move` は座標しか渡さないので、 修飾キーを見るには
+        // こちらが要る — ⇧ドラッグの直交スナップのような「押している間だけ」の
+        // 操作は、 動いている最中の状態が取れないと書けない。
+        self.app.on_input(&InputEvent::PointerMoved {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+            modifiers: self.modifiers,
+        });
+        self.drag_manager.on_move(self.mouse_x, self.mouse_y);
+        // text selection drag: button held + selecting=true なら head を更新。
+        // hit_test_text が None でも head は前の値を保持 (= 端の text 上で
+        // 止まる、 巻き戻りで戻れる)。
+        if self.selecting {
+            // drag 中は最近傍 snap (strict=false)。 anchor は既に実テキスト上に
+            // 立っているので、 段落の外へ払っても選択が伸び続けてよい。
+            if let Some(head) = self.hit_test_text(self.mouse_x, self.mouse_y, false) {
+                let snap = self
+                    .text_layouts
+                    .iter()
+                    .find(|l| l.text_idx == head.0)
+                    .map(|l| l.content.clone())
+                    .unwrap_or_default();
+                if let Some(ref mut sel) = self.selection {
+                    sel.head = head;
+                    sel.head_content = snap;
+                }
             }
         }
     }

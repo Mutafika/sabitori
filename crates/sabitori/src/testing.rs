@@ -270,11 +270,50 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.focused_id.as_deref()
     }
 
-    /// 座標を指定してポインタを動かす。 ホバーの更新まで行う。
+    /// いまポインタの下にある要素の id。
+    ///
+    /// `focused_id` と同じ立場で、`UiCapture` からは引けないので直に出す。
+    /// アプリ側からは `ViewContext::hovered` で同じ値が見える。
+    ///
+    /// 「ホバーしても光らない」は 2 つに分かれる — **塗りが弱い**のか、
+    /// **追跡が死んでいる**のか。これはその 2 つを分けるための口
+    /// ([#49](https://github.com/Mutafika/sabitori/issues/49))。
+    /// アプリが `view()` の中で `ctx.hovered` を控えに書き写して読む手もあるが、
+    /// それでは確かめているのがランタイムの状態ではなくアプリの控えになる。
+    pub fn hovered_id(&self) -> Option<&str> {
+        self.state.hovered_id.as_deref()
+    }
+
+    /// いま運んでいる物 — `(payload, 掴んだ要素の id)`。運んでいなければ `None`。
+    ///
+    /// `press_at` だけでは `None` のまま。`DragManager` は 5px の閾値を越えて
+    /// 初めて `Pending` から `Active` に上がるので、`move_to` で動かす必要がある
+    /// ([#48](https://github.com/Mutafika/sabitori/issues/48))。
+    ///
+    /// アプリ側から見た `ViewContext::drag` と違い、こちらは `over_drop_zone` を
+    /// 含まない — あれはフレームを組むときに hit_regions から引かれるので、
+    /// `frame()` を回した後の `ViewContext` で見ること。
+    pub fn drag_info(&self) -> Option<(String, Option<String>)> {
+        self.state.drag_manager.drag_info()
+    }
+
+    /// いま何かを運んでいるか。
+    pub fn dragging(&self) -> bool {
+        self.state.drag_manager.is_active()
+    }
+
+    /// 座標を指定してポインタを動かす。
+    ///
+    /// 実機の `CursorMoved` と同じ 1 本 (`pointer_moved_to`) を通るので、
+    /// ホバーの更新だけでなく `on_pointer_move` / `on_input(PointerMoved)` /
+    /// ドラッグの前進 / テキスト選択の伸長まで、実機と同じことが起きる。
+    ///
+    /// かつてはホバーの更新しかしておらず、`DragManager` を前に進めていなかった。
+    /// 5px の閾値を越えられないので、Harness からはドラッグが永遠に成立せず、
+    /// `press_at` → `move_to` → `release` と書いても「押しっぱなしで動かしただけ」
+    /// になっていた ([#48](https://github.com/Mutafika/sabitori/issues/48))。
     pub fn move_to(&mut self, x: f32, y: f32) {
-        self.state.mouse_x = x;
-        self.state.mouse_y = y;
-        self.state.update_hover();
+        self.state.pointer_moved_to(x, y);
     }
 
     /// 座標を指定して主ボタンを押して離す。
@@ -541,5 +580,126 @@ mod tests {
         let mut h = Harness::new(Counter::default(), 400.0, 300.0);
         h.frame();
         h.click("nope");
+    }
+}
+
+#[cfg(test)]
+mod drag_and_hover_tests {
+    //! Harness からドラッグを最後まで運べること ([#48]) と、ホバー追跡を
+    //! 外から読めること ([#49])。
+    //!
+    //! **[#44] がテストの外に居座っていた区間がここ。** `move_to` が
+    //! `DragManager` を前に進めていなかったので、`drag_ghost` を書いても
+    //! テストから踏む手段が無く、実機で目視するまで壊れていることに気付けなかった。
+    //!
+    //! [#48]: https://github.com/Mutafika/sabitori/issues/48
+    //! [#49]: https://github.com/Mutafika/sabitori/issues/49
+    //! [#44]: https://github.com/Mutafika/sabitori/issues/44
+
+    use super::*;
+    use crate::ViewContext;
+    use sabitori_core::element::*;
+
+    #[derive(Default)]
+    struct DragApp {
+        /// `on_drop` が届いた記録: (運んだ物, 落とした先)。
+        dropped: Vec<(String, String)>,
+    }
+
+    impl DeclarativeApp for DragApp {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            div().w(Px(400.0)).h(Px(200.0)).flex_row().children([
+                div()
+                    .id("card")
+                    .w(Px(100.0))
+                    .h(Px(100.0))
+                    .bg(sabitori_core::Color::new(0.2, 0.4, 0.9, 1.0))
+                    .draggable("card-1"),
+                div()
+                    .id("bin")
+                    .w(Px(100.0))
+                    .h(Px(100.0))
+                    .bg(sabitori_core::Color::new(0.9, 0.2, 0.2, 1.0))
+                    .droppable(),
+            ])
+        }
+
+        fn drag_ghost(&self, _ctx: &ViewContext) -> Option<Element> {
+            Some(div().w(Px(20.0)).h(Px(20.0)))
+        }
+
+        fn on_drop(&mut self, data: &str, target_id: &str) {
+            self.dropped.push((data.into(), target_id.into()));
+        }
+    }
+
+    fn harness() -> Harness<DragApp> {
+        let mut h = Harness::new(DragApp::default(), 400.0, 200.0);
+        h.frame();
+        h
+    }
+
+    /// **報告された形そのもの。** press → move → release で `on_drop` が届く。
+    #[test]
+    fn a_drag_can_be_carried_all_the_way_to_a_drop() {
+        let mut h = harness();
+        h.press_at(50.0, 50.0);
+        h.move_to(150.0, 50.0); // 閾値 5px を大きく越える
+        h.frame();
+        h.release();
+
+        assert_eq!(
+            h.app().dropped,
+            vec![("card-1".to_string(), "bin".to_string())],
+            "on_drop が届いていない"
+        );
+    }
+
+    /// ドラッグ中はランタイムが運搬状態を持っている。
+    #[test]
+    fn the_drag_is_visible_while_carrying() {
+        let mut h = harness();
+        h.press_at(50.0, 50.0);
+        h.move_to(150.0, 50.0);
+        assert!(h.dragging(), "運んでいる最中なのに drag が立っていない");
+        assert_eq!(
+            h.drag_info().map(|(d, _)| d),
+            Some("card-1".to_string()),
+            "運んでいる物が取れない"
+        );
+    }
+
+    /// **5px を越えないと始まらない。** 閾値の扱いは実機と同じ。
+    #[test]
+    fn a_press_without_movement_is_not_a_drag() {
+        let mut h = harness();
+        h.press_at(50.0, 50.0);
+        h.move_to(52.0, 50.0); // 2px — 閾値未満
+        assert!(!h.dragging(), "2px で drag が始まってしまった");
+        h.release();
+        assert!(h.app().dropped.is_empty(), "drop していないのに on_drop が来た");
+    }
+
+    /// drop zone の外で離したら、何も落ちない。
+    #[test]
+    fn releasing_outside_a_drop_zone_drops_nothing() {
+        let mut h = harness();
+        h.press_at(50.0, 50.0);
+        h.move_to(50.0, 180.0); // どちらの箱でもない所
+        h.frame();
+        h.release();
+        assert!(h.app().dropped.is_empty());
+    }
+
+    /// #49: ホバー追跡を外から読める。
+    #[test]
+    fn the_hovered_id_is_readable() {
+        let mut h = harness();
+        h.move_to(50.0, 50.0);
+        assert_eq!(h.hovered_id(), Some("card"));
+        h.move_to(150.0, 50.0);
+        assert_eq!(h.hovered_id(), Some("bin"));
+        h.move_to(50.0, 190.0);
+        assert_eq!(h.hovered_id(), None, "どの要素の上でもない");
     }
 }
