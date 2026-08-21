@@ -78,7 +78,7 @@ div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i)
 
 古い書き方 —`.id("save")` と `fn on_click(&mut self, id: &str)` の文字列マッチ— も動きますし、動的に振り分けたいときのために残してあります。ただし**どちらの文字列を打ち間違えてもコンパイルは通り、黙って何も起きません**。`click` を使ってください。
 
-## よく間違える 4 つ
+## よく間違える 5 つ
 
 この 4 つが他の全部を合わせたより多いです。それぞれ正解は 1 つだけ。
 
@@ -179,6 +179,28 @@ assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 **`frame()` は時間を進めません。** 慣性スクロール・`scroll_intents`・style アニメーションなど、ばねで動くものは `tick(dt)` か `settle()` が要ります。
+
+### 5. `tick` で絵を動かしているのに名乗らない
+
+**`tick(dt)` が画面を動かすなら `is_animating` を上書きします。**
+
+```rust
+fn is_animating(&self) -> bool { true }   // 粒子・スピナー・時計
+fn tick(&mut self, dt: f32) { self.t += dt; }
+```
+
+ランタイムは、誰も要求していないフレームを描きません。自分が持っている
+アニメーター — スクロールのばね、style、presence、ドラッグ、tooltip の遅延、
+そして組み込み `text_input` のキャレット — は見えますが、**アプリの状態は
+見えません**。名乗らずに `tick` で粒子を動かすと、**次の入力が来るまで画面が
+止まります**。
+
+一度きりの変化 (ワーカースレッドが終わった、toast の時間が切れた) は
+`poll_dirty` の方です。毎 tick に 1 回問われ、読むと下ります。
+
+`lazy_render` に `false` を返すと窓ごと降りて、無条件に描き続けます。0.8.0 まで
+の既定がこれで、idle の窓で 1 コアと GPU の一部を焼きます。まず `is_animating`
+を検討してください。
 
 ## レイアウト
 

@@ -272,7 +272,37 @@ assert_eq!(h.app().saved.as_deref(), Some("hello"));
     }
 }
 
-// ===== README [10] レイアウト =====
+// ===== README [10] tick で動かすなら名乗る =====
+mod animating_section {
+    use super::*;
+
+    /// README の 5 番目の落とし穴そのもの — `tick` が絵を動かすアプリ。
+    #[derive(Default)]
+    pub struct Spinner {
+        pub t: f32,
+    }
+
+    impl DeclarativeApp for Spinner {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            div().id("dot").w(Px(10.0)).h(Px(10.0))
+        }
+
+fn is_animating(&self) -> bool { true }   // particles, spinners, a clock
+fn tick(&mut self, dt: f32) { self.t += dt; }
+    }
+
+    /// 名乗ったアプリは `settle` が打ち切れない = 描き続ける側に居る。
+    /// README が「止まりません」と言っているのはこの状態。
+    #[test]
+    fn naming_yourself_animating_keeps_the_runtime_awake() {
+        let mut h = Harness::new(Spinner::default(), 200.0, 200.0);
+        h.frame();
+        assert_eq!(h.settle_for(3), 3, "is_animating が true なら落ち着かない");
+        assert!(h.app().t > 0.0, "tick で時間が進んでいる");
+    }
+}
+
+// ===== README [11] レイアウト =====
 mod layout_section {
     use super::*;
 
@@ -304,7 +334,7 @@ let sheet = grid()
     }
 }
 
-// ===== README [11] ウィジェット =====
+// ===== README [12] ウィジェット =====
 mod widget_section {
     use super::*;
 
@@ -342,7 +372,7 @@ div().flex_col().children([
     }
 }
 
-// ===== README [12] アクセシビリティ =====
+// ===== README [13] アクセシビリティ =====
 mod a11y_section {
     use super::*;
 

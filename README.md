@@ -78,7 +78,7 @@ div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i)
 
 The older form — `.id("save")` plus a `fn on_click(&mut self, id: &str)` that matches on strings — still works and is still there for dynamic dispatch. But a typo in either string compiles fine and silently does nothing, so prefer `click`.
 
-## The four things people get wrong
+## The five things people get wrong
 
 These come up more than everything else combined. Each has exactly one correct form.
 
@@ -179,6 +179,27 @@ assert_eq!(h.app().saved.as_deref(), Some("hello"));
 ```
 
 `frame()` does not advance time. Anything spring-driven — momentum scroll, `scroll_intents`, style animation — needs `tick(dt)` or `settle()`.
+
+### 5. Animating in `tick` without saying so
+
+**If `tick(dt)` moves what is on screen, override `is_animating`.**
+
+```rust
+fn is_animating(&self) -> bool { true }   // particles, spinners, a clock
+fn tick(&mut self, dt: f32) { self.t += dt; }
+```
+
+The runtime does not redraw a frame that nothing asked for. It sees its own
+animators — scroll springs, style, presence, drag, tooltip delay, and the caret
+of a built-in `text_input` — but it cannot see your state. Move a particle in
+`tick` without saying so and **the screen stops until the next input event.**
+
+For a one-off change (a worker thread finished, a toast expired) use
+`poll_dirty` instead — it is asked once per tick and clears when read.
+
+Returning `false` from `lazy_render` opts the whole window out and redraws
+unconditionally. That was the default through 0.8.0; it costs roughly a core
+and a slice of the GPU on an idle window, so reach for `is_animating` first.
 
 ## Layout
 

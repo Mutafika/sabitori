@@ -163,7 +163,9 @@ fn stub_line_of(content: &str, byte_offset: usize) -> (usize, &str) {
 ///
 /// 窓も wgpu デバイスも作らない。 モジュールの doc も参照。
 pub struct Harness<A: DeclarativeApp> {
-    state: AppState<A>,
+    /// クレート内のテストからランタイムの内部状態を直接見るために開けてある
+    /// (`declarative.rs` の `draw_gate_tests` 等)。 公開 API ではない。
+    pub(crate) state: AppState<A>,
     width: f32,
     height: f32,
 }
