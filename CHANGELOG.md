@@ -15,6 +15,24 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-21
+
+書き換えたまま走らせ続けられるようにした版。
+
+UI の実装は「1px ずらす・色を少し変える」を何百回も回す作業なのに、そのたびに
+ビルドを待ち、起動し、目的の画面まで手で操作し直していた。`view()` は `&self` から
+Element を組むだけの純粋関数で、状態は App 側の struct に載っている。**view だけを
+差し替えれば状態を残したまま画面を作り直せる形に、最初からなっていた。**
+
+同じ「一度しか問い合わせていなかった」問題が、サブウィンドウ側にもあった。
+`extra_windows()` は主ウィンドウが上がるときの一度きりで、ディスプレイを挿し直した
+アプリは、もう存在しない画面に向かって描き続けていた。
+
+ホットリロードは実機で確認済み。3 回連続でパッチを当てる間、アプリの起動・GPU 初期化・
+devserver 接続はいずれも 1 回のまま — プロセスは再起動しておらず、GPU サーフェスも
+フォントアトラスも状態も保たれている。その検証で案内の誤りが 3 件出たので、同じ版で
+直してある。
+
 ### Fixed
 
 - **ホットリロードの起動コマンドが間違っていた。** 正しくは `dx serve --hot-patch`
@@ -2412,7 +2430,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Mutafika/sabitori/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/Mutafika/sabitori/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Mutafika/sabitori/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Mutafika/sabitori/compare/v0.5.1...v0.6.0
