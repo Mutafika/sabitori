@@ -260,7 +260,36 @@ cargo run --example tui_demo      # ANSI-based TUI dashboard
 cargo run --example tui_gallery   # Animation gallery
 cargo run --example filer         # File manager — runtime-managed scroll, virtualized rows
 cargo run --example hello         # Low-level API (`SabitoriApp` trait)
+cargo run --example hot_reload    # Hot-reload demo (below)
 ```
+
+## Hot Reload (experimental)
+
+Edit `view()`, hit save, and the screen updates **while the app keeps its state**.
+It uses [subsecond](https://crates.io/crates/subsecond), which patches machine code
+into the running process. The patches come from the Dioxus CLI, so you launch with
+`dx serve` rather than `cargo run`.
+
+```bash
+cargo install dioxus-cli   # once
+dx serve --hotpatch --package sabitori --example hot_reload --features hot-reload
+```
+
+Turning it on in your own app is one feature flag — no code changes.
+
+```toml
+[dependencies]
+sabitori = { version = "0.6", features = ["hot-reload"] }
+```
+
+- **Reloaded**: the bodies of `view()` / `overlay_view()` / `view_for()` and everything
+  they call — layout, colors, copy, branches
+- **Not reloaded**: adding, removing, or retyping a field on your state struct. The
+  memory layout changes, so `dx` falls back to a full restart
+- subsecond only engages when `debug_assertions` is on. In release the boundary folds
+  into a plain call, so shipping with the feature enabled costs nothing at runtime
+- With no devserver present it disables itself silently — `cargo run` is unchanged
+- Native only. On WASM, use `trunk serve` live reload
 
 ## Architecture
 

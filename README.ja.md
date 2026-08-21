@@ -260,7 +260,36 @@ cargo run --example tui_demo      # ANSI ベースの TUI ダッシュボード
 cargo run --example tui_gallery   # アニメーションギャラリー
 cargo run --example filer         # ファイラ — ランタイム管理スクロール + 行の仮想化
 cargo run --example hello         # 低レベル API（`SabitoriApp` トレイト）
+cargo run --example hot_reload    # ホットリロードのデモ（下記）
 ```
+
+## ホットリロード（実験的）
+
+`view()` を書き換えて保存すると、**状態を保ったまま**画面だけが更新される。
+走行中のプロセスに機械語パッチを当てる [subsecond](https://crates.io/crates/subsecond)
+を使う。パッチを作るのは Dioxus CLI なので、起動が `cargo run` ではなく `dx serve`
+になる。
+
+```bash
+cargo install dioxus-cli   # 初回だけ
+dx serve --hotpatch --package sabitori --example hot_reload --features hot-reload
+```
+
+自分のアプリで有効にするのは feature ひとつで、コードの変更は要らない。
+
+```toml
+[dependencies]
+sabitori = { version = "0.6", features = ["hot-reload"] }
+```
+
+- **効く**: `view()` / `overlay_view()` / `view_for()` の中身と、そこから呼ばれる全て。
+  レイアウト・色・文言・分岐
+- **効かない**: 状態を持つ struct のフィールド追加・削除・型変更。メモリレイアウトが
+  変わるので `dx` がフル再起動に落とす
+- subsecond は `debug_assertions` が有効なときだけ働く。release では境界が素の呼び出しに
+  畳まれるので、feature を立てたまま出荷しても実行時コストは無い
+- devserver が居なければ黙って無効になる。`cargo run` は今までどおり
+- ネイティブのみ。WASM は `trunk serve` のライブリロードを使う
 
 ## アーキテクチャ
 

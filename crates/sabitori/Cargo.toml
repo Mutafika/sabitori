@@ -25,6 +25,11 @@ default = ["builtin-font-jp"]
 builtin-font-jp = ["sabitori-text/builtin-font-jp"]
 builtin-font-latin = ["sabitori-text/builtin-font-latin"]
 
+# Rust コードのホットリロード (dev 専用)。`dx serve --hotpatch` と組で使う。
+# subsecond は debug_assertions が有効なときだけ働くので、有効にしたまま release を
+# 出しても実行時コストは無いが、依存を持ち込まないよう既定では off。
+hot-reload = ["dep:subsecond", "dep:dioxus-cli-config", "dep:tungstenite", "dep:serde_json"]
+
 [dependencies]
 sabitori-core.workspace = true
 sabitori-gpu.workspace = true
@@ -47,6 +52,14 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# ホットリロード (feature = "hot-reload")。パッチを作るのは `dx` CLI 側で、ここに
+# あるのは走っているプロセスが受け取る口だけ。上流の dioxus-devtools を使うと
+# VirtualDom 用の dioxus-core / dioxus-signals まで付いてくるので、必要な受信処理
+# (40 行) は crates/sabitori/src/hot_reload.rs に自前で持つ。
+subsecond = { version = "0.7", optional = true }
+dioxus-cli-config = { version = "0.7", optional = true }
+tungstenite = { version = "0.28", optional = true }
+serde_json = { version = "1", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
@@ -152,3 +165,7 @@ path = "../../examples/landing_particles.rs"
 [[example]]
 name = "measure_headless"
 path = "../../examples/measure_headless.rs"
+
+[[example]]
+name = "hot_reload"
+path = "../../examples/hot_reload.rs"
