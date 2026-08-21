@@ -3300,3 +3300,81 @@ mod z_index_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod overlay_content_tests {
+    //! **地を塗っていない層は矩形を 1 つも出さない。**
+    //!
+    //! これ自体は正しい (塗る物が無いので描く矩形も無い)。問題は、レンダラが
+    //! 「この層に描く物があるか」を矩形の数で判定していたこと。画像だけ /
+    //! 文字だけの overlay が丸ごと落ち、しかも入力も callback も正しく動くので
+    //! 「絵だけが出ない」という掴みにくい壊れ方をした
+    //! ([#44](https://github.com/Mutafika/sabitori/issues/44))。
+    //!
+    //! ここで固定するのはその前提 — 矩形の数は中身の有無の代わりにならない。
+
+    use super::*;
+    use crate::element::{div, image, text, ImageData, Px};
+
+    fn counts(root: &Element) -> (usize, usize, usize) {
+        let built = build_tree(root, 800.0, 600.0);
+        let mut rects = 0;
+        let mut images = 0;
+        let mut texts = 0;
+        for cmd in &built.render_list.commands {
+            match cmd {
+                RenderCommand::Rect(_) => rects += 1,
+                RenderCommand::Image(_) => images += 1,
+                RenderCommand::Text(_) => texts += 1,
+                _ => {}
+            }
+        }
+        (rects, images, texts)
+    }
+
+    fn a_pixel() -> ImageData {
+        ImageData::new(vec![255, 0, 0, 255], 1, 1)
+    }
+
+    /// ドラッグゴーストが消えていた形そのもの。
+    #[test]
+    fn an_image_only_layer_emits_no_rect() {
+        let root = div()
+            .w(Px(96.0))
+            .h(Px(96.0))
+            .children([image("ghost", a_pixel()).w(Px(96.0)).h(Px(96.0))]);
+        let (rects, images, _) = counts(&root);
+        assert_eq!(rects, 0, "地を塗っていない div は矩形を出さない");
+        assert_eq!(images, 1, "しかし描く物はある");
+    }
+
+    /// 文字だけの overlay も同じ。
+    #[test]
+    fn a_text_only_layer_emits_no_rect() {
+        let root = div().w(Px(200.0)).h(Px(40.0)).children([text("運搬中")]);
+        let (rects, _, texts) = counts(&root);
+        assert_eq!(rects, 0);
+        assert_eq!(texts, 1);
+    }
+
+    /// **ツールチップとコンテキストメニューが無事だった理由。**
+    /// たまたま両方とも地を塗っていたので、矩形が出て層が開いた。
+    #[test]
+    fn a_background_is_what_produced_a_rect() {
+        let root = div()
+            .w(Px(96.0))
+            .h(Px(96.0))
+            .bg(crate::Color::new(0.1, 0.1, 0.1, 1.0))
+            .children([image("ghost", a_pixel()).w(Px(96.0)).h(Px(96.0))]);
+        let (rects, images, _) = counts(&root);
+        assert_eq!(rects, 1, "地を塗ると矩形が出る — これが回避策になっていた");
+        assert_eq!(images, 1);
+    }
+
+    /// 本当に何も無い層は、矩形も中身も 0。
+    #[test]
+    fn an_empty_layer_has_neither() {
+        let (rects, images, texts) = counts(&div().w(Px(10.0)).h(Px(10.0)));
+        assert_eq!((rects, images, texts), (0, 0, 0));
+    }
+}
