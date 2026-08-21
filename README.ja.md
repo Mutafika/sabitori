@@ -270,17 +270,28 @@ cargo run --example hot_reload    # ホットリロードのデモ（下記）
 を使う。パッチを作るのは Dioxus CLI なので、起動が `cargo run` ではなく `dx serve`
 になる。
 
-```bash
-cargo install dioxus-cli   # 初回だけ
-dx serve --hotpatch --package sabitori --example hot_reload --features hot-reload
-```
-
-自分のアプリで有効にするのは feature ひとつで、コードの変更は要らない。
+有効にするのは feature ひとつで、コードの変更は要らない。
 
 ```toml
 [dependencies]
 sabitori = { version = "0.6", features = ["hot-reload"] }
 ```
+
+```bash
+cargo install dioxus-cli   # 初回だけ
+dx serve --hot-patch       # アプリのクレート直下で、`cargo run` の代わりに
+```
+
+`src/main.rs` を書き換えて保存する。パッチが当たるたびにアプリが
+`hot-reload: パッチ適用` を出す。M2 Max で 1 回あたり実測 0.7〜1.0 秒
+（起動直後の 1 回目はパッチキャッシュを作るぶん遅い）。
+
+**`dx` が見ているのは各クレートの `src` / `tests` / `Cargo.toml` だけ。**
+そこから外れたコードは監視されないので、アプリはクレートの `src/` に置く必要がある。
+同じ理由で、同梱の `examples/hot_reload.rs` は — このリポジトリが example を
+ワークスペース直下（どのクレートにも属さない場所）に置いているため —
+**ここからはホットリロードできない**。雛形として読み、自分のクレートの
+`src/main.rs` に写してから `dx serve` すること。
 
 - **効く**: `view()` / `overlay_view()` / `view_for()` の中身と、そこから呼ばれる全て。
   レイアウト・色・文言・分岐
