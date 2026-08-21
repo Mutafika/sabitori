@@ -15,16 +15,25 @@
 
 ## [Unreleased]
 
-### Changed
+### Changed（破壊的）
 
-- **破壊的: `DeclarativeApp::lazy_render` の既定が `true` になった**
+- **`DeclarativeApp::lazy_render` の既定が `false` → `true` になった**
   ([#53](https://github.com/Mutafika/sabitori/issues/53))。
   入力もアニメーションも無いフレームは描かれなくなる。
 
   これまでの既定 (`false`) は、**何もしていない窓が 1 コアと GPU の一部を
   焼き続ける**という意味だった。刻みの既定が 8ms (≈120Hz)、`present_mode` が
   取れれば `Immediate` なので、「毎秒 120 回、無条件に全部描き直す」が既定の
-  構成になっていた。M2 Max の idle 実測で **CPU 69〜77% → 0.3%、GPU 45% → 0**。
+  構成になっていた。
+
+  idle 実測 (どちらも M2 Max / macOS):
+
+  | | CPU | GPU |
+  |---|---|---|
+  | 報告元のアプリ (#53) | 69〜77% → **0.3%** | 45% → **0** |
+  | `examples/declarative` (release・20 秒・窓は端末の裏) | 5.6% → **0.3%** | — |
+
+  絶対値の開きは、example が軽く窓が隠れていたぶん。向きと桁は一致している。
 
   仕組み自体は 0.5.x から在って、`lazy_render` を上書きすれば効いた。
   問題は opt-in だったこと — **repo 内の 12 本の example も含め、上書きして
