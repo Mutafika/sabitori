@@ -1046,6 +1046,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
                         },
                     );
+                    // フレーム境界。テクスチャ LRU の世代をここで進める —
+                    // パスごとではなく、全パスを描き終えてから (#43)。
+                    if let Some(ir) = ir.as_mut() {
+                        ir.end_frame();
+                    }
                     self.image_renderer = ir;
                     self.ring_renderer = rr;
                     self.line_renderer = lr;
@@ -1071,6 +1076,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
                         },
                     );
+                    // フレーム境界。テクスチャ LRU の世代をここで進める —
+                    // パスごとではなく、全パスを描き終えてから (#43)。
+                    if let Some(ir) = ir.as_mut() {
+                        ir.end_frame();
+                    }
                     self.image_renderer = ir;
                     self.ring_renderer = rr;
                     self.line_renderer = lr;

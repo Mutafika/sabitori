@@ -473,6 +473,21 @@ pub trait DeclarativeApp: 'static {
         std::time::Duration::from_millis(8)
     }
 
+    /// 画像テクスチャに使ってよい GPU メモリの上限 (既定 256 MiB)。
+    ///
+    /// 超えた分は最も長く使われていない物から捨てられ、再び描かれたときに
+    /// 上げ直される。捨てても絵は欠けない — 描画のたびに元データごと渡されるので。
+    ///
+    /// 既定で足りるのが普通で、触るのは両極の場合:
+    ///
+    /// - **上げる**: 大きな画像を何十枚も同時に画面へ出す。予算が 1 フレームぶん
+    ///   の working set を下回ると、毎フレーム捨てては上げ直す往復が起きる
+    ///   (絵は出るが遅くなる)。
+    /// - **下げる**: 組み込みなど GPU メモリが厳しい環境。
+    fn texture_budget_bytes(&self) -> usize {
+        sabitori_gpu::TextureBudget::DEFAULT_BUDGET_BYTES
+    }
+
     /// Secondary windows the app wants open alongside the primary `view()`
     /// window. Called once at startup. Each entry's `key` identifies the
     /// window for `view_for` / `set_extra_window` / `macos_configure_extra_window`
@@ -831,7 +846,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         }
         text.set_preferred_family(self.app.preferred_font_family());
         text.set_preferred_monospace_family(self.app.preferred_monospace_family());
-        let img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+        let mut img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+        img.set_texture_budget_bytes(self.app.texture_budget_bytes());
         let rings = sabitori_gpu::RingRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
         let lines = sabitori_gpu::LineRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
         self.app.set_window(window.clone());
@@ -1607,6 +1623,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
                         },
                     );
+                    // フレーム境界。テクスチャ LRU の世代をここで進める —
+                    // パスごとではなく、全パスを描き終えてから (#43)。
+                    if let Some(ir) = ir.as_mut() {
+                        ir.end_frame();
+                    }
                     self.image_renderer = ir;
                     self.ring_renderer = rr;
                     self.line_renderer = lr;
@@ -1651,6 +1672,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         };
                         draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
                     });
+                    // フレーム境界。テクスチャ LRU の世代をここで進める —
+                    // パスごとではなく、全パスを描き終えてから (#43)。
+                    if let Some(ir) = ir.as_mut() {
+                        ir.end_frame();
+                    }
                     self.image_renderer = ir;
                     self.ring_renderer = rr;
                     self.line_renderer = lr;
@@ -1905,11 +1931,12 @@ impl<A: DeclarativeApp> AppState<A> {
             extra_gpu.surface_config.format,
             &extra_gpu.globals_bind_group_layout,
         );
-        let extra_img = sabitori_gpu::ImageRenderer::new(
+        let mut extra_img = sabitori_gpu::ImageRenderer::new(
             &extra_gpu.device,
             extra_gpu.surface_config.format,
             &extra_gpu.globals_bind_group_layout,
         );
+        extra_img.set_texture_budget_bytes(self.app.texture_budget_bytes());
         let extra_rings = sabitori_gpu::RingRenderer::new(
             &extra_gpu.device,
             extra_gpu.surface_config.format,
@@ -3647,7 +3674,8 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                     if !user_fonts.is_empty() {
                         text.prefer_user_fonts(&user_fonts);
                     }
-                    let img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+                    let mut img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+                    img.set_texture_budget_bytes(s.app.texture_budget_bytes());
                     let rings = sabitori_gpu::RingRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
                     s.renderer = Some(gpu);
                     s.text_renderer = Some(text);
