@@ -1,0 +1,53 @@
+# ライセンス周りが黙って壊れるのを止める。
+#
+# 実際に起きたこと: v0.4.0 で arboard が入り、その依存の BSL-1.0 が deny.toml の
+# allow に無かったため `cargo deny check licenses` が赤くなった。誰も回していな
+# かったので v0.7.0 まで 4 マイナー分気付かれず、同じ期間 THIRD-PARTY-LICENSES.html
+# も再生成されないまま、arboard (MIT/Apache-2.0) の帰属が抜けた状態で放置された。
+#
+# どちらも「依存を足した PR がその場で赤くなる」ようにすれば起きない。
+name: license
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # 依存を触っていなくても、新しい RUSTSEC 勧告や cargo-deny の更新で
+  # 状況は変わる。週 1 で気付けるようにしておく。
+  schedule:
+    - cron: "0 0 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # deny と about は起動のたびにビルドすると数分かかる。バイナリを取る。
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-about
+
+      # allow リストに無いライセンスが混ざっていないこと。
+      # `--all-features` は hot-reload の依存 (subsecond / tungstenite ほか) も
+      # 検査対象に入れるため — 既定 off でも、有効にした利用者には効いてくる。
+      - name: cargo deny check licenses
+        run: cargo deny --all-features check licenses
+
+      # 配布物の帰属表示が現在の依存と一致していること。
+      # 生成は決定的なので、差分が出た = 依存が変わったのに再生成していない。
+      - name: THIRD-PARTY-LICENSES.html が最新か
+        run: |
+          cargo about generate about.hbs -o /tmp/third-party.html --all-features
+          if ! diff -q THIRD-PARTY-LICENSES.html /tmp/third-party.html > /dev/null; then
+            echo "::error::THIRD-PARTY-LICENSES.html が依存ツリーとずれています。"
+            echo "::error::次を実行してコミットしてください:"
+            echo "::error::  cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features"
+            diff -u THIRD-PARTY-LICENSES.html /tmp/third-party.html | head -60
+            exit 1
+          fi
