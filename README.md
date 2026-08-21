@@ -270,17 +270,28 @@ It uses [subsecond](https://crates.io/crates/subsecond), which patches machine c
 into the running process. The patches come from the Dioxus CLI, so you launch with
 `dx serve` rather than `cargo run`.
 
-```bash
-cargo install dioxus-cli   # once
-dx serve --hotpatch --package sabitori --example hot_reload --features hot-reload
-```
-
-Turning it on in your own app is one feature flag — no code changes.
+Turning it on is one feature flag — no code changes:
 
 ```toml
 [dependencies]
 sabitori = { version = "0.6", features = ["hot-reload"] }
 ```
+
+```bash
+cargo install dioxus-cli   # once
+dx serve --hot-patch       # from your app's crate root, instead of `cargo run`
+```
+
+Edit `src/main.rs` and save. The app logs `hot-reload: パッチ適用` on each patch it
+applies; measured at roughly 0.7–1.0s per edit on an M2 Max (the first patch after
+launch is slower — it warms the patch cache).
+
+**`dx` only watches `<crate>/src`, `<crate>/tests`, and `Cargo.toml`.** Code outside
+those paths is invisible to it, so your app has to live in a crate's `src/`. That
+also means the bundled `examples/hot_reload.rs` — which this repo keeps at the
+workspace root, outside any crate — **cannot hot reload from here**. Read it as a
+starting point, copy it into your own crate's `src/main.rs`, and run `dx serve`
+there.
 
 - **Reloaded**: the bodies of `view()` / `overlay_view()` / `view_for()` and everything
   they call — layout, colors, copy, branches

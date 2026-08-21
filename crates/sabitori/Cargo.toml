@@ -25,7 +25,7 @@ default = ["builtin-font-jp"]
 builtin-font-jp = ["sabitori-text/builtin-font-jp"]
 builtin-font-latin = ["sabitori-text/builtin-font-latin"]
 
-# Rust コードのホットリロード (dev 専用)。`dx serve --hotpatch` と組で使う。
+# Rust コードのホットリロード (dev 専用)。`dx serve --hot-patch` と組で使う。
 # subsecond は debug_assertions が有効なときだけ働くので、有効にしたまま release を
 # 出しても実行時コストは無いが、依存を持ち込まないよう既定では off。
 hot-reload = ["dep:subsecond", "dep:dioxus-cli-config", "dep:tungstenite", "dep:serde_json"]

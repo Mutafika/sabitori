@@ -1,17 +1,27 @@
-//! ホットリロードのデモ。
+//! ホットリロードの雛形。
+//!
+//! **このファイルを直接 `dx serve` しても、ホットリロードは効かない。**
+//! `dx` が監視するのは各クレートの `src` / `tests` / `Cargo.toml` だけで、
+//! このリポジトリは example をワークスペース直下 (どのクレートにも属さない場所)
+//! に置いているため、編集しても `dx` の視界に入らない。
+//!
+//! 動かすには、自分のクレートの `src/main.rs` にこの中身を写して:
 //!
 //! ```sh
-//! cargo install dioxus-cli          # 初回だけ
-//! dx serve --hotpatch --package sabitori --example hot_reload --features hot-reload
+//! cargo install dioxus-cli   # 初回だけ
+//! dx serve --hot-patch       # そのクレート直下で
 //! ```
 //!
 //! 起動したらボタンを何回か押してカウンタを上げ、そのまま下の `view` の中身
 //! (色・文言・サイズ・レイアウト) を書き換えて保存する。**カウンタの値を保ったまま**
-//! 画面だけが変われば成功。
+//! 画面だけが変われば成功。パッチが当たるたびに `hot-reload: パッチ適用` が出る。
 //!
 //! 逆に `HotReloadDemo` のフィールドを足し引きすると状態のメモリレイアウトが
 //! 変わるので、そこは dx がフル再起動に落とす (＝カウンタは 0 に戻る)。
 //! これは制約であって不具合ではない。
+//!
+//! 素の確認だけなら `cargo run --example hot_reload` でも動く
+//! (devserver が居ないので、ホットリロードは黙って無効になる)。
 
 use sabitori::element::*;
 use sabitori::*;
