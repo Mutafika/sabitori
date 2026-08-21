@@ -15,6 +15,24 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-22
+
+**何もしていない窓が 1 コアと GPU を焼くのをやめた版。**
+
+`lazy_render` の既定を `true` にした。仕組み自体は 0.5.x から在って、上書きすれば
+効いた — 問題は opt-in だったこと。repo 内の example 12 本を含め、**上書きして
+いる実装は 1 つも無かった**。誰も取らない opt-in は既定が間違っている。
+
+そして掘ると、既定を変えるだけでは済まなかった。描画判定が
+`DeclarativeApp::is_animating()` を見ていない。「`tick` が自前の状態を進めるなら
+上書きせよ」と doc に書いてある口を、肝心の判定が無視していた。**example 6 本は
+既に正しく名乗っていたのに届いていなかった**ということで、`lazy_render` を
+上書きしたアプリは正しく書いても画面が止まる状態だった。同じ穴が presence と
+キャレット点滅にもあった。
+
+つまり「焼き続ける既定」と「名乗っても止まる判定」が組で在って、片方だけ直すと
+もう片方が牙を剥く関係だった。両方まとめて直してある。
+
 ### Changed（破壊的）
 
 - **`DeclarativeApp::lazy_render` の既定が `false` → `true` になった**
@@ -2617,7 +2635,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Mutafika/sabitori/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Mutafika/sabitori/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Mutafika/sabitori/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/Mutafika/sabitori/compare/v0.6.1...v0.6.2

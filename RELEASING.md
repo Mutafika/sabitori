@@ -63,9 +63,20 @@ API が安定したら `1.0.0` を切る。
 4. **`THIRD-PARTY-LICENSES.html` を再生成する。**
 
    ```sh
-   cargo install cargo-about --version 0.9.2 --locked   # 初回だけ
+   cargo about --version                                # 0.9.2 であること
+   cargo install cargo-about --version 0.9.2 --locked --features cli   # 違えば入れ直す
    cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features --locked
    ```
+
+   > **⚠️ バージョンを確認してから走らせる。** 版が違うと**黙って壊れた出力を
+   > 出す**。0.8.4 は `self_cell` の `GPL-2.0` を捌けず、標準エラーに ERROR を
+   > 1 行吐くだけで**終了コードは 0**、`ring` の Apache-2.0 全文を含む
+   > 47 エントリを落とした HTML を書く。パイプで握り潰していると気付けない。
+   > 生成後は必ず `git diff --stat` を見て、**工程 3 で上げた自クレートの
+   > バージョンだけが動いていること**を確かめる。
+   >
+   > `--features cli` は要る。無いとバイナリが入らず、古い版が残ったままになる
+   > （`cargo install` 自体は成功したように見える）。
 
    > CI (`.github/workflows/license.yml`) も同じ検査をしているので、工程 3 で
    > 依存が動いていなければ差分は出ない。出たらコミットする。
