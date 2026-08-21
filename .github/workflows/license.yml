@@ -4,16 +4,11 @@
 # allow に無かったため `cargo deny check licenses` が赤くなった。CI が無く誰も
 # 回していなかったので、v0.7.0 まで 4 マイナー分気付かれなかった。
 #
-# THIRD-PARTY-LICENSES.html の鮮度はここでは見ない。あのファイルは依存の正確な
-# バージョンを埋め込むが、Cargo.lock を追跡していない (ライブラリなので) ため
-# CI は毎回まっさらに解決する。上流が patch を出すたびにバージョンが動き、
-# 推移依存のクレート自体も増減するので、何を比べても定期的に赤くなる。
-# 誰も直しようがない赤は、この workflow が防ごうとしているものそのもの。
-#
-# 代わりに RELEASING.md の工程 4 で、リリースごとに再生成する。配布物に載る
-# 内容が正しければよく、その瞬間はリリース時。
-#
-# CI でも見たいなら Cargo.lock を追跡する必要がある (未決)。
+# THIRD-PARTY-LICENSES.html の鮮度もここで見る。あのファイルは依存の正確な
+# バージョンを埋め込むので、CI と手元で同じツリーを解決できないと比較にならない。
+# そのために Cargo.lock を追跡し、全コマンドに --locked を付けている。
+# --locked を外すと CI が勝手に解決し直し、上流が patch を出しただけで
+# 赤くなる — 一度そうなった。
 name: license
 
 on:
@@ -49,4 +44,24 @@ jobs:
       # `--all-features` は hot-reload の依存 (subsecond / tungstenite ほか) も
       # 検査対象に入れるため — 既定 off でも、有効にした利用者には効いてくる。
       - name: cargo deny check licenses
-        run: cargo deny --all-features check licenses
+        run: cargo deny --all-features --locked check licenses
+
+      # 配布物の帰属表示が、現在の依存ツリーと一致していること。
+      #
+      # MIT と Apache-2.0 は配布物に著作権表示を含めることを要求していて、その
+      # 義務を実際に果たしているのがこのファイル。v0.3.13 から v0.7.0 まで
+      # 再生成されず、arboard ほか 5 本の帰属が抜けたまま 4 マイナー分配られた。
+      #
+      # Cargo.lock を追跡し、ツールを固定し、--locked を付けているので、
+      # 出力は CI でも手元でも同じになる (ホスト OS にも依存しない)。
+      - name: 帰属ファイルが依存ツリーと一致しているか
+        run: |
+          cargo about generate about.hbs -o /tmp/third-party.html --all-features --locked
+          if ! diff -q THIRD-PARTY-LICENSES.html /tmp/third-party.html > /dev/null; then
+            echo "::error::THIRD-PARTY-LICENSES.html が依存ツリーとずれています。"
+            echo "::error::次を実行してコミットしてください:"
+            echo "::error::  cargo install cargo-about --version 0.9.2 --locked"
+            echo "::error::  cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features --locked"
+            diff -u THIRD-PARTY-LICENSES.html /tmp/third-party.html | head -40
+            exit 1
+          fi
