@@ -2187,6 +2187,12 @@ impl<A: DeclarativeApp> AppState<A> {
             scroll_states: scroll_info,
             tooltip: tooltip_info,
             drag: drag_info,
+            // 抱えているテクスチャの量。長時間起動の調べ物に要る (#47)。
+            textures: self
+                .image_renderer
+                .as_ref()
+                .map(|r| r.texture_stats())
+                .unwrap_or_default(),
             theme: self.app.theme(),
             presence: self.presence_animator.all_progress(),
             images: Some(self.image_ctx.clone()),
@@ -3504,6 +3510,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 scroll_states: std::collections::HashMap::new(),
                 tooltip: None,
                 drag: None,
+                textures: Default::default(),
                 theme: self.app.theme(),
                 presence: std::collections::HashMap::new(),
                 images: Some(self.image_ctx.clone()),

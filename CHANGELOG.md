@@ -15,6 +15,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`ViewContext::textures`** — 画像テクスチャの GPU 使用状況をアプリから見える
+  ようにした ([#47](https://github.com/Mutafika/sabitori/issues/47))。
+  `bytes` / `count` / `budget_bytes` / `evictions_total` / `evicted_last_frame`。
+
+  長時間起動でだんだん様子がおかしくなる、という話を調べるとき、アプリ側からは
+  自分がどれだけ抱えているかが全く見えなかった。窓の外から `ps -o rss` を
+  サンプリングして症状の時刻と突き合わせる、という推測の域を出ない調べ方に
+  なっていた。数字が 1 つ窓の中に出せれば「見れば分かる」に変わる。
+
+  **`evicted_last_frame` が 0 でないまま続くなら、予算が 1 フレームぶんの
+  working set より小さい。** 毎フレーム捨てては入れ直しているので、絵は正しく
+  出たまま静かに遅くなる。追い出しは「今フレーム使われた鍵は捨てない」「収まらない
+  時は超過を許す」と安全側に倒れているぶん、超過が常態化していることは外に出さないと
+  分からない。
+
+- **`ImageRenderer::replace_texture`** — 同じ鍵のままテクスチャの中身を入れ替える
+  ([#50](https://github.com/Mutafika/sabitori/issues/50))。
+
+  `ensure_texture` は既存の鍵で早期 return するので、「同じ物を指す鍵だが中身は
+  変わった」を表す手段が鍵を変えることしかなかった。ファイルを指す画像なら鍵に
+  更新時刻を混ぜることになり、作り直すたびに別テクスチャが増える。
+  `drop_texture` → `ensure_texture` の 2 段でも同じだが、前半を書き忘れると
+  **古い絵が出続ける** — 壊れずに間違う形になる。
+
+- **`ImageRenderer::texture_stats`** — 上の統計を低レベル側から取る口。
+
 ### Fixed
 
 - **画像テクスチャが一度も解放されず、GPU メモリが単調に増えていた**
