@@ -916,6 +916,12 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     }),
                     theme: self.app.theme(),
                     presence: self.presence_animator.all_progress(),
+                    // 抱えているテクスチャの量 (#47)。
+                    textures: self
+                        .image_renderer
+                        .as_ref()
+                        .map(|r| r.texture_stats())
+                        .unwrap_or_default(),
                     // SceneApp doesn't wire up an image runtime yet; callers
                     // can still use `image(key, data)` with their own cache.
                     images: None,

@@ -69,6 +69,31 @@ pub struct TooltipInfo {
 // DragInfo — active drag state
 // ---------------------------------------------------------------------------
 
+/// 画像テクスチャの GPU 側の使用状況。
+///
+/// 長時間起動でだんだん様子がおかしくなる、という話を調べるとき、アプリ側からは
+/// 自分がどれだけ抱えているかが全く見えなかった。窓の外から `ps -o rss` を
+/// サンプリングして症状の時刻と突き合わせる、という推測の域を出ない調べ方に
+/// なっていた ([#47](https://github.com/Mutafika/sabitori/issues/47))。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextureStats {
+    /// いまテクスチャが占めている bytes。
+    pub bytes: usize,
+    /// いま持っているテクスチャの枚数。
+    pub count: usize,
+    /// 上限 (`DeclarativeApp::texture_budget_bytes`)。
+    pub budget_bytes: usize,
+    /// 起動からの累計追い出し数。
+    pub evictions_total: u64,
+    /// 直近の 1 フレームで追い出した数。
+    ///
+    /// **0 でないまま続くなら、予算が 1 フレームぶんの working set より小さい。**
+    /// 毎フレーム捨てては入れ直しているので、絵は正しく出たまま静かに遅くなる。
+    /// 追い出しは「今フレーム使われた鍵は捨てない」「収まらない時は超過を許す」と
+    /// 安全側に倒れているぶん、超過が常態化していることは外に出さないと分からない。
+    pub evicted_last_frame: usize,
+}
+
 /// Information about an active drag operation.
 #[derive(Clone, Debug)]
 pub struct DragInfo {
@@ -161,6 +186,9 @@ pub struct ViewContext<'a> {
     pub tooltip: Option<TooltipInfo>,
     /// Active drag operation info (if any).
     pub drag: Option<DragInfo>,
+    /// 画像テクスチャの使用状況。計測器を持たないホスト (testing harness 等) では
+    /// 全部 0 になる。
+    pub textures: TextureStats,
     /// Framework-level theme with semantic color names.
     pub theme: AppTheme,
     /// Presence animation progress values: id -> progress (0.0-1.0).
@@ -604,6 +632,7 @@ mod view_context_tests {
             scroll_states: std::collections::HashMap::new(),
             tooltip: None,
             drag: None,
+            textures: Default::default(),
             theme: AppTheme::default(),
             presence: std::collections::HashMap::new(),
             images: None,

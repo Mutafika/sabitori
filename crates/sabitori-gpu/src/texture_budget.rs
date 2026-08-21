@@ -34,6 +34,16 @@ pub struct TextureBudget {
     used_bytes: usize,
     generation: u64,
     entries: HashMap<String, Entry>,
+    /// 起動からの累計追い出し数。
+    ///
+    /// 予算が実際の working set より小さいと「毎フレーム捨てて入れ直す」が起きる。
+    /// **絵は正しく出続けるので壊れて見えず、静かに遅くなるだけ**なので、
+    /// 外から見える数字が無いと原因が予算だと気付けない
+    /// ([#47](https://github.com/Mutafika/sabitori/issues/47))。
+    evictions_total: u64,
+    /// 直近の 1 フレームで追い出した数。0 でないまま続くなら予算が足りない。
+    evicted_last_frame: usize,
+    evicted_this_frame: usize,
 }
 
 impl TextureBudget {
@@ -49,6 +59,9 @@ impl TextureBudget {
             used_bytes: 0,
             generation: 0,
             entries: HashMap::new(),
+            evictions_total: 0,
+            evicted_last_frame: 0,
+            evicted_this_frame: 0,
         }
     }
 
@@ -93,6 +106,22 @@ impl TextureBudget {
     /// **今から描く物を追い出してしまう**。
     pub fn end_frame(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.evicted_last_frame = self.evicted_this_frame;
+        self.evicted_this_frame = 0;
+    }
+
+    /// 起動からの累計追い出し数。
+    pub fn evictions_total(&self) -> u64 {
+        self.evictions_total
+    }
+
+    /// 直近の 1 フレームで追い出した数。
+    ///
+    /// **これが 0 でないまま続くなら、予算が 1 フレームぶんの working set より
+    /// 小さい。** 毎フレーム捨てては入れ直しているので、絵は正しく出たまま
+    /// 静かに遅くなる。`set_texture_budget_bytes` を上げるか、描く画像を減らす。
+    pub fn evicted_last_frame(&self) -> usize {
+        self.evicted_last_frame
     }
 
     /// `bytes` の新しいテクスチャを入れる前に、**追い出すべき鍵**を返す。
@@ -117,6 +146,8 @@ impl TextureBudget {
             let e = self.entries.remove(&victim).expect("lru_victim は entries から選ぶ");
             self.used_bytes -= e.bytes;
             evicted.push(victim);
+            self.evictions_total = self.evictions_total.wrapping_add(1);
+            self.evicted_this_frame += 1;
         }
 
         self.entries.insert(
@@ -330,6 +361,62 @@ mod tests {
         b.set_budget_bytes(2 * full());
         b.admit("d", full());
         assert!(b.used_bytes() <= 2 * full(), "{} bytes", b.used_bytes());
+    }
+
+    /// **追い出しが起きたことが外から見える。**
+    ///
+    /// 予算が working set より小さいと毎フレーム捨てて入れ直すが、絵は正しく
+    /// 出続けるので壊れて見えない。数字が出ないと原因が予算だと気付けない (#47)。
+    #[test]
+    fn evictions_are_counted() {
+        let mut b = TextureBudget::new(2 * full());
+        assert_eq!(b.evictions_total(), 0);
+        assert_eq!(b.evicted_last_frame(), 0);
+
+        b.admit("a", full());
+        b.admit("b", full());
+        b.end_frame();
+        assert_eq!(b.evictions_total(), 0, "予算内なら追い出していない");
+
+        b.admit("c", full()); // a か b が 1 枚出る
+        assert_eq!(b.evictions_total(), 1);
+        // end_frame を跨ぐまでは前フレームの数字のまま
+        assert_eq!(b.evicted_last_frame(), 0);
+        b.end_frame();
+        assert_eq!(b.evicted_last_frame(), 1);
+    }
+
+    /// **予算が足りない状態は `evicted_last_frame` が 0 に戻らないことで分かる。**
+    #[test]
+    fn a_too_small_budget_keeps_evicting_every_frame() {
+        let mut b = TextureBudget::new(2 * full());
+        // 毎フレーム 3 枚の別画像を描く = working set が予算を超えている
+        for f in 0..10 {
+            for i in 0..3 {
+                b.admit(&format!("img-{i}"), full());
+            }
+            b.end_frame();
+            if f > 0 {
+                assert!(
+                    b.evicted_last_frame() > 0,
+                    "予算が足りないのに追い出しが 0 と報告された"
+                );
+            }
+        }
+        assert!(b.evictions_total() >= 10);
+    }
+
+    /// 予算が足りていれば、落ち着いた後は追い出しが止まる。
+    #[test]
+    fn a_sufficient_budget_settles_to_no_evictions() {
+        let mut b = TextureBudget::new(10 * full());
+        for _ in 0..10 {
+            for i in 0..3 {
+                b.admit(&format!("img-{i}"), full());
+            }
+            b.end_frame();
+        }
+        assert_eq!(b.evicted_last_frame(), 0, "予算が足りているのに追い出している");
     }
 
     /// 追い出しの結果が HashMap の反復順に左右されないこと。

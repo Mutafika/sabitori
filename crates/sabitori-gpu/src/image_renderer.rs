@@ -252,6 +252,45 @@ impl ImageRenderer {
     // テクスチャ寿命の制御 (#43)
     // ---------------------------------------------------------------
 
+    /// 同じ鍵のまま、テクスチャの中身を入れ替える。
+    ///
+    /// [`ensure_texture`](Self::ensure_texture) は既存の鍵で早期 return するので、
+    /// 「同じ物を指す鍵だが中身は変わった」を表す手段が鍵を変えることしか
+    /// なかった。ファイルを指す画像なら鍵に更新時刻やハッシュを混ぜることになり、
+    /// **作り直すたびに別テクスチャが増える**
+    /// ([#50](https://github.com/Mutafika/sabitori/issues/50))。
+    ///
+    /// `drop_texture` してから `ensure_texture` する 2 段でも同じことはできるが、
+    /// 前半を書き忘れると**古い絵が出続ける** — 壊れずに間違う形になる。
+    /// 入れ替えたいならこちらを 1 回呼ぶ。
+    pub fn replace_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: &str,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        self.drop_texture(key);
+        self.ensure_texture(device, queue, key, rgba, width, height);
+    }
+
+    /// 画像テクスチャの GPU 側の使用状況。
+    ///
+    /// 長時間起動でだんだん様子がおかしくなる、という調べ物のための数字
+    /// ([#47](https://github.com/Mutafika/sabitori/issues/47))。宣言的アプリからは
+    /// `ViewContext::textures` で同じ物が見える。
+    pub fn texture_stats(&self) -> sabitori_core::TextureStats {
+        sabitori_core::TextureStats {
+            bytes: self.budget.used_bytes(),
+            count: self.textures.len(),
+            budget_bytes: self.budget.budget_bytes(),
+            evictions_total: self.budget.evictions_total(),
+            evicted_last_frame: self.budget.evicted_last_frame(),
+        }
+    }
+
     /// このフレームの描画が終わったことをキャッシュに伝える。
     ///
     /// **フレームにつき 1 回、全パスを描き終えてから**呼ぶこと。パスごとに
