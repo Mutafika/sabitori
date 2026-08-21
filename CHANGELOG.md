@@ -15,6 +15,64 @@
 
 ## [Unreleased]
 
+### Changed（破壊的）
+
+- **`DeclarativeApp::lazy_render` の既定が `false` → `true` になった**
+  ([#53](https://github.com/Mutafika/sabitori/issues/53))。
+  入力もアニメーションも無いフレームは描かれなくなる。
+
+  これまでの既定 (`false`) は、**何もしていない窓が 1 コアと GPU の一部を
+  焼き続ける**という意味だった。刻みの既定が 8ms (≈120Hz)、`present_mode` が
+  取れれば `Immediate` なので、「毎秒 120 回、無条件に全部描き直す」が既定の
+  構成になっていた。
+
+  idle 実測 (どちらも M2 Max / macOS):
+
+  | | CPU | GPU |
+  |---|---|---|
+  | 報告元のアプリ (#53) | 69〜77% → **0.3%** | 45% → **0** |
+  | `examples/declarative` (release・20 秒・窓は端末の裏) | 5.6% → **0.3%** | — |
+
+  絶対値の開きは、example が軽く窓が隠れていたぶん。向きと桁は一致している。
+
+  仕組み自体は 0.5.x から在って、`lazy_render` を上書きすれば効いた。
+  問題は opt-in だったこと — **repo 内の 12 本の example も含め、上書きして
+  いる実装は 1 つも無かった**。誰も取らない opt-in は既定が間違っている。
+
+  **移行:** `tick(dt)` で絵を動かすなら
+  [`is_animating`](https://docs.rs/sabitori/latest/sabitori/trait.DeclarativeApp.html#method.is_animating)
+  を上書きする (この口は前から在り、example 6 本は既に書いていた)。一度きりの
+  変化なら `poll_dirty`。窓ごと降りたいなら `fn lazy_render(&self) -> bool { false }`
+  で 0.8.0 までと同じ挙動に戻る。
+
+  壊れ方が「操作したのに描き変わらない」という**目に見える形**になるのを取った。
+  今までの壊れ方 — 黙って 1 コアと GPU を焼く — は、探しに行かない限り誰も
+  気付かない。実際、過去に取った性能の実測値は全部その状態で取られていた。
+
+### Fixed
+
+- **`is_animating()` が lazy 判定から漏れていた**
+  ([#53](https://github.com/Mutafika/sabitori/issues/53))。
+  「`tick` が自前の状態を進めるなら上書きせよ」と doc に書いてある口を、
+  肝心の描画判定が見ていなかった。`lazy_render` を上書きしたアプリは、
+  正しく名乗っていても画面が止まる状態だった。
+
+- **presence (入退場) アニメーションが lazy 判定から漏れていた**。
+  `PresenceAnimator::has_animations()` は在ったのにランタイムが呼んでおらず、
+  要素が出かかった/消えかかった姿で固まりうる。`settle` の打ち切り判定にも
+  加えたので、Harness でも入退場が終わるまで回る。
+
+- **キャレット点滅が lazy で止まる問題**。位相を進めるのはランタイム側
+  (`advance`) なので、`view()` だけ書いたアプリには名乗る手段が無かった。
+  「登録済みテキスト欄がフォーカス中」をランタイムが自分で見るようにした。
+  収束しないので `settle` の打ち切り判定には**入れていない** — 入れると
+  フォーカス中のテストが毎回上限まで回る。
+
+### Notes
+
+- `SceneApp` 側には仕組みごと無い (`about_to_wait` が無条件に
+  `request_redraw`)。使う側から上書きする手段も無いので別途。
+
 ## [0.8.0] - 2026-08-22
 
 報告された壊れ方を 6 件まとめて直した版。

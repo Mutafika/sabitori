@@ -317,6 +317,8 @@ struct FilerApp {
     window: Option<std::sync::Arc<winit::window::Window>>,
     // External file hover (drag from another window/app)
     hover_files: Vec<PathBuf>,
+    /// `tick` が絵を変えたか。 `poll_dirty` で汲んで下ろす。
+    tick_changed: bool,
     // Conflict resolution modal
     conflict_modal: Option<ConflictModal>,
     hover_mouse: (f32, f32),
@@ -369,6 +371,7 @@ impl FilerApp {
             toast: None,
             window: None,
             hover_files: Vec::new(),
+            tick_changed: false,
             conflict_modal: None,
             hover_mouse: (0.0, 0.0),
         }
@@ -1205,16 +1208,36 @@ impl DeclarativeApp for FilerApp {
         None
     }
 
+    /// 外部ファイルをドラッグで持ってきている間だけ、 毎フレーム描き直す。
+    /// OS のドラッグ中は `CursorMoved` が来ないので `tick` でマウスを追って
+    /// おり、 入力イベントが 1 つも無いまま絵が動く — 既定の `lazy_render`
+    /// はそれを知る手立てが無いので、 ここで名乗る。
+    fn is_animating(&self) -> bool {
+        !self.hover_files.is_empty()
+    }
+
+    /// toast と古いドラッグの掃除は「時計が来たら 1 回」。 連続した動きでは
+    /// ないので `is_animating` ではなくこちら。
+    fn poll_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.tick_changed)
+    }
+
     fn tick(&mut self, _dt: f32) {
         // スクロールのばねはランタイムが回す (`.scroll(id)` に付けた時点で
         // 位置も速度もランタイムの持ち物)。 ここで tick する必要は無い。
         // Clear toast after 2 seconds
         if let Some((_, time)) = &self.toast {
-            if time.elapsed().as_secs_f32() > 2.0 { self.toast = None; }
+            if time.elapsed().as_secs_f32() > 2.0 {
+                self.toast = None;
+                self.tick_changed = true;
+            }
         }
         // Clear stale drag after 5 seconds
         if let Some(ref drag) = self.drag {
-            if drag.created.elapsed().as_secs() > 5 { self.drag = None; }
+            if drag.created.elapsed().as_secs() > 5 {
+                self.drag = None;
+                self.tick_changed = true;
+            }
         }
         // Poll mouse position during external file hover (OS drag doesn't send CursorMoved)
         #[cfg(target_os = "macos")]

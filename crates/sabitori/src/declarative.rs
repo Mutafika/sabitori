@@ -135,7 +135,28 @@ pub struct UiCapture {
     pub wants_keyboard: bool,
 }
 
-/// `'static` を要求するのは、 `Element::click` で登録されたハンドラが
+/// アプリ本体。 `view()` だけ実装すれば動く。
+///
+/// # 描かれないフレームがある
+///
+/// ランタイムは**誰も要求していないフレームを描かない**
+/// ([`lazy_render`](Self::lazy_render) の既定は `true`)。 自前のアニメーターは
+/// 見えているので、 スクロールのばね・style・presence・ドラッグ・tooltip の
+/// 遅延・組み込み `text_input` のキャレット点滅は放っておいて動く。
+///
+/// **見えないのはアプリの状態**。 [`tick`](Self::tick) で絵を動かすなら
+/// [`is_animating`](Self::is_animating) を上書きすること — 名乗らないと、
+/// 次の入力が来るまで画面が止まる。 一度きりの変化なら
+/// [`poll_dirty`](Self::poll_dirty)。
+///
+/// ```ignore
+/// fn is_animating(&self) -> bool { true }        // 粒子・スピナー・時計
+/// fn tick(&mut self, dt: f32) { self.t += dt; }
+/// ```
+///
+/// # `'static` について
+///
+/// 要求するのは、 `Element::click` で登録されたハンドラが
 /// `&mut dyn Any` 経由でアプリ本体に降りるため。 アプリはランタイムが所有して
 /// プロセス寿命まで持つので、 実質的な制約にはならない。
 pub trait DeclarativeApp: 'static {
@@ -310,11 +331,15 @@ pub trait DeclarativeApp: 'static {
     /// Called every frame with delta time. Use for animation ticking.
     fn tick(&mut self, _dt: f32) {}
 
-    /// Whether the app currently has its own animations running.
-    /// Return `true` to force the runtime into continuous-redraw mode.
-    /// Default `false` lets the runtime drop to its idle 1Hz heartbeat
-    /// when no built-in animator (scroll, tooltip, presence, style, drag)
-    /// is active. Override if your `tick(dt)` is advancing custom state.
+    /// アプリ自身のアニメーションが動いているか。
+    ///
+    /// **`tick(dt)` で絵を動かすなら上書きすること。** ランタイムが持つ
+    /// アニメーター (スクロール / スタイル / presence / ドラッグ / tooltip) は
+    /// ランタイムが自分で見るが、アプリの状態は見えない。既定の
+    /// [`lazy_render`](Self::lazy_render) は `true` なので、ここで名乗らないと
+    /// **入力が無いあいだ画面が止まる**。
+    ///
+    /// 一度きりの変化なら [`poll_dirty`](Self::poll_dirty) の方。
     fn is_animating(&self) -> bool { false }
 
     /// Element ids whose layout position should be reported back in
@@ -447,20 +472,36 @@ pub trait DeclarativeApp: 'static {
     /// The theme is available in `view()` via `ctx.theme`.
     fn theme(&self) -> sabitori_core::AppTheme { sabitori_core::AppTheme::default() }
 
-    /// Opt into lazy rendering: skip redraws when nothing is animating
-    /// and no input has occurred. Default `false` keeps the original
-    /// 60fps redraw loop for compatibility. When `true`, the runtime
-    /// only requests a redraw if input arrived, an animation is running,
-    /// or the app reports state changes via `poll_dirty`. Idle CPU drops
-    /// from "view+layout+GPU every 16ms" to ~0.
-    fn lazy_render(&self) -> bool { false }
+    /// 何も変わっていないフレームを描かない (既定 `true`)。
+    ///
+    /// `false` を返すと、入力もアニメーションも無い idle の窓が
+    /// [`target_frame_interval`](Self::target_frame_interval) ごとに
+    /// view の構築・レイアウト・GPU の提示を回し続ける。既定の 8ms と
+    /// `present_mode: Immediate` の組では **1 コアと GPU の一部を焼き続ける**
+    /// ([#53](https://github.com/Mutafika/sabitori/issues/53))。
+    ///
+    /// `true` のとき、ランタイムが redraw を出すのは次のいずれか:
+    ///
+    /// - 入力・フォーカス・リサイズ・IME・ドロップ等のイベントが来た
+    /// - ランタイム側のアニメーションが動いている
+    ///   (スクロールのばね / スタイル / presence / ドラッグ / tooltip の遅延 /
+    ///   **登録済みテキスト欄のキャレット点滅**)
+    /// - アプリが [`is_animating`](Self::is_animating) で `true` を返した
+    /// - アプリが [`poll_dirty`](Self::poll_dirty) で `true` を返した
+    ///
+    /// **`tick` で自前に絵を動かすなら [`is_animating`](Self::is_animating) を
+    /// 上書きすること。** 書かないと画面が止まる — ランタイムにはアプリの状態が
+    /// 変わったかどうかを知る手段が無い。
+    fn lazy_render(&self) -> bool { true }
 
-    /// Polled at the end of each tick (lazy mode only). Return `true` if
-    /// `tick` mutated visual state and the next frame should be redrawn.
-    /// Default `false` — input-driven UIs need not implement this since
-    /// input events already invalidate the frame; override only when your
-    /// `tick` drains async results that change what's on screen (e.g.
-    /// channels from worker threads, completion signals).
+    /// 毎 tick の最後に問われる。`tick` が絵を変えたなら `true`。
+    ///
+    /// **一度きりの変化**のための口。連続して動き続けるものは
+    /// [`is_animating`](Self::is_animating) の方を上書きする。
+    ///
+    /// 既定 `false` — 入力で動く UI は書かなくてよい (イベント自体がフレームを
+    /// 無効化する)。上書きするのは、`tick` がワーカースレッドのチャンネルを
+    /// 汲む・タイマの満了を拾う等、**外から来た変化**を反映するとき。
     fn poll_dirty(&mut self) -> bool { false }
 
     /// Target tick + redraw cadence. Default 8ms (≈120Hz) so ProMotion
@@ -1741,22 +1782,19 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Layout / focus may have changed since the last pointer event —
         // keep the capture snapshot current once per tick.
         self.push_ui_capture();
-        let app_dirty = self.app.poll_dirty();
-        // Scroll spring / fling keeps animating after the user lets go of the
-        // wheel. Without this check, lazy_render parks the loop and the
-        // momentum scroll stutters or freezes mid-flight.
-        let scroll_animating = self.scroll_states.values().any(|sv| sv.is_animating());
-        let any_anim = self.style_animator.is_animating()
-            || self.drag_manager.is_active()
-            || scroll_animating
-            // tooltip の hover-delay / fade 中は tick を回し続ける。無いと lazy_render が
-            // loop を park して delay タイマが止まり、マウスを動かすまで tooltip が出ない。
-            || self.tooltip_state.is_pending();
-        let must_draw = !self.app.lazy_render()
-            || self.dirty
-            || app_dirty
-            || any_anim
-            || self.atlas_recover_pending;
+        // 判定そのものは [`DrawGate`] が持つ — 材料を集めるのがここ、
+        // 決めるのは向こう。 ヘッドレスに試せる形にしてある (#53)。
+        let must_draw = DrawGate {
+            lazy: self.app.lazy_render(),
+            dirty: self.dirty,
+            // `poll_dirty` は「問うと下りる」ので 1 フレームに 1 回だけ呼ぶ。
+            app_dirty: self.app.poll_dirty(),
+            app_animating: self.app.is_animating(),
+            runtime_animating: self.runtime_animating(),
+            caret_blinking: self.caret_blinking(),
+            atlas_recover_pending: self.atlas_recover_pending,
+        }
+        .must_draw();
 
         if must_draw {
             if let Some(w) = self.window.as_ref() {
@@ -1805,6 +1843,45 @@ pub(crate) struct FrameBuild {
     /// The overlay tree — app `overlay_view` plus the tooltip and drag ghost —
     /// when any of those produced content this frame.
     pub(crate) overlay_build: Option<BuildResult>,
+}
+
+/// 1 フレーム分の「描くべきか」の判断材料。
+///
+/// 集めるのは `about_to_wait`、 決めるのはここ。 副作用が無いので
+/// ヘッドレスに試せる — 既定を lazy にした以上、 **描かれない条件**の方が
+/// 本番の挙動を決めるので、 そこをテストで押さえられる形にしてある (#53)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DrawGate {
+    /// アプリが [`DeclarativeApp::lazy_render`] で名乗った値。
+    /// `false` なら以下は全部無視して毎フレーム描く。
+    pub(crate) lazy: bool,
+    /// 前のフレーム以降に入力等のイベントが来た。
+    pub(crate) dirty: bool,
+    /// アプリが [`DeclarativeApp::poll_dirty`] で `true` を返した (一度きりの変化)。
+    pub(crate) app_dirty: bool,
+    /// アプリが [`DeclarativeApp::is_animating`] で `true` を返した (連続した動き)。
+    pub(crate) app_animating: bool,
+    /// ランタイム側のアニメーターのどれかが動いている
+    /// ([`AppState::runtime_animating`])。
+    pub(crate) runtime_animating: bool,
+    /// フォーカス中の登録済みテキスト欄がキャレットを点滅させている
+    /// ([`AppState::caret_blinking`])。
+    pub(crate) caret_blinking: bool,
+    /// グリフアトラスが溢れた直後。 次のフレームで flush + 再シェイプが要る。
+    pub(crate) atlas_recover_pending: bool,
+}
+
+impl DrawGate {
+    /// このフレームで redraw を出すべきか。
+    pub(crate) fn must_draw(self) -> bool {
+        !self.lazy
+            || self.dirty
+            || self.app_dirty
+            || self.app_animating
+            || self.runtime_animating
+            || self.caret_blinking
+            || self.atlas_recover_pending
+    }
 }
 
 /// What [`plan_extras`] decided to do with the live extra-window set.
@@ -2542,11 +2619,38 @@ impl<A: DeclarativeApp> AppState<A> {
     /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
     /// 回し続けるべきかの判定で、 テストの「落ち着くまで待つ」もこれを見る。
     pub(crate) fn is_animating(&self) -> bool {
-        self.app.is_animating()
-            || self.scroll_states.values().any(|sv| sv.is_animating())
+        self.app.is_animating() || self.runtime_animating()
+    }
+
+    /// ランタイムが自分で持っているアニメーションのどれかが動いているか。
+    ///
+    /// **落ち着く (収束する) ものだけ**をここに入れる — `settle` がこれを見て
+    /// 打ち切りを決めるので、 永久に動き続けるもの (キャレット点滅) を混ぜると
+    /// 待ち切れなくなる。 そちらは [`Self::caret_blinking`]。
+    pub(crate) fn runtime_animating(&self) -> bool {
+        self.scroll_states.values().any(|sv| sv.is_animating())
             || self.style_animator.is_animating()
+            // 入退場 (presence) の最中。 見ていないと lazy_render が loop を
+            // park して、 要素が出かかった/消えかかった姿で固まる。
+            || self.presence_animator.has_animations()
             || self.drag_manager.is_active()
+            // tooltip の hover-delay / fade 中は tick を回し続ける。無いと lazy_render が
+            // loop を park して delay タイマが止まり、マウスを動かすまで tooltip が出ない。
             || self.tooltip_state.is_pending()
+    }
+
+    /// フォーカス中の登録済みテキスト欄がキャレットを点滅させているか。
+    ///
+    /// 点滅の位相を進めるのは [`Self::advance`] (ランタイム側) なので、
+    /// **アプリには名乗る手段が無い**。 ここで拾わないと、 既定の
+    /// `lazy_render` でキャレットの止まったテキスト欄になる (#53)。
+    ///
+    /// 収束しないので [`Self::is_animating`] には入れない — あちらは
+    /// `settle` の打ち切り判定。
+    pub(crate) fn caret_blinking(&self) -> bool {
+        self.focused_id
+            .as_deref()
+            .is_some_and(|id| self.managed_text_field(id).is_some())
     }
 
     pub(crate) fn press_primary(&mut self) {
@@ -4935,5 +5039,130 @@ mod extra_window_tests {
             }
         }
         assert!(!Plain.take_window_reconcile());
+    }
+}
+
+/// 「描くべきか」の判定 — 既定を lazy にした以上、 **描かれない条件**の方が
+/// 本番の挙動を決める ([#53](https://github.com/Mutafika/sabitori/issues/53))。
+#[cfg(test)]
+mod draw_gate_tests {
+    use super::*;
+    use crate::testing::Harness;
+    use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
+
+    /// 何も起きていない lazy フレーム。 ここから 1 つずつ立てて見る。
+    fn idle() -> DrawGate {
+        DrawGate { lazy: true, ..DrawGate::default() }
+    }
+
+    #[test]
+    fn idle_lazy_frame_is_not_drawn() {
+        assert!(!idle().must_draw(), "何も起きていない lazy フレームは描かない");
+    }
+
+    /// `lazy_render` を切ったら、 他が全部静まっていても描く。
+    /// 0.8.0 までの既定の挙動で、 明示的な opt-out として残っている。
+    #[test]
+    fn opting_out_of_lazy_draws_unconditionally() {
+        assert!(DrawGate { lazy: false, ..DrawGate::default() }.must_draw());
+    }
+
+    /// 描く理由は 6 つあり、 **どれ 1 つでも欠けると画面が止まる**。
+    /// 表にして 1 本ずつ立て、 全部が単独で効くことを見る。
+    #[test]
+    fn every_reason_draws_on_its_own() {
+        let reasons: [(&str, fn(&mut DrawGate)); 6] = [
+            ("入力が来た", |g| g.dirty = true),
+            ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
+            ("アプリが is_animating で名乗った", |g| g.app_animating = true),
+            ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
+            ("キャレットが点滅している", |g| g.caret_blinking = true),
+            ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+        ];
+        for (why, set) in reasons {
+            let mut g = idle();
+            set(&mut g);
+            assert!(g.must_draw(), "{why} のに描かれない");
+        }
+    }
+
+    fn style() -> TextInputStyle {
+        TextInputStyle {
+            bg: sabitori_core::Color::from_hex("#202020"),
+            border: sabitori_core::Color::from_hex("#404040"),
+            text: sabitori_core::Color::WHITE,
+            placeholder: sabitori_core::Color::from_hex("#808080"),
+            font_size: 14.0,
+            radius: 4.0,
+            padding: 8.0,
+            focus_border: None,
+            caret: None,
+            preedit: None,
+            selection: None,
+        }
+    }
+
+    /// `view()` しか実装していないアプリ。 既定が lazy になって最初に
+    /// 割を食う立場で、 テキスト欄をただ置いただけのもの。
+    struct BareField {
+        name: TextInputState,
+    }
+
+    impl DeclarativeApp for BareField {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            text_input(ctx, "name", &self.name, &style())
+        }
+    }
+
+    fn bare() -> Harness<BareField> {
+        let mut h = Harness::new(BareField { name: TextInputState::new("名前") }, 400.0, 200.0);
+        h.frame();
+        h
+    }
+
+    /// **本題。** 組み込みのテキスト欄はキャレットが点滅していて、 位相を
+    /// 進めるのはランタイム側 (`advance`) — アプリには名乗る手段が無い。
+    /// ここを拾わないと、 `view()` だけ書いたアプリが「キャレットの止まった
+    /// テキスト欄」になる。
+    #[test]
+    fn focused_managed_field_keeps_the_frame_alive() {
+        let mut h = bare();
+        assert!(!h.state.caret_blinking(), "フォーカス前は点滅していない");
+
+        h.click("name");
+        assert_eq!(h.focused_id(), Some("name"));
+        assert!(h.state.caret_blinking(), "フォーカス中の欄はキャレットが点滅する");
+    }
+
+    /// フォーカスが外れたら止まる。 「点滅していることにして描き続ける」
+    /// のでは既定を lazy にした意味が無い。
+    #[test]
+    fn blurring_the_field_lets_the_loop_park_again() {
+        let mut h = bare();
+        h.click("name");
+        assert!(h.state.caret_blinking());
+
+        h.click_at(390.0, 190.0); // 欄の外
+        assert_eq!(h.focused_id(), None);
+        assert!(!h.state.caret_blinking(), "フォーカスが外れたら点滅も止まる");
+    }
+
+    /// 触っていないアプリは本当に静まっている。 ここが `true` に張り付くと
+    /// `settle` が毎回上限まで回り、 lazy の意味も無くなる。
+    #[test]
+    fn an_untouched_app_is_genuinely_idle() {
+        let h = bare();
+        assert!(!h.state.runtime_animating(), "何もしていないのにアニメーション扱い");
+        assert!(!h.state.caret_blinking());
+    }
+
+    /// キャレットは収束しないので `is_animating` (= `settle` の打ち切り判定)
+    /// には**入れない**。 入れるとフォーカス中のテスト全部が上限まで回る。
+    #[test]
+    fn caret_does_not_stall_settle() {
+        let mut h = bare();
+        h.click("name");
+        assert!(h.state.caret_blinking());
+        assert!(h.settle() < 120, "キャレット点滅で settle が待ち切れなくなっている");
     }
 }

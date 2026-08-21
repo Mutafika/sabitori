@@ -1872,6 +1872,13 @@ impl DeclarativeApp for Gallery {
         ]
     }
 
+    /// スピナー・グラデーション・波・パルス・タイプライタが常時回っていて、
+    /// 入力が 1 つも無くても絵が変わり続ける。 既定の `lazy_render` に対して
+    /// 「自分は動いている」と名乗る側。
+    fn is_animating(&self) -> bool {
+        true
+    }
+
     fn tick(&mut self, dt: f32) {
         if !self.splash_done && self.elapsed() >= SPLASH_DURATION {
             self.splash_done = true;
