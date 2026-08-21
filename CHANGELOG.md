@@ -15,6 +15,19 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-22
+
+報告された壊れ方を 6 件まとめて直した版。
+
+**絵だけが出ない、静かに漏れる、テストから踏めない** — どれも「動作は全部正しいのに
+一点だけ違う」形で、ログからは掴めなかったもの。画像だけの overlay が描かれず、
+テクスチャが一度も解放されず、そしてその両方が **Harness からドラッグを最後まで
+運べなかったせいでテストの外に居座っていた**。
+
+3 つは繋がっている。overlay の件が実機で目視するまで見つからなかったのは、
+`move_to` が `DragManager` を前に進めておらず、`drag_ghost` をテストから踏めな
+かったから。今回そこも塞いだので、同じ区間はテストで固定されている。
+
 ### Added
 
 - **`ViewContext::textures`** — 画像テクスチャの GPU 使用状況をアプリから見える
@@ -43,29 +56,6 @@
 
 - **`ImageRenderer::texture_stats`** — 上の統計を低レベル側から取る口。
 
-### Fixed
-
-- **Harness からドラッグを最後まで運べなかった**
-  ([#48](https://github.com/Mutafika/sabitori/issues/48))。
-
-  `Harness::move_to` はホバーの更新しかしておらず、`DragManager` を前に進めて
-  いなかった。`DragManager` は 5px の閾値を `on_move` の中で見て `Pending` →
-  `Active` に上げるので、**Harness からはドラッグが永遠に成立しない**。
-  `press_at` → `move_to` → `release` と書いても「押しっぱなしで動かしただけ」で、
-  `ctx.drag` は `None` のまま、`on_drop` も `drag_ghost` も呼ばれなかった。
-
-  **[#44](https://github.com/Mutafika/sabitori/issues/44) がテストの外に居座って
-  いたのはこれが理由。** `drag_ghost` を書いてもテストから踏めないので、固定できた
-  のは「掴める物として組まれているか」と「`on_drop` が正しく動かすか」の両端だけ
-  だった。真ん中は実機で目視するしかなく、そこで落ちていた。
-
-  実機の `CursorMoved` の中身を `pointer_moved_to` として括り出し、ランタイムと
-  Harness が同じ 1 本を通るようにした。片方にしか無い処理を作れなくするため —
-  `tick` を `advance` に括り出したのと同じ理由
-  ([#28](https://github.com/Mutafika/sabitori/issues/28))。
-
-### Added
-
 - **`Harness::hovered_id`** — いまポインタの下にある要素の id
   ([#49](https://github.com/Mutafika/sabitori/issues/49))。`focused_id` と対称。
 
@@ -77,7 +67,42 @@
 - **`Harness::drag_info` / `Harness::dragging`** — 運搬中の状態を外から読む。
   上のドラッグ経路をテストで検査するために必要。
 
+- **`DeclarativeApp::texture_budget_bytes`** — 画像テクスチャの GPU メモリ上限。
+  既定 256 MiB。
+
+- **`ImageRenderer` にテクスチャ寿命の制御を足した** — `drop_texture` /
+  `retain_textures` / `clear_textures` / `set_texture_budget_bytes` /
+  `texture_bytes` / `texture_count`。どれが要らないかをアプリが知っている場合に、
+  予算に当たる前に自分で捨てられる。
+
+- **`TextureBudget`** (`sabitori-gpu`) — 上記の帳簿。バイト数と最終使用世代だけを
+  持ち wgpu には触らないので、追い出しの判断を GPU 無しで検査できる。
+
+### Changed
+
+- **破壊的**: `GpuRenderer::render_layered` と
+  `GpuRenderer::render_scene_then_ui_layered` に `overlay_has_content: bool` が
+  増えた。`UiDrawLists::is_empty()` を否定して渡せばよい。
+
 ### Fixed
+
+- **画像だけ・文字だけの overlay が描かれなかった**
+  ([#44](https://github.com/Mutafika/sabitori/issues/44))。
+
+  `render_layered` の overlay パスが、その層の**矩形の数**で守られていた。
+  だが矩形はレンダラ自身が描き、画像・リング・線・文字は callback 越しに描かれる。
+  つまり「矩形が 0」と「描く物が無い」は別の問いで、前者で後者を代用していた。
+
+  地を塗っていない `div` は矩形を出さないので、`drag_ghost` に画像を 1 枚置いた
+  だけの層が**丸ごと落ちた**。しかも入力も hit region も callback も全部正しく
+  動くので、「絵だけが出ない」という掴みにくい壊れ方をする。ツールチップと
+  コンテキストメニューが無事だったのは、たまたま両方とも地を塗っていたから。
+
+  `overlay_has_content` を受け取り、矩形が 0 でも中身があれば層を開く。
+  この判定はレンダラ側では出せない — 描くのは opaque な `draw_fn` なので、
+  呼び出し側が言うしかない。
+
+  同じ形が `render_scene_then_ui_layered` にもあった（報告には無かった 2 箇所目）。
 
 - **画像テクスチャが一度も解放されず、GPU メモリが単調に増えていた**
   ([#43](https://github.com/Mutafika/sabitori/issues/43))。
@@ -100,44 +125,24 @@
   1 フレームぶんの working set が予算を超えているということで、描画を壊すより
   マシだから。
 
-### Added
+- **Harness からドラッグを最後まで運べなかった**
+  ([#48](https://github.com/Mutafika/sabitori/issues/48))。
 
-- **`DeclarativeApp::texture_budget_bytes`** — 画像テクスチャの GPU メモリ上限。
-  既定 256 MiB。
+  `Harness::move_to` はホバーの更新しかしておらず、`DragManager` を前に進めて
+  いなかった。`DragManager` は 5px の閾値を `on_move` の中で見て `Pending` →
+  `Active` に上げるので、**Harness からはドラッグが永遠に成立しない**。
+  `press_at` → `move_to` → `release` と書いても「押しっぱなしで動かしただけ」で、
+  `ctx.drag` は `None` のまま、`on_drop` も `drag_ghost` も呼ばれなかった。
 
-- **`ImageRenderer` にテクスチャ寿命の制御を足した** — `drop_texture` /
-  `retain_textures` / `clear_textures` / `set_texture_budget_bytes` /
-  `texture_bytes` / `texture_count`。どれが要らないかをアプリが知っている場合に、
-  予算に当たる前に自分で捨てられる。
+  **[#44](https://github.com/Mutafika/sabitori/issues/44) がテストの外に居座って
+  いたのはこれが理由。** `drag_ghost` を書いてもテストから踏めないので、固定できた
+  のは「掴める物として組まれているか」と「`on_drop` が正しく動かすか」の両端だけ
+  だった。真ん中は実機で目視するしかなく、そこで落ちていた。
 
-- **`TextureBudget`** (`sabitori-gpu`) — 上記の帳簿。バイト数と最終使用世代だけを
-  持ち wgpu には触らないので、追い出しの判断を GPU 無しで検査できる。
-
-### Fixed
-
-- **画像だけ・文字だけの overlay が描かれなかった**
-  ([#44](https://github.com/Mutafika/sabitori/issues/44))。
-
-  `render_layered` の overlay パスが、その層の**矩形の数**で守られていた。
-  だが矩形はレンダラ自身が描き、画像・リング・線・文字は callback 越しに描かれる。
-  つまり「矩形が 0」と「描く物が無い」は別の問いで、前者で後者を代用していた。
-
-  地を塗っていない `div` は矩形を出さないので、`drag_ghost` に画像を 1 枚置いた
-  だけの層が**丸ごと落ちた**。しかも入力も hit region も callback も全部正しく
-  動くので、「絵だけが出ない」という掴みにくい壊れ方をする。ツールチップと
-  コンテキストメニューが無事だったのは、たまたま両方とも地を塗っていたから。
-
-  `overlay_has_content` を受け取り、矩形が 0 でも中身があれば層を開く。
-  この判定はレンダラ側では出せない — 描くのは opaque な `draw_fn` なので、
-  呼び出し側が言うしかない。
-
-  同じ形が `render_scene_then_ui_layered` にもあった（報告には無かった 2 箇所目）。
-
-### Changed
-
-- **破壊的**: `GpuRenderer::render_layered` と
-  `GpuRenderer::render_scene_then_ui_layered` に `overlay_has_content: bool` が
-  増えた。`UiDrawLists::is_empty()` を否定して渡せばよい。
+  実機の `CursorMoved` の中身を `pointer_moved_to` として括り出し、ランタイムと
+  Harness が同じ 1 本を通るようにした。片方にしか無い処理を作れなくするため —
+  `tick` を `advance` に括り出したのと同じ理由
+  ([#28](https://github.com/Mutafika/sabitori/issues/28))。
 
 ## [0.7.0] - 2026-08-21
 
@@ -2554,7 +2559,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Mutafika/sabitori/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Mutafika/sabitori/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/Mutafika/sabitori/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Mutafika/sabitori/compare/v0.6.0...v0.6.1
