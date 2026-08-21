@@ -54,27 +54,23 @@ API が安定したら `1.0.0` を切る。
    cargo update --workspace
    ```
 
-   > `Cargo.lock` は `.gitignore` に入っているため**コミット対象にはならない**
-   > （ライブラリなので lock は追跡しない方針）。ローカルのビルドを新バージョンに
-   > 揃えるためだけに実行する。差分が出なくても正常。
+   > `Cargo.lock` は**追跡している**ので、これもコミット対象になる
+   > （ワークスペースメンバーのバージョンが書き換わる）。ライブラリだが lock を
+   > 追跡しているのは、CI を再現可能にするため — 追跡しないと CI が毎回まっさらに
+   > 解決してしまい、依存ツリーから作る成果物を検査できない。下流の利用者には
+   > 影響しない。
 
 4. **`THIRD-PARTY-LICENSES.html` を再生成する。**
 
    ```sh
    cargo install cargo-about --version 0.9.2 --locked   # 初回だけ
-   cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features
+   cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features --locked
    ```
 
-   > **なぜ CI ではなくここなのか。** `Cargo.lock` を追跡していない (ライブラリ
-   > なので) ため、CI は毎回まっさらに解決する。上流が patch を出すたびに
-   > バージョンが動き、推移依存のクレート自体も増減するので、CI でこのファイルと
-   > 比べると**リポジトリに何の変更が無くても定期的に赤くなる**。誰も直しようが
-   > ない赤は、ゲートとして機能しない。
+   > CI (`.github/workflows/license.yml`) も同じ検査をしているので、工程 3 で
+   > 依存が動いていなければ差分は出ない。出たらコミットする。
    >
-   > 一方、**配布物に載る内容は正確であってほしい**。それを揃えられるのが
-   > このタイミング。差分が出なければそれでよい。
-   >
-   > CI でも見たいなら `Cargo.lock` を追跡する必要がある (未決)。
+   > `--locked` は必須。付けないと解決し直してしまい、CI の結果と食い違う。
 
    > **⚠️ 飛ばさない。** 実際に v0.3.13 から v0.7.0 まで再生成されず、
    > `arboard` ほか 5 本の帰属が抜けたまま 4 マイナー分配られた。MIT と

@@ -1,3 +1,6 @@
 target/
-Cargo.lock
+# Cargo.lock は追跡する。ライブラリだが、CI を再現可能にするため。
+# 追跡しないと CI が毎回まっさらに解決し、依存ツリーから作る成果物
+# (THIRD-PARTY-LICENSES.html) を検査できない。下流の利用者には影響しない。
+# Cargo.lock
 .DS_Store
