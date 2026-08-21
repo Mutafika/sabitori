@@ -483,6 +483,19 @@ pub trait DeclarativeApp: 'static {
     /// (`setIgnoresMouseEvents:YES`), HUDs, per-display panels.
     fn extra_windows(&self) -> Vec<ExtraWindow> { Vec::new() }
 
+    /// Consume a pending request to rebuild the extra-window set.
+    ///
+    /// `extra_windows()` is otherwise queried once, when the primary
+    /// window comes up. An app whose window layout is derived from
+    /// something that changes at runtime — most obviously the set of
+    /// connected displays — raises this to have the runtime re-query
+    /// the list and move, spawn, or close windows to match.
+    ///
+    /// Called once per frame, so implementations must return `true`
+    /// only once per change (take-and-clear), not for as long as the
+    /// condition holds.
+    fn take_window_reconcile(&mut self) -> bool { false }
+
     /// Build the UI for the given extra-window `key`. Default returns an
     /// empty container so apps that declare extras without overriding this
     /// see something obviously wrong (blank window) instead of mysteriously
@@ -821,77 +834,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // first frame of every window is rendered together.
         let extras = self.app.extra_windows();
         for spec in extras {
-            let mut attrs = WindowAttributes::default()
-                .with_title(&spec.title)
-                .with_inner_size(winit::dpi::LogicalSize::new(spec.size.0, spec.size.1))
-                .with_min_inner_size(winit::dpi::LogicalSize::new(spec.min_size.0, spec.min_size.1));
-            if let Some((x, y)) = spec.position {
-                attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
-            }
-            if spec.transparent {
-                attrs = attrs.with_transparent(true);
-            }
-            if !spec.decorations {
-                attrs = attrs.with_decorations(false);
-            }
-            let extra_window = Arc::new(event_loop.create_window(attrs).unwrap());
-
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(blur) = spec.backdrop_blur {
-                    crate::macos_blur::attach_backdrop_blur(
-                        &extra_window,
-                        blur,
-                        spec.backdrop_blur_top_strip_height,
-                    );
-                }
-                self.app.macos_configure_extra_window(&spec.key, &extra_window);
-            }
-
-            let mut extra_gpu = GpuRenderer::new_with_alpha(extra_window.clone(), spec.transparent);
-            // Allocate the depth texture *before* setup_extra_scene so
-            // the app's pipeline init can sample render targets that
-            // include depth (matches SceneApp's setup ordering).
-            if spec.scene_3d {
-                extra_gpu.create_depth_texture();
-            }
-            let extra_text = TextRenderer::new(
-                &extra_gpu.device,
-                extra_gpu.surface_config.format,
-                &extra_gpu.globals_bind_group_layout,
-            );
-            let extra_img = sabitori_gpu::ImageRenderer::new(
-                &extra_gpu.device,
-                extra_gpu.surface_config.format,
-                &extra_gpu.globals_bind_group_layout,
-            );
-            let extra_rings = sabitori_gpu::RingRenderer::new(
-                &extra_gpu.device,
-                extra_gpu.surface_config.format,
-                &extra_gpu.globals_bind_group_layout,
-            );
-            let extra_lines = sabitori_gpu::LineRenderer::new(
-                &extra_gpu.device,
-                extra_gpu.surface_config.format,
-                &extra_gpu.globals_bind_group_layout,
-            );
-            if spec.scene_3d {
-                self.app.setup_extra_scene(&spec.key, &extra_gpu.gpu_context());
-            }
-            let id = extra_window.id();
-            self.app.set_extra_window(&spec.key, extra_window.clone());
-            self.extras.insert(id, ExtraWindowState {
-                key: spec.key,
-                window: extra_window,
-                renderer: extra_gpu,
-                text_renderer: extra_text,
-                image_renderer: extra_img,
-                ring_renderer: extra_rings,
-                line_renderer: extra_lines,
-                measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
-                last_build: None,
-                scene_3d: spec.scene_3d,
-            });
+            self.spawn_extra(event_loop, spec);
         }
     }
 
@@ -1740,6 +1683,18 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // `desired_focus` の反映は `advance` / `build_frame` の中 (#28)。
         // ここに書くと Harness からは一度も通らない。
         self.advance(dt);
+        // Displays can appear, vanish, or be re-arranged between any
+        // two frames. Checked right after `advance` so the app has just
+        // had the chance to notice and raise the flag, and before the
+        // build/draw below — otherwise this frame would paint through
+        // windows that no longer match the layout the app just adopted.
+        //
+        // `advance` 自体ではなくここに置くのは、あちらを Harness が共有して
+        // いるため (#28)。ヘッドレスに OS ウィンドウも event_loop も無い。
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.app.take_window_reconcile() {
+            self.reconcile_extras(event_loop);
+        }
         // Anchor the platform IME (conversion / candidate window) at the app's
         // caret. Polled every frame but deduped — only re-sent when the caret
         // rect changes — so the Cocoa call doesn't fire 125×/sec. Without this,
@@ -1839,7 +1794,186 @@ pub(crate) struct FrameBuild {
     pub(crate) overlay_build: Option<BuildResult>,
 }
 
+/// What [`plan_extras`] decided to do with the live extra-window set.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ExtraPlan {
+    /// Keys of live windows the app stopped declaring. Closed before
+    /// anything else, so a key can be recycled onto a different display
+    /// in the same pass without the old window lingering for a frame.
+    pub(crate) close: Vec<String>,
+    /// One entry per declared spec, **in declaration order**: `true`
+    /// when a window with that key is already up (move it in place),
+    /// `false` when it has to be created.
+    pub(crate) reuse: Vec<bool>,
+}
+
+/// The decision half of [`AppState::reconcile_extras`], with no winit in it.
+///
+/// Keys are the identity of a window, not its position in the list — an
+/// app that reorders `extra_windows()` between two frames must not cause
+/// a single window to be torn down and rebuilt. Splitting the decision
+/// out is what makes that testable: the winit half needs an event loop
+/// and real displays, this half needs neither.
+pub(crate) fn plan_extras(wanted: &[String], live: &[String]) -> ExtraPlan {
+    let wanted_set: std::collections::HashSet<&str> = wanted.iter().map(String::as_str).collect();
+    let live_set: std::collections::HashSet<&str> = live.iter().map(String::as_str).collect();
+
+    let mut close: Vec<String> = live
+        .iter()
+        .filter(|k| !wanted_set.contains(k.as_str()))
+        .cloned()
+        .collect();
+    // `self.extras` is a HashMap, so `live` arrives in whatever order it
+    // iterated. Sorting keeps the plan (and the tests) deterministic.
+    close.sort();
+    close.dedup();
+
+    // A key can only be reused once — if the app declares the same key
+    // twice, the second spec has no window of its own and would
+    // otherwise silently move the first one instead of getting built.
+    let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let reuse = wanted
+        .iter()
+        .map(|k| live_set.contains(k.as_str()) && used.insert(k.as_str()))
+        .collect();
+
+    ExtraPlan { close, reuse }
+}
+
 impl<A: DeclarativeApp> AppState<A> {
+    /// Create one secondary window from its spec: OS window, GPU
+    /// surface, per-window renderers, then register it under its key.
+    ///
+    /// Split out of `resumed` so `reconcile_extras` can add windows
+    /// after startup — displays get plugged in and unplugged, and the
+    /// set of extras is derived from them.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_extra(&mut self, event_loop: &ActiveEventLoop, spec: ExtraWindow) {
+        let mut attrs = WindowAttributes::default()
+            .with_title(&spec.title)
+            .with_inner_size(winit::dpi::LogicalSize::new(spec.size.0, spec.size.1))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(spec.min_size.0, spec.min_size.1));
+        if let Some((x, y)) = spec.position {
+            attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
+        }
+        if spec.transparent {
+            attrs = attrs.with_transparent(true);
+        }
+        if !spec.decorations {
+            attrs = attrs.with_decorations(false);
+        }
+        let extra_window = Arc::new(event_loop.create_window(attrs).unwrap());
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(blur) = spec.backdrop_blur {
+                crate::macos_blur::attach_backdrop_blur(
+                    &extra_window,
+                    blur,
+                    spec.backdrop_blur_top_strip_height,
+                );
+            }
+            self.app.macos_configure_extra_window(&spec.key, &extra_window);
+        }
+
+        let mut extra_gpu = GpuRenderer::new_with_alpha(extra_window.clone(), spec.transparent);
+        // Allocate the depth texture *before* setup_extra_scene so
+        // the app's pipeline init can sample render targets that
+        // include depth (matches SceneApp's setup ordering).
+        if spec.scene_3d {
+            extra_gpu.create_depth_texture();
+        }
+        let extra_text = TextRenderer::new(
+            &extra_gpu.device,
+            extra_gpu.surface_config.format,
+            &extra_gpu.globals_bind_group_layout,
+        );
+        let extra_img = sabitori_gpu::ImageRenderer::new(
+            &extra_gpu.device,
+            extra_gpu.surface_config.format,
+            &extra_gpu.globals_bind_group_layout,
+        );
+        let extra_rings = sabitori_gpu::RingRenderer::new(
+            &extra_gpu.device,
+            extra_gpu.surface_config.format,
+            &extra_gpu.globals_bind_group_layout,
+        );
+        let extra_lines = sabitori_gpu::LineRenderer::new(
+            &extra_gpu.device,
+            extra_gpu.surface_config.format,
+            &extra_gpu.globals_bind_group_layout,
+        );
+        if spec.scene_3d {
+            self.app.setup_extra_scene(&spec.key, &extra_gpu.gpu_context());
+        }
+        let id = extra_window.id();
+        self.app.set_extra_window(&spec.key, extra_window.clone());
+        self.extras.insert(id, ExtraWindowState {
+            key: spec.key,
+            window: extra_window,
+            renderer: extra_gpu,
+            text_renderer: extra_text,
+            image_renderer: extra_img,
+            ring_renderer: extra_rings,
+            line_renderer: extra_lines,
+            measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
+            last_build: None,
+            scene_3d: spec.scene_3d,
+        });
+    }
+
+    /// Re-query `extra_windows()` and make the live window set match it.
+    ///
+    /// Keys are the identity: a spec whose key already has a window is
+    /// moved/resized in place (keeping its GPU surface and any 3D scene
+    /// the app set up), a new key spawns a window, and a window whose
+    /// key disappeared from the list is dropped.
+    ///
+    /// Called when the app raises `take_window_reconcile`, which for a
+    /// desktop shell means the display layout changed underneath it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_extras(&mut self, event_loop: &ActiveEventLoop) {
+        let specs = self.app.extra_windows();
+        let live: Vec<String> = self.extras.values().map(|ex| ex.key.clone()).collect();
+        let wanted: Vec<String> = specs.iter().map(|s| s.key.clone()).collect();
+        let plan = plan_extras(&wanted, &live);
+
+        // Close first. Removing the state drops the last `Arc<Window>`
+        // we hold, which closes the OS window.
+        if !plan.close.is_empty() {
+            self.extras.retain(|_, ex| !plan.close.contains(&ex.key));
+        }
+
+        let by_key: std::collections::HashMap<String, WindowId> = self
+            .extras
+            .iter()
+            .map(|(id, ex)| (ex.key.clone(), *id))
+            .collect();
+
+        for (spec, reuse) in specs.into_iter().zip(plan.reuse) {
+            match reuse.then(|| by_key.get(&spec.key)).flatten() {
+                Some(id) => {
+                    let Some(extra) = self.extras.get(id) else { continue };
+                    // Resize before moving: on macOS a window whose new
+                    // frame lands on a different display gets its
+                    // backing scale re-evaluated on the move, and doing
+                    // it in this order avoids a frame at the old size
+                    // on the new display.
+                    let _ = extra.window.request_inner_size(
+                        winit::dpi::LogicalSize::new(spec.size.0, spec.size.1),
+                    );
+                    if let Some((x, y)) = spec.position {
+                        extra
+                            .window
+                            .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                    }
+                    extra.window.request_redraw();
+                }
+                None => self.spawn_extra(event_loop, spec),
+            }
+        }
+    }
+
     /// Runtime state for `app` with no window or GPU resources attached yet.
     ///
     /// Everything that isn't a GPU resource is initialized here, so the state is
@@ -4620,5 +4754,99 @@ mod clipboard_tests {
         h.key(Key::X, primary());
 
         assert_eq!(crate::clipboard::read_text().as_deref(), Some("前に入れたもの"));
+    }
+}
+
+#[cfg(test)]
+mod extra_window_tests {
+    use super::*;
+
+    fn keys(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 何も宣言していないアプリが、余計なウィンドウ操作を食らわないこと。
+    #[test]
+    fn nothing_declared_nothing_live_is_a_no_op() {
+        let plan = plan_extras(&[], &[]);
+        assert_eq!(plan.close, Vec::<String>::new());
+        assert_eq!(plan.reuse, Vec::<bool>::new());
+    }
+
+    /// 初回 (resumed 直後) は全部が新規。
+    #[test]
+    fn every_key_is_new_when_nothing_is_live() {
+        let plan = plan_extras(&keys(&["hud", "panel"]), &[]);
+        assert!(plan.close.is_empty());
+        assert_eq!(plan.reuse, vec![false, false]);
+    }
+
+    /// ディスプレイが 1 枚抜けた形。宣言から消えた key の窓だけが閉じる。
+    #[test]
+    fn a_key_that_vanished_from_the_list_is_closed() {
+        let plan = plan_extras(&keys(&["hud"]), &keys(&["hud", "panel"]));
+        assert_eq!(plan.close, keys(&["panel"]));
+        assert_eq!(plan.reuse, vec![true]);
+    }
+
+    /// 全部消えた形 (最後のディスプレイが抜けた等)。
+    #[test]
+    fn declaring_nothing_closes_everything() {
+        let plan = plan_extras(&[], &keys(&["hud", "panel"]));
+        assert_eq!(plan.close, keys(&["hud", "panel"]));
+        assert!(plan.reuse.is_empty());
+    }
+
+    /// **並べ替えは作り直しではない。**
+    ///
+    /// key が同一性であって順番ではない、という約束の本体。ここが崩れると、
+    /// アプリが `extra_windows()` の順を入れ替えただけで GPU サーフェスと
+    /// 3D シーンが毎フレーム捨てられる。
+    #[test]
+    fn reordering_the_list_moves_nothing() {
+        let plan = plan_extras(&keys(&["panel", "hud"]), &keys(&["hud", "panel"]));
+        assert!(plan.close.is_empty(), "並べ替えただけで窓を閉じてはいけない");
+        assert_eq!(plan.reuse, vec![true, true]);
+    }
+
+    /// 増減が同時に起きる形 — 外部ディスプレイの差し替え。
+    #[test]
+    fn a_swap_closes_the_old_and_builds_the_new() {
+        let plan = plan_extras(&keys(&["hud", "external-2"]), &keys(&["hud", "external-1"]));
+        assert_eq!(plan.close, keys(&["external-1"]));
+        assert_eq!(plan.reuse, vec![true, false]);
+    }
+
+    /// key が重複した場合、2 つ目は自前の窓を持てない。
+    ///
+    /// 使い回しを 1 回に限らないと、2 つ目の spec が 1 つ目と同じ窓を動かして
+    /// 「宣言したのに出てこない窓」ができる。作りに行かせて、アプリ側が
+    /// key の重複に気付けるようにする。
+    #[test]
+    fn a_duplicated_key_is_only_reused_once() {
+        let plan = plan_extras(&keys(&["hud", "hud"]), &keys(&["hud"]));
+        assert!(plan.close.is_empty());
+        assert_eq!(plan.reuse, vec![true, false]);
+    }
+
+    /// `extras` は HashMap なので `live` の順は不定。plan がそれに依存しないこと。
+    #[test]
+    fn the_plan_does_not_depend_on_the_order_live_windows_arrive_in() {
+        let a = plan_extras(&keys(&["hud"]), &keys(&["panel", "aux", "hud"]));
+        let b = plan_extras(&keys(&["hud"]), &keys(&["aux", "hud", "panel"]));
+        assert_eq!(a, b);
+        assert_eq!(a.close, keys(&["aux", "panel"]));
+    }
+
+    /// 既定では誰も再構成を要求しない (既存アプリが影響を受けない)。
+    #[test]
+    fn reconcile_is_opt_in() {
+        struct Plain;
+        impl DeclarativeApp for Plain {
+            fn view(&self, _ctx: &ViewContext) -> Element {
+                sabitori_core::element::div()
+            }
+        }
+        assert!(!Plain.take_window_reconcile());
     }
 }
