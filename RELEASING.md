@@ -58,26 +58,48 @@ API が安定したら `1.0.0` を切る。
    > （ライブラリなので lock は追跡しない方針）。ローカルのビルドを新バージョンに
    > 揃えるためだけに実行する。差分が出なくても正常。
 
-4. コミットする:
+4. **`THIRD-PARTY-LICENSES.html` を再生成する。**
+
+   ```sh
+   cargo install cargo-about --version 0.9.2 --locked   # 初回だけ
+   cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features
+   ```
+
+   > **なぜ CI ではなくここなのか。** `Cargo.lock` を追跡していない (ライブラリ
+   > なので) ため、CI は毎回まっさらに解決する。上流が patch を出すたびに
+   > バージョンが動き、推移依存のクレート自体も増減するので、CI でこのファイルと
+   > 比べると**リポジトリに何の変更が無くても定期的に赤くなる**。誰も直しようが
+   > ない赤は、ゲートとして機能しない。
+   >
+   > 一方、**配布物に載る内容は正確であってほしい**。それを揃えられるのが
+   > このタイミング。差分が出なければそれでよい。
+   >
+   > CI でも見たいなら `Cargo.lock` を追跡する必要がある (未決)。
+
+   > **⚠️ 飛ばさない。** 実際に v0.3.13 から v0.7.0 まで再生成されず、
+   > `arboard` ほか 5 本の帰属が抜けたまま 4 マイナー分配られた。MIT と
+   > Apache-2.0 は配布物への著作権表示を要求しているので、これは実害のある漏れ。
+
+5. コミットする:
 
    ```sh
    git commit -am "chore: release v0.2.0"
    ```
 
-5. **annotated タグ** を打つ（lightweight は使わない — メッセージを残す）:
+6. **annotated タグ** を打つ（lightweight は使わない — メッセージを残す）:
 
    ```sh
    git tag -a v0.2.0 -m "v0.2.0 — <一行サマリ>"
    ```
 
-6. push する:
+7. push する:
 
    ```sh
    git push origin main
    git push origin v0.2.0
    ```
 
-7. （任意）GitHub Release を作る。CHANGELOG の該当セクションを本文にする:
+8. （任意）GitHub Release を作る。CHANGELOG の該当セクションを本文にする:
 
    ```sh
    gh release create v0.2.0 --title "v0.2.0" --notes-file <(...)
