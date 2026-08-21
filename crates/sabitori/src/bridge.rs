@@ -697,6 +697,7 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
 ///
 /// Built once per render list so the draw site does not have to remember which
 /// extraction call yields which kind — see [`draw_ui_layer`].
+#[derive(Default)]
 pub struct UiDrawLists {
     pub images: Vec<ImageBatch>,
     pub rings: Vec<RingInstance>,
@@ -705,6 +706,20 @@ pub struct UiDrawLists {
 }
 
 impl UiDrawLists {
+    /// Whether this layer has nothing to draw.
+    ///
+    /// The renderer takes rects itself and hands everything else back through
+    /// a phase callback, so "no rects" and "nothing to draw" are different
+    /// questions. A layer holding only an image, or only text, has zero rects
+    /// (an undecorated `div` emits none) but is very much not empty — see
+    /// [`GpuRenderer::render_layered`](sabitori_gpu::GpuRenderer::render_layered).
+    pub fn is_empty(&self) -> bool {
+        self.images.is_empty()
+            && self.rings.is_empty()
+            && self.lines.is_empty()
+            && self.glyphs.is_empty()
+    }
+
     /// Extract every non-rect draw kind from one render list, returning the
     /// rects alongside (they are drawn by the renderer itself, before the pass
     /// callback runs).
@@ -1125,5 +1140,64 @@ mod fullpath_verify {
         let out = std::env::temp_dir().join("polyline_fullpath.png");
         image::save_buffer(&out, &data[..], w, h, image::ExtendedColorType::Rgba8).unwrap();
         eprintln!("WROTE {}", out.display());
+    }
+}
+
+#[cfg(test)]
+mod overlay_emptiness_tests {
+    //! `UiDrawLists::is_empty` は、レンダラに「この層を開くべきか」を伝えるための
+    //! 判定。矩形はレンダラ自身が描き、それ以外は callback 越しなので、
+    //! 「矩形が 0」と「描く物が無い」は別の問いになる ([#44]).
+    //!
+    //! [#44]: https://github.com/Mutafika/sabitori/issues/44
+
+    use super::*;
+
+    fn a_pixel() -> sabitori_core::ImageData {
+        sabitori_core::ImageData::new(vec![255, 0, 0, 255], 1, 1)
+    }
+
+    #[test]
+    fn nothing_at_all_is_empty() {
+        assert!(UiDrawLists::default().is_empty());
+    }
+
+    /// ドラッグゴーストの形 — 画像だけ。矩形は 0 でも、層は空ではない。
+    #[test]
+    fn an_image_alone_is_not_empty() {
+        let lists = UiDrawLists {
+            images: vec![ImageBatch {
+                key: "ghost".into(),
+                data: a_pixel(),
+                instances: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        assert!(!lists.is_empty());
+    }
+
+    /// 文字だけの層も同じ。
+    #[test]
+    fn glyphs_alone_are_not_empty() {
+        let lists = UiDrawLists {
+            glyphs: vec![bytemuck::Zeroable::zeroed()],
+            ..Default::default()
+        };
+        assert!(!lists.is_empty());
+    }
+
+    /// リング / 線だけの層も落としてはいけない。
+    #[test]
+    fn rings_and_lines_alone_are_not_empty() {
+        let rings = UiDrawLists {
+            rings: vec![bytemuck::Zeroable::zeroed()],
+            ..Default::default()
+        };
+        let lines = UiDrawLists {
+            lines: vec![bytemuck::Zeroable::zeroed()],
+            ..Default::default()
+        };
+        assert!(!rings.is_empty(), "リングだけの層");
+        assert!(!lines.is_empty(), "線だけの層");
     }
 }

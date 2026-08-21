@@ -1589,6 +1589,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let _ = renderer.render_layered(
                         &base_rects,
                         &overlay_rects,
+                        // 矩形の数だけでは overlay の有無を判定できない。地を塗って
+                        // いない div は矩形を出さないので、画像だけ / 文字だけの
+                        // overlay が丸ごと落ちる (#44)。
+                        !overlay_lists.is_empty(),
                         |phase, pass, globals_bg| {
                             let lists = match phase {
                                 RenderPhase::BaseText => &base_lists,

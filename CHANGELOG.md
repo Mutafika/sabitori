@@ -15,6 +15,32 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **画像だけ・文字だけの overlay が描かれなかった**
+  ([#44](https://github.com/Mutafika/sabitori/issues/44))。
+
+  `render_layered` の overlay パスが、その層の**矩形の数**で守られていた。
+  だが矩形はレンダラ自身が描き、画像・リング・線・文字は callback 越しに描かれる。
+  つまり「矩形が 0」と「描く物が無い」は別の問いで、前者で後者を代用していた。
+
+  地を塗っていない `div` は矩形を出さないので、`drag_ghost` に画像を 1 枚置いた
+  だけの層が**丸ごと落ちた**。しかも入力も hit region も callback も全部正しく
+  動くので、「絵だけが出ない」という掴みにくい壊れ方をする。ツールチップと
+  コンテキストメニューが無事だったのは、たまたま両方とも地を塗っていたから。
+
+  `overlay_has_content` を受け取り、矩形が 0 でも中身があれば層を開く。
+  この判定はレンダラ側では出せない — 描くのは opaque な `draw_fn` なので、
+  呼び出し側が言うしかない。
+
+  同じ形が `render_scene_then_ui_layered` にもあった（報告には無かった 2 箇所目）。
+
+### Changed
+
+- **破壊的**: `GpuRenderer::render_layered` と
+  `GpuRenderer::render_scene_then_ui_layered` に `overlay_has_content: bool` が
+  増えた。`UiDrawLists::is_empty()` を否定して渡せばよい。
+
 ## [0.7.0] - 2026-08-21
 
 書き換えたまま走らせ続けられるようにした版。

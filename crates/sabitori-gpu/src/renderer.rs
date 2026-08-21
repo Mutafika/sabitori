@@ -701,10 +701,21 @@ impl GpuRenderer {
     /// The `draw_fn` closure is called twice with different [`RenderPhase`]
     /// values, so the caller can use a single `&mut TextRenderer` without
     /// borrow-checker issues.
+    /// `overlay_has_content` says whether the overlay layer draws anything
+    /// *other than* rects — images, rings, lines, glyphs. It cannot be derived
+    /// here: those are drawn by `draw_fn`, which is opaque to the renderer.
+    ///
+    /// Gating the overlay pass on `overlay_rects` alone loses whole layers.
+    /// An undecorated `div` emits no rect, so an overlay holding only an image
+    /// (a drag ghost) or only text never opened its pass and vanished — with
+    /// every other signal, hit regions and callbacks included, still correct.
+    /// Tooltips and context menus survived only because both happen to set a
+    /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
     pub fn render_layered(
         &mut self,
         base_rects: &[RectInstance],
         overlay_rects: &[RectInstance],
+        overlay_has_content: bool,
         mut draw_fn: impl FnMut(RenderPhase, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
     ) -> Result<(), wgpu::SurfaceError> {
         let base_count = base_rects.len();
@@ -776,7 +787,7 @@ impl GpuRenderer {
         }
 
         // Pass 2: overlay layer — separate encoder + submit
-        if overlay_count > 0 {
+        if overlay_count > 0 || overlay_has_content {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("sabitori_overlay_encoder"),
             });
@@ -961,11 +972,16 @@ impl GpuRenderer {
     /// paint over an overlay's background. Base and overlay rects share one
     /// instance buffer (overlay appended after base), matching
     /// [`Self::render_layered`].
+    /// `overlay_has_content` carries the same meaning as in
+    /// [`render_layered`](Self::render_layered): whether the overlay layer
+    /// draws anything other than rects. Same trap, same reason it cannot be
+    /// derived here.
     pub fn render_scene_then_ui_layered(
         &mut self,
         scene_fn: impl FnOnce(&mut SceneRenderContext),
         base_rects: &[RectInstance],
         overlay_rects: &[RectInstance],
+        overlay_has_content: bool,
         mut draw_fn: impl FnMut(RenderPhase, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
     ) -> Result<(), wgpu::SurfaceError> {
         let base_count = base_rects.len();
@@ -1057,7 +1073,7 @@ impl GpuRenderer {
         }
 
         // === Pass 3: overlay UI (no depth, LoadOp::Load) ===
-        if overlay_count > 0 {
+        if overlay_count > 0 || overlay_has_content {
             let mut encoder = self.device.create_command_encoder(
                 &wgpu::CommandEncoderDescriptor {
                     label: Some("sabitori_scene_ui_overlay_encoder"),

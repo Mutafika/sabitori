@@ -1030,6 +1030,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         },
                         &base_rects,
                         &overlay_rects,
+                        // 矩形の数だけでは overlay の有無を判定できない (#44)。
+                        !overlay_lists.is_empty(),
                         |phase, pass, globals_bg| {
                             let lists = match phase {
                                 RenderPhase::BaseText => &base_lists,
