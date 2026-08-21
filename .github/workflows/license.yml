@@ -47,16 +47,33 @@ jobs:
       - name: cargo deny check licenses
         run: cargo deny --all-features check licenses
 
-      # 配布物の帰属表示が現在の依存と一致していること。
-      # 生成は決定的なので、差分が出た = 依存が変わったのに再生成していない。
-      - name: THIRD-PARTY-LICENSES.html が最新か
+      # 配布物の帰属表示に、現在の依存が漏れなく載っていること。
+      #
+      # 比べるのは**クレート名の集合だけ**で、バージョンは落とす。
+      # THIRD-PARTY-LICENSES.html は正確なバージョン番号を埋め込むが、
+      # Cargo.lock は追跡していない (ライブラリなので) ため、CI は毎回まっさらに
+      # 解決して最新の patch を拾う。バージョンまで比べると、リポジトリに何の変更が
+      # 無くても上流が publish しただけで赤くなる — 誰も直しようがない赤は、
+      # この workflow が防ごうとしているものそのもの。
+      #
+      # 名前の集合なら「依存を足したのに再生成していない」だけを捕まえられる。
+      # 実際に起きたのはそれ (v0.4.0 の arboard)。
+      #
+      # 正確なバージョンはリリース時に揃える — RELEASING.md の工程に入れてある。
+      - name: 帰属ファイルに現在の依存が載っているか
         run: |
+          names() {
+            grep -oE '<li><a href="[^"]*">[^<]+ [0-9][^<]*</a></li>' "$1" \
+              | sed -E 's/.*">//; s/ [0-9][^<]*<\/a><\/li>$//' | sort -u
+          }
           cargo about generate about.hbs -o /tmp/third-party.html --all-features
-          if ! diff -q THIRD-PARTY-LICENSES.html /tmp/third-party.html > /dev/null; then
-            echo "::error::THIRD-PARTY-LICENSES.html が依存ツリーとずれています。"
+          if ! diff -u <(names THIRD-PARTY-LICENSES.html) <(names /tmp/third-party.html) > /tmp/names.diff; then
+            echo "::error::THIRD-PARTY-LICENSES.html に載っていない依存があります (または消えた依存が残っています)。"
             echo "::error::次を実行してコミットしてください (cargo-about は 0.9.2):"
             echo "::error::  cargo install cargo-about --version 0.9.2 --locked"
             echo "::error::  cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html --all-features"
-            diff -u THIRD-PARTY-LICENSES.html /tmp/third-party.html | head -60
+            echo "--- 差分 (- が欠落、+ が余分) ---"
+            cat /tmp/names.diff
             exit 1
           fi
+          echo "帰属済みクレート: $(names THIRD-PARTY-LICENSES.html | wc -l) 件"
