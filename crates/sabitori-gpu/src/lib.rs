@@ -5,6 +5,7 @@ mod instance;
 mod line_renderer;
 mod renderer;
 mod ring_renderer;
+mod texture_budget;
 mod ui_overlay;
 
 /// Re-exported so downstream crates can name wgpu types in their own signatures
@@ -19,4 +20,5 @@ pub use instance::{LineInstance, RectInstance, RingInstance};
 pub use line_renderer::LineRenderer;
 pub use renderer::{GpuRenderer, RenderPhase};
 pub use ring_renderer::RingRenderer;
+pub use texture_budget::TextureBudget;
 pub use ui_overlay::UiOverlayRenderer;

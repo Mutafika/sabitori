@@ -65,6 +65,9 @@ pub struct ImageRenderer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     textures: HashMap<String, CachedImage>,
+    /// バイト予算と LRU の帳簿。実際のテクスチャは `textures` 側にあり、
+    /// こちらは「どれを追い出すか」だけを決める (#43)。
+    budget: crate::TextureBudget,
 }
 
 impl ImageRenderer {
@@ -159,6 +162,7 @@ impl ImageRenderer {
             instance_buffer,
             instance_capacity,
             textures: HashMap::new(),
+            budget: crate::TextureBudget::default(),
         }
     }
 
@@ -173,7 +177,18 @@ impl ImageRenderer {
         height: u32,
     ) {
         if self.textures.contains_key(key) {
+            // 今フレーム使ったことにする。これを飛ばすと、今から描く物が
+            // 追い出しの候補に残ってしまう。
+            self.budget.touch(key);
             return;
+        }
+
+        // 予算に収まるまで古い物を捨ててから入れる。捨てた物は次に必要になった
+        // フレームで上げ直される — `ensure_texture` は毎フレーム、rgba 付きで
+        // 呼ばれるので、追い出しても絵は欠けない。
+        let bytes = (width as usize) * (height as usize) * 4;
+        for victim in self.budget.admit(key, bytes) {
+            self.textures.remove(&victim);
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -231,6 +246,62 @@ impl ImageRenderer {
             bind_group,
             _texture: texture,
         });
+    }
+
+    // ---------------------------------------------------------------
+    // テクスチャ寿命の制御 (#43)
+    // ---------------------------------------------------------------
+
+    /// このフレームの描画が終わったことをキャッシュに伝える。
+    ///
+    /// **フレームにつき 1 回、全パスを描き終えてから**呼ぶこと。パスごとに
+    /// 呼ぶと、base パスで使った画像が overlay パスの途中で「古い」と見なされ、
+    /// これから描く物を追い出しかねない。ランタイム (`run_declarative` /
+    /// `run_scene`) が呼ぶので、普通のアプリが自分で呼ぶ必要はない。
+    pub fn end_frame(&mut self) {
+        self.budget.end_frame();
+    }
+
+    /// テクスチャに使ってよい GPU メモリの上限を変える (既定 256 MiB)。
+    ///
+    /// 枚数ではなくバイト数なのは、240px のサムネイルと 832×1216 の原寸で
+    /// 1 枚あたり 18 倍違うため。枚数で切ると、片方に対して必ずずれる。
+    pub fn set_texture_budget_bytes(&mut self, bytes: usize) {
+        self.budget.set_budget_bytes(bytes);
+    }
+
+    /// 今テクスチャが占めている bytes。
+    pub fn texture_bytes(&self) -> usize {
+        self.budget.used_bytes()
+    }
+
+    /// 今持っているテクスチャの枚数。
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
+    /// テクスチャを 1 枚捨てる。持っていれば `true`。
+    ///
+    /// どれが要らないかはアプリが知っているので、予算に当たる前に自分で捨てたい
+    /// 場合に使う。捨てた鍵が再び描かれれば、次のフレームで上げ直される。
+    pub fn drop_texture(&mut self, key: &str) -> bool {
+        self.budget.remove(key);
+        self.textures.remove(key).is_some()
+    }
+
+    /// `f` が `false` を返した鍵のテクスチャを捨てる。
+    ///
+    /// 「今開いているフォルダの物だけ残す」のように、残す条件を式で書ける。
+    pub fn retain_textures(&mut self, f: impl FnMut(&str) -> bool) {
+        for key in self.budget.retain(f) {
+            self.textures.remove(&key);
+        }
+    }
+
+    /// テクスチャを全部捨てる。
+    pub fn clear_textures(&mut self) {
+        self.textures.clear();
+        self.budget.clear();
     }
 
     /// Render a batch of image instances that use the same texture.
