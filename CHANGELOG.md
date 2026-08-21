@@ -43,6 +43,32 @@
   いて（[#28](https://github.com/Mutafika/sabitori/issues/28)）、ヘッドレスには
   OS ウィンドウも event loop も無い。
 
+- **Rust コードのホットリロード**（`feature = "hot-reload"`、既定 off）。
+  `view()` を書き換えて保存すると、**アプリの状態を保ったまま**画面だけが更新される。
+  走行中のプロセスに機械語パッチを当てる
+  [subsecond](https://crates.io/crates/subsecond) を使い、起動は
+  `dx serve --hotpatch`（パッチを作るのは Dioxus CLI 側）。
+
+  UI 開発は「1px ずらす・色を少し変える」を何百回も回す作業で、そのたびに
+  ビルド待ち → 起動 → 目的の画面まで手で操作、を通していた。`view()` は
+  `&self` から Element を組むだけの純粋関数なので、ここを境界にすれば
+  状態を残したまま差し替えられる。
+
+  境界は `view()` / `overlay_view()` / `view_for()` の 3 箇所。状態を持つ struct の
+  フィールドを足し引きするとメモリレイアウトが変わるため、そこは `dx` が
+  フル再起動に落とす。ネイティブのみで、WASM は `trunk serve` のライブリロードを使う。
+
+  受信部（`sabitori::hot_reload`）は自前実装にした。上流の `dioxus-devtools` にも
+  同じ `connect_subsecond` があるが、VirtualDom へテンプレートを流すために
+  `dioxus-core` と `dioxus-signals` を必ず連れてくる。Sabitori に VirtualDom は無く、
+  要るのは devserver が流す jump table ひとつなので、WebSocket を直接読む 40 行に
+  置き換えた。追加依存は subsecond / tungstenite / serde_json / dioxus-cli-config の
+  4 本で、Dioxus 本体はツリーに入らない。
+
+  subsecond は `debug_assertions` が有効なときだけ働く。release ビルドでは境界が
+  素の呼び出しに畳まれるので、feature を立てたまま出荷しても実行時コストは無い。
+  devserver が居なければ黙って無効になり、`cargo run` は今までどおり動く。
+
 ## [0.6.2] - 2026-08-20
 
 テキスト欄が修飾キーを見ていなかったのを直した版。

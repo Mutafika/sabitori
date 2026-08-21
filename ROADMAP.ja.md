@@ -97,5 +97,6 @@ StyleAnimator / PresenceAnimator
 
 ### その他検討中
 - ⬜ WebSocket / SSE クライアント
+- ✅ Rust コードのホットリロード（subsecond / `feature = "hot-reload"`）
 - ⬜ カスタムシェーダーホットリロード
 - ⬜ CSS Grid 専用スタイル props（現状は Taffy にパススルー）

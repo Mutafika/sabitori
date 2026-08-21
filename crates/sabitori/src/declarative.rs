@@ -749,6 +749,19 @@ impl TextSelection {
 }
 
 impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
+    /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
+    /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
+    /// ことがあり、自力ではコードが変わったことに気付けないので、外から起こして
+    /// 全ウィンドウを描き直させる。
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        for extra in self.extras.values() {
+            extra.window.request_redraw();
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
@@ -2154,8 +2167,11 @@ impl<A: DeclarativeApp> AppState<A> {
             managed: Default::default(),
             actions: Default::default(),
         };
-        // Build main UI tree
-        let mut root = self.app.view(&ctx);
+        // Build main UI tree.
+        // `hot_reload::call` はホットリロードの境界 (feature off なら素の呼び出し)。
+        // `view` 以下で差し替わったコードは次のフレームから効き、`self` に載っている
+        // 状態はそのまま残る。
+        let mut root = crate::hot_reload::call(|| self.app.view(&ctx));
 
         // Apply presence (mount/unmount) animations
         self.presence_animator.update_presence(&root);
@@ -2202,7 +2218,7 @@ impl<A: DeclarativeApp> AppState<A> {
 
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active
-        let app_overlay = self.app.overlay_view(&ctx);
+        let app_overlay = crate::hot_reload::call(|| self.app.overlay_view(&ctx));
 
         // `view()` / `overlay_view()` の中でウィジェットが登録したものを引き取る。
         // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
@@ -3465,7 +3481,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 managed: Default::default(),
             actions: Default::default(),
             };
-            let root = self.app.view_for(&extra.key, &ctx);
+            let root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
             let built = build_tree_measured(&root, w, h, &measurer);
             (root, built)
         };
@@ -3547,6 +3563,14 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         .try_init();
 
     let event_loop = EventLoop::new().unwrap();
+
+    // ホットリロードの受け口 (feature = "hot-reload" のときだけ中身がある)。
+    // パッチは別スレッドで着弾するので、proxy 経由でループを起こして描き直す。
+    let proxy = event_loop.create_proxy();
+    crate::hot_reload::init(move || {
+        let _ = proxy.send_event(());
+    });
+
     let mut state = AppState::new(app);
     event_loop.run_app(&mut state).unwrap();
 }
