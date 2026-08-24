@@ -15,6 +15,110 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-24
+
+**3D の窓も焼き続けるのをやめた版。トラックパッドのピンチが初めて届く。**
+
+0.9.0 は declarative ランタイムだけを直した。`run_scene` (`SceneApp`) には
+`lazy_render` の仕組みごと無く、`target_frame_interval` も見ずに上限無しで
+回り続けていた — idle の 3D の窓が 2 コア近くを焼く状態で、使う側から降りる
+手段も無かった。今回そちらも同じ規則に乗せている。**`render_scene` が自前の
+時計で絵を動かすなら [`is_animating`] を名乗ること** (移行は下記)。
+
+もう 1 つ、`on_pinch*` が macOS のトラックパッドから一度も鳴っていなかったのを
+直した。2 本目の指からしか生えておらず、`WindowEvent::Touch` を出さない機械 —
+つまり Mac のデスクトップ全部 — では死んでいた。
+
+### Changed（破壊的）
+
+- **`run_scene` (`SceneApp`) も [`lazy_render`] に従うようになった**
+  ([#55](https://github.com/Mutafika/sabitori/issues/55))。
+
+  0.9.0 は declarative ランタイムだけを直した。`SceneApp` 側には仕組みごと
+  無く、`about_to_wait` が**無条件に** `request_redraw` を出していた。しかも
+  待ち方を指定していないので、描画 → `about_to_wait` → 描画 …… が上限無しに
+  回る — `target_frame_interval` すら見ていない。使う側から降りる手段も無い。
+
+  idle 実測 (どちらも M2 Max / macOS、release、窓は前面、6 秒/20 秒)。
+  描画回数は `render_scene` を数える最小の `SceneApp`、CPU は
+  `examples/scene_ui` — 別の計測なので出典ごとに分けてある:
+
+  | | 描画回数 (6 秒) | CPU (20 秒平均) |
+  |---|---|---|
+  | v0.9.0 | 584 回 (≈97/秒) | **191.8%** |
+  | 本変更 | **2 回** | **0.5%** |
+
+  CPU が 100% を超えているのは誤記ではない。上限の無いループが主スレッドと
+  wgpu の present を同時に焼くので、**何もしていない 3D の窓が 2 コア近くを
+  持っていく**。declarative 側 (#53) の 69〜77% より悪い。
+
+  **移行:** `render_scene` が自前の時計で絵を動かすなら
+  [`is_animating`] を上書きする。3D 側の動き (回り続けるカメラ、粒子) は
+  UI のイベントも `tick` の状態変化も伴わないので、名乗らないと**次の
+  クリックまで scene ごと止まる**。一度きりの変化なら `poll_dirty`、
+  窓ごと降りるなら `fn lazy_render(&self) -> bool { false }`。
+
+  名乗った場合の実測は 6 秒で 651 回 (≈108/秒) — 既定の刻み 8ms 通り。
+
+- **`run_scene` が [`target_frame_interval`] を尊重するようになった** (同 #55)。
+  これまでは無視して回りっぱなしだったので、120Hz を超えて回っていた環境では
+  上限が付く。上げ下げしたければ従来どおりこの口で指定する。
+
+### Fixed
+
+- **トラックパッドのピンチが `on_pinch*` に届いていなかった**
+  ([#56](https://github.com/Mutafika/sabitori/issues/56))。
+
+  `on_pinch_start` / `on_pinch` / `on_pinch_end` は `WindowEvent::Touch` の
+  2 本目の指からしか生えておらず、`WindowEvent::PinchGesture` は
+  declarative / `run_scene` のどちらも拾っていなかった。macOS のトラックパッドは
+  `Touch` を一切出さないので、**タッチ画面を持たない機械 — つまり Mac の
+  デスクトップ全部 — では 3 つとも一度も呼ばれない**。ROADMAP が
+  「✅ ピンチジェスチャー」と言っている裏で、実機では動いていなかった。
+
+  両ランタイムで `PinchGesture` を拾うようにした。winit が配るのは**増分**
+  なので、`TrackpadPinch` で積んで**つまみ始めからの累積倍率**に直してから
+  渡す — タッチ側の `dist / start_distance` と同じ規約なので、受け手は
+  入力の出どころで場合分けしなくてよい。winit の doc が言うとおり `delta` は
+  NaN で来ることがあるため、有限でない値は捨てる（積むと `scale` が NaN に
+  固着してジェスチャが丸ごと死ぬ）。
+
+  `PinchGesture` は中心を持たないので、`center_*` には**カーソル位置**を渡す。
+  タッチ側の 2 指の中点とは出どころが違うが、拡大の軸としては実用上これが
+  正しい（つまんだ先が寄ってくる）。2 本指タッチのピンチが走っている間と、
+  タッチが主導権を持っている間 (`PrimaryInput::Touch`) は無視するので、
+  二重には鳴らない。
+
+  ⚠️ winit が `PinchGesture` を出すのは **macOS と iOS のみ**。Windows /
+  Linux のトラックパッドには依然として届かない（winit 側の制約）。
+  `DoubleTapGesture` / `RotationGesture` / `PanGesture` も未配線のままで、
+  こちらは受け口となるトレイトメソッドから要るので別途。
+
+- **`run_scene` の刻みが描画に相乗りしていた** (同 #55)。`tick` /
+  スクロールのばね / style / presence / tooltip / ドラッグ / IME の反映が
+  `RedrawRequested` の中に置かれていたので、**描画を止めると時間ごと止まる**。
+  lazy を入れる前提として `about_to_wait` へ移し、描画とは独立に回るように
+  した (declarative が #53 で取ったのと同じ形)。
+
+- **`run_scene` で生マウスモーション (`on_raw_motion`) が刻みを無視して
+  再描画を出していた**。ドラッグ中は 1000Hz 級で届くので、この経路だけ
+  上限が外れる。無効化フラグを立てるだけにして、出す/出さないの判断は
+  `about_to_wait` の 1 箇所に集めた。
+
+### Internal
+
+- ランタイムが持つアニメーター (スクロール / tooltip / ドラッグ / style /
+  presence) の**進める側と名乗る側**を `runtime_shared` の 1 実装に寄せた。
+  2 ランタイムに手で 2 回書かれていて、実際 `drag_manager` は scene_app 側
+  だけ tick が無い時期がある。進めているのに名乗らないものが 1 つでもあると
+  lazy_render がアニメーションの途中でループを park するので、両者が揃って
+  いることをテストで固定した。
+
+[`lazy_render`]: https://docs.rs/sabitori/latest/sabitori/trait.DeclarativeApp.html#method.lazy_render
+[`is_animating`]: https://docs.rs/sabitori/latest/sabitori/trait.DeclarativeApp.html#method.is_animating
+[`target_frame_interval`]: https://docs.rs/sabitori/latest/sabitori/trait.DeclarativeApp.html#method.target_frame_interval
+
+
 ## [0.9.0] - 2026-08-22
 
 **何もしていない窓が 1 コアと GPU を焼くのをやめた版。**
@@ -2635,7 +2739,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Mutafika/sabitori/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Mutafika/sabitori/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Mutafika/sabitori/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Mutafika/sabitori/compare/v0.6.2...v0.7.0

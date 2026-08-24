@@ -170,6 +170,63 @@ pub(crate) fn push_ui_capture<A: DeclarativeApp>(
     }
 }
 
+/// ランタイムが自前で抱えるアニメーターを `dt` 秒ぶん進める。
+///
+/// スクロールのばね / 慣性、 tooltip の hover-delay、 ドラッグ、
+/// style (hover/active のトランジション)、 presence (入退場)。 アプリの
+/// `tick` は**含めない** — あちらは 2 ランタイムで呼ぶ位置が違う。
+///
+/// ## なぜ関数に括り出すか
+///
+/// [#55](https://github.com/Mutafika/sabitori/issues/55) — この並びは
+/// declarative の `advance` と scene_app の `RedrawRequested` に**手で 2 回**
+/// 書かれていた。 tick する対象が増えたとき、 片方だけ更新されると
+/// 「declarative では動くのに run_scene では動かない」という差が静かに開く。
+/// 実際 `drag_manager` は scene_app にだけ tick が無い時期があった。
+///
+/// [`animators_running`] と**同じ並び**であることが要る。 進めているのに
+/// 「動いている」と名乗らないものがあると、 lazy_render がそのアニメーションの
+/// 途中でループを park する。
+pub(crate) fn advance_animators(
+    scroll_states: &mut std::collections::HashMap<String, sabitori_widgets::ScrollView>,
+    tooltip_state: &mut sabitori_widgets::TooltipState,
+    drag_manager: &mut sabitori_widgets::DragManager,
+    style_animator: &mut sabitori_widgets::StyleAnimator,
+    presence_animator: &mut sabitori_widgets::PresenceAnimator,
+    dt: f32,
+) {
+    for sv in scroll_states.values_mut() {
+        sv.tick(dt);
+    }
+    tooltip_state.tick(dt);
+    drag_manager.tick(dt);
+    style_animator.tick(dt);
+    presence_animator.tick(dt);
+}
+
+/// [`advance_animators`] が進める対象のどれかがまだ動いているか。
+///
+/// **落ち着く (収束する) ものだけ**をここに入れる — テストの「落ち着くまで待つ」
+/// (`Harness::settle`) がこれを見て打ち切りを決めるので、 永久に動き続けるもの
+/// (キャレット点滅) を混ぜると待ち切れなくなる。
+pub(crate) fn animators_running(
+    scroll_states: &std::collections::HashMap<String, sabitori_widgets::ScrollView>,
+    tooltip_state: &sabitori_widgets::TooltipState,
+    drag_manager: &sabitori_widgets::DragManager,
+    style_animator: &sabitori_widgets::StyleAnimator,
+    presence_animator: &sabitori_widgets::PresenceAnimator,
+) -> bool {
+    scroll_states.values().any(|sv| sv.is_animating())
+        || style_animator.is_animating()
+        // 入退場 (presence) の最中。 見ていないと lazy_render が loop を park して、
+        // 要素が出かかった/消えかかった姿で固まる。
+        || presence_animator.has_animations()
+        || drag_manager.is_active()
+        // tooltip の hover-delay / fade 中は tick を回し続ける。無いと lazy_render が
+        // loop を park して delay タイマが止まり、マウスを動かすまで tooltip が出ない。
+        || tooltip_state.is_pending()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +308,56 @@ mod tests {
         assert!(!ui_capture(Some(&b), 5.0, 5.0, false, false).wants_pointer);
         assert!(ui_capture(Some(&b), 5.0, 5.0, true, false).wants_pointer);
         assert!(ui_capture(None, 5.0, 5.0, false, true).wants_keyboard);
+    }
+
+    /// 進める側 ([`advance_animators`]) と名乗る側 ([`animators_running`]) は
+    /// 表裏でなければならない。 進めているのに名乗らないものが 1 つでもあると、
+    /// lazy_render がそのアニメーションの**途中で**ループを park して、
+    /// 出かかった姿のまま固まる — #53 で presence に実際に起きたのがこれ。
+    ///
+    /// 「動かしたら名乗る」「時間を進め切ったら名乗らなくなる」の両方を見る。
+    /// 片方だけだと、 常に `true` を返す実装がテストを通ってしまう。
+    #[test]
+    fn a_running_animator_is_named_until_it_settles() {
+        let mut scroll = std::collections::HashMap::new();
+        let mut sv = sabitori_widgets::ScrollView::new(100.0, 1000.0);
+        sv.smooth_scroll_to(400.0);
+        scroll.insert("list".to_string(), sv);
+        let mut tooltip = sabitori_widgets::TooltipState::new();
+        let mut drag = sabitori_widgets::DragManager::new();
+        let mut style = sabitori_widgets::StyleAnimator::new();
+        let mut presence = sabitori_widgets::PresenceAnimator::new();
+
+        assert!(
+            animators_running(&scroll, &tooltip, &drag, &style, &presence),
+            "ばねの目標を置いた直後は動いている"
+        );
+
+        // 8ms (既定の刻み) を 600 回 = 4.8 秒。 ばねが落ち着くには十分。
+        for _ in 0..600 {
+            advance_animators(&mut scroll, &mut tooltip, &mut drag, &mut style, &mut presence, 0.008);
+        }
+
+        assert!(
+            (scroll["list"].scroll_y.value() - 400.0).abs() < 1.0,
+            "進めた結果、目標に着いていること (advance_animators が実際に回している)"
+        );
+        assert!(
+            !animators_running(&scroll, &tooltip, &drag, &style, &presence),
+            "着いたら名乗るのをやめる — やめないと lazy_render が永久に park できない"
+        );
+    }
+
+    /// 何も起きていない束は最初から静か。 これが `true` を返すと、
+    /// lazy_render が一度も park できず既定が意味を失う。
+    #[test]
+    fn an_untouched_set_of_animators_is_quiet() {
+        let scroll = std::collections::HashMap::new();
+        let tooltip = sabitori_widgets::TooltipState::new();
+        let drag = sabitori_widgets::DragManager::new();
+        let style = sabitori_widgets::StyleAnimator::new();
+        let presence = sabitori_widgets::PresenceAnimator::new();
+        assert!(!animators_running(&scroll, &tooltip, &drag, &style, &presence));
     }
 }
 

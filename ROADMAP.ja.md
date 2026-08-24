@@ -32,7 +32,7 @@
 - ✅ Pointer 抽象（マウス / タッチ / ペン unified）
 - ✅ 日本語 IME + preedit composition
 - ✅ Tab / Shift+Tab フォーカス遷移
-- ✅ ピンチジェスチャー、慣性スクロール、バウンス
+- ✅ ピンチジェスチャー（タッチパネル + macOS トラックパッド）、慣性スクロール、バウンス
 - ✅ macOS ネイティブ Drag & Drop（ファイルドロップ）
 
 ### アニメーション

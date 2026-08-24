@@ -202,6 +202,10 @@ fn tick(&mut self, dt: f32) { self.t += dt; }
 の既定がこれで、idle の窓で 1 コアと GPU の一部を焼きます。まず `is_animating`
 を検討してください。
 
+`run_scene` (`SceneApp`) も同じ規則です。**`render_scene` が自前の時計で絵を
+動かすなら名乗ってください** — 回り続けるカメラや粒子は UI 側のイベントを
+伴わないので、名乗らないと次のクリックまで scene ごと止まります。
+
 ## レイアウト
 
 flex と grid の両方が使えます。土台は Taffy で、名前は CSS に揃えてあります。

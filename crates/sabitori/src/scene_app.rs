@@ -25,7 +25,9 @@ use crate::bridge::{
     draw_ui_layer, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers,
 };
 use crate::declarative::{DeclarativeApp, UiCapture};
-use crate::input_router::{pinch_metrics, PinchGesture, PrimaryInput, TouchDrag, TOUCH_SLOP};
+use crate::input_router::{
+    pinch_metrics, PinchGesture, PrimaryInput, TouchDrag, TrackpadPinch, TOUCH_SLOP,
+};
 
 /// Extension trait for apps that combine custom GPU rendering with declarative UI.
 ///
@@ -122,6 +124,9 @@ struct SceneAppState<A: SceneApp> {
     active_touches: std::collections::HashMap<u64, (f32, f32)>,
     touch_drag: Option<TouchDrag>,
     pinch: Option<PinchGesture>,
+    /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
+    /// タッチ由来の [`PinchGesture`] とは出どころが別なので分けて持つ。
+    trackpad_pinch: Option<TrackpadPinch>,
     /// Last [`UiCapture`] snapshot pushed to the app (deduped).
     last_capture: UiCapture,
     /// 管理されたスクロールコンテナ(`.scroll(id)`)の状態。DeclarativeApp ランタイム
@@ -137,6 +142,12 @@ struct SceneAppState<A: SceneApp> {
     /// Drag & drop state for `.draggable()` / `.droppable()`. Mouse only for
     /// now; touch-drag in run_scene is a follow-up (see issue #25).
     drag_manager: sabitori_widgets::DragManager,
+    /// 前のフレーム以降に入力等のイベントが来た。 declarative の `AppState` と
+    /// 同じ意味・同じ寿命 (イベントで立ち、 描き終えたフレームの末尾で降りる)。
+    /// [`DeclarativeApp::lazy_render`] の判定材料 (#55)。
+    ///
+    /// 初期値は `true` — 最初のフレームは無条件に描く。
+    dirty: bool,
 }
 
 impl<A: SceneApp> SceneAppState<A> {
@@ -192,6 +203,72 @@ impl<A: SceneApp> SceneAppState<A> {
             &mut self.last_capture,
             &mut self.app,
         );
+    }
+
+    /// 時間を `dt` 秒ぶん進める。 アプリの `tick` と、 ランタイムが持つ
+    /// アニメーション状態をまとめて回す。
+    ///
+    /// declarative の `AppState::advance` と対になる — あちらが持つ「登録済み
+    /// テキスト欄のキャレット」だけ、 このランタイムには無い (管理テキスト欄を
+    /// 持たないため)。 それ以外は同じ 1 実装を通す (#55)。
+    ///
+    /// v0.9.0 まではこの並びが `RedrawRequested` に置かれていた。 描画のたびに
+    /// 進める形なので、 lazy_render で描画を止めると**時間ごと止まる**。
+    /// 刻みは描画から独立していなければならない。
+    fn advance(&mut self, dt: f32) {
+        self.app.tick(dt);
+        // tick 後: アプリが主張するフォーカスを当てる (モーダルが開いた最初の
+        // フレームで中の入力欄を掴む)。判断は declarative / Harness と同じ
+        // 1 実装を通す (#28)。
+        if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
+            self.push_ui_capture();
+        }
+        crate::runtime_shared::advance_animators(
+            &mut self.scroll_states,
+            &mut self.tooltip_state,
+            &mut self.drag_manager,
+            &mut self.style_animator,
+            &mut self.presence_animator,
+            dt,
+        );
+    }
+
+    /// ランタイムが自分で持っているアニメーションのどれかが動いているか。
+    /// 判定は declarative と同じ 1 実装 (#55)。
+    fn runtime_animating(&self) -> bool {
+        crate::runtime_shared::animators_running(
+            &self.scroll_states,
+            &self.tooltip_state,
+            &self.drag_manager,
+            &self.style_animator,
+            &self.presence_animator,
+        )
+    }
+
+    /// プラットフォーム IME の位置と可否を winit へ送る (どちらも dedup 済み)。
+    ///
+    /// 毎フレーム問うが、 変わったときしか送らない — Cocoa の呼び出しが
+    /// 125 回/秒 で飛ばないように。 位置を送らないと変換候補が窓の左上に出る。
+    /// 可否の方は、 落とすと変換中の合成がキャンセルされるので、 合成の途中で
+    /// ダイアログが閉じても候補窓が取り残されない。
+    fn sync_ime(&mut self) {
+        let ime_area = self.app.ime_cursor_area();
+        if ime_area != self.last_ime_area {
+            self.last_ime_area = ime_area;
+            if let (Some(w), Some((x, y, cw, ch))) = (self.window.as_ref(), ime_area) {
+                w.set_ime_cursor_area(
+                    winit::dpi::LogicalPosition::new(x, y),
+                    winit::dpi::LogicalSize::new(cw, ch),
+                );
+            }
+        }
+        let ime_allowed = self.app.ime_allowed();
+        if ime_allowed != self.last_ime_allowed {
+            self.last_ime_allowed = ime_allowed;
+            if let Some(w) = self.window.as_ref() {
+                w.set_ime_allowed(ime_allowed);
+            }
+        }
     }
 
     fn winit_to_sabi_button(button: winit::event::MouseButton) -> Option<SabiMouseButton> {
@@ -272,13 +349,21 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta } = event {
             self.app.on_raw_motion(delta.0, delta.1);
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
+            // 直に redraw を出すのではなく無効化だけする。 出す/出さないを
+            // `about_to_wait` の 1 箇所に集めないと、 lazy でも刻みでもない
+            // 経路がここだけ残る (生モーションはドラッグ中 1000Hz 級で来る)。
+            self.dirty = true;
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // 再描画そのもの以外は全部フレームの無効化として扱う: 入力・フォーカス・
+        // リサイズ・IME・ドロップは、レイアウトかヒットテストのどちらかを変える。
+        // declarative と同じ扱い — 非 lazy でも立てておく (読む者が居なければ
+        // ただの bool で、揃えておかないと lazy 経路だけが腐る)。
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.dirty = true;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -498,6 +583,49 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
             }
 
+            // トラックパッドのピンチ (macOS / iOS)。 タッチパネルと違って
+            // `WindowEvent::Touch` は一切来ないので、 ここを拾わないと
+            // **マウス/トラックパッドの機械では `on_pinch*` が一度も鳴らない**
+            // (#56)。 winit が配るのは増分なので、 `TrackpadPinch` で
+            // 累積倍率に直してからタッチ側と同じ規約で渡す。
+            //
+            // 中心は winit が持っていないのでカーソル位置を使う。 拡大の軸と
+            // しては実用上これが正しい (つまんだ先が寄ってくる)。
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                // 終わりは**無条件に**通す。 始めた後で下の門が閉じた場合
+                // (タッチが主導権を取る等) でも、 ここを潜らせないと
+                // `trackpad_pinch` が残って `on_pinch_end` が永久に来ない。
+                if matches!(
+                    phase,
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                ) {
+                    if self.trackpad_pinch.take().is_some() {
+                        self.app.on_pinch_end();
+                    }
+                    return;
+                }
+                // タッチが主導権を持っている間は始めない (MouseWheel と同じ規約)。
+                // 2 本指タッチのピンチが走っているなら、そちらが `on_pinch` の
+                // 出し手 — 二重に鳴らさない。
+                if self.primary_input == PrimaryInput::Touch || self.pinch.is_some() {
+                    return;
+                }
+                // `Started` を取りこぼしても始められるようにしておく — 落ちると
+                // 以降の `Moved` が全部無音になるため。
+                if self.trackpad_pinch.is_none() {
+                    self.trackpad_pinch = Some(TrackpadPinch::started());
+                    self.app.on_pinch_start(self.mouse_x, self.mouse_y);
+                    // `Started` 自身は倍率 1.0 の開始通知だけ。 delta は積まない。
+                    if matches!(phase, winit::event::TouchPhase::Started) {
+                        return;
+                    }
+                }
+                if let Some(ref mut tp) = self.trackpad_pinch {
+                    if let Some(scale) = tp.apply(delta) {
+                        self.app.on_pinch(scale, self.mouse_x, self.mouse_y);
+                    }
+                }
+            }
             // Touch events — first finger drives click/focus (deferred to
             // release with TOUCH_SLOP), second finger promotes to pinch.
             // Gated by the first-come mouse/touch mutex.
@@ -798,56 +926,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             }
 
             WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let dt = (now - self.last_frame).as_secs_f32().min(0.05);
-                self.last_frame = now;
-
-                self.app.tick(dt);
-                // After tick: let the app reassert its desired focus (e.g. a
-                // modal that opens with a known input grabs focus its first
-                // frame, without needing a click). 判断は declarative /
-                // Harness と同じ 1 実装を通す (#28)。
-                if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
-                    self.push_ui_capture();
-                }
-                // Anchor the platform IME (conversion / candidate window) at
-                // the app's caret. Polled every frame but deduped — only
-                // re-sent when the caret rect changes. Without this, winit
-                // leaves the area at the window origin and the candidate
-                // window sits in the top-left.
-                let ime_area = self.app.ime_cursor_area();
-                if ime_area != self.last_ime_area {
-                    self.last_ime_area = ime_area;
-                    if let (Some(w), Some((x, y, cw, ch))) =
-                        (self.window.as_ref(), ime_area)
-                    {
-                        w.set_ime_cursor_area(
-                            winit::dpi::LogicalPosition::new(x, y),
-                            winit::dpi::LogicalSize::new(cw, ch),
-                        );
-                    }
-                }
-                // IME on/off per app policy (deduped); disabling cancels an
-                // in-flight composition. See DeclarativeApp::ime_allowed.
-                let ime_allowed = self.app.ime_allowed();
-                if ime_allowed != self.last_ime_allowed {
-                    self.last_ime_allowed = ime_allowed;
-                    if let Some(w) = self.window.as_ref() {
-                        w.set_ime_allowed(ime_allowed);
-                    }
-                }
-                // スクロールの慣性/スプリングを進める。
-                for sv in self.scroll_states.values_mut() {
-                    sv.tick(dt);
-                }
-                // Advance style/presence springs. run_scene redraws every
-                // frame (about_to_wait always requests one), so no is_animating
-                // gating is needed — they simply settle over successive frames.
-                self.style_animator.tick(dt);
-                self.presence_animator.tick(dt);
-                self.tooltip_state.tick(dt);
-                self.drag_manager.tick(dt);
-
+                // 刻み (tick / アニメーター / IME) は `about_to_wait` へ移した。
+                // ここに置くと「描かないフレームでは時間が進まない」ことになり、
+                // lazy_render がアニメーションを途中で凍らせる (#55)。
+                // ここに残るのは組み立てと描画だけ。
                 let Some(renderer) = self.renderer.as_mut() else { return };
                 let mut tr = match self.text_renderer.take() {
                     Some(t) => t,
@@ -1103,14 +1185,74 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 self.text_renderer = Some(tr);
                 // Fresh layout may move UI under the (stationary) pointer.
                 self.push_ui_capture();
+                // フレームを描き終えた — 次の `about_to_wait` が park できるよう
+                // 無効化フラグを降ろす。
+                self.dirty = false;
             }
 
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+    /// 刻みを進め、 このフレームを描くかどうかを決める。
+    ///
+    /// v0.9.0 まではここが**無条件に** `request_redraw` を出していた。
+    /// 待ち方も指定していないので、 描画 → `about_to_wait` → 描画 …… が
+    /// 上限無しに回る — 何もしていない窓が 1 コアと GPU を焼き続ける
+    /// ([#55](https://github.com/Mutafika/sabitori/issues/55))。 declarative は
+    /// [#53](https://github.com/Mutafika/sabitori/issues/53) で直したが、
+    /// こちらは仕組みごと無く、 使う側から上書きする手段も無かった。
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let elapsed = self.last_frame.elapsed();
+        // 既定 8ms (≈120Hz)。アプリは `target_frame_interval` で上書きできる。
+        let target = self.app.target_frame_interval();
+
+        // 早すぎるなら次の境界までループを止める。
+        if elapsed < target {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + (target - elapsed),
+            ));
+            return;
+        }
+
+        let dt = elapsed.as_secs_f32().min(0.05);
+        self.last_frame = Instant::now();
+
+        // 刻みは描画と独立に、決まった間隔で回す。描かないフレームでも
+        // ばねは進み、アプリの `tick` は外から来た変化を拾える。
+        self.advance(dt);
+        self.sync_ime();
+        // レイアウトやフォーカスは前のポインタイベント以降に動きうる。
+        // キャプチャの snapshot を刻みごとに引き直す。
+        self.push_ui_capture();
+
+        // 判定は declarative と同じ [`DrawGate`] を通す (#55)。
+        let must_draw = crate::declarative::DrawGate {
+            lazy: self.app.lazy_render(),
+            dirty: self.dirty,
+            // `poll_dirty` は「問うと下りる」ので 1 フレームに 1 回だけ呼ぶ。
+            app_dirty: self.app.poll_dirty(),
+            app_animating: self.app.is_animating(),
+            runtime_animating: self.runtime_animating(),
+            // このランタイムに管理テキスト欄は無いので点滅もしない。
+            caret_blinking: false,
+            // グリフアトラスの復旧も declarative 側にしか無い。 溢れたときの
+            // 振る舞いは lazy の前後で変わらない (どちらも復旧しない)。
+            atlas_recover_pending: false,
+        }
+        .must_draw();
+
+        if must_draw {
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        }
+
+        // 次の起床を刻みの境界に置く。これが無いとループは回りっぱなし (Poll)
+        // か眠りっぱなし (Wait) のどちらかになる。
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+            self.last_frame + target,
+        ));
     }
 }
 
@@ -1153,12 +1295,14 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         active_touches: std::collections::HashMap::new(),
         touch_drag: None,
         pinch: None,
+        trackpad_pinch: None,
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
         style_animator: sabitori_widgets::StyleAnimator::new(),
         presence_animator: sabitori_widgets::PresenceAnimator::new(),
         tooltip_state: sabitori_widgets::TooltipState::new(),
         drag_manager: sabitori_widgets::DragManager::new(),
+        dirty: true,
     };
     event_loop.run_app(&mut state).unwrap();
 }
@@ -1200,12 +1344,14 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         active_touches: std::collections::HashMap::new(),
         touch_drag: None,
         pinch: None,
+        trackpad_pinch: None,
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
         style_animator: sabitori_widgets::StyleAnimator::new(),
         presence_animator: sabitori_widgets::PresenceAnimator::new(),
         tooltip_state: sabitori_widgets::TooltipState::new(),
         drag_manager: sabitori_widgets::DragManager::new(),
+        dirty: true,
     }));
 
     struct WasmSceneHandler<A: SceneApp> {

@@ -1,7 +1,9 @@
 //! Declarative app runner.
 //! Run a GUI app by just returning an Element tree from `view()`.
 
-use crate::input_router::{pinch_metrics, PinchGesture, PrimaryInput, TouchDrag, TOUCH_SLOP};
+use crate::input_router::{
+    pinch_metrics, PinchGesture, PrimaryInput, TouchDrag, TrackpadPinch, TOUCH_SLOP,
+};
 
 use std::sync::Arc;
 use web_time::Instant;
@@ -245,15 +247,28 @@ pub trait DeclarativeApp: 'static {
     fn on_scroll_xy(&mut self, _delta_x: f32, _delta_y: f32) {}
 
     /// Called when a two-finger pinch gesture begins. `center_*` is the
-    /// midpoint between the two fingers in logical coordinates.
+    /// pinch center in logical coordinates.
+    ///
+    /// 出どころは 2 つあり、 どちらも同じ 3 つのメソッドへ来る (#56):
+    ///
+    /// - **タッチパネル** — 2 本目の指が触れた時。 `center_*` は 2 指の中点。
+    /// - **トラックパッド (macOS)** — winit の `PinchGesture`。 中心を持たない
+    ///   イベントなので、 `center_*` は**カーソル位置**になる。
+    ///
+    /// 受け手が場合分けする必要は無い。 [`Self::on_pinch`] の `scale` の規約も
+    /// 両者で揃えてある。
     fn on_pinch_start(&mut self, _center_x: f32, _center_y: f32) {}
 
     /// Called while a pinch is active. `scale` is the absolute ratio of the
     /// current finger distance to the starting distance (1.0 at start).
-    /// `center_*` is the current midpoint between the two fingers.
+    ///
+    /// **累積倍率であって増分ではない** — トラックパッド由来の場合も同じ。
+    /// winit は増分で配ってくるが、 ランタイム側で積んでから渡している。
+    /// `center_*` は [`Self::on_pinch_start`] と同じ規約。
     fn on_pinch(&mut self, _scale: f32, _center_x: f32, _center_y: f32) {}
 
-    /// Called when the pinch gesture ends (one of the two fingers lifted).
+    /// Called when the pinch gesture ends (a finger lifted, or the trackpad
+    /// gesture ended/cancelled).
     fn on_pinch_end(&mut self) {}
 
     /// Called when mouse back button is pressed.
@@ -492,6 +507,12 @@ pub trait DeclarativeApp: 'static {
     /// **`tick` で自前に絵を動かすなら [`is_animating`](Self::is_animating) を
     /// 上書きすること。** 書かないと画面が止まる — ランタイムにはアプリの状態が
     /// 変わったかどうかを知る手段が無い。
+    ///
+    /// [`run_scene`](crate::run_scene) の [`SceneApp`](crate::SceneApp) にも
+    /// 同じ判定が効く (#55)。 **`render_scene` が自前の時計で絵を動かすなら
+    /// 名乗ること** — カメラが回り続ける・粒子が飛ぶといった 3D 側の動きは、
+    /// UI 側のイベントも `tick` の状態変化も伴わないので、 名乗らないと
+    /// 次のクリックまで scene ごと止まる。
     fn lazy_render(&self) -> bool { true }
 
     /// 毎 tick の最後に問われる。`tick` が絵を変えたなら `true`。
@@ -718,6 +739,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     touch_drag: Option<TouchDrag>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
+    /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
+    /// タッチ由来の [`PinchGesture`] とは出どころが別なので分けて持つ。
+    trackpad_pinch: Option<TrackpadPinch>,
     /// Managed scroll states, keyed by the id given to `.scroll(id)`.
     pub(crate) scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Managed tooltip hover-delay state.
@@ -1099,6 +1123,49 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if !handled {
                     self.app.on_scroll(delta_y);
                     self.app.on_scroll_xy(delta_x, delta_y);
+                }
+            }
+            // トラックパッドのピンチ (macOS / iOS)。 タッチパネルと違って
+            // `WindowEvent::Touch` は一切来ないので、 ここを拾わないと
+            // **マウス/トラックパッドの機械では `on_pinch*` が一度も鳴らない**
+            // (#56)。 winit が配るのは増分なので、 `TrackpadPinch` で
+            // 累積倍率に直してからタッチ側と同じ規約で渡す。
+            //
+            // 中心は winit が持っていないのでカーソル位置を使う。 拡大の軸と
+            // しては実用上これが正しい (つまんだ先が寄ってくる)。
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                // 終わりは**無条件に**通す。 始めた後で下の門が閉じた場合
+                // (タッチが主導権を取る等) でも、 ここを潜らせないと
+                // `trackpad_pinch` が残って `on_pinch_end` が永久に来ない。
+                if matches!(
+                    phase,
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                ) {
+                    if self.trackpad_pinch.take().is_some() {
+                        self.app.on_pinch_end();
+                    }
+                    return;
+                }
+                // タッチが主導権を持っている間は始めない (MouseWheel と同じ規約)。
+                // 2 本指タッチのピンチが走っているなら、そちらが `on_pinch` の
+                // 出し手 — 二重に鳴らさない。
+                if self.primary_input == PrimaryInput::Touch || self.pinch.is_some() {
+                    return;
+                }
+                // `Started` を取りこぼしても始められるようにしておく — 落ちると
+                // 以降の `Moved` が全部無音になるため。
+                if self.trackpad_pinch.is_none() {
+                    self.trackpad_pinch = Some(TrackpadPinch::started());
+                    self.app.on_pinch_start(self.mouse_x, self.mouse_y);
+                    // `Started` 自身は倍率 1.0 の開始通知だけ。 delta は積まない。
+                    if matches!(phase, winit::event::TouchPhase::Started) {
+                        return;
+                    }
+                }
+                if let Some(ref mut tp) = self.trackpad_pinch {
+                    if let Some(scale) = tp.apply(delta) {
+                        self.app.on_pinch(scale, self.mouse_x, self.mouse_y);
+                    }
                 }
             }
             // Touch events — first finger drives the primary flow (tap, scroll,
@@ -2181,6 +2248,7 @@ impl<A: DeclarativeApp> AppState<A> {
             active_touches: std::collections::HashMap::new(),
             touch_drag: None,
             pinch: None,
+            trackpad_pinch: None,
             scroll_states: std::collections::HashMap::new(),
             modifiers: Modifiers::default(),
             tooltip_state: sabitori_widgets::TooltipState::new(),
@@ -2607,13 +2675,15 @@ impl<A: DeclarativeApp> AppState<A> {
                 field.advance(dt);
             }
         }
-        for sv in self.scroll_states.values_mut() {
-            sv.tick(dt);
-        }
-        self.tooltip_state.tick(dt);
-        self.drag_manager.tick(dt);
-        self.style_animator.tick(dt);
-        self.presence_animator.tick(dt);
+        // ランタイム側のアニメーターは scene_app と同じ 1 実装を通す (#55)。
+        crate::runtime_shared::advance_animators(
+            &mut self.scroll_states,
+            &mut self.tooltip_state,
+            &mut self.drag_manager,
+            &mut self.style_animator,
+            &mut self.presence_animator,
+            dt,
+        );
     }
 
     /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
@@ -2628,15 +2698,15 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 打ち切りを決めるので、 永久に動き続けるもの (キャレット点滅) を混ぜると
     /// 待ち切れなくなる。 そちらは [`Self::caret_blinking`]。
     pub(crate) fn runtime_animating(&self) -> bool {
-        self.scroll_states.values().any(|sv| sv.is_animating())
-            || self.style_animator.is_animating()
-            // 入退場 (presence) の最中。 見ていないと lazy_render が loop を
-            // park して、 要素が出かかった/消えかかった姿で固まる。
-            || self.presence_animator.has_animations()
-            || self.drag_manager.is_active()
-            // tooltip の hover-delay / fade 中は tick を回し続ける。無いと lazy_render が
-            // loop を park して delay タイマが止まり、マウスを動かすまで tooltip が出ない。
-            || self.tooltip_state.is_pending()
+        // 判定は scene_app と同じ 1 実装 (#55)。 進める側 (`advance_animators`)
+        // と並びが揃っていないと、 進めているのに名乗らないものが出る。
+        crate::runtime_shared::animators_running(
+            &self.scroll_states,
+            &self.tooltip_state,
+            &self.drag_manager,
+            &self.style_animator,
+            &self.presence_animator,
+        )
     }
 
     /// フォーカス中の登録済みテキスト欄がキャレットを点滅させているか。

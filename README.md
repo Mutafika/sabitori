@@ -201,6 +201,11 @@ Returning `false` from `lazy_render` opts the whole window out and redraws
 unconditionally. That was the default through 0.8.0; it costs roughly a core
 and a slice of the GPU on an idle window, so reach for `is_animating` first.
 
+`run_scene` (`SceneApp`) follows the same rule. **If `render_scene` animates
+off its own clock, say so** — an orbiting camera or a particle field comes with
+no UI event, so without `is_animating` the scene itself stops until the next
+click.
+
 ## Layout
 
 Flexbox and grid, both backed by Taffy. If you know CSS you already know this — the names match.

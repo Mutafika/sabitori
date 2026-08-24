@@ -60,3 +60,102 @@ pub(crate) fn pinch_metrics(
     let center = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
     Some((distance, center))
 }
+
+/// 下限。 `1.0 + delta` が 0 以下になると倍率の符号が反転して、 以降ずっと
+/// 壊れた値を配ることになる。 factor 側で床を張って絶たれないようにする。
+const MIN_PINCH_FACTOR: f32 = 0.01;
+
+/// トラックパッド (macOS) のピンチ状態。
+///
+/// winit は [`WindowEvent::PinchGesture`] を**増分** (`delta`) で配るが、
+/// [`DeclarativeApp::on_pinch`] の規約は「つまみ始めからの**累積**倍率」
+/// — タッチ側の `dist / start_distance` と同じ意味 — なので、 ここで
+/// 積んでから渡す。 受け手が両方の入力を区別せずに書けるのがこの型の役目。
+///
+/// [`WindowEvent::PinchGesture`]: winit::event::WindowEvent::PinchGesture
+/// [`DeclarativeApp::on_pinch`]: crate::DeclarativeApp::on_pinch
+pub(crate) struct TrackpadPinch {
+    /// つまみ始め (= 1.0) からの累積倍率。
+    pub scale: f32,
+}
+
+impl TrackpadPinch {
+    /// つまみ始め。 倍率は 1.0 から。
+    pub fn started() -> Self {
+        Self { scale: 1.0 }
+    }
+
+    /// 増分 `delta` を積んで、 新しい累積倍率を返す。
+    ///
+    /// winit の doc が「`delta` は NaN になり得る」 と言っているので、
+    /// 有限でない値は**捨てる** (`None`) — 一度でも混ぜると `scale` が NaN に
+    /// 固着して、 以降そのジェスチャが丸ごと死ぬ。
+    pub fn apply(&mut self, delta: f64) -> Option<f32> {
+        if !delta.is_finite() {
+            return None;
+        }
+        let factor = (1.0 + delta as f32).max(MIN_PINCH_FACTOR);
+        self.scale *= factor;
+        Some(self.scale)
+    }
+}
+
+#[cfg(test)]
+mod trackpad_pinch_tests {
+    use super::*;
+
+    /// 規約の確認: `on_pinch` に渡すのは**累積**倍率で、 1.0 から始まる。
+    ///
+    /// タッチ側は `dist / start_distance` を渡している。 ここが増分のままだと
+    /// 受け手が入力の出どころで場合分けする羽目になり、 「片方だけ効く」
+    /// 実装が量産される。
+    #[test]
+    fn scale_accumulates_from_one() {
+        let mut p = TrackpadPinch::started();
+        assert_eq!(p.scale, 1.0);
+
+        // +10% を 2 回 → 1.21 (増分の和 1.2 ではない)。
+        assert_eq!(p.apply(0.1), Some(1.1));
+        let after = p.apply(0.1).unwrap();
+        assert!((after - 1.21).abs() < 1e-6, "{after}");
+    }
+
+    /// 縮小方向も同じ積み方で、 拡大を打ち消せば 1.0 に戻ること。
+    #[test]
+    fn shrinking_undoes_magnifying() {
+        let mut p = TrackpadPinch::started();
+        p.apply(0.25);
+        let back = p.apply(1.0 / 1.25 - 1.0).unwrap();
+        assert!((back - 1.0).abs() < 1e-6, "{back}");
+    }
+
+    /// winit の doc が「NaN が来ることがある」 と言っている。 積んでしまうと
+    /// `scale` が NaN に固着して、 そのジェスチャが丸ごと死ぬ。 捨てること。
+    #[test]
+    fn non_finite_delta_is_dropped_and_leaves_scale_intact() {
+        let mut p = TrackpadPinch::started();
+        p.apply(0.5);
+        let good = p.scale;
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(p.apply(bad), None, "{bad} を受け付けている");
+            assert_eq!(p.scale, good, "{bad} で scale が壊れた");
+        }
+
+        // 捨てたあとも普通に続けられること。
+        assert!(p.apply(0.1).is_some());
+    }
+
+    /// `1.0 + delta` が 0 以下になっても倍率の符号を反転させないこと。
+    /// 一度負に振れると、 以降の拡大縮小が全部裏返って戻らない。
+    #[test]
+    fn extreme_negative_delta_never_flips_the_sign() {
+        let mut p = TrackpadPinch::started();
+        for delta in [-1.0, -2.0, -50.0] {
+            let scale = p.apply(delta).expect("有限値は受け付ける");
+            assert!(scale > 0.0, "delta={delta} で scale={scale} が非正になった");
+        }
+        // 床を張ったあとも、 拡大方向へ復帰できること。
+        assert!(p.apply(1.0).unwrap() > p.scale / 2.0);
+    }
+}
