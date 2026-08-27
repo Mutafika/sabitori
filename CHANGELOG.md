@@ -15,6 +15,10 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-27
+
+**view() を組むだけで wasm が落ちない版。**
+
 ### Fixed
 
 - **wasm32 で view() 構築が既定スタック (1MB) を食い潰して即死する**
@@ -2796,7 +2800,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/Mutafika/sabitori/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Mutafika/sabitori/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Mutafika/sabitori/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Mutafika/sabitori/compare/v0.8.0...v0.9.0
