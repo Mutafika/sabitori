@@ -12,10 +12,13 @@ use sabitori_input::{
 use sabitori_scene::{NodeId, NodeTree};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::ActiveEventLoop;
+#[cfg(target_arch = "wasm32")]
+use winit::event_loop::EventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
+pub mod background;
 pub mod keymap;
 
 /// Trait for building interactive UIs with Sabitori.
@@ -107,15 +110,18 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
             return;
         }
 
-        let attrs = WindowAttributes::default()
-            .with_title("Sabitori")
-            .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 800.0));
+        let attrs = background::apply_background_attrs(
+            WindowAttributes::default()
+                .with_title("Sabitori")
+                .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 800.0)),
+        );
 
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
                 .expect("Failed to create window"),
         );
+        background::finish_background_window(&window);
 
         // On native, create the renderer synchronously via pollster::block_on.
         // On WASM, this `resumed()` impl is NOT used directly — the
@@ -612,7 +618,7 @@ pub fn run<A: SabitoriApp + 'static>(app: A) {
         )
         .try_init();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = background::build_event_loop();
     let mut state = AppState {
         app,
         window: None,

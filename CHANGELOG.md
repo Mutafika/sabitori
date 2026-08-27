@@ -15,6 +15,42 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-27
+
+**窓を起こしても誰の邪魔もしない版。**
+
+### Added
+
+- **バックグラウンド起動 `SABITORI_BACKGROUND=1` (macOS)** — スクリーンショット
+  検証用に、フォーカスを奪わず・画面に一切映らずに窓を起こすモード。
+  3 ランタイム (`run` / `run_scene` / `run_declarative`、extra window 含む) 共通。
+
+  GUI の自動検証 (エージェントが窓を起こして `screencapture -l<WID>` で確認する類)
+  は、起動のたびに窓が最前面に出てフォーカスを奪い、**作業中のユーザーの打鍵が
+  アプリへ流れ込む**。位置ずらし (画面外へ移動) では防げない — macOS は titled
+  window の完全画面外配置をクランプする (5120px 幅の画面では {5000,1400} 指定でも
+  一部が見える) し、生成〜移動の間は必ず一瞬見える。
+
+  env が立っていると:
+
+  1. Accessory activation policy + activate しない設定で EventLoop を作る
+     (Dock に出ない・フォーカスを奪わない・キー入力が届かない)。
+  2. 窓を**非表示のまま生成**し、`setFrameOrigin` で完全画面外へ移してから
+     表示する。1 フレームも画面に映らないが、window server は通常どおり合成し
+     続けるので `screencapture -l<WID>` のキャプチャはそのまま生きる。
+
+  手段は全部実測で選んだ: 生成属性の `with_position` は macOS が titled window の
+  初期配置をクランプして画面内へ引き戻すので不可 (生成後の `setFrameOrigin` は
+  クランプされない)。ウィンドウレベルを壁紙より下に沈めるのは、見えなくはなるが
+  **macOS がその窓の合成を止め backing store が凍る**ため不可 — キャプチャが
+  起動数秒時点の古いフレームを返し続け、後から届いた描画 (非同期ロードの
+  テクスチャ等) が永遠に写らない。`alphaValue = 0` は screencapture が窓の
+  alpha ごと合成して真っ白になるため不可。
+
+  実装は `sabitori_window::background` (`background_launch` /
+  `build_event_loop` / `apply_background_attrs` / `finish_background_window`)。
+  macOS 以外の native と wasm では env は無視され、通常起動と同一。
+
 ## [0.10.0] - 2026-08-24
 
 **3D の窓も焼き続けるのをやめた版。トラックパッドのピンチが初めて届く。**
@@ -2739,7 +2775,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Mutafika/sabitori/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Mutafika/sabitori/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Mutafika/sabitori/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Mutafika/sabitori/compare/v0.7.0...v0.8.0
