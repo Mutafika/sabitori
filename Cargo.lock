@@ -2699,6 +2699,8 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "log",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "pollster",
  "sabitori-core",
  "sabitori-gpu",

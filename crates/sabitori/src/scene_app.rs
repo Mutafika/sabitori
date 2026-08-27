@@ -296,9 +296,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         if !self.app.decorations() {
             attrs = attrs.with_decorations(false);
         }
+        attrs = sabitori_window::background::apply_background_attrs(attrs);
         // 生の相対マウスモーションを受け取る（中/右ボタンドラッグ中も止まらないカメラ操作用）。
         event_loop.listen_device_events(DeviceEvents::Always);
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        sabitori_window::background::finish_background_window(&window);
         // Enable IME so Japanese (and other) input methods deliver
         // preedit/commit events to the `WindowEvent::Ime` handler. Without
         // this winit never emits them and IME is silently dead in run_scene.
@@ -1268,7 +1270,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         )
         .try_init();
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = sabitori_window::background::build_event_loop();
     let mut state = SceneAppState {
         app,
         window: None,

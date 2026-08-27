@@ -873,7 +873,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             use winit::platform::macos::WindowAttributesExtMacOS;
             attrs = attrs.with_accepts_first_mouse(true);
         }
+        attrs = sabitori_window::background::apply_background_attrs(attrs);
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        sabitori_window::background::finish_background_window(&window);
 
         // Platform-specific post-creation configuration. winit doesn't
         // expose macOS panel levels, collection behavior, mouse passthrough
@@ -2019,7 +2021,9 @@ impl<A: DeclarativeApp> AppState<A> {
         if !spec.decorations {
             attrs = attrs.with_decorations(false);
         }
+        attrs = sabitori_window::background::apply_background_attrs(attrs);
         let extra_window = Arc::new(event_loop.create_window(attrs).unwrap());
+        sabitori_window::background::finish_background_window(&extra_window);
 
         #[cfg(target_os = "macos")]
         {
@@ -3798,7 +3802,7 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         )
         .try_init();
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = sabitori_window::background::build_event_loop();
 
     // ホットリロードの受け口 (feature = "hot-reload" のときだけ中身がある)。
     // パッチは別スレッドで着弾するので、proxy 経由でループを起こして描き直す。

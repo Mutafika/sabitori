@@ -31,3 +31,7 @@ web-sys = { workspace = true, features = [
 console_error_panic_hook.workspace = true
 console_log.workspace = true
 log.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
