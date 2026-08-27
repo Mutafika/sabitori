@@ -15,6 +15,10 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-27
+
+**窓を起こしても誰の邪魔もしない版。**
+
 ### Added
 
 - **バックグラウンド起動 `SABITORI_BACKGROUND=1` (macOS)** — スクリーンショット
@@ -2771,7 +2775,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Mutafika/sabitori/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Mutafika/sabitori/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Mutafika/sabitori/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Mutafika/sabitori/compare/v0.7.0...v0.8.0
