@@ -935,7 +935,11 @@ impl StateStyle {
 /// A declarative UI element. Constructed via `div()`, `text()`, or `button()`.
 pub struct Element {
     pub kind: ElementKind,
-    pub style: ElementStyle,
+    /// スタイルは Box で持つ。ElementStyle は 536B あり、インラインだと Element が
+    /// 1.2KB 超になって builder 式の入れ子 1 段ごとにそれがスタックへ積まれる —
+    /// wasm32 の既定スタック 1MB を view() 構築だけで食い潰していた (#56)。
+    /// 読み手は auto-deref でそのまま `el.style.x` と書ける。
+    pub style: Box<ElementStyle>,
     pub children: Vec<Element>,
     /// Unique identifier for event dispatch (click/hover).
     pub id: Option<String>,
@@ -954,10 +958,10 @@ pub struct Element {
     pub label: Option<String>,
     /// 見出しの階層 (1 が最上位)。 [`Role::Heading`] のときだけ意味がある。
     pub heading_level: Option<u8>,
-    /// Style overrides when hovered.
-    pub hover_style: Option<StateStyle>,
+    /// Style overrides when hovered. Box なのは style と同じ理由 (#56、220B×2)。
+    pub hover_style: Option<Box<StateStyle>>,
     /// Style overrides when pressed/active.
-    pub active_style: Option<StateStyle>,
+    pub active_style: Option<Box<StateStyle>>,
     /// Transition declarations.
     pub transitions: Vec<Transition>,
     /// When true, this element (and all its children) renders on the overlay
@@ -1181,7 +1185,7 @@ pub fn fold_state_style(style: &mut ElementStyle, s: &StateStyle, animated: bool
 pub fn div() -> Element {
     Element {
         kind: ElementKind::Div,
-        style: ElementStyle::default(),
+        style: Box::default(),
         children: Vec::new(),
         id: None,
         on_click: None,
@@ -1219,7 +1223,7 @@ pub fn grid() -> Element {
 pub fn text(content: impl Into<String>) -> Element {
     Element {
         kind: ElementKind::Text { content: content.into() },
-        style: ElementStyle::default(),
+        style: Box::default(),
         children: Vec::new(),
         id: None,
         on_click: None,
@@ -1254,7 +1258,7 @@ pub fn polyline() -> Element {
             width: 1.5,
             color: Color::TRANSPARENT,
         }),
-        style: ElementStyle::default(),
+        style: Box::default(),
         children: Vec::new(),
         id: None,
         on_click: None,
@@ -1296,7 +1300,7 @@ pub fn arc() -> Element {
             fill_color: Color::TRANSPARENT,
             track_color: Color::TRANSPARENT,
         }),
-        style: ElementStyle::default(),
+        style: Box::default(),
         children: Vec::new(),
         id: None,
         on_click: None,
@@ -1322,7 +1326,7 @@ pub fn arc() -> Element {
 pub fn image(key: impl Into<String>, data: ImageData) -> Element {
     Element {
         kind: ElementKind::Image { key: key.into(), data },
-        style: ElementStyle::default(),
+        style: Box::default(),
         children: Vec::new(),
         id: None,
         on_click: None,
@@ -1346,7 +1350,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
 
 /// Create a button element with default interactive styles.
 pub fn button(label: impl Into<String>) -> Element {
-    let mut style = ElementStyle::default();
+    let mut style = Box::<ElementStyle>::default();
     style.flex_direction = FlexDirection::Row;
     style.align_items = AlignItems::Center;
     style.justify_content = JustifyContent::Center;
@@ -1375,8 +1379,8 @@ pub fn button(label: impl Into<String>) -> Element {
         //
         // Callers who want something else just override with `.hover()` /
         // `.active()`; those replace these outright.
-        hover_style: Some(StateStyle { scale: Some(1.02), ..StateStyle::default() }),
-        active_style: Some(StateStyle { scale: Some(0.96), ..StateStyle::default() }),
+        hover_style: Some(Box::new(StateStyle { scale: Some(1.02), ..StateStyle::default() })),
+        active_style: Some(Box::new(StateStyle { scale: Some(0.96), ..StateStyle::default() })),
         transitions: vec![Transition {
             property: TransitionProperty::All,
             kind: TransitionKind::default(),
@@ -1561,7 +1565,7 @@ impl Element {
     }
 
     /// Subtle glow (30% alpha, 8px blur).
-    pub fn glow_sm(mut self, color: Color) -> Self {
+    pub fn glow_sm(self, color: Color) -> Self {
         self.glow(color.with_alpha(0.3), 8.0)
     }
 
@@ -2482,7 +2486,7 @@ impl Element {
     /// div().bg(surface).hover(|s| s.bg(surface_hover).scale(1.02))
     /// ```
     pub fn hover(mut self, f: impl FnOnce(StateStyle) -> StateStyle) -> Self {
-        self.hover_style = Some(f(StateStyle::default()));
+        self.hover_style = Some(Box::new(f(StateStyle::default())));
         self
     }
 
@@ -2491,7 +2495,7 @@ impl Element {
     /// div().bg(surface).active(|s| s.bg(surface_active).scale(0.98))
     /// ```
     pub fn active(mut self, f: impl FnOnce(StateStyle) -> StateStyle) -> Self {
-        self.active_style = Some(f(StateStyle::default()));
+        self.active_style = Some(Box::new(f(StateStyle::default())));
         self
     }
 

@@ -15,6 +15,27 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **wasm32 で view() 構築が既定スタック (1MB) を食い潰して即死する**
+  ([#56](https://github.com/Mutafika/sabitori/issues/56)) — `Element` が
+  `ElementStyle` (536B) と hover/active の `StateStyle` (220B×2) をインラインで抱えて
+  **1224B** あり、ビルダー式の入れ子 1 段ごとにそれがスタックへ値渡しで積まれる。
+  デバッグビルドの wasm はテンポラリのスロットを再利用しないため、大きめの `view()`
+  だけで 1MB を超え、生の `RuntimeError: memory access out of bounds` で落ちていた
+  (panic を経由しないので原因に辿り着きにくい。native はスタック 8MB で無症状)。
+
+  太い 3 フィールドを Box 化して `Element` を **272B** に削減
+  (`style: Box<ElementStyle>`、`hover_style`/`active_style: Option<Box<StateStyle>>`)。
+  読み手は auto-deref でそのまま、書き手も builder API 経由なら変更なし。
+  フィールドを直接組む消費者だけ `Box::new` が要る (実質 API 変更なし扱いの patch)。
+  bamiri-plateau の実 view (起動即死していたもの) が既定 1MB スタックで
+  全操作 (picker/text_input 打鍵込み) 動作することを headless Chrome で確認。
+  `size_probe` テストで上限 320B を張り、無音の再肥大を止める。
+
+  副収穫として、ノード 1 個あたりのコピーが 1/4.5 になるので native の view 構築も
+  軽くなる (毎フレーム数千ノード × memcpy 1.2KB → 272B)。
+
 ## [0.11.0] - 2026-08-27
 
 **窓を起こしても誰の邪魔もしない版。**
