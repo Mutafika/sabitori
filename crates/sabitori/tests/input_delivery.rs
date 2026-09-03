@@ -33,8 +33,20 @@ fn every_runtime_declares_every_kind() {
     }
     assert_eq!(
         K::ALL.len(),
-        12,
+        13,
         "種別を増減したら、 3 ランタイムの input_delivery と CHANGELOG を確認すること"
+    );
+}
+
+/// ホイールは `DeclarativeApp` を持つ 2 ランタイムで `on_input` に届き (管理
+/// スクロールより先)、 `SabitoriApp` では発行されない (#58)。
+#[test]
+fn wheel_reaches_declarative_apps_and_is_not_produced_by_sabitori_window() {
+    assert_eq!(sabitori::declarative::input_delivery(K::Wheel), Delivery::ToApp);
+    assert_eq!(sabitori::scene_app::input_delivery(K::Wheel), Delivery::ToApp);
+    assert!(
+        matches!(sabitori_window::input_delivery(K::Wheel), Delivery::NotProduced(_)),
+        "sabitori-window が MouseWheel を見るようになったなら、 この宣言とテストを更新すること"
     );
 }
 

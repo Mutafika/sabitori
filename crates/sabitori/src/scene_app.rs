@@ -72,6 +72,9 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
             Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
         }
 
+        // declarative と同じ: 管理スクロールより先に `on_input` へ (#58)。
+        InputEventKind::Wheel => Delivery::ToApp,
+
         InputEventKind::ImeEnabled
         | InputEventKind::ImePreedit
         | InputEventKind::ImeCommit
@@ -127,6 +130,12 @@ struct SceneAppState<A: SceneApp> {
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
     /// タッチ由来の [`PinchGesture`] とは出どころが別なので分けて持つ。
     trackpad_pinch: Option<TrackpadPinch>,
+    /// `PointerPressed::click_count` の合成。declarative の `AppState` と同じ。
+    clicks: sabitori_input::ClickCounter,
+    /// 直近に `on_click` を配った id (空白は `""`)。`on_double_click` の判定用。
+    last_click_id: Option<String>,
+    /// トラックパッドの 1 ジェスチャの間、ホイールの届け先を固定する。
+    wheel_latch: crate::scroll_sync::WheelLatch,
     /// Last [`UiCapture`] snapshot pushed to the app (deduped).
     last_capture: UiCapture,
     /// 管理されたスクロールコンテナ(`.scroll(id)`)の状態。DeclarativeApp ランタイム
@@ -188,6 +197,24 @@ impl<A: SceneApp> SceneAppState<A> {
     fn hit_id_at(&self, x: f32, y: f32) -> Option<String> {
         let build = self.last_build.as_ref()?;
         crate::runtime_shared::hit_id_at(build, x, y)
+    }
+
+    /// クリック 1 回の配り先 (declarative の `dispatch_click` と同じ規約、#58)。
+    /// `on_click(id)` → 偶数回目で前回と同じ対象なら `on_double_click(id, x, y)`。
+    /// 空白は `on_click` 無しで `""` のダブルクリックだけ。このランタイムは
+    /// `Element::click` の型付きアクションを持たないので、そこだけ無い。
+    fn dispatch_click(&mut self, target: Option<&str>, click_count: u32, x: f32, y: f32) {
+        if let Some(id) = target {
+            self.app.on_click(id);
+        }
+        let id = target.unwrap_or("");
+        let same_target = self.last_click_id.as_deref() == Some(id);
+        // 偶数回目 (2, 4, …)。`is_multiple_of` は MSRV 1.85 に無い。
+        let even = click_count & 1 == 0;
+        if even && same_target {
+            self.app.on_double_click(id, x, y);
+        }
+        self.last_click_id = Some(id.to_owned());
     }
 
     /// Recompute the [`UiCapture`] snapshot and push it to the app when it
@@ -445,15 +472,24 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
 
                 // Forward mouse button events to on_input (for camera drag, etc.)
+                // `consumed` は右ボタンにだけ効く: `true` なら `on_right_click` を
+                // 鳴らさない (declarative の `press_secondary` と同じ規約、#58)。
+                let mut consumed = false;
+                let mut click_count = 1;
                 if let Some(sabi_btn) = Self::winit_to_sabi_button(button) {
                     let event = match state {
-                        winit::event::ElementState::Pressed => InputEvent::PointerPressed {
-                            id: MOUSE_POINTER_ID,
-                            kind: PointerKind::Mouse,
-                            position: pos,
-                            button: Some(sabi_btn),
-                            modifiers: self.modifiers,
-                        },
+                        winit::event::ElementState::Pressed => {
+                            click_count =
+                                self.clicks.press_now(pos, Some(sabi_btn), PointerKind::Mouse);
+                            InputEvent::PointerPressed {
+                                id: MOUSE_POINTER_ID,
+                                kind: PointerKind::Mouse,
+                                position: pos,
+                                button: Some(sabi_btn),
+                                modifiers: self.modifiers,
+                                click_count,
+                            }
+                        }
                         winit::event::ElementState::Released => InputEvent::PointerReleased {
                             id: MOUSE_POINTER_ID,
                             kind: PointerKind::Mouse,
@@ -462,7 +498,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             modifiers: self.modifiers,
                         },
                     };
-                    self.app.on_input(&event);
+                    consumed = self.app.on_input(&event);
                 }
 
                 // 押下中の要素を覚える → 次フレームで active_style が畳まれる (#3)。
@@ -478,6 +514,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     && button == winit::event::MouseButton::Left
                 {
                     let mut pending_drag: Option<(String, Option<String>)> = None;
+                    let mut click_target: Option<String> = None;
                     if let Some(ref build) = self.last_build {
                         let mut focus_set = false;
                         for region in &build.hit_regions {
@@ -489,9 +526,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                     focus_set = true;
                                 }
                                 if region.clickable {
-                                    if let Some(ref id) = region.id {
-                                        self.app.on_click(id);
-                                    }
+                                    click_target = region.id.clone();
                                 }
                                 // A draggable element starts a pending drag that
                                 // promotes to active once the pointer moves past
@@ -506,6 +541,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             self.focused_id = None;
                         }
                     }
+                    self.dispatch_click(click_target.as_deref(), click_count, pos.x, pos.y);
                     if let Some((data, source_id)) = pending_drag {
                         self.drag_manager.start_pending(data, source_id, self.mouse_x, self.mouse_y);
                     }
@@ -535,6 +571,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
 
                 if state == winit::event::ElementState::Pressed
                     && button == winit::event::MouseButton::Right
+                    && !consumed
                 {
                     if let Some(ref build) = self.last_build {
                         let mut found = false;
@@ -554,31 +591,40 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 if self.primary_input == PrimaryInput::Touch {
                     return;
                 }
-                let (delta_x, delta_y) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
-                };
-                // カーソル下の管理スクロールコンテナ(`.scroll(id)`)へルーティング。
-                // 該当が無ければアプリの on_scroll へフォールバック（DeclarativeApp と同じ）。
-                let mut handled = false;
-                if let Some(ref build) = self.last_build {
-                    let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-                    for region in &build.hit_regions {
-                        if region.rect.contains(pt) {
-                            if let Some(ref id) = region.id {
-                                if let Some(sv) = self.scroll_states.get_mut(id) {
-                                    sv.on_scroll_xy(delta_x, delta_y);
-                                    handled = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                let (delta_x, delta_y, precise) = crate::input_router::wheel_delta_px(delta);
+                let phase = crate::input_router::wheel_phase(phase);
+                let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+                // declarative の `AppState::wheel` と同じ順 (#58):
+                // `on_input(Wheel)` → 動ける管理コンテナ (1 ジェスチャの間は固定) →
+                // `on_scroll` / `on_scroll_xy`。
+                let consumed = self.app.on_input(&InputEvent::Wheel {
+                    position,
+                    delta_x,
+                    delta_y,
+                    precise,
+                    phase,
+                    modifiers: self.modifiers,
+                });
+                if consumed {
+                    return;
                 }
+                let handled = match self.last_build.as_ref() {
+                    Some(build) => self.wheel_latch.route(
+                        build,
+                        &mut self.scroll_states,
+                        self.mouse_x,
+                        self.mouse_y,
+                        delta_x,
+                        delta_y,
+                        precise,
+                        phase,
+                    ),
+                    None => false,
+                };
                 if !handled {
                     self.app.on_scroll(delta_y);
                     self.app.on_scroll_xy(delta_x, delta_y);
@@ -638,6 +684,13 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 let y = touch.location.y as f32 / scale;
                 let pos = sabitori_core::Point::new(x, y);
                 let id = touch.id.saturating_add(1);
+                // 連続タップの回数 (declarative と同じ)。タップ確定は解放なので
+                // `TouchDrag` にも載せて `on_double_click` の判定に使う。
+                let click_count = if matches!(touch.phase, winit::event::TouchPhase::Started) {
+                    self.clicks.press_now(pos, None, PointerKind::Touch)
+                } else {
+                    1
+                };
 
                 // Always update tracking + forward raw events.
                 match touch.phase {
@@ -649,6 +702,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             position: pos,
                             button: None,
                             modifiers: self.modifiers,
+                            click_count,
                         });
                     }
                     winit::event::TouchPhase::Moved => {
@@ -723,6 +777,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                 click_target,
                                 scroll_target: None,
                                 moved_beyond_slop: false,
+                                click_count,
                             });
                         } else if count == 2 && self.pinch.is_none() {
                             if let Some(ref mut td) = self.touch_drag {
@@ -790,9 +845,12 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             let td = self.touch_drag.take();
                             if let Some(td) = td {
                                 if !is_cancel && !td.moved_beyond_slop {
-                                    if let Some(cid) = td.click_target {
-                                        self.app.on_click(&cid);
-                                    }
+                                    self.dispatch_click(
+                                        td.click_target.as_deref(),
+                                        td.click_count,
+                                        x,
+                                        y,
+                                    );
                                 }
                             }
                             self.app.on_pointer_up();
@@ -1298,6 +1356,9 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         touch_drag: None,
         pinch: None,
         trackpad_pinch: None,
+        clicks: sabitori_input::ClickCounter::new(),
+        last_click_id: None,
+        wheel_latch: crate::scroll_sync::WheelLatch::new(),
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
         style_animator: sabitori_widgets::StyleAnimator::new(),
@@ -1347,6 +1408,9 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         touch_drag: None,
         pinch: None,
         trackpad_pinch: None,
+        clicks: sabitori_input::ClickCounter::new(),
+        last_click_id: None,
+        wheel_latch: crate::scroll_sync::WheelLatch::new(),
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
         style_animator: sabitori_widgets::StyleAnimator::new(),

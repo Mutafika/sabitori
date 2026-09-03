@@ -110,6 +110,20 @@ let (first, count) = ctx.visible_range("file-list", ROW_H);
 
 The other model is `.scroll_manual(x, y)`, where **your app** owns the offset and the runtime never touches it. Pick one; the type says which.
 
+Two wheel details. A `.scroll(id)` container only consumes the wheel while it can still move in that direction; at its end the event falls through to the next container out, and finally to `on_scroll_xy`. And the raw wheel reaches `on_input` **first**, as `InputEvent::Wheel` with the cursor position, modifiers, and trackpad phase, so Cmd+wheel zoom is written there — return `true` and nothing scrolls:
+
+```rust
+fn on_input(&mut self, ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::Wheel { position, delta_y, modifiers, .. } if modifiers.meta => {
+            self.zoom_at(*position, *delta_y);
+            true // consumed: nothing scrolls
+        }
+        _ => false,
+    }
+}
+```
+
 ### 2. Text input and the IME
 
 **Put `text_input` in `view()`. That is the entire wiring.**

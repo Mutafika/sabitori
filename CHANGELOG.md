@@ -15,6 +15,80 @@
 
 ## [Unreleased]
 
+**マウスが OS と同じ作法で届く版。ダブルクリック・右ドラッグ・Cmd+ホイールが書ける。**
+
+マウス入力の監査で見つかった 4 つの穴を、runtime 側でまとめて塞いだ
+([#58](https://github.com/Mutafika/sabitori/issues/58))。どれも「winit が配らない
+から runtime が合成すべきもの」か「runtime が握り潰していたもの」で、アプリ側で
+書き直せる類ではなかった。実際 `examples/filer.rs` を含む 7 箇所が `Instant` を
+持ってダブルクリックを自作し、右ドラッグは書く手段そのものが無かった。
+
+### Added
+
+- **クリック回数** — `InputEvent::PointerPressed` に `click_count` が載る
+  (OS の `clickCount` / DOM の `detail` 相当)。同じボタンを 0.5 秒以内・5px 以内
+  (タッチは 24px) で押すと 1, 2, 3 と増え、外れたら 1 に戻る。合成は
+  `sabitori_input::ClickCounter` で、自前 runtime (埋め込みホスト) も同じ規則で
+  数えられるよう公開してある。
+- **`DeclarativeApp::on_double_click(id, x, y)`** — 同じ要素への偶数回目のクリックで、
+  その回の `on_click` の直後に鳴る (ブラウザの `click` → `dblclick` と同じ順序)。
+  空白のダブルクリックは `""` で届く (`on_right_click` と同じ規約)。
+  `examples/filer.rs` の自前カウンタはこれに置き換えた。
+- **`InputEvent::Wheel`** — ホイール / トラックパッドが `on_input` に届く。
+  カーソル位置・両軸の delta (論理 px)・修飾キー・`precise` (トラックパッドか
+  刻みホイールか)・`phase` (`WheelPhase`: `Started` / `Moved` / `Ended` /
+  `Cancelled`) を載せる。**管理スクロール (`.scroll(id)`) より先に届き、`true` を
+  返せば消費**なので、Cmd+ホイールのカーソル位置ズームがここで書ける。
+  `false` なら従来どおり管理コンテナ → `on_scroll` / `on_scroll_xy` へ落ちる。
+- `sabitori_input::LINE_DELTA_PX` — 刻みホイール 1 行 → 論理 px の係数 (20)。
+  2 ランタイムが別々に `* 20.0` を書いていたのを 1 箇所にした。
+- `ScrollView::can_scroll_x` / `can_scroll_y` / `can_consume_wheel` — その向きに
+  まだ動けるかを、ばねの**目標**で答える。
+- `scroll_sync::WheelLatch` — 1 ジェスチャの間だけ届け先を固定するルータ
+  (下の Fixed を参照)。埋め込みホストも同じ挙動を取れる。
+- `testing::Harness` に `right_click` / `right_click_at` / `double_click` /
+  `double_click_at` / `wheel_at` / `wheel_phase_at` / `wheel_lines_at`。
+  ホイールは実ランタイムと同じ経路 (`on_input` → 管理コンテナ → `on_scroll_xy`)
+  を通る (`Harness::scroll` は状態を直接動かすだけで、この経路を通らない)。
+
+### Changed（破壊的）
+
+- **`InputEvent::PointerPressed` にフィールド `click_count: u32` が増えた。**
+  パターンで `..` を使っていれば無変更。自前で組み立てている所 (テスト、イベントの
+  再発行) は `click_count: 1` を足す。
+- **`InputEvent` に variant `Wheel` が増えた。** `on_input` の `match` が網羅なら
+  arm が要る。⚠️ **`on_input` が状況によらず `true` を返しているアプリは、この版から
+  ホイールも飲み込む** (管理スクロールが動かなくなる)。「モーダル中は全部消費」の
+  ような書き方は、`Wheel` を除外するか、消費したいイベントだけ `true` を返す形に
+  直すこと。
+- **右ボタンの押下が `on_input` で消費されると `on_right_click` は鳴らない。**
+  右ドラッグ (オービット、パン) を取ったアプリの上でコンテキストメニューが開く
+  のを止める合図。以前は右ボタンが `on_input` に届かなかったので、`true` を
+  返していたアプリは存在しない (= 実害の無い変更)。
+- **端に達した管理スクロールコンテナはホイールを消費しない** (下の Fixed)。
+  内側のリストの端で外側が動くようになるので、それを望まない (内側で止めたい)
+  場合は外側を `.scroll_manual` にするか、`on_input(Wheel)` で `true` を返す。
+
+### Fixed
+
+- **右ボタンが `on_input` に届かず、解放は捨てられていた。** 押下は
+  `on_right_click(id, x, y)` に変換されるだけで `PointerPressed { button: Right }` は
+  出ず、解放は arm すら無かった。中ボタンは (#62 で) 届くのに右だけ届かない
+  非対称で、右ドラッグが書けなかった。両ランタイム (declarative / scene) で
+  押下・解放を転送する。
+- **内側のスクロールコンテナが端に居てもホイールを飲み込んでいた。**
+  `scroll_sync::route_wheel` はカーソル下で最初に見つかった管理コンテナに無条件で
+  渡して `true` を返していたので、ネストしたリストの下端で外側のページが動かない。
+  **その向きに動けるコンテナだけ**が消費し、動けなければ外側へ、どれも動けなければ
+  `on_scroll_xy` へ落ちる。判定は主軸 (絶対値の大きい方) で行う — 縦リストの上で
+  斜めに払ったとき、小さな横成分を理由に消費しない。
+- **トラックパッドの `phase` を捨てていた** (`MouseWheel { delta, .. }`)。
+  これが無いと上の「動けなければ外側へ」が、内側を下端まで払った**その指の続き**で
+  外側を動かしてしまう (跳ね)。macOS ネイティブと Chrome に倣い、`Started` で
+  決めた届け先を `Ended` まで固定し、慣性 (`Ended` 後の `Moved`) も同じ届け先で
+  端に達したら止める。刻みホイール (`precise == false`) はジェスチャを持たない
+  ので、ノッチごとに解決し直す。
+
 ## [0.11.1] - 2026-08-27
 
 **view() を組むだけで wasm が落ちない版。**
