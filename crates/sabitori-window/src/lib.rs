@@ -6,8 +6,8 @@ use std::time::Instant;
 use sabitori_core::Point;
 use sabitori_gpu::{GpuRenderer, RectInstance};
 use sabitori_input::{
-    button_bit, ActivePointer, BUTTON_PRIMARY, Delivery, InputEvent, InputEventKind, MouseButton,
-    PointerKind, PointerState, MOUSE_POINTER_ID,
+    button_bit, ActivePointer, ClickCounter, BUTTON_PRIMARY, Delivery, InputEvent,
+    InputEventKind, MouseButton, PointerKind, PointerState, MOUSE_POINTER_ID,
 };
 use sabitori_scene::{NodeId, NodeTree};
 use winit::application::ApplicationHandler;
@@ -61,6 +61,12 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
         InputEventKind::PointerCancelled => Delivery::Internal("押下ノードの解除"),
         InputEventKind::PointerLeft => Delivery::Internal("hover の解除とカーソル復帰"),
 
+        // このランタイムは `WindowEvent::MouseWheel` を一切見ていない (管理
+        // スクロールも `on_scroll` も無い)。
+        InputEventKind::Wheel => Delivery::NotProduced(
+            "SabitoriApp はホイールを扱わない (MouseWheel の arm 自体が無い)",
+        ),
+
         InputEventKind::ImeEnabled
         | InputEventKind::ImePreedit
         | InputEventKind::ImeCommit
@@ -102,6 +108,10 @@ struct AppState<A: SabitoriApp> {
     /// Mouse/touch mutex. When `Mouse`, incoming touch events skip the primary
     /// flow (raw events still forward). When `Touch`, mouse press skips.
     primary_input: PrimaryInput,
+    /// `PointerPressed::click_count` の合成。このランタイムはポインタをアプリへ
+    /// 渡さないので値は外から見えないが、`inject_event` 経由の消費者と規則を
+    /// 揃えておく。
+    clicks: ClickCounter,
 }
 
 impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
@@ -229,12 +239,14 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             position: pos,
                             buttons: prev | bit,
                         });
+                        let click_count = self.clicks.press_now(pos, Some(btn), PointerKind::Mouse);
                         self.process_event(InputEvent::PointerPressed {
                             id: MOUSE_POINTER_ID,
                             kind: PointerKind::Mouse,
                             position: pos,
                             button: Some(btn),
                             modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
+                            click_count,
                         });
                     }
                     ElementState::Released => {
@@ -293,12 +305,14 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                             position: pos,
                             buttons: sabitori_input::BUTTON_PRIMARY,
                         });
+                        let click_count = self.clicks.press_now(pos, None, PointerKind::Touch);
                         self.process_event(InputEvent::PointerPressed {
                             id,
                             kind: PointerKind::Touch,
                             position: pos,
                             button: None,
                             modifiers: keymap::modifiers_from_winit(self.winit_modifiers),
+                            click_count,
                         });
                     }
                     TouchPhase::Moved => {
@@ -595,6 +609,9 @@ impl<A: SabitoriApp> AppState<A> {
             // 押下・移動が非 primary (右/中ボタン) の場合もガード付きの腕から
             // 漏れてここに来る。 このランタイムは primary しか見ないので no-op。
             InputEvent::PointerPressed { .. } | InputEvent::PointerReleased { .. } => {}
+            // ホイールはこのランタイムでは発行されない (`input_delivery` 参照)。
+            // `inject_event` で流されても、 管理スクロールが無いので受け先が無い。
+            InputEvent::Wheel { .. } => {}
             InputEvent::ImeEnabled
             | InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }
@@ -631,6 +648,7 @@ pub fn run<A: SabitoriApp + 'static>(app: A) {
         cursor_icon: CursorIcon::Default,
         winit_modifiers: ModifiersState::empty(),
         primary_input: PrimaryInput::None,
+        clicks: ClickCounter::new(),
     };
     event_loop.run_app(&mut state).expect("Event loop failed");
 }
@@ -667,6 +685,7 @@ pub fn run<A: SabitoriApp + 'static>(app: A) {
         cursor_icon: CursorIcon::Default,
         winit_modifiers: ModifiersState::empty(),
         primary_input: PrimaryInput::None,
+        clicks: ClickCounter::new(),
     }));
 
     // Wrapper that delegates to the inner AppState and handles async renderer init
@@ -903,6 +922,9 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
             // `ModifiersChanged` が上のキーボード群にも入らずここにも落ちて、
             // app へ一度も届かなかった (issue #12)。 網羅にしてあれば、 種別を
             // 足した人はここで必ず判断を迫られる。
+            //
+            // ホイールは受け先が無い (管理スクロールも `on_scroll` も無いランタイム)。
+            InputEvent::Wheel { .. } => {}
             InputEvent::ImeEnabled
             | InputEvent::ImePreedit { .. }
             | InputEvent::ImeCommit { .. }

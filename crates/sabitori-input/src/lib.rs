@@ -19,6 +19,28 @@ pub enum MouseButton {
     Middle,
 }
 
+/// ホイール / トラックパッドのジェスチャ位相。winit の `TouchPhase` と同じ 4 値。
+///
+/// トラックパッドは `Started` → `Moved`… → `Ended` で 1 ジェスチャ (慣性は `Ended`
+/// の**後**に `Moved` として続く)。刻みホイールは位相を持たないので常に `Moved`。
+/// ランタイムはこれで「1 ジェスチャの間は届け先を固定する」(macOS の latching)
+/// を行う。アプリ側でも、慣性の終わりや「指が離れた」の検出に使える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+/// 刻みホイール 1 行ぶんを論理ピクセルに直す係数。
+///
+/// winit の `LineDelta` (マウスのホイール 1 ノッチ = 1 行) は、ランタイムがこれを掛けて
+/// `PixelDelta` (トラックパッド) と同じ単位に揃えてから配る。受け手 —
+/// [`InputEvent::Wheel`] / `on_scroll_xy` / 管理スクロール — は単位で場合分けしない。
+/// 本文 1 行 (≈20px) が 1 ノッチで流れる、というテキスト UI の慣習に合わせた値。
+pub const LINE_DELTA_PX: f32 = 20.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Backspace,
@@ -112,6 +134,15 @@ pub enum InputEvent {
         /// 分からないと書けない。`KeyInput` を自前で追って状態を持つ手もあるが、
         /// 値は runtime が既に握っているので載せて配る方が素直。
         modifiers: Modifiers,
+        /// 連続クリックの何回目か (OS の `clickCount` / DOM の `detail` 相当)。
+        /// 単独のクリックは `1`、ダブルクリックの 2 打目は `2`、トリプルは `3`。
+        ///
+        /// winit はこれを配らないので、ランタイムが [`ClickCounter`] で合成する:
+        /// **同じボタン**を、前回から [`MULTI_CLICK_INTERVAL`] 以内に、前回の位置から
+        /// slop 以内で押したら +1、どれか外れたら `1` に戻る。id 付き要素への
+        /// ダブルクリックは `DeclarativeApp::on_double_click` でも受けられるが、
+        /// キャンバスのような id の無い面や 3 連打はここで見る。
+        click_count: u32,
     },
     /// Pointer released (mouse button up, touch end, pen up).
     PointerReleased {
@@ -130,6 +161,32 @@ pub enum InputEvent {
     },
     /// Mouse cursor left the window. Not emitted for touch.
     PointerLeft,
+
+    /// ホイール / トラックパッドのスクロール入力。
+    ///
+    /// `delta_*` は論理ピクセル。行単位で来る刻みホイール (winit `LineDelta`) は
+    /// ランタイムが [`LINE_DELTA_PX`] 倍して揃えるので、受け手は単位で場合分け
+    /// しなくてよい。符号は `on_scroll_xy` と同じ: 正の `delta_y` は上の内容を
+    /// 見せる向き。
+    ///
+    /// **管理スクロール (`.scroll(id)`) より先に届く。** `on_input` が `true` を
+    /// 返すとそのイベントは消費され、管理コンテナも `on_scroll_xy` も動かない。
+    /// Cmd+ホイールでカーソル位置ズーム、のようにアプリが優先で取りたい操作は
+    /// ここで書く。`false` を返せば従来どおり: カーソル下の管理コンテナ →
+    /// その向きに動けなければ外側のコンテナ → 最後に `on_scroll_xy`。
+    Wheel {
+        /// カーソル位置 (論理座標)。ズームの軸や、どのペインの上かの判定に使う。
+        position: Point,
+        delta_x: f32,
+        delta_y: f32,
+        /// `true` ならピクセル精度の入力 (トラックパッド、精密ホイール)。`false` は
+        /// 刻みホイールの行単位を [`LINE_DELTA_PX`] で換算したもの。
+        precise: bool,
+        /// ジェスチャの位相。刻みホイールは常に [`WheelPhase::Moved`]。
+        phase: WheelPhase,
+        /// その瞬間の修飾キー。Cmd+ホイール (ズーム) / Shift+ホイール (横) はこれで見る。
+        modifiers: Modifiers,
+    },
 
     /// IME was activated.
     ImeEnabled,
@@ -189,6 +246,7 @@ pub enum InputEventKind {
     PointerReleased,
     PointerCancelled,
     PointerLeft,
+    Wheel,
     ImeEnabled,
     ImePreedit,
     ImeCommit,
@@ -210,6 +268,7 @@ impl InputEventKind {
         InputEventKind::PointerReleased,
         InputEventKind::PointerCancelled,
         InputEventKind::PointerLeft,
+        InputEventKind::Wheel,
         InputEventKind::ImeEnabled,
         InputEventKind::ImePreedit,
         InputEventKind::ImeCommit,
@@ -230,13 +289,14 @@ impl InputEventKind {
             InputEventKind::PointerReleased => 2,
             InputEventKind::PointerCancelled => 3,
             InputEventKind::PointerLeft => 4,
-            InputEventKind::ImeEnabled => 5,
-            InputEventKind::ImePreedit => 6,
-            InputEventKind::ImeCommit => 7,
-            InputEventKind::KeyInput => 8,
-            InputEventKind::ModifiersChanged => 9,
-            InputEventKind::CharInput => 10,
-            InputEventKind::Paste => 11,
+            InputEventKind::Wheel => 5,
+            InputEventKind::ImeEnabled => 6,
+            InputEventKind::ImePreedit => 7,
+            InputEventKind::ImeCommit => 8,
+            InputEventKind::KeyInput => 9,
+            InputEventKind::ModifiersChanged => 10,
+            InputEventKind::CharInput => 11,
+            InputEventKind::Paste => 12,
         }
     }
 }
@@ -257,6 +317,7 @@ impl InputEvent {
             InputEvent::PointerReleased { .. } => InputEventKind::PointerReleased,
             InputEvent::PointerCancelled { .. } => InputEventKind::PointerCancelled,
             InputEvent::PointerLeft => InputEventKind::PointerLeft,
+            InputEvent::Wheel { .. } => InputEventKind::Wheel,
             InputEvent::ImeEnabled => InputEventKind::ImeEnabled,
             InputEvent::ImePreedit { .. } => InputEventKind::ImePreedit,
             InputEvent::ImeCommit { .. } => InputEventKind::ImeCommit,
@@ -296,6 +357,91 @@ pub enum Delivery {
     Internal(&'static str),
     /// このランタイムでは発行されない。 文字列は理由。
     NotProduced(&'static str),
+}
+
+/// 連続クリックとみなす、前回の押下からの最長間隔。
+///
+/// macOS / Windows の既定 (0.5 秒) に合わせた。短くすると普通の速さのダブルクリックが
+/// 取りこぼされ、「効かない」と見える。長くすると遅い 2 打目が誤って数えられるが、
+/// そちらの方が苦情になりにくい。
+pub const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// マウス / ペンで、前回の押下位置からこれ以上 (論理 px) 離れたら連続とみなさない。
+/// Windows の `SM_CXDOUBLECLK` (4px) と同程度。
+pub const MULTI_CLICK_SLOP: f32 = 5.0;
+/// タッチの同上。指は同じ場所を狙っても 10px 単位でぶれるので、マウスより緩い。
+pub const MULTI_TAP_SLOP: f32 = 24.0;
+
+/// 連続クリックの回数を数える (OS の `clickCount` / DOM の `detail` 相当)。
+///
+/// winit はクリック回数を配らないので、ランタイムが押下のたびにこれへ通して
+/// [`InputEvent::PointerPressed`] の `click_count` に載せる。規則は OS と同じ:
+/// **同じボタン**を、前回から [`MULTI_CLICK_INTERVAL`] 以内に、前回の位置から
+/// slop ([`MULTI_CLICK_SLOP`] / タッチは [`MULTI_TAP_SLOP`]) 以内で押したら +1、
+/// どれか 1 つでも外れたら `1` に戻る。
+///
+/// 自前の runtime (埋め込みホスト) も同じ規則で数えられるよう公開している。
+#[derive(Debug, Default)]
+pub struct ClickCounter {
+    last: Option<LastPress>,
+}
+
+#[derive(Debug)]
+struct LastPress {
+    at: web_time::Instant,
+    position: Point,
+    button: Option<MouseButton>,
+    count: u32,
+}
+
+impl ClickCounter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 押下を 1 回記録して、その押下の連続回数を返す。
+    ///
+    /// `now` を外から渡すのはテストのため。実行時は [`Self::press_now`] でよい。
+    pub fn press(
+        &mut self,
+        now: web_time::Instant,
+        position: Point,
+        button: Option<MouseButton>,
+        kind: PointerKind,
+    ) -> u32 {
+        let slop = match kind {
+            PointerKind::Touch => MULTI_TAP_SLOP,
+            PointerKind::Mouse | PointerKind::Pen => MULTI_CLICK_SLOP,
+        };
+        let count = match self.last {
+            Some(ref prev)
+                if prev.button == button
+                    && now.saturating_duration_since(prev.at) <= MULTI_CLICK_INTERVAL
+                    && within(prev.position, position, slop) =>
+            {
+                prev.count + 1
+            }
+            _ => 1,
+        };
+        self.last = Some(LastPress { at: now, position, button, count });
+        count
+    }
+
+    /// [`Self::press`] の `now = Instant::now()` 版。
+    pub fn press_now(&mut self, position: Point, button: Option<MouseButton>, kind: PointerKind) -> u32 {
+        self.press(web_time::Instant::now(), position, button, kind)
+    }
+
+    /// 数え直す。フォーカスを失った、モーダルが開いた、など「前のクリックと
+    /// 繋げたくない」境界で呼ぶ。
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+fn within(a: Point, b: Point, slop: f32) -> bool {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy <= slop * slop
 }
 
 /// Per-node interaction state.
@@ -396,7 +542,7 @@ mod kind_tests {
                 InputEventKind::PointerMoved,
             ),
             (
-                InputEvent::PointerPressed { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at, button: Some(MouseButton::Left), modifiers: m },
+                InputEvent::PointerPressed { id: MOUSE_POINTER_ID, kind: PointerKind::Mouse, position: at, button: Some(MouseButton::Left), modifiers: m, click_count: 1 },
                 InputEventKind::PointerPressed,
             ),
             (
@@ -408,6 +554,10 @@ mod kind_tests {
                 InputEventKind::PointerCancelled,
             ),
             (InputEvent::PointerLeft, InputEventKind::PointerLeft),
+            (
+                InputEvent::Wheel { position: at, delta_x: 0.0, delta_y: -20.0, precise: false, phase: WheelPhase::Moved, modifiers: m },
+                InputEventKind::Wheel,
+            ),
             (InputEvent::ImeEnabled, InputEventKind::ImeEnabled),
             (
                 InputEvent::ImePreedit { text: "かな".into(), cursor: None },
@@ -438,5 +588,94 @@ mod kind_tests {
                 "{k:?} のケースがこのテストに無い"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod click_counter_tests {
+    use super::*;
+    use std::time::Duration;
+    use web_time::Instant;
+
+    fn at(x: f32, y: f32) -> Point {
+        Point::new(x, y)
+    }
+    const LEFT: Option<MouseButton> = Some(MouseButton::Left);
+
+    /// 同じ場所を続けて押せば 1, 2, 3 と増える。
+    #[test]
+    fn rapid_presses_at_one_spot_count_up() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        assert_eq!(c.press(t0, at(10.0, 10.0), LEFT, PointerKind::Mouse), 1);
+        assert_eq!(c.press(t0 + Duration::from_millis(100), at(11.0, 10.0), LEFT, PointerKind::Mouse), 2);
+        assert_eq!(c.press(t0 + Duration::from_millis(200), at(10.0, 12.0), LEFT, PointerKind::Mouse), 3);
+    }
+
+    /// 間隔は**前回の押下から**測る。3 打目が 1 打目から 0.5 秒を超えていても、
+    /// 2 打目から 0.5 秒以内なら続きとして数える (OS の規則)。
+    #[test]
+    fn interval_is_measured_from_the_previous_press_not_the_first() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        c.press(t0 + Duration::from_millis(400), at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        assert_eq!(c.press(t0 + Duration::from_millis(800), at(0.0, 0.0), LEFT, PointerKind::Mouse), 3);
+    }
+
+    /// 間隔を超えたら 1 に戻る。境界ちょうどは含む。
+    #[test]
+    fn a_slow_second_press_starts_over() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        assert_eq!(c.press(t0 + MULTI_CLICK_INTERVAL, at(0.0, 0.0), LEFT, PointerKind::Mouse), 2, "境界は含む");
+        let t2 = t0 + MULTI_CLICK_INTERVAL;
+        assert_eq!(
+            c.press(t2 + MULTI_CLICK_INTERVAL + Duration::from_millis(1), at(0.0, 0.0), LEFT, PointerKind::Mouse),
+            1
+        );
+    }
+
+    /// 離れた場所を押したら 1 に戻る。マウスは 5px、タッチは 24px まで許す。
+    #[test]
+    fn moving_away_starts_over_with_a_looser_slop_for_touch() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        assert_eq!(c.press(t0, at(6.0, 0.0), LEFT, PointerKind::Mouse), 1, "マウスは 5px を超えたら別のクリック");
+
+        let mut t = ClickCounter::new();
+        t.press(t0, at(0.0, 0.0), None, PointerKind::Touch);
+        assert_eq!(t.press(t0, at(20.0, 0.0), None, PointerKind::Touch), 2, "タッチは 24px まで同じ場所");
+        assert_eq!(t.press(t0, at(50.0, 0.0), None, PointerKind::Touch), 1);
+    }
+
+    /// ボタンが変わったら 1 に戻る。左→右→左 は 3 連打ではない。
+    #[test]
+    fn a_different_button_starts_over() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        assert_eq!(c.press(t0, at(0.0, 0.0), Some(MouseButton::Right), PointerKind::Mouse), 1);
+        assert_eq!(c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse), 1);
+    }
+
+    /// `reset` の後は必ず 1 から。
+    #[test]
+    fn reset_forgets_the_previous_press() {
+        let mut c = ClickCounter::new();
+        let t0 = Instant::now();
+        c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse);
+        c.reset();
+        assert_eq!(c.press(t0, at(0.0, 0.0), LEFT, PointerKind::Mouse), 1);
+    }
+
+    /// `press_now` は実時計で数える。連続して呼べば当然 2 になる。
+    #[test]
+    fn press_now_counts_with_the_wall_clock() {
+        let mut c = ClickCounter::new();
+        assert_eq!(c.press_now(at(0.0, 0.0), LEFT, PointerKind::Mouse), 1);
+        assert_eq!(c.press_now(at(0.0, 0.0), LEFT, PointerKind::Mouse), 2);
     }
 }
