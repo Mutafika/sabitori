@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-07
+
 **マウスが OS と同じ作法で届く版。ダブルクリック・右ドラッグ・Cmd+ホイールが書ける。**
 
 マウス入力の監査で見つかった 4 つの穴を、runtime 側でまとめて塞いだ
@@ -2874,7 +2876,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/Mutafika/sabitori/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/Mutafika/sabitori/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Mutafika/sabitori/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Mutafika/sabitori/compare/v0.9.0...v0.10.0
