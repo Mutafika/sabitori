@@ -173,8 +173,28 @@ pub trait DeclarativeApp: 'static {
     /// Called when an element with an `.id()` is clicked (left button).
     fn on_click(&mut self, _id: &str) {}
 
+    /// Called on the second (and every even-numbered) rapid click on the same
+    /// element, right after that click's [`Self::on_click`]. `x`/`y` are logical
+    /// coordinates. `id` is `""` for a double-click on empty space (a canvas).
+    ///
+    /// 「連続」の規則は OS と同じ ([`sabitori_input::ClickCounter`]): 同じボタン、
+    /// 前回から 0.5 秒以内、5px 以内 (タッチは 24px)。`on_click` も毎回鳴るので、
+    /// 「1 打目で選択・2 打目で開く」はそのまま書ける (ブラウザの `click` /
+    /// `dblclick` と同じ順序)。3 連打や、id の無い面での回数そのものは
+    /// `InputEvent::PointerPressed` の `click_count` で見る。
+    ///
+    /// 以前はこの仕組みが無く、`examples/filer.rs` を含む 7 箇所が `Instant` を
+    /// 持って自前で数えていた ([#58](https://github.com/Mutafika/sabitori/issues/58))。
+    fn on_double_click(&mut self, _id: &str, _x: f32, _y: f32) {}
+
     /// Called when an element with an `.id()` is right-clicked.
     /// `x`/`y` are logical coordinates for positioning a context menu.
+    ///
+    /// 右ボタンの押下・解放は先に `InputEvent::PointerPressed` /
+    /// `PointerReleased` (`button: Some(MouseButton::Right)`) として
+    /// [`Self::on_input`] へ届く。そこで `true` を返すと**これは鳴らない** —
+    /// 右ドラッグ (オービット、パン) を取ったアプリの上でコンテキストメニューが
+    /// 開くのを止める合図 (#58)。
     fn on_right_click(&mut self, _id: &str, _x: f32, _y: f32) {}
 
     /// Called when the mouse moves (logical coordinates).
@@ -244,6 +264,15 @@ pub trait DeclarativeApp: 'static {
     /// pixels. Fires alongside [`Self::on_scroll`] whenever no managed scroll
     /// container consumes the event. Implement this instead of `on_scroll`
     /// when horizontal deltas matter (e.g. 2D canvas panning).
+    ///
+    /// ホイール 1 イベントの配り順 (#58):
+    ///
+    /// 1. `InputEvent::Wheel` として [`Self::on_input`] へ。位置・修飾キー・位相が
+    ///    載っているので、Cmd+ホイールのカーソル位置ズームはここで書く。`true` を
+    ///    返せばそこで終わり (管理スクロールも動かない)。
+    /// 2. カーソル下の管理コンテナ (`.scroll(id)`) のうち、**その向きに動けるもの**。
+    ///    内側が端に居れば外側へ。トラックパッドは 1 ジェスチャの間だけ届け先を固定。
+    /// 3. どれも動けなければここ (`on_scroll` / `on_scroll_xy`)。
     fn on_scroll_xy(&mut self, _delta_x: f32, _delta_y: f32) {}
 
     /// Called when a two-finger pinch gesture begins. `center_*` is the
@@ -638,6 +667,10 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
             Delivery::NotProduced("カーソルの離脱は DeclarativeApp::on_cursor_left で伝える")
         }
 
+        // ホイールは**管理スクロールより先に** `on_input` へ届く。`true` で消費、
+        // `false` なら管理コンテナ → `on_scroll_xy` へ落ちる (#58)。
+        InputEventKind::Wheel => Delivery::ToApp,
+
         // IME / キーボードはフォーカス中の要素へ先に渡し、 消費されなければ
         // `on_input` に落とす。
         InputEventKind::ImeEnabled
@@ -742,6 +775,13 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
     /// タッチ由来の [`PinchGesture`] とは出どころが別なので分けて持つ。
     trackpad_pinch: Option<TrackpadPinch>,
+    /// `PointerPressed::click_count` の合成 (マウス・タッチ共通)。
+    clicks: sabitori_input::ClickCounter,
+    /// 直近に `on_click` を配った id (空白は `""`)。`on_double_click` は
+    /// 「偶数回目 **かつ** 前回と同じ対象」で鳴らす。
+    last_click_id: Option<String>,
+    /// トラックパッドの 1 ジェスチャの間、ホイールの届け先を固定する。
+    wheel_latch: crate::scroll_sync::WheelLatch,
     /// Managed scroll states, keyed by the id given to `.scroll(id)`.
     pub(crate) scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
     /// Managed tooltip hover-delay state.
@@ -1041,23 +1081,20 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 button: winit::event::MouseButton::Right,
                 ..
             } => {
-                if let Some(ref build) = self.last_build {
-                    let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-                    let mut found = false;
-                    for region in &build.hit_regions {
-                        if region.clickable && region.rect.contains(pt) {
-                            if let Some(ref id) = region.id {
-                                self.app.on_right_click(id, self.mouse_x, self.mouse_y);
-                                found = true;
-                            }
-                            break;
-                        }
-                    }
-                    if !found {
-                        // Right-click on empty area
-                        self.app.on_right_click("", self.mouse_x, self.mouse_y);
-                    }
+                if self.primary_input == PrimaryInput::Touch {
+                    return;
                 }
+                self.press_secondary();
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                if self.primary_input == PrimaryInput::Touch {
+                    return;
+                }
+                self.release_secondary();
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
@@ -1086,6 +1123,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         position,
                         button: Some(InputMouseButton::Middle),
                         modifiers: self.modifiers,
+                        click_count: self.clicks.press_now(
+                            position,
+                            Some(InputMouseButton::Middle),
+                            PointerKind::Mouse,
+                        ),
                     },
                     winit::event::ElementState::Released => InputEvent::PointerReleased {
                         id: MOUSE_POINTER_ID,
@@ -1097,35 +1139,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 };
                 self.app.on_input(&ev);
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 if self.primary_input == PrimaryInput::Touch {
                     return;
                 }
-                let (delta_x, delta_y) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.x as f32, pos.y as f32)
-                    }
-                };
-                // Route scroll to managed scroll container under cursor
-                let handled = self
-                    .last_build
-                    .as_ref()
-                    .map(|build| {
-                        crate::scroll_sync::route_wheel(
-                            build,
-                            &mut self.scroll_states,
-                            self.mouse_x,
-                            self.mouse_y,
-                            delta_x,
-                            delta_y,
-                        )
-                    })
-                    .unwrap_or(false);
-                if !handled {
-                    self.app.on_scroll(delta_y);
-                    self.app.on_scroll_xy(delta_x, delta_y);
-                }
+                let (delta_x, delta_y, precise) = crate::input_router::wheel_delta_px(delta);
+                self.wheel(delta_x, delta_y, precise, crate::input_router::wheel_phase(phase));
             }
             // トラックパッドのピンチ (macOS / iOS)。 タッチパネルと違って
             // `WindowEvent::Touch` は一切来ないので、 ここを拾わないと
@@ -1183,6 +1202,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let y = touch.location.y as f32 / s;
                 let pos = sabitori_core::Point::new(x, y);
                 let id = touch.id.saturating_add(1);
+                // 連続タップの回数。押下で数え、タップ (解放) の時に
+                // `on_double_click` の判定へ使うので `TouchDrag` にも載せる。
+                let click_count = if matches!(touch.phase, winit::event::TouchPhase::Started) {
+                    self.clicks.press_now(pos, None, PointerKind::Touch)
+                } else {
+                    1
+                };
 
                 // Always update active_touches tracking and forward raw events.
                 match touch.phase {
@@ -1194,6 +1220,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             position: pos,
                             button: None,
                             modifiers: self.modifiers,
+                            click_count,
                         });
                         self.pressed_id = self.hit_id_at(x, y);
                     }
@@ -1303,6 +1330,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                                 click_target,
                                 scroll_target,
                                 moved_beyond_slop: false,
+                                click_count,
                             });
                         } else if count == 2 && self.pinch.is_none() {
                             // Second finger — promote to pinch. Cancel the
@@ -1443,9 +1471,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                                     }
                                 }
                                 if !is_cancel && !td.moved_beyond_slop {
-                                    if let Some(cid) = td.click_target {
-                                        self.app.on_click(&cid);
-                                    }
+                                    self.dispatch_click(
+                                        td.click_target.as_deref(),
+                                        td.click_count,
+                                        x,
+                                        y,
+                                    );
                                 }
                             }
                             if is_cancel {
@@ -2253,6 +2284,9 @@ impl<A: DeclarativeApp> AppState<A> {
             touch_drag: None,
             pinch: None,
             trackpad_pinch: None,
+            clicks: sabitori_input::ClickCounter::new(),
+            last_click_id: None,
+            wheel_latch: crate::scroll_sync::WheelLatch::new(),
             scroll_states: std::collections::HashMap::new(),
             modifiers: Modifiers::default(),
             tooltip_state: sabitori_widgets::TooltipState::new(),
@@ -2727,15 +2761,133 @@ impl<A: DeclarativeApp> AppState<A> {
             .is_some_and(|id| self.managed_text_field(id).is_some())
     }
 
+    /// 右ボタン押下。生イベントを `on_input` へ (押下回数つき)、消費されなければ
+    /// 従来どおり `on_right_click(id, x, y)` (空白なら `""`)。
+    ///
+    /// 以前は `on_right_click` に変換するだけで `PointerPressed { button: Right }`
+    /// を出しておらず、解放に至っては arm すら無かった (#58)。中ボタンは届くのに
+    /// 右だけ届かないので、右ドラッグ (CAD のオービット、右ボタンパン) が
+    /// 書けなかった。`on_input` が `true` を返したら `on_right_click` は鳴らさない
+    /// — 右ドラッグを取ったアプリの上でコンテキストメニューが開くのを止める合図。
+    pub(crate) fn press_secondary(&mut self) {
+        let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+        let click_count =
+            self.clicks.press_now(position, Some(InputMouseButton::Right), PointerKind::Mouse);
+        let consumed = self.app.on_input(&InputEvent::PointerPressed {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position,
+            button: Some(InputMouseButton::Right),
+            modifiers: self.modifiers,
+            click_count,
+        });
+        if consumed {
+            return;
+        }
+        let Some(build) = self.last_build.as_ref() else { return };
+        // 空白なら `""`。`clickable` は id 付き要素にしか立たないので、当たった
+        // 領域に id が無いことは無いが、無ければ空白扱いに倒す。
+        let id = build
+            .hit_regions
+            .iter()
+            .find(|r| r.clickable && r.rect.contains(position))
+            .and_then(|r| r.id.clone())
+            .unwrap_or_default();
+        self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
+    }
+
+    /// 右ボタン解放。`on_input` へ転送するだけ (右クリックの意味づけは押下側)。
+    pub(crate) fn release_secondary(&mut self) {
+        self.app.on_input(&InputEvent::PointerReleased {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+            button: Some(InputMouseButton::Right),
+            modifiers: self.modifiers,
+        });
+    }
+
+    /// ホイール 1 イベントの配り方 (#58)。順に:
+    ///
+    /// 1. `InputEvent::Wheel` を `on_input` へ。`true` ならそこで終わり。
+    /// 2. カーソル下で**その向きに動ける**管理コンテナ。内側が端なら外側へ。
+    ///    トラックパッドは 1 ジェスチャの間だけ届け先を固定 ([`WheelLatch`])。
+    /// 3. どれも動けなければ `on_scroll` / `on_scroll_xy`。
+    ///
+    /// [`WheelLatch`]: crate::scroll_sync::WheelLatch
+    pub(crate) fn wheel(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        precise: bool,
+        phase: sabitori_input::WheelPhase,
+    ) {
+        let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+        let consumed = self.app.on_input(&InputEvent::Wheel {
+            position,
+            delta_x,
+            delta_y,
+            precise,
+            phase,
+            modifiers: self.modifiers,
+        });
+        if consumed {
+            return;
+        }
+        let handled = match self.last_build.as_ref() {
+            Some(build) => self.wheel_latch.route(
+                build,
+                &mut self.scroll_states,
+                self.mouse_x,
+                self.mouse_y,
+                delta_x,
+                delta_y,
+                precise,
+                phase,
+            ),
+            None => false,
+        };
+        if !handled {
+            self.app.on_scroll(delta_y);
+            self.app.on_scroll_xy(delta_x, delta_y);
+        }
+    }
+
+    /// クリック 1 回の配り先。`Element::click` の処理 → `on_click(id)` →
+    /// 偶数回目で前回と同じ対象なら `on_double_click(id, x, y)`。対象が無い
+    /// (空白) ときは `on_click` は鳴らさず、`""` でダブルクリックだけ配る
+    /// (`on_right_click` の空白の扱いと同じ)。マウスは押下、タッチはタップ確定
+    /// (解放) から呼ばれる。
+    fn dispatch_click(&mut self, target: Option<&str>, click_count: u32, x: f32, y: f32) {
+        if let Some(id) = target {
+            // `Element::click` で登録された処理が先。 その後で従来の
+            // `on_click(id)` も呼ぶ (併用しても壊れない)。
+            self.run_action(id);
+            self.app.on_click(id);
+        }
+        let id = target.unwrap_or("");
+        let same_target = self.last_click_id.as_deref() == Some(id);
+        // 偶数回目 (2, 4, …)。`is_multiple_of` は MSRV 1.85 に無い。
+        let even = click_count & 1 == 0;
+        if even && same_target {
+            self.app.on_double_click(id, x, y);
+        }
+        self.last_click_id = Some(id.to_owned());
+    }
+
     pub(crate) fn press_primary(&mut self) {
+        let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+        let click_count =
+            self.clicks.press_now(position, Some(InputMouseButton::Left), PointerKind::Mouse);
         // マウス押下もタッチ同様 InputEvent::Pointer* としてアプリへ転送する
         // （キャンバスのドラッグパン等が押下状態を観測できるように）。#62
         self.app.on_input(&InputEvent::PointerPressed {
             id: MOUSE_POINTER_ID,
             kind: PointerKind::Mouse,
-            position: sabitori_core::Point::new(self.mouse_x, self.mouse_y),
+            position,
             button: Some(InputMouseButton::Left),
             modifiers: self.modifiers,
+            click_count,
         });
         // 押下中の要素を覚える。 次のフレームの `apply_state_styles` が
         // ここから `active_style` を畳む (#3)。 hover と同じ引き方だが、
@@ -2785,12 +2937,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     break;
                 }
             }
-            // `Element::click` で登録された処理が先。 その後で従来の
-            // `on_click(id)` も呼ぶ (併用しても壊れない)。
-            if let Some(id) = click_target {
-                self.run_action(&id);
-                self.app.on_click(&id);
-            }
+            self.dispatch_click(click_target.as_deref(), click_count, self.mouse_x, self.mouse_y);
             // Blur if clicked on a non-focusable region (or empty area)
             if !focus_set {
                 self.focused_id = None;
@@ -4582,14 +4729,22 @@ mod frame_tests {
 
         let mut state = AppState::new(RecordingApp::default());
 
-        // 叩ける入口: キー入力 (文字つき) と修飾キーの変化。
+        // 叩ける入口: キー入力 (文字つき)、修飾キーの変化、主ボタンの押下・解放、
+        // ホイール。ポインタとホイールは winit を通さず runtime の入口を直接叩く
+        // (Harness と同じ経路)。
         state.handle_key_input(Key::A, true, vec!['a']);
         state.set_modifiers(Modifiers { shift: true, ..Default::default() });
+        state.press_primary();
+        state.release_primary();
+        state.wheel(0.0, -20.0, true, sabitori_input::WheelPhase::Moved);
 
         let driven = [
             InputEventKind::KeyInput,
             InputEventKind::CharInput,
             InputEventKind::ModifiersChanged,
+            InputEventKind::PointerPressed,
+            InputEventKind::PointerReleased,
+            InputEventKind::Wheel,
         ];
         for kind in driven {
             assert_eq!(

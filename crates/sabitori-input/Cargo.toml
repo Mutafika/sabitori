@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 sabitori-core.workspace = true
+# ClickCounter の時刻。wasm でも動く Instant が要る (std::time::Instant は wasm で panic)。
+web-time.workspace = true

@@ -13,8 +13,9 @@
 //! アサーションが薄いのは意図的で、 **このファイルが通ること自体がテスト**。
 
 use sabitori::{
-    ActivePointer, InputEvent, InteractionState, Key, Modifiers, MouseButton, Point, PointerId,
-    PointerKind, PointerState, BUTTON_PRIMARY, MOUSE_POINTER_ID,
+    ActivePointer, ClickCounter, InputEvent, InteractionState, Key, Modifiers, MouseButton, Point,
+    PointerId, PointerKind, PointerState, WheelPhase, BUTTON_PRIMARY, LINE_DELTA_PX,
+    MOUSE_POINTER_ID,
 };
 
 /// ポインタ系イベントを 4 種とも組む。 `kind` の型が名前で書けないと、 ここが落ちる。
@@ -34,6 +35,7 @@ fn pointer_events_are_constructible_through_the_facade() {
             position: at,
             button: Some(MouseButton::Left),
             modifiers: Modifiers::default(),
+            click_count: 1,
         },
         InputEvent::PointerReleased {
             id: 7 as PointerId,
@@ -47,6 +49,30 @@ fn pointer_events_are_constructible_through_the_facade() {
     assert_eq!(events.len(), 4);
 }
 
+/// ホイールのイベントと、 自前 runtime が回数を数えるための `ClickCounter` が
+/// ファサード越しに組める・使えること (#58)。 `WheelPhase` / `LINE_DELTA_PX` が
+/// 漏れると `Wheel` は名前で書けない。
+#[test]
+fn wheel_event_and_click_counter_are_usable_through_the_facade() {
+    let wheel = InputEvent::Wheel {
+        position: Point::new(10.0, 20.0),
+        delta_x: 0.0,
+        delta_y: -LINE_DELTA_PX,
+        precise: false,
+        phase: WheelPhase::Moved,
+        modifiers: Modifiers { meta: true, ..Default::default() },
+    };
+    assert!(matches!(
+        wheel,
+        InputEvent::Wheel { modifiers: Modifiers { meta: true, .. }, precise: false, .. }
+    ));
+
+    let mut clicks = ClickCounter::new();
+    let at = Point::new(0.0, 0.0);
+    assert_eq!(clicks.press_now(at, Some(MouseButton::Left), PointerKind::Mouse), 1);
+    assert_eq!(clicks.press_now(at, Some(MouseButton::Left), PointerKind::Mouse), 2);
+}
+
 /// ⇧+クリック（選択に足す／外す）が下流で書けること。押下**時点**の修飾キーが
 /// イベントに載っていないと、アプリは `KeyInput` を自前で追って押下状態を保持する
 /// しかなく、それは解放イベントが来て初めて成立する。
@@ -58,6 +84,7 @@ fn pointer_press_carries_the_modifiers_held_at_that_moment() {
         position: Point::new(10.0, 20.0),
         button: Some(MouseButton::Left),
         modifiers: Modifiers { shift: true, ..Default::default() },
+        click_count: 1,
     };
     let shift_click = matches!(
         ev,

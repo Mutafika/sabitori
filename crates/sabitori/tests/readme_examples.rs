@@ -161,7 +161,64 @@ fn scroll_intents(&mut self) -> Vec<(String, f32)> {
     }
 }
 
-// ===== README [6] テキスト入力 =====
+// ===== README [6] ホイールは on_input へ先に届く (⌘+ホイールでズーム) =====
+mod wheel_zoom {
+    use super::*;
+
+    #[derive(Default)]
+    struct App {
+        zooms: Vec<(Point, f32)>,
+    }
+
+    impl App {
+        fn zoom_at(&mut self, at: Point, dy: f32) {
+            self.zooms.push((at, dy));
+        }
+    }
+
+    impl DeclarativeApp for App {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            // ズームしたい面が管理スクロールの中に居ても、 ⌘+ホイールは先に
+            // アプリへ来る (= リストは動かない)。
+            div().w(Px(400.0)).h(Px(300.0)).flex_col().child(
+                div().scroll("list").w_full().h(Px(200.0)).flex_col().children(
+                    (0..50).map(|_| div().w_full().h(Px(40.0))).collect::<Vec<_>>(),
+                ),
+            )
+        }
+
+fn on_input(&mut self, ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::Wheel { position, delta_y, modifiers, .. } if modifiers.meta => {
+            self.zoom_at(*position, *delta_y);
+            true // consumed: nothing scrolls
+        }
+        _ => false,
+    }
+}
+    }
+
+    /// ⌘+ホイールはズームへ (リストは動かない)、 素のホイールはリストへ
+    /// (ズームは呼ばれない)。 README の断片がそのまま両方を満たすこと。
+    #[test]
+    fn cmd_wheel_zooms_instead_of_scrolling() {
+        let mut h = Harness::new(App::default(), 400.0, 300.0);
+        h.frame();
+        h.set_modifiers(Modifiers { meta: true, ..Default::default() });
+        h.wheel_at(100.0, 100.0, 0.0, -60.0);
+        h.settle();
+        assert_eq!(h.app().zooms.len(), 1);
+        assert_eq!(h.scroll_y("list"), Some(0.0), "消費したのにリストが動いた");
+
+        h.set_modifiers(Modifiers::default());
+        h.wheel_at(100.0, 100.0, 0.0, -60.0);
+        h.settle();
+        assert_eq!(h.app().zooms.len(), 1, "素のホイールでズームしてはいけない");
+        assert!(h.scroll_y("list").unwrap() > 0.0, "素のホイールはリストへ");
+    }
+}
+
+// ===== README [7] テキスト入力 =====
 mod text_field {
     use super::*;
 

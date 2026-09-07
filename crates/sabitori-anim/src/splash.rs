@@ -152,7 +152,7 @@ impl SplashPreset {
                 // Each char starts from a pseudo-random offset
                 let seed = (fi * 7.31 + 2.71).sin();
                 let sx = seed * 150.0 * (1.0 - eased);
-                let sy = (seed * 3.14).cos() * 100.0 * (1.0 - eased);
+                let sy = (seed * std::f32::consts::PI).cos() * 100.0 * (1.0 - eased);
                 (sx, sy, eased)
             }
             Self::Ripple => {

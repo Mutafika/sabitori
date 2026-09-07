@@ -5,9 +5,10 @@ pub use sabitori_gpu::{GpuRenderer, ImageInstance, ImageRenderer, OrbitCamera, R
 // 構築できなくなる (実際 PointerKind の欠落で下流のビルドが落ちた)。 項目を足したら
 // ここにも足すこと — tests/facade.rs がコンパイル時に見張っている。
 pub use sabitori_input::{
-    ActivePointer, Delivery, InputEvent, InputEventKind, InteractionState, Key, Modifiers,
-    MouseButton, PointerId, PointerKind, PointerState, BUTTON_MIDDLE, BUTTON_PRIMARY,
-    BUTTON_SECONDARY, MOUSE_POINTER_ID,
+    ActivePointer, ClickCounter, Delivery, InputEvent, InputEventKind, InteractionState, Key,
+    Modifiers, MouseButton, PointerId, PointerKind, PointerState, WheelPhase, BUTTON_MIDDLE,
+    BUTTON_PRIMARY, BUTTON_SECONDARY, LINE_DELTA_PX, MOUSE_POINTER_ID, MULTI_CLICK_INTERVAL,
+    MULTI_CLICK_SLOP, MULTI_TAP_SLOP,
 };
 pub use sabitori_layout::{LayoutEngine, LayoutNodeId, LayoutResult};
 pub use sabitori_anim::{

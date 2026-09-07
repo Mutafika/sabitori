@@ -22,6 +22,36 @@ pub(crate) struct TouchDrag {
     pub scroll_target: Option<String>,
     /// Once the finger crosses [`TOUCH_SLOP`] this is set; no tap will fire on release.
     pub moved_beyond_slop: bool,
+    /// この指の押下が連続タップの何回目か ([`sabitori_input::ClickCounter`])。
+    /// タップは解放で確定するので、押下時に数えた値をここで運んで
+    /// `on_double_click` の判定に使う。
+    pub click_count: u32,
+}
+
+/// winit のホイール delta を、配る単位 (論理 px) と精度フラグに直す。
+///
+/// `LineDelta` (刻みホイール) は [`sabitori_input::LINE_DELTA_PX`] 倍、`PixelDelta`
+/// (トラックパッド) はそのまま。2 ランタイムが別々に `* 20.0` を書いていたのを
+/// 1 箇所にした。戻り値は `(delta_x, delta_y, precise)`。
+pub(crate) fn wheel_delta_px(delta: winit::event::MouseScrollDelta) -> (f32, f32, bool) {
+    match delta {
+        winit::event::MouseScrollDelta::LineDelta(x, y) => {
+            let k = sabitori_input::LINE_DELTA_PX;
+            (x * k, y * k, false)
+        }
+        winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32, true),
+    }
+}
+
+/// winit の `TouchPhase` (ホイールにも付いてくる) を [`sabitori_input::WheelPhase`] へ。
+pub(crate) fn wheel_phase(phase: winit::event::TouchPhase) -> sabitori_input::WheelPhase {
+    use sabitori_input::WheelPhase;
+    match phase {
+        winit::event::TouchPhase::Started => WheelPhase::Started,
+        winit::event::TouchPhase::Moved => WheelPhase::Moved,
+        winit::event::TouchPhase::Ended => WheelPhase::Ended,
+        winit::event::TouchPhase::Cancelled => WheelPhase::Cancelled,
+    }
 }
 
 /// Two-finger pinch gesture state.

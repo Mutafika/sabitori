@@ -99,14 +99,32 @@ impl ScrollView {
     pub fn on_scroll_xy(&mut self, delta_x: f32, delta_y: f32) {
         let max_x = self.max_scroll_x();
         let max_y = self.max_scroll_y();
-        // Horizontally-dominant containers (carousels, timelines) have little or
-        // no vertical range (content ~= viewport height), so a vertical scroll
-        // gesture would be lost. A mouse wheel sends delta_x == 0; a TRACKPAD
-        // vertical swipe sends a large delta_y AND a small non-zero delta_x, so a
-        // `delta_x == 0` gate misses it and the strip barely moves. Instead, when
-        // horizontal scroll room dominates (>= 2x the vertical), route whichever
-        // input axis is larger to the x-axis. Standard carousel UX.
-        let (delta_x, delta_y) = if max_x > 0.0 && max_x >= max_y * 2.0 {
+        let (delta_x, delta_y) = self.redirect_wheel_axes(delta_x, delta_y);
+        if delta_x != 0.0 {
+            let new_x = (self.scroll_x.target() - delta_x).clamp(0.0, max_x);
+            self.scroll_x.set_target(new_x);
+        }
+        if delta_y != 0.0 {
+            let new_y = (self.scroll_y.target() - delta_y).clamp(0.0, max_y);
+            self.scroll_y.set_target(new_y);
+        }
+    }
+
+    /// Horizontally-dominant containers (carousels, timelines) have little or
+    /// no vertical range (content ~= viewport height), so a vertical scroll
+    /// gesture would be lost. A mouse wheel sends delta_x == 0; a TRACKPAD
+    /// vertical swipe sends a large delta_y AND a small non-zero delta_x, so a
+    /// `delta_x == 0` gate misses it and the strip barely moves. Instead, when
+    /// horizontal scroll room dominates (>= 2x the vertical), route whichever
+    /// input axis is larger to the x-axis. Standard carousel UX.
+    ///
+    /// [`Self::on_scroll_xy`] (実際に動かす) と [`Self::can_consume_wheel`]
+    /// (動けるかを先に聞く) が**同じ付け替え**を通る。片方だけ変えると、
+    /// 「動けると答えたのに動かない」か、その逆が起きる。
+    fn redirect_wheel_axes(&self, delta_x: f32, delta_y: f32) -> (f32, f32) {
+        let max_x = self.max_scroll_x();
+        let max_y = self.max_scroll_y();
+        if max_x > 0.0 && max_x >= max_y * 2.0 {
             if delta_x.abs() >= delta_y.abs() {
                 (delta_x, 0.0) // real horizontal input — pass through 1:1
             } else {
@@ -118,14 +136,48 @@ impl ScrollView {
             }
         } else {
             (delta_x, delta_y)
-        };
-        if delta_x != 0.0 {
-            let new_x = (self.scroll_x.target() - delta_x).clamp(0.0, max_x);
-            self.scroll_x.set_target(new_x);
         }
-        if delta_y != 0.0 {
-            let new_y = (self.scroll_y.target() - delta_y).clamp(0.0, max_y);
-            self.scroll_y.set_target(new_y);
+    }
+
+    /// `delta_x` の向きへまだ動けるか。符号は [`Self::on_scroll_xy`] と同じ
+    /// (負 = 右の内容を見せる = オフセットが増える)。0 なら `false`。
+    ///
+    /// ばねの**目標**で判定する。値 (表示位置) で見ると、ばねが追いついていない
+    /// 間だけ「まだ動ける」と答えて、端で数ノッチ余計に消費する。
+    pub fn can_scroll_x(&self, delta_x: f32) -> bool {
+        Self::has_room(self.scroll_x.target(), self.max_scroll_x(), delta_x)
+    }
+
+    /// [`Self::can_scroll_x`] の縦版。
+    pub fn can_scroll_y(&self, delta_y: f32) -> bool {
+        Self::has_room(self.scroll_y.target(), self.max_scroll_y(), delta_y)
+    }
+
+    fn has_room(target: f32, max: f32, delta: f32) -> bool {
+        // 0.5px 未満の残りは「端」とみなす。sub-pixel の余りで 1 ノッチ食うと、
+        // 外側へ渡るべきホイールが内側で消える。
+        const EPS: f32 = 0.5;
+        if delta < 0.0 {
+            target < max - EPS
+        } else if delta > 0.0 {
+            target > EPS
+        } else {
+            false
+        }
+    }
+
+    /// このホイール入力を [`Self::on_scroll_xy`] に渡したら、実際に動くか。
+    ///
+    /// ランタイムは**動けるコンテナだけ**にホイールを消費させ、端に居るコンテナは
+    /// 素通しして外側 (最終的にアプリ) へ渡す。判定は主軸 (絶対値の大きい方) で
+    /// 行う: 縦リストの上で斜めに払ったとき、小さな横成分だけを理由に消費して
+    /// しまうと、外側のページが二度と動かない。
+    pub fn can_consume_wheel(&self, delta_x: f32, delta_y: f32) -> bool {
+        let (dx, dy) = self.redirect_wheel_axes(delta_x, delta_y);
+        if dx.abs() >= dy.abs() {
+            self.can_scroll_x(dx)
+        } else {
+            self.can_scroll_y(dy)
         }
     }
 
@@ -340,5 +392,68 @@ fn fling_axis(anim: &mut Animated<f32>, velocity: &mut f32, dt: f32, max_scroll:
         if velocity.abs() < FLING_EPSILON {
             *velocity = 0.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod wheel_room_tests {
+    use super::*;
+
+    /// 300px の窓に 1000px の中身 (縦だけ動く)。
+    fn vertical() -> ScrollView {
+        ScrollView::new(300.0, 1000.0)
+    }
+
+    /// 上端では下向き (負の delta_y) にだけ動ける。
+    #[test]
+    fn at_the_top_only_scrolling_down_has_room() {
+        let sv = vertical();
+        assert!(sv.can_scroll_y(-20.0), "下へは動ける");
+        assert!(!sv.can_scroll_y(20.0), "上端なので上へは動けない");
+        assert!(!sv.can_scroll_y(0.0), "0 は動かない");
+    }
+
+    /// 下端まで送ったら、上向きにだけ動ける。判定はばねの**目標**で行うので、
+    /// 表示位置がまだ追いついていなくても「端」と答える。
+    #[test]
+    fn at_the_bottom_only_scrolling_up_has_room_even_before_the_spring_settles() {
+        let mut sv = vertical();
+        sv.on_scroll_xy(0.0, -5000.0);
+        assert!(sv.scroll_y.value() < 100.0, "前提: ばねはまだ追いついていない");
+        assert!(!sv.can_scroll_y(-20.0), "目標が下端なら、もう下へは消費しない");
+        assert!(sv.can_scroll_y(20.0));
+    }
+
+    /// 縦リストの上で斜めに払ったとき、判定は主軸 (縦) で行う。小さな横成分を
+    /// 理由に「動ける」と答えると、下端で外側へ渡らない。
+    #[test]
+    fn diagonal_input_is_judged_on_the_dominant_axis() {
+        let mut sv = vertical();
+        sv.on_scroll_xy(0.0, -5000.0);
+        assert!(!sv.can_consume_wheel(3.0, -30.0), "下端: 主軸が縦で動けない → 消費しない");
+        assert!(sv.can_consume_wheel(3.0, 30.0), "上向きなら動ける");
+    }
+
+    /// 横だけ動くコンテナ (カルーセル) は、縦ホイールを横へ付け替えて判定する。
+    /// `on_scroll_xy` と同じ付け替えなので、「動ける」と答えた入力は実際に動く。
+    #[test]
+    fn carousel_redirect_is_shared_between_asking_and_moving() {
+        let mut sv = ScrollView::new_2d(300.0, 100.0, 3000.0, 100.0);
+        assert!(sv.can_consume_wheel(0.0, -20.0), "縦ホイールでも横へ動ける");
+        sv.on_scroll_xy(0.0, -20.0);
+        assert!(sv.scroll_x.target() > 0.0, "実際に横へ動いた");
+
+        sv.on_scroll_xy(0.0, -100_000.0);
+        assert!(!sv.can_consume_wheel(0.0, -20.0), "右端では縦ホイールも消費しない");
+        assert!(sv.can_consume_wheel(0.0, 20.0), "戻る向きなら動ける");
+    }
+
+    /// 中身が窓に収まっていれば、どの向きにも動けない。
+    #[test]
+    fn content_that_fits_never_has_room() {
+        let sv = ScrollView::new(300.0, 200.0);
+        assert!(!sv.can_consume_wheel(0.0, -20.0));
+        assert!(!sv.can_consume_wheel(0.0, 20.0));
+        assert!(!sv.can_consume_wheel(-20.0, 0.0));
     }
 }

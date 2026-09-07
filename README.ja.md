@@ -110,6 +110,20 @@ let (first, count) = ctx.visible_range("file-list", ROW_H);
 
 もう 1 つのモデルが `.scroll_manual(x, y)` で、こちらは**アプリが**位置を持ち、ランタイムは一切触りません。どちらかを選ぶ — 型がどちらかを示します。
 
+ホイールについて 2 点。`.scroll(id)` のコンテナがホイールを消費するのは**その向きにまだ動けるあいだ**だけで、端に達すると外側のコンテナへ、最後は `on_scroll_xy` へ落ちます。そして生のホイールは**先に** `on_input` へ `InputEvent::Wheel` として届きます — カーソル位置・修飾キー・トラックパッドの位相つきなので、⌘+ホイールのズームはそこで書きます。`true` を返せば何もスクロールしません:
+
+```rust
+fn on_input(&mut self, ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::Wheel { position, delta_y, modifiers, .. } if modifiers.meta => {
+            self.zoom_at(*position, *delta_y);
+            true // 消費: 何もスクロールしない
+        }
+        _ => false,
+    }
+}
+```
+
 ### 2. テキスト入力と IME
 
 **`view()` に `text_input` を置く。配線はこれで全部です。**

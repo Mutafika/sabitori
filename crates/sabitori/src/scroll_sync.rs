@@ -110,10 +110,22 @@ pub fn apply_scroll_measures(build: &BuildResult, states: &mut HashMap<String, S
 }
 
 /// Route a wheel/trackpad scroll to the managed scroll container under
-/// the pointer, if any. Returns `true` when a container consumed the
-/// delta. Hit regions are stored front-to-back, so an inner scroller
-/// wins over an outer one. Deltas are in logical pixels (winit
-/// `LineDelta` is conventionally multiplied by 20 before this call).
+/// the pointer that **can still move in that direction**. Returns `true`
+/// when a container consumed the delta. Hit regions are stored
+/// front-to-back, so an inner scroller is asked first; one sitting at its
+/// end is skipped and the wheel reaches the next container out (and, when
+/// none can move, the app via `on_scroll_xy`). Deltas are in logical pixels
+/// (winit `LineDelta` is multiplied by [`sabitori_input::LINE_DELTA_PX`]
+/// before this call).
+///
+/// 以前は最初に見つかった管理コンテナに**無条件で**渡して `true` を返していた
+/// ([#58](https://github.com/Mutafika/sabitori/issues/58))。内側のリストが下端に
+/// 居ても外側のページが動かず、ホイールがそこで死ぬ。
+///
+/// トラックパッドの 1 ジェスチャの間は届け先を固定したい (途中で内側が端に
+/// 達した瞬間に外側が動き出す「跳ね」を防ぐ) ので、ランタイムは位相を知っている
+/// [`WheelLatch::route`] を使う。位相の無いホスト (刻みホイールだけ、埋め込み) は
+/// こちらで足りる。
 pub fn route_wheel(
     build: &BuildResult,
     states: &mut HashMap<String, ScrollView>,
@@ -122,18 +134,145 @@ pub fn route_wheel(
     delta_x: f32,
     delta_y: f32,
 ) -> bool {
+    resolve_and_scroll(build, states, x, y, delta_x, delta_y).is_some()
+}
+
+/// カーソル下で `delta` の向きへ動ける最も内側の管理コンテナに渡し、その id を返す。
+fn resolve_and_scroll(
+    build: &BuildResult,
+    states: &mut HashMap<String, ScrollView>,
+    x: f32,
+    y: f32,
+    delta_x: f32,
+    delta_y: f32,
+) -> Option<String> {
     let pt = sabitori_core::Point::new(x, y);
     for region in &build.hit_regions {
-        if region.rect.contains(pt) {
-            if let Some(ref id) = region.id {
-                if let Some(sv) = states.get_mut(id) {
-                    sv.on_scroll_xy(delta_x, delta_y);
-                    return true;
-                }
-            }
+        if !region.rect.contains(pt) {
+            continue;
+        }
+        let Some(ref id) = region.id else { continue };
+        let Some(sv) = states.get_mut(id) else { continue };
+        if sv.can_consume_wheel(delta_x, delta_y) {
+            sv.on_scroll_xy(delta_x, delta_y);
+            return Some(id.clone());
         }
     }
-    false
+    None
+}
+
+/// カーソル下に管理コンテナが 1 つでも在るか (動けるかは問わない)。
+fn any_container_under(build: &BuildResult, states: &HashMap<String, ScrollView>, x: f32, y: f32) -> bool {
+    let pt = sabitori_core::Point::new(x, y);
+    build
+        .hit_regions
+        .iter()
+        .any(|r| r.rect.contains(pt) && r.id.as_ref().is_some_and(|id| states.contains_key(id)))
+}
+
+/// トラックパッドの 1 ジェスチャの間、ホイールの届け先を固定する (macOS の latching)。
+///
+/// [`route_wheel`] の「動けるコンテナへ」だけだと、内側のリストを下端まで払った
+/// **その指の続き**で外側のページが動き出す。macOS のネイティブも Chrome も、
+/// ジェスチャの最初に決めた届け先を `Ended` まで変えない (端では止まる／ゴムで
+/// 伸びる) ので同じにする。慣性 (`Ended` の後に `Moved` として続く) も同じ
+/// 届け先へ流し、端に達したらそこで**止める** — 止まりかけの慣性を外側へ横流し
+/// すると、指を離した後にページが勝手に動き出す。
+///
+/// 刻みホイール (`precise == false`。位相も常に `Moved`) にジェスチャは無いので、
+/// ノッチごとに解決し直す。ラッチは精密入力の `Started` を見たジェスチャの中でしか
+/// 掛からない。⚠️ 位相を配るのは winit では macOS / iOS だけで、Windows の
+/// precision touchpad は `PixelDelta` + `Moved` しか来ない。そこではラッチは
+/// 掛からず、イベントごとに「動けるコンテナへ」で解決する (跳ねは防げない)。
+#[derive(Debug, Default)]
+pub struct WheelLatch {
+    /// `Started` から `Ended` / `Cancelled` まで。
+    in_gesture: bool,
+    /// このジェスチャ (と続く慣性) の届け先。
+    target: Option<String>,
+}
+
+impl WheelLatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 現在ラッチしている管理コンテナの id。テストと診断用。
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    /// 位相つきでルーティングする。戻り値は [`route_wheel`] と同じ「管理コンテナが
+    /// 消費したか」。`precise` は `InputEvent::Wheel` のそれ (刻みホイールなら
+    /// `false`)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn route(
+        &mut self,
+        build: &BuildResult,
+        states: &mut HashMap<String, ScrollView>,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        precise: bool,
+        phase: sabitori_input::WheelPhase,
+    ) -> bool {
+        use sabitori_input::WheelPhase;
+
+        if !precise || phase == WheelPhase::Started {
+            // 刻みホイールにジェスチャは無い。ノッチごとに解決し直す。
+            // 精密入力は `Started` で張り替える。
+            self.in_gesture = precise;
+            self.target = None;
+        }
+
+        // ラッチ先がもう画面に無い / カーソルが外れた (ジェスチャ中に窓が組み
+        // 替わった) なら忘れる。
+        if let Some(id) = self.target.as_deref() {
+            let pt = sabitori_core::Point::new(x, y);
+            let still_there = states.contains_key(id)
+                && build
+                    .hit_regions
+                    .iter()
+                    .any(|r| r.id.as_deref() == Some(id) && r.rect.contains(pt));
+            if !still_there {
+                self.target = None;
+            }
+        }
+
+        let zero = delta_x == 0.0 && delta_y == 0.0;
+        let mut consumed = false;
+
+        if let Some(id) = self.target.clone() {
+            let sv = states.get_mut(&id).expect("checked above");
+            // ジェスチャ中は端でも手放さない (跳ね防止)。慣性は動ける間だけ動かし、
+            // 端では黙って飲む (外側へ横流ししない)。どちらも「消費した」。
+            if !zero && (self.in_gesture || sv.can_consume_wheel(delta_x, delta_y)) {
+                sv.on_scroll_xy(delta_x, delta_y);
+            }
+            consumed = true;
+        }
+
+        if !consumed && !zero {
+            let resolved = resolve_and_scroll(build, states, x, y, delta_x, delta_y);
+            consumed = resolved.is_some();
+            if self.in_gesture && resolved.is_some() {
+                self.target = resolved;
+            }
+        }
+
+        // delta 0 (Started / Ended の通知だけ) は、管理コンテナの上なら「消費」に
+        // しておく。アプリの `on_scroll_xy(0, 0)` を鳴らしても意味が無い。
+        if !consumed && zero {
+            consumed = any_container_under(build, states, x, y);
+        }
+
+        if matches!(phase, WheelPhase::Ended | WheelPhase::Cancelled) {
+            // 届け先は慣性のために残す。次の `Started` で張り替わる。
+            self.in_gesture = false;
+        }
+        consumed
+    }
 }
 
 /// Advance all scroll springs/flings by `dt` seconds.
@@ -304,5 +443,140 @@ mod tests {
 
         // Outside any region → not consumed.
         assert!(!route_wheel(&build, &mut states, 200.0, 350.0, 0.0, -60.0));
+    }
+}
+
+/// #58: 端に達したコンテナはホイールを消費しない (外側へ、最後はアプリへ)。
+/// トラックパッドの 1 ジェスチャの間は届け先を固定する。
+#[cfg(test)]
+mod chaining_tests {
+    use super::*;
+    use sabitori_core::build::build_tree;
+    use sabitori_core::element::{div, Px};
+    use sabitori_input::WheelPhase::{Ended, Moved, Started};
+
+    /// 外側 400x300 の中に、ヘッダ 100px + 内側リスト (150px、20 行 × 40px) +
+    /// 1000px のフッタ。外側も内側もスクロールできる。内側の矩形は y 100..250。
+    fn nested_tree() -> Element {
+        div().w(Px(400.0)).h(Px(300.0)).flex_col().child(
+            div().scroll("outer").w_full().h(Px(300.0)).flex_col().children([
+                div().w_full().h(Px(100.0)),
+                div().scroll("inner").w_full().h(Px(150.0)).flex_col().children(
+                    (0..20).map(|_| div().w_full().h(Px(40.0))).collect::<Vec<_>>(),
+                ),
+                div().w_full().h(Px(1000.0)),
+            ]),
+        )
+    }
+
+    fn nested() -> (BuildResult, HashMap<String, ScrollView>) {
+        let mut states = HashMap::new();
+        let mut root = nested_tree();
+        patch_scroll_offsets(&mut root, &mut states);
+        let build = build_tree(&root, 400.0, 300.0);
+        apply_scroll_measures(&build, &mut states);
+        assert!(states["inner"].can_scroll_y(-1.0), "前提: 内側は動ける");
+        assert!(states["outer"].can_scroll_y(-1.0), "前提: 外側も動ける");
+        (build, states)
+    }
+
+    /// 内側の上に居て、内側に余地があれば内側だけが動く (従来どおり)。
+    #[test]
+    fn inner_scroller_with_room_takes_the_wheel() {
+        let (build, mut states) = nested();
+        assert!(route_wheel(&build, &mut states, 200.0, 175.0, 0.0, -60.0));
+        assert!(states["inner"].scroll_y.target() > 0.0);
+        assert_eq!(states["outer"].scroll_y.target(), 0.0);
+    }
+
+    /// 内側が下端なら外側へ。以前は内側が無条件に飲んで `true` を返していた。
+    #[test]
+    fn inner_scroller_at_its_end_lets_the_wheel_through_to_the_outer() {
+        let (build, mut states) = nested();
+        states.get_mut("inner").unwrap().on_scroll_xy(0.0, -100_000.0);
+
+        assert!(route_wheel(&build, &mut states, 200.0, 175.0, 0.0, -60.0), "外側が消費する");
+        assert!(states["outer"].scroll_y.target() > 0.0, "外側が動いた");
+
+        // 戻る向きは内側が動けるので内側へ。
+        let outer_before = states["outer"].scroll_y.target();
+        assert!(route_wheel(&build, &mut states, 200.0, 175.0, 0.0, 60.0));
+        assert_eq!(states["outer"].scroll_y.target(), outer_before, "外側が動いてはいけない");
+    }
+
+    /// どちらも端なら管理コンテナは消費しない → アプリの `on_scroll_xy` へ落ちる。
+    #[test]
+    fn when_every_container_is_at_its_end_the_wheel_falls_through() {
+        let (build, mut states) = nested();
+        states.get_mut("inner").unwrap().on_scroll_xy(0.0, -100_000.0);
+        states.get_mut("outer").unwrap().on_scroll_xy(0.0, -100_000.0);
+        assert!(!route_wheel(&build, &mut states, 200.0, 175.0, 0.0, -60.0));
+    }
+
+    /// ラッチ: ジェスチャの途中で内側が端に達しても外側は動かない (跳ね防止)。
+    /// 慣性も同じ届け先で、端なら黙って飲む。次の `Started` で張り替わる。
+    #[test]
+    fn a_gesture_stays_latched_to_the_container_it_started_on() {
+        let (build, mut states) = nested();
+        let mut latch = WheelLatch::new();
+        let at = (200.0, 175.0);
+
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, 0.0, true, Started));
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, -60.0, true, Moved));
+        assert_eq!(latch.target(), Some("inner"));
+
+        // 内側を下端まで払う。
+        latch.route(&build, &mut states, at.0, at.1, 0.0, -100_000.0, true, Moved);
+        assert!(!states["inner"].can_scroll_y(-1.0), "前提: 内側は下端");
+
+        // 同じ指の続き: 外側は動かない。
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, -60.0, true, Moved));
+        assert_eq!(states["outer"].scroll_y.target(), 0.0, "ジェスチャ中に外側へ跳ねた");
+
+        // 指を離した後の慣性も同じ届け先。端なので飲むだけで、外側へは流さない。
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, 0.0, true, Ended));
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, -30.0, true, Moved));
+        assert_eq!(states["outer"].scroll_y.target(), 0.0, "慣性が外側へ横流しされた");
+
+        // 次のジェスチャは張り替え: 内側が端なので外側へ。
+        latch.route(&build, &mut states, at.0, at.1, 0.0, 0.0, true, Started);
+        assert!(latch.route(&build, &mut states, at.0, at.1, 0.0, -60.0, true, Moved));
+        assert_eq!(latch.target(), Some("outer"));
+        assert!(states["outer"].scroll_y.target() > 0.0);
+    }
+
+    /// 刻みホイールにジェスチャは無い: ノッチごとに解決し直すので、内側が端に
+    /// 達した次のノッチで外側が動く。ラッチも掛からない。
+    #[test]
+    fn discrete_wheel_notches_resolve_independently() {
+        let (build, mut states) = nested();
+        let mut latch = WheelLatch::new();
+        latch.route(&build, &mut states, 200.0, 175.0, 0.0, -100_000.0, false, Moved);
+        assert!(latch.target().is_none(), "刻みホイールでラッチしてはいけない");
+        assert!(latch.route(&build, &mut states, 200.0, 175.0, 0.0, -60.0, false, Moved));
+        assert!(states["outer"].scroll_y.target() > 0.0);
+    }
+
+    /// ラッチ中に精密でないノッチが来たら (トラックパッドとマウスの併用)、
+    /// ラッチは捨ててノッチとして解決する。古い届け先に縛られない。
+    #[test]
+    fn a_discrete_notch_drops_a_stale_latch() {
+        let (build, mut states) = nested();
+        let mut latch = WheelLatch::new();
+        latch.route(&build, &mut states, 200.0, 175.0, 0.0, -100_000.0, true, Started);
+        assert_eq!(latch.target(), Some("inner"));
+        assert!(latch.route(&build, &mut states, 200.0, 175.0, 0.0, -60.0, false, Moved));
+        assert!(latch.target().is_none());
+        assert!(states["outer"].scroll_y.target() > 0.0, "ノッチは外側へ");
+    }
+
+    /// delta 0 の位相通知 (`Started` / `Ended`) は、管理コンテナの上なら消費扱い、
+    /// 外なら素通し。アプリに `on_scroll_xy(0, 0)` を鳴らす意味は無い。
+    #[test]
+    fn zero_delta_phase_notifications_are_swallowed_over_a_container() {
+        let (build, mut states) = nested();
+        let mut latch = WheelLatch::new();
+        assert!(latch.route(&build, &mut states, 200.0, 175.0, 0.0, 0.0, true, Started));
+        assert!(!latch.route(&build, &mut states, 200.0, 350.0, 0.0, 0.0, true, Started));
     }
 }

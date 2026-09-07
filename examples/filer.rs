@@ -305,8 +305,6 @@ struct FilerApp {
     clipboard_cut: bool,
     // Rename
     renaming: Option<(usize, String)>, // (real file index, current text)
-    // Double-click tracking
-    last_click: Option<(usize, std::time::Instant)>, // (filtered_idx, time)
     // Drag & drop
     drag: Option<DragState>,
     last_hovered: std::cell::RefCell<Option<String>>,
@@ -364,7 +362,6 @@ impl FilerApp {
             clipboard: Vec::new(),
             clipboard_cut: false,
             renaming: None,
-            last_click: None,
             drag: None,
             last_hovered: std::cell::RefCell::new(None),
             last_mouse: std::cell::Cell::new((0.0, 0.0)),
@@ -1911,37 +1908,42 @@ impl DeclarativeApp for FilerApp {
         if let Some(idx_str) = id.strip_prefix("f-") {
             if let Ok(fi) = idx_str.parse::<usize>() {
                 if fi >= self.tab().filtered.len() { return; }
-                let real_idx = self.tab().filtered[fi];
-                let now = std::time::Instant::now();
+                // 1 打目で選択 (と drag の起点)。 2 打目で開くのは `on_double_click` —
+                // 回数は runtime が数える (#58)。 以前はここで `Instant` を持って
+                // 自前で数えていた。
+                self.select_file(fi, shift, cmd);
+                // Start potential drag from click position
+                let (mx, my) = self.last_mouse.get();
+                let indices: Vec<usize> = self.tab().selected.iter().copied().collect();
+                self.drag = Some(DragState {
+                    file_indices: indices,
+                    start_x: mx,
+                    start_y: my,
+                    active: false,
+                    created: std::time::Instant::now(),
+                });
+            }
+        }
+    }
 
-                let is_double = if let Some((prev_fi, prev_time)) = self.last_click {
-                    prev_fi == fi && now.duration_since(prev_time).as_millis() < 400
-                } else { false };
-
-                if is_double && !shift && !cmd {
-                    self.last_click = None;
-                    let file = self.tab().files.get(real_idx).cloned();
-                    if let Some(file) = file {
-                        if file.is_dir {
-                            self.navigate_to(file.path);
-                        } else {
-                            let _ = std::process::Command::new("open").arg(&file.path).spawn();
-                        }
-                    }
-                } else {
-                    self.last_click = Some((fi, now));
-                    self.select_file(fi, shift, cmd);
-                    // Start potential drag from click position
-                    let (mx, my) = self.last_mouse.get();
-                    let indices: Vec<usize> = self.tab().selected.iter().copied().collect();
-                    self.drag = Some(DragState {
-                        file_indices: indices,
-                        start_x: mx,
-                        start_y: my,
-                        active: false,
-                        created: std::time::Instant::now(),
-                    });
-                }
+    /// ファイル行のダブルクリック: フォルダなら入る、 ファイルなら開く。
+    /// ⇧ / ⌘ で選択を広げている最中は開かない (2 打目も選択の操作)。
+    fn on_double_click(&mut self, id: &str, _x: f32, _y: f32) {
+        if self.last_shift.get() || self.last_cmd.get() {
+            return;
+        }
+        let Some(fi) = id.strip_prefix("f-").and_then(|s| s.parse::<usize>().ok()) else {
+            return;
+        };
+        let Some(&real_idx) = self.tab().filtered.get(fi) else { return };
+        let file = self.tab().files.get(real_idx).cloned();
+        // 2 打目の on_click が置いた drag の起点は要らない (開く方が勝つ)。
+        self.drag = None;
+        if let Some(file) = file {
+            if file.is_dir {
+                self.navigate_to(file.path);
+            } else {
+                let _ = std::process::Command::new("open").arg(&file.path).spawn();
             }
         }
     }

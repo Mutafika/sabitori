@@ -243,6 +243,7 @@ mod tests {
             position: sabitori_core::Point::new(0.0, 0.0),
             button: Some(sabitori_input::MouseButton::Left),
             modifiers: sabitori_input::Modifiers::default(),
+            click_count: 1,
         };
 
         // 仕切りの上に居ないので消費しない。

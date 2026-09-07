@@ -336,6 +336,69 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.release_primary();
     }
 
+    /// 右ボタンを座標で押して離す。 `on_input` に
+    /// `PointerPressed` / `PointerReleased { button: Some(Right) }` が届き、
+    /// 押下が消費されなければ `on_right_click(id, x, y)` が鳴る (空白なら `""`)。
+    pub fn right_click_at(&mut self, x: f32, y: f32) {
+        self.move_to(x, y);
+        self.state.press_secondary();
+        self.state.release_secondary();
+    }
+
+    /// `id` の要素の中心を右クリックする。 見えていなければ panic
+    /// ([`Self::click`] と同じ)。
+    pub fn right_click(&mut self, id: &str) {
+        let (x, y) = self.center_of(id);
+        self.right_click_at(x, y);
+    }
+
+    /// 同じ座標を続けて 2 回クリックする。 回数は実時計で数えるので、 2 打目の
+    /// `PointerPressed::click_count` は 2、 同じ対象なら `on_double_click` が鳴る。
+    pub fn double_click_at(&mut self, x: f32, y: f32) {
+        self.click_at(x, y);
+        self.click_at(x, y);
+    }
+
+    /// `id` の要素の中心をダブルクリックする。
+    pub fn double_click(&mut self, id: &str) {
+        let (x, y) = self.center_of(id);
+        self.double_click_at(x, y);
+    }
+
+    /// ホイール 1 イベントを座標へ送る。 経路は実ランタイムと同じ:
+    /// `on_input(InputEvent::Wheel)` → その向きに動ける管理コンテナ →
+    /// `on_scroll` / `on_scroll_xy`。 符号は winit と同じで、 **負の `dy` が
+    /// 下へスクロール** ([`Self::scroll`] とは逆なので注意)。
+    ///
+    /// 精密入力 (`precise = true`)、 位相は `Moved` として送る。 ばねは整定
+    /// させないので、 位置を読むなら [`Self::settle`] を挟む。
+    pub fn wheel_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.wheel_phase_at(x, y, dx, dy, sabitori_input::WheelPhase::Moved);
+    }
+
+    /// 位相つきのホイール。 トラックパッドの 1 ジェスチャ
+    /// (`Started` → `Moved`… → `Ended`) を再現するときに使う。 精密入力として送る。
+    pub fn wheel_phase_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        phase: sabitori_input::WheelPhase,
+    ) {
+        self.move_to(x, y);
+        self.state.wheel(dx, dy, true, phase);
+    }
+
+    /// 刻みホイール (`precise = false`) を 1 ノッチぶん送る。 `lines` は行数で、
+    /// ランタイムが [`sabitori_input::LINE_DELTA_PX`] 倍して px に直す。
+    pub fn wheel_lines_at(&mut self, x: f32, y: f32, lines_x: f32, lines_y: f32) {
+        self.move_to(x, y);
+        let k = sabitori_input::LINE_DELTA_PX;
+        self.state
+            .wheel(lines_x * k, lines_y * k, false, sabitori_input::WheelPhase::Moved);
+    }
+
     /// `id` の要素の中心をクリックする。
     ///
     /// 直近のフレームの hit_regions から引く。 **見えていない要素は引けない** —
