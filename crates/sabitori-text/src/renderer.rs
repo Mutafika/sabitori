@@ -661,11 +661,18 @@ impl TextRenderer {
     /// (non-monospace) is shaped with `Family::Name(&name)` instead of
     /// `Family::SansSerif`, which on macOS otherwise routes Japanese kanji
     /// through Chinese-styled system fonts.
-    pub fn set_preferred_family(&mut self, family: Option<String>) {
+    /// Returns whether the value actually changed, so the caller can
+    /// invalidate a size cache keyed on the old face — same contract as
+    /// [`set_preferred_monospace_family`](Self::set_preferred_monospace_family),
+    /// so a font picker can drive both from one place.
+    pub fn set_preferred_family(&mut self, family: Option<String>) -> bool {
         // The shaper owns the value and reports whether it moved; dropping the
         // shaped-glyph cache stays here because the shaper has no caches.
         if self.shaper.set_preferred_family(family) {
             self.glyph_cache.clear(); // resolved face changed → reshape
+            true
+        } else {
+            false
         }
     }
 

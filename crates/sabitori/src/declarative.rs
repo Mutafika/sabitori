@@ -706,6 +706,44 @@ struct ExtraWindowState {
     scene_3d: bool,
 }
 
+/// Every renderer a window needs, built in one place.
+///
+/// The native window, the wasm canvas and each extra window all used to
+/// assemble this list inline, and the copies had drifted: the wasm one never
+/// created a `LineRenderer` (so `polyline()` silently drew nothing on the web)
+/// or applied `preferred_font_family`, and the extra-window one ignored the
+/// app's fonts entirely (#66). Nothing here is optional per platform, so
+/// adding a renderer to this function reaches every window at once.
+struct Renderers {
+    text: TextRenderer,
+    image: sabitori_gpu::ImageRenderer,
+    rings: RingRenderer,
+    lines: sabitori_gpu::LineRenderer,
+}
+
+fn init_renderers<A: DeclarativeApp>(app: &A, gpu: &GpuRenderer) -> Renderers {
+    let format = gpu.surface_config.format;
+    let layout = &gpu.globals_bind_group_layout;
+
+    let mut text = TextRenderer::new(&gpu.device, format, layout);
+    let user_fonts = app.fonts();
+    if !user_fonts.is_empty() {
+        text.prefer_user_fonts(&user_fonts);
+    }
+    text.set_preferred_family(app.preferred_font_family());
+    text.set_preferred_monospace_family(app.preferred_monospace_family());
+
+    let mut image = sabitori_gpu::ImageRenderer::new(&gpu.device, format, layout);
+    image.set_texture_budget_bytes(app.texture_budget_bytes());
+
+    Renderers {
+        text,
+        image,
+        rings: RingRenderer::new(&gpu.device, format, layout),
+        lines: sabitori_gpu::LineRenderer::new(&gpu.device, format, layout),
+    }
+}
+
 pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) app: A,
     /// True when the next frame would visually differ from the last drawn
@@ -948,24 +986,14 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         #[cfg(not(target_os = "ios"))]
         window.set_ime_allowed(true);
         let gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
-        let mut text = TextRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
-        let user_fonts = self.app.fonts();
-        if !user_fonts.is_empty() {
-            text.prefer_user_fonts(&user_fonts);
-        }
-        text.set_preferred_family(self.app.preferred_font_family());
-        text.set_preferred_monospace_family(self.app.preferred_monospace_family());
-        let mut img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
-        img.set_texture_budget_bytes(self.app.texture_budget_bytes());
-        let rings = sabitori_gpu::RingRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
-        let lines = sabitori_gpu::LineRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+        let r = init_renderers(&self.app, &gpu);
         self.app.set_window(window.clone());
         self.window = Some(window);
         self.renderer = Some(gpu);
-        self.text_renderer = Some(text);
-        self.image_renderer = Some(img);
-        self.ring_renderer = Some(rings);
-        self.line_renderer = Some(lines);
+        self.text_renderer = Some(r.text);
+        self.image_renderer = Some(r.image);
+        self.ring_renderer = Some(r.rings);
+        self.line_renderer = Some(r.lines);
 
         // After the primary is up, create any declared extras. Done
         // here (rather than in a separate event-loop callback) so the
@@ -1613,10 +1641,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     None => return,
                 };
 
-                // Pick up a live monospace-family change (font picker) before
+                // Pick up a live font-family change (font picker) before
                 // measuring; the measure cache isn't keyed on the face, so bust
-                // it when the font actually changes.
-                if tr.set_preferred_monospace_family(self.app.preferred_monospace_family()) {
+                // it when the font actually changes. Both families are read
+                // here — the monospace one used to be alone, so a picker that
+                // changed the proportional face was silently ignored.
+                let family_changed = tr.set_preferred_family(self.app.preferred_font_family());
+                let mono_changed =
+                    tr.set_preferred_monospace_family(self.app.preferred_monospace_family());
+                if family_changed || mono_changed {
                     self.measure_cache.borrow_mut().clear();
                 }
 
@@ -2075,27 +2108,7 @@ impl<A: DeclarativeApp> AppState<A> {
         if spec.scene_3d {
             extra_gpu.create_depth_texture();
         }
-        let extra_text = TextRenderer::new(
-            &extra_gpu.device,
-            extra_gpu.surface_config.format,
-            &extra_gpu.globals_bind_group_layout,
-        );
-        let mut extra_img = sabitori_gpu::ImageRenderer::new(
-            &extra_gpu.device,
-            extra_gpu.surface_config.format,
-            &extra_gpu.globals_bind_group_layout,
-        );
-        extra_img.set_texture_budget_bytes(self.app.texture_budget_bytes());
-        let extra_rings = sabitori_gpu::RingRenderer::new(
-            &extra_gpu.device,
-            extra_gpu.surface_config.format,
-            &extra_gpu.globals_bind_group_layout,
-        );
-        let extra_lines = sabitori_gpu::LineRenderer::new(
-            &extra_gpu.device,
-            extra_gpu.surface_config.format,
-            &extra_gpu.globals_bind_group_layout,
-        );
+        let extra = init_renderers(&self.app, &extra_gpu);
         if spec.scene_3d {
             self.app.setup_extra_scene(&spec.key, &extra_gpu.gpu_context());
         }
@@ -2105,10 +2118,10 @@ impl<A: DeclarativeApp> AppState<A> {
             key: spec.key,
             window: extra_window,
             renderer: extra_gpu,
-            text_renderer: extra_text,
-            image_renderer: extra_img,
-            ring_renderer: extra_rings,
-            line_renderer: extra_lines,
+            text_renderer: extra.text,
+            image_renderer: extra.image,
+            ring_renderer: extra.rings,
+            line_renderer: extra.lines,
             measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
             last_build: None,
             scene_3d: spec.scene_3d,
@@ -4021,22 +4034,12 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                         gpu.resize(size.width, size.height, window.scale_factor());
                     }
                     let mut s = inner.borrow_mut();
-                    let mut text = TextRenderer::new(
-                        &gpu.device,
-                        gpu.surface_config.format,
-                        &gpu.globals_bind_group_layout,
-                    );
-                    let user_fonts = s.app.fonts();
-                    if !user_fonts.is_empty() {
-                        text.prefer_user_fonts(&user_fonts);
-                    }
-                    let mut img = sabitori_gpu::ImageRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
-                    img.set_texture_budget_bytes(s.app.texture_budget_bytes());
-                    let rings = sabitori_gpu::RingRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
+                    let r = init_renderers(&s.app, &gpu);
                     s.renderer = Some(gpu);
-                    s.text_renderer = Some(text);
-                    s.image_renderer = Some(img);
-                    s.ring_renderer = Some(rings);
+                    s.text_renderer = Some(r.text);
+                    s.image_renderer = Some(r.image);
+                    s.ring_renderer = Some(r.rings);
+                    s.line_renderer = Some(r.lines);
                     log::info!("Declarative renderer ready");
                 });
             }

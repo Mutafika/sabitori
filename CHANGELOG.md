@@ -17,6 +17,18 @@
 
 ### Fixed
 
+- **web で `polyline()` が 1 本も描かれなかった / `preferred_font_family()` が
+  無視されていた** ([#66](https://github.com/Mutafika/sabitori/issues/66))。
+  レンダラーの初期化が native / wasm / 追加ウィンドウの 3 か所に手で並んでいて、
+  wasm の写しだけ `LineRenderer` を作っていなかった。描画側は `None` なら線を
+  飛ばすだけなので、panic もログも出ず「web だけ見た目が違う」になっていた
+  (グラフの折れ線・区切り線が消える)。書体の指定も native にしか無く、追加
+  ウィンドウはアプリの `fonts()` ごと無視していた。3 か所を `init_renderers`
+  1 本に寄せた — レンダラーを足すと全ウィンドウに届く。
+  あわせて、フォントピッカーの反映が等幅だけ毎フレーム更新されていたのを、
+  本文書体も同じ場所で見るようにした (`TextRenderer::set_preferred_family` が
+  変化したかを返すようになった)。
+
 - **上限の低い WebGL2 環境で、起動時に必ず panic していた**
   ([#72](https://github.com/Mutafika/sabitori/issues/72))。wasm の GPU 初期化が
   `downlevel_webgl2_defaults()` を**そのまま必須として**要求していたため、
