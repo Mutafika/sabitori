@@ -25,6 +25,8 @@ pub use element::{
     AlignItems, BoxShadow, EdgeDimensions, FlexDirection, FlexWrap, JustifyContent, Overflow,
     Position,
 };
+// 浮かせる要素を別の要素に貼り付ける (`Element::anchor_to`)。
+pub use element::{Anchor, Placement};
 // grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
 // `sabitori-style` にも同名の型があり、 ファサードの glob 同士がぶつかって
 // `sabitori::Display` がどちらとも決まらなくなる。 `.grid()` / `.grid_cols()` が
@@ -245,6 +247,24 @@ pub struct ViewContext<'a> {
 pub trait Managed: std::any::Any {
     /// ランタイムが具体型へ降ろすための口。 実装は `self` を返すだけ。
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// **時間を進める。** ばねを持つウィジェットだけ上書きする。
+    ///
+    /// これが無かったころは、開閉のばねを持つウィジェット (モーダル) を
+    /// アプリが `tick(dt)` で手回しする必要があり、書き忘れると
+    /// **開きかけのまま止まる**。しかもテストの `settle` はアプリの
+    /// `is_animating` しか見ないので、閉じかけの背景が次のクリックを吸った
+    /// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 7 と 15)。
+    fn advance(&self, _dt: f32) {}
+
+    /// **まだ動いているか。** 描画を続けるかと、テストの `settle` の
+    /// 打ち切り判定に入る。
+    ///
+    /// **収束するものだけ**を `true` にすること — 永久に動き続けるもの
+    /// (キャレットの点滅) をここに混ぜると `settle` が待ち切れなくなる。
+    fn animating(&self) -> bool {
+        false
+    }
 }
 
 /// クリックされたときにアプリへ加える変更。

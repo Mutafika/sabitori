@@ -75,7 +75,7 @@ pub use dock_group::{drop_split, DockAxis, DockGroup, MIN_PANE_PX, SPLITTER_PX};
 pub use drag::DragManager;
 pub use focus::{FocusChange, FocusKeyResult, FocusManager};
 pub use menu_bar::{MenuBarState, MenuBarStyle, MenuDef};
-pub use modal::{Modal, ModalStyle};
+pub use modal::{modal, Modal, ModalState, ModalStyle};
 pub use numeric_input::NumericInputState;
 pub use panel::{Panel, PanelSide};
 pub use presence::PresenceAnimator;

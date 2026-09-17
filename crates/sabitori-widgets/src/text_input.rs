@@ -919,6 +919,15 @@ impl sabitori_core::Managed for TextInputState {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    /// キャレットの点滅を進める。
+    ///
+    /// **`animating` は名乗らない** — 点滅は収束しないので、`settle` の
+    /// 打ち切り判定に混ぜると永久に待つことになる。描画を続ける判定のほうは
+    /// ランタイムが `caret_blinking` で別に見ている (#53)。
+    fn advance(&self, dt: f32) {
+        TextInputState::advance(self, dt);
+    }
 }
 
 impl std::fmt::Debug for TextInputState {

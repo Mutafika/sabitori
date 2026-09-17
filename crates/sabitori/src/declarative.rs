@@ -2953,12 +2953,15 @@ impl<A: DeclarativeApp> AppState<A> {
         // 「時間が進んだ結果」を拾う分 (lazy_render で描画が止まっていても
         // フォーカスは追随する)。 どちらも同じ 1 実装を呼ぶ (#28)。
         self.apply_desired_focus();
-        // 登録済みのテキスト欄はランタイムが進める (キャレット点滅)。
-        // アプリが `state.tick(dt)` を書く必要は無い。
+        // 登録済みのウィジェットはランタイムが進める — テキスト欄のキャレット
+        // 点滅も、モーダルの開閉のばねも。アプリが `state.tick(dt)` を書く
+        // 必要は無い (#75 の 7)。
+        //
+        // 以前はここで `TextInputState` に降ろしていたので、**テキスト欄だけ**が
+        // 進んだ。ばねを持つウィジェットが増えるたびにこの for を増やす形は、
+        // 増やし忘れたときに「開きかけで止まる」になる。
         for (_, target) in &self.managed {
-            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
-                field.advance(dt);
-            }
+            target.advance(dt);
         }
         // ランタイム側のアニメーターは scene_app と同じ 1 実装を通す (#55)。
         crate::runtime_shared::advance_animators(
@@ -2992,6 +2995,10 @@ impl<A: DeclarativeApp> AppState<A> {
             &self.style_animator,
             &self.presence_animator,
         )
+        // 登録済みウィジェットのばね (モーダルの開閉など)。進めるのが
+        // `advance` の for なら、名乗るのもここで揃える — 片方だけだと
+        // 「進めているのに 1 フレームで描画が止まる」か、その逆になる。
+        || self.managed.iter().any(|(_, t)| t.animating())
     }
 
     /// フォーカス中の登録済みテキスト欄がキャレットを点滅させているか。

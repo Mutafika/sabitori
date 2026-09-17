@@ -704,6 +704,48 @@ pub struct ElementStyle {
     /// Clickable/hoverable byte ranges in a text element (in-body links).
     /// `.link_ranges(..)`.
     pub link_ranges: Option<Vec<LinkRange>>,
+    /// **別の要素の箱に貼り付けて浮かせる指定** ([`Element::anchor_to`])。
+    ///
+    /// レイアウトが終わってから相手の箱を見て位置を決めるので、`view()` の中で
+    /// 座標を知らなくてよい。`Box` なのは、ほとんどの要素で `None` のまま
+    /// `ElementStyle` を太らせないため。
+    pub anchor: Option<Box<Anchor>>,
+}
+
+/// 浮かせる要素を**別の要素の箱に貼り付ける**指定 ([`Element::anchor_to`])。
+///
+/// ドロップダウンのメニュー・ポップオーバー・吹き出しのように「あの要素の
+/// すぐ下に出したい」ものは、相手の画面上の位置を知らないと置けない。これまでは
+/// 1 フレーム前のビルド結果から矩形を拾って (`BuildResult::region_rect`) アプリが
+/// 覚えておく必要があり、**開いた最初のフレームだけ位置がずれた**
+/// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 4)。
+///
+/// この指定はレイアウトの**後**に解決されるので、同じフレームで正しい位置に出る。
+/// 画面からはみ出す側に開こうとしたときは反対側へ折り返す。
+#[derive(Clone, Debug)]
+pub struct Anchor {
+    /// 貼り付ける相手の要素 id。見つからなければ**何もしない**
+    /// (要素は自分の `pos()` のまま出る)。
+    pub to: String,
+    /// 相手のどちら側に出すか。収まらなければ反対側へ折り返す。
+    pub placement: Placement,
+    /// 相手との隙間 (px)。
+    pub gap: f32,
+    /// 相手と同じ幅にする。ドロップダウンのメニューはこれが要る。
+    pub match_width: bool,
+}
+
+/// [`Anchor`] で、相手のどちら側に出すか。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// 下に出す (ドロップダウン)。収まらなければ上。
+    Below,
+    /// 上に出す。収まらなければ下。
+    Above,
+    /// 右に出す (サブメニュー)。収まらなければ左。
+    Right,
+    /// 左に出す。収まらなければ右。
+    Left,
 }
 
 impl Default for ElementStyle {
@@ -773,6 +815,7 @@ impl Default for ElementStyle {
             scrollbar_thumb: None,
             highlight: Vec::new(),
             link_ranges: None,
+            anchor: None,
         }
     }
 }
@@ -2120,6 +2163,56 @@ impl Element {
     /// Set position to absolute.
     pub fn absolute(mut self) -> Self {
         self.style.position = Position::Absolute;
+        self
+    }
+
+    /// **別の要素のすぐ下 (上・左・右) に浮かせる。**
+    ///
+    /// 位置はレイアウトが終わってから相手の箱を見て決まるので、`view()` の中で
+    /// 相手の座標を知る必要が無い。開いた最初のフレームから正しい位置に出る。
+    /// 画面の端で収まらなければ反対側へ折り返す。
+    ///
+    /// ```ignore
+    /// // トリガーと、その下に開くメニュー。メニューは `overlay` に置く。
+    /// div().id("plan").child(text("ベーシック"))
+    /// div().overlay()
+    ///     .anchor_to("plan", Placement::Below)
+    ///     .anchor_match_width()
+    ///     .children(items)
+    /// ```
+    ///
+    /// **相手の id が同じフレームのツリーに無ければ何も起きない** —
+    /// 要素は自分の `pos()` のまま出る (前フレームの位置に飛ばない)。
+    ///
+    /// 絶対配置になるので、親のフレックスの流れからは外れる。
+    pub fn anchor_to(mut self, id: impl Into<String>, placement: Placement) -> Self {
+        self.style.position = Position::Absolute;
+        self.style.anchor = Some(Box::new(Anchor {
+            to: id.into(),
+            placement,
+            gap: 4.0,
+            match_width: false,
+        }));
+        self
+    }
+
+    /// [`Element::anchor_to`] の相手との隙間 (px、既定 4.0)。
+    pub fn anchor_gap(mut self, gap: f32) -> Self {
+        if let Some(a) = self.style.anchor.as_mut() {
+            a.gap = gap;
+        }
+        self
+    }
+
+    /// [`Element::anchor_to`] の相手と同じ幅にする。
+    ///
+    /// ドロップダウンのメニューはトリガーと幅が揃っていないと崩れて見える。
+    /// 幅はレイアウトを決めてから分かるので、**この指定があるときだけ**
+    /// レイアウトをもう一度回す (無ければ費用はゼロ)。
+    pub fn anchor_match_width(mut self) -> Self {
+        if let Some(a) = self.style.anchor.as_mut() {
+            a.match_width = true;
+        }
         self
     }
 

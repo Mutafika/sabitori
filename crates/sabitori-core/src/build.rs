@@ -14,9 +14,9 @@
 //! ```
 
 use crate::element::{
-    AlignContent, AlignItems, AlignSelf, Cursor, Dimension, Display, Element, ElementKind,
+    AlignContent, AlignItems, AlignSelf, Anchor, Cursor, Dimension, Display, Element, ElementKind,
     ElementStyle, FlexDirection, FlexWrap, GridAutoFlow, GridPlacement, JustifyContent, Overflow,
-    Position, Track, TrackSize, Typography,
+    Placement, Position, Track, TrackSize, Typography,
 };
 use crate::Corners;
 use crate::render_list::{ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
@@ -469,23 +469,18 @@ fn build_tree_impl(
     // Phase 2: compute layout. If a measurer is available, use it via
     // compute_layout_with_measure; text nodes will be re-shaped under the
     // actual available width so wrapped height is correct.
-    let viewport = TaffySize {
-        width: AvailableSpace::Definite(viewport_width),
-        height: AvailableSpace::Definite(viewport_height),
-    };
-    if let Some(m) = measurer {
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                viewport,
-                |known, avail, _id, ctx, _style| measure_text_leaf(m, known, avail, ctx),
-            )
-            .expect("Taffy layout computation failed");
-    } else {
-        taffy
-            .compute_layout(root_node, viewport)
-            .expect("Taffy layout computation failed");
-    }
+    compute_layout_for(&mut taffy, root_node, viewport_width, viewport_height, measurer);
+
+    // Phase 2.5: 浮かせる要素 (`Element::anchor_to`) の位置を、貼り付け先の
+    // 箱から決める。アンカーが 1 つも無ければ即座に空で返る。
+    let anchor_positions = resolve_anchors(
+        &mut taffy,
+        root,
+        root_node,
+        viewport_width,
+        viewport_height,
+        measurer,
+    );
 
     // Phase 3: walk tree, collect absolute positions, emit render commands
     let mut render_list = RenderList::new();
@@ -521,6 +516,7 @@ fn build_tree_impl(
         false,
         probes,
         &mut probe_positions,
+        &anchor_positions,
     );
 
     // Reverse each list so front-most (last drawn) comes first for picking,
@@ -724,6 +720,252 @@ fn count_elements(element: &Element, counter: &mut usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2.5: アンカー解決 (`Element::anchor_to`)
+// ---------------------------------------------------------------------------
+
+/// レイアウトを 1 回回す。アンカーの幅合わせで 2 回目を回すので、測定器の
+/// 有無で分岐する部分をここに畳んでおく (2 か所に書くと片方だけ直る)。
+fn compute_layout_for(
+    taffy: &mut TaffyTree<TextNodeContext>,
+    root_node: taffy::NodeId,
+    viewport_width: f32,
+    viewport_height: f32,
+    measurer: Option<&dyn TextMeasure>,
+) {
+    let viewport = TaffySize {
+        width: AvailableSpace::Definite(viewport_width),
+        height: AvailableSpace::Definite(viewport_height),
+    };
+    if let Some(m) = measurer {
+        taffy
+            .compute_layout_with_measure(
+                root_node,
+                viewport,
+                |known, avail, _id, ctx, _style| measure_text_leaf(m, known, avail, ctx),
+            )
+            .expect("Taffy layout computation failed");
+    } else {
+        taffy
+            .compute_layout(root_node, viewport)
+            .expect("Taffy layout computation failed");
+    }
+}
+
+/// ツリーに [`Element::anchor_to`] が 1 つでもあるか。
+///
+/// 無いのが普通なので、**無いと分かった時点で以降を全部やらない**。
+/// アンカーのためにツリーを 1 周する費用を、使っていないアプリに払わせない。
+fn collect_anchor_targets(element: &Element, out: &mut std::collections::HashSet<String>) {
+    if let Some(a) = element.style.anchor.as_deref() {
+        out.insert(a.to.clone());
+    }
+    for c in &element.children {
+        collect_anchor_targets(c, out);
+    }
+}
+
+/// 貼り付け先の箱と、浮かせる要素の taffy ノードを集める。
+///
+/// 位置の計算は [`emit_commands`] と同じ式 — スケール、`translate`、
+/// スクロール量まで揃えないと、スクロールした一覧の中のトリガーで
+/// メニューだけ置いていかれる。
+#[allow(clippy::too_many_arguments)]
+fn collect_anchor_boxes(
+    taffy: &TaffyTree<TextNodeContext>,
+    element: &Element,
+    taffy_node: taffy::NodeId,
+    parent_x: f32,
+    parent_y: f32,
+    parent_scale: f32,
+    wanted: &std::collections::HashSet<String>,
+    rects: &mut std::collections::HashMap<String, Rect>,
+    pending: &mut Vec<(taffy::NodeId, Anchor)>,
+) {
+    let Ok(layout) = taffy.layout(taffy_node) else { return };
+    let style = &element.style;
+    let scale = parent_scale * style.scale;
+    let slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
+    let slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    let w = layout.size.width * scale;
+    let h = layout.size.height * scale;
+    let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
+    let abs_y = slot_y + (layout.size.height * parent_scale - h) * 0.5;
+
+    if let Some(id) = element.id.as_deref() {
+        if wanted.contains(id) {
+            rects.insert(id.to_string(), Rect::new(abs_x, abs_y, w, h));
+        }
+    }
+    if let Some(a) = style.anchor.as_deref() {
+        pending.push((taffy_node, a.clone()));
+    }
+
+    let child_offset_x = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) {
+        -style.scroll_x
+    } else {
+        0.0
+    };
+    let child_offset_y = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) {
+        -style.scroll_y
+    } else {
+        0.0
+    };
+
+    let children = taffy.children(taffy_node).unwrap_or_default();
+    for (i, child) in element.children.iter().enumerate() {
+        if let Some(&node) = children.get(i) {
+            collect_anchor_boxes(
+                taffy,
+                child,
+                node,
+                abs_x + child_offset_x * scale,
+                abs_y + child_offset_y * scale,
+                scale,
+                wanted,
+                rects,
+                pending,
+            );
+        }
+    }
+}
+
+/// 貼り付け先の箱から、浮かせる要素の左上を決める。
+///
+/// 開こうとした側に収まらなければ**反対側へ折り返す**。両側とも収まらない
+/// ときは、より広いほうへ出して画面内へ寄せる (メニューが画面外に消えるより、
+/// 端で切れるほうがまだ操作できる)。
+fn place_anchored(
+    target: Rect,
+    size: (f32, f32),
+    anchor: &Anchor,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> (f32, f32) {
+    let (w, h) = size;
+    let gap = anchor.gap;
+    let (mut x, mut y) = match anchor.placement {
+        Placement::Below | Placement::Above => {
+            let below = target.origin.y + target.size.height + gap;
+            let above = target.origin.y - gap - h;
+            let fits_below = below + h <= viewport_h;
+            let fits_above = above >= 0.0;
+            let y = match anchor.placement {
+                Placement::Below => {
+                    if fits_below || !fits_above {
+                        below
+                    } else {
+                        above
+                    }
+                }
+                _ => {
+                    if fits_above || !fits_below {
+                        above
+                    } else {
+                        below
+                    }
+                }
+            };
+            (target.origin.x, y)
+        }
+        Placement::Right | Placement::Left => {
+            let right = target.origin.x + target.size.width + gap;
+            let left = target.origin.x - gap - w;
+            let fits_right = right + w <= viewport_w;
+            let fits_left = left >= 0.0;
+            let x = match anchor.placement {
+                Placement::Right => {
+                    if fits_right || !fits_left {
+                        right
+                    } else {
+                        left
+                    }
+                }
+                _ => {
+                    if fits_left || !fits_right {
+                        left
+                    } else {
+                        right
+                    }
+                }
+            };
+            (x, target.origin.y)
+        }
+    };
+    // 画面内へ寄せる。入り切らない (ビューポートより大きい) ときは左上を優先。
+    if x + w > viewport_w {
+        x = viewport_w - w;
+    }
+    if x < 0.0 {
+        x = 0.0;
+    }
+    if y + h > viewport_h {
+        y = viewport_h - h;
+    }
+    if y < 0.0 {
+        y = 0.0;
+    }
+    (x, y)
+}
+
+/// 浮かせる要素の画面位置を決める。アンカーが無ければ空の表を返す。
+fn resolve_anchors(
+    taffy: &mut TaffyTree<TextNodeContext>,
+    root: &Element,
+    root_node: taffy::NodeId,
+    viewport_w: f32,
+    viewport_h: f32,
+    measurer: Option<&dyn TextMeasure>,
+) -> std::collections::HashMap<taffy::NodeId, (f32, f32)> {
+    let mut wanted = std::collections::HashSet::new();
+    collect_anchor_targets(root, &mut wanted);
+    if wanted.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let mut rects = std::collections::HashMap::new();
+    let mut pending: Vec<(taffy::NodeId, Anchor)> = Vec::new();
+    collect_anchor_boxes(
+        taffy, root, root_node, 0.0, 0.0, 1.0, &wanted, &mut rects, &mut pending,
+    );
+
+    // 幅合わせ (`anchor_match_width`) は**レイアウトに効く**ので、幅を書き換えて
+    // もう一度回す。中身の折り返しも新しい幅で決まる。絶対配置なので他の要素は
+    // 動かないが、taffy に測り直させないと中身が古い幅のままになる。
+    let mut relaid = false;
+    for (node, anchor) in &pending {
+        if !anchor.match_width {
+            continue;
+        }
+        let Some(target) = rects.get(&anchor.to) else { continue };
+        let Ok(style) = taffy.style(*node).cloned() else { continue };
+        let mut style = style;
+        style.size.width = taffy::Dimension::Length(target.size.width);
+        if taffy.set_style(*node, style).is_ok() {
+            relaid = true;
+        }
+    }
+    if relaid {
+        compute_layout_for(taffy, root_node, viewport_w, viewport_h, measurer);
+        rects.clear();
+        pending.clear();
+        collect_anchor_boxes(
+            taffy, root, root_node, 0.0, 0.0, 1.0, &wanted, &mut rects, &mut pending,
+        );
+    }
+
+    let mut out = std::collections::HashMap::new();
+    for (node, anchor) in pending {
+        // 相手が今フレームのツリーに居なければ**何もしない**。前フレームの
+        // 位置に飛ばすより、書かれた `pos()` のまま出すほうが直せる。
+        let Some(target) = rects.get(&anchor.to).copied() else { continue };
+        let Ok(layout) = taffy.layout(node) else { continue };
+        let size = (layout.size.width, layout.size.height);
+        out.insert(node, place_anchored(target, size, &anchor, viewport_w, viewport_h));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Phase 3: emit render commands
 // ---------------------------------------------------------------------------
 
@@ -793,6 +1035,9 @@ fn emit_commands(
     parent_disabled: bool,
     probes: &std::collections::HashSet<String>,
     probe_positions: &mut std::collections::HashMap<String, f32>,
+    // `Element::anchor_to` で貼り付け先から決まった画面位置 (taffy のノード単位)。
+    // ここに載っている要素は、taffy が置いた場所ではなくこちらへ出る。
+    anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
 ) {
     let disabled = parent_disabled || element.disabled;
     let layout = taffy.layout(taffy_node).expect("Missing layout");
@@ -810,8 +1055,14 @@ fn emit_commands(
     // this element. Children inherit the shifted origin via abs_x/abs_y.
     // Layout-space offsets arrive in unscaled px, so the *inherited* factor
     // converts them to screen px; this element's own factor is not in play yet.
-    let slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
-    let slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    let mut slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
+    let mut slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    // 貼り付け先から決まった位置があればそちらへ。子は `abs_x` / `abs_y` から
+    // 下りるので、中身も丸ごと一緒に動く。
+    if let Some(&(ax, ay)) = anchor_positions.get(&taffy_node) {
+        slot_x = ax;
+        slot_y = ay;
+    }
     let w = layout.size.width * scale;
     let h = layout.size.height * scale;
     // Own scale pivots on the element's center — growing on hover must not
@@ -875,7 +1126,7 @@ fn emit_commands(
                     no_select, scale,
                     parent_clip,
                     disabled,
-                    probes, probe_positions,
+                    probes, probe_positions, anchor_positions,
                 );
             }
         }
@@ -1223,7 +1474,7 @@ fn emit_commands(
                 no_select, scale,
                 child_clip,
                 disabled,
-                probes, probe_positions,
+                probes, probe_positions, anchor_positions,
             );
         }
     }
@@ -3734,3 +3985,162 @@ mod overlay_content_tests {
     }
 }
 
+
+#[cfg(test)]
+mod anchor_tests {
+    //! **浮かせる要素を、別の要素の箱に貼り付ける** ([#75] の 4)。
+    //!
+    //! ドロップダウンを「トリガーの下」に出すには相手の画面上の位置が要る。
+    //! これまでは 1 フレーム前のビルド結果から矩形を拾ってアプリが覚える形
+    //! しか無く、**開いた最初のフレームだけ位置がずれた**。ここで固定するのは
+    //! 「同じフレームで正しい位置に出る」こと。
+    //!
+    //! [#75]: https://github.com/Mutafika/sabitori/issues/75
+
+    use super::*;
+    use crate::element::{div, Placement, Px};
+
+    /// トリガー (`w=120, h=32`) を画面の (40, 100) に置き、その下にメニューを出す。
+    fn scene(placement: Placement, trigger_top: f32, menu_h: f32) -> BuildResult {
+        let root = div()
+            .w(Px(400.0))
+            .h(Px(300.0))
+            .child(
+                div()
+                    .id("trigger")
+                    .pos(40.0, trigger_top)
+                    .w(Px(120.0))
+                    .h(Px(32.0)),
+            )
+            .child(
+                div()
+                    .id("menu")
+                    .overlay()
+                    .anchor_to("trigger", placement)
+                    .w(Px(200.0))
+                    .h(Px(menu_h)),
+            );
+        build_tree(&root, 400.0, 300.0)
+    }
+
+    #[test]
+    fn a_menu_opens_right_under_its_trigger() {
+        let b = scene(Placement::Below, 100.0, 80.0);
+        let menu = b.region_rect("menu").expect("メニューが出ていない");
+        assert_eq!(menu.origin.x, 40.0, "トリガーの左に揃うこと");
+        assert_eq!(menu.origin.y, 100.0 + 32.0 + 4.0, "下に隙間 4px で出ること");
+    }
+
+    /// **下に収まらなければ上に開く。** 画面の下端にあるトリガーで、
+    /// メニューが画面外に消えないこと。
+    #[test]
+    fn a_menu_flips_above_when_it_would_fall_off_the_bottom() {
+        let b = scene(Placement::Below, 250.0, 80.0);
+        let menu = b.region_rect("menu").unwrap();
+        assert_eq!(menu.origin.y, 250.0 - 4.0 - 80.0, "上に折り返すこと");
+        assert!(menu.origin.y >= 0.0);
+    }
+
+    /// 上に開く指定でも、上に収まらなければ下へ。
+    #[test]
+    fn above_flips_down_when_there_is_no_room_up_there() {
+        let b = scene(Placement::Above, 10.0, 80.0);
+        let menu = b.region_rect("menu").unwrap();
+        assert_eq!(menu.origin.y, 10.0 + 32.0 + 4.0);
+    }
+
+    /// 横に出す指定 (サブメニュー)。
+    #[test]
+    fn right_placement_opens_beside_the_trigger() {
+        let root = div().w(Px(400.0)).h(Px(300.0))
+            .child(div().id("row").pos(40.0, 100.0).w(Px(120.0)).h(Px(32.0)))
+            .child(
+                div().id("sub").overlay()
+                    .anchor_to("row", Placement::Right)
+                    .w(Px(150.0)).h(Px(60.0)),
+            );
+        let b = build_tree(&root, 400.0, 300.0);
+        let sub = b.region_rect("sub").unwrap();
+        assert_eq!(sub.origin.x, 40.0 + 120.0 + 4.0);
+        assert_eq!(sub.origin.y, 100.0, "上辺が揃うこと");
+    }
+
+    /// **トリガーと同じ幅にできる。** 幅はレイアウトを決めてから分かるので、
+    /// 揃えるにはもう一度測り直す必要がある。
+    #[test]
+    fn match_width_makes_the_menu_as_wide_as_the_trigger() {
+        let root = div().w(Px(400.0)).h(Px(300.0))
+            .child(div().id("trigger").pos(40.0, 50.0).w(Px(173.0)).h(Px(32.0)))
+            .child(
+                div().id("menu").overlay()
+                    .anchor_to("trigger", Placement::Below)
+                    .anchor_match_width()
+                    .h(Px(80.0)),
+            );
+        let b = build_tree(&root, 400.0, 300.0);
+        let menu = b.region_rect("menu").unwrap();
+        assert_eq!(menu.size.width, 173.0);
+        assert_eq!(menu.origin.x, 40.0);
+    }
+
+    /// **中身も一緒に動く。** 位置だけずらして子が置いていかれると、
+    /// 枠だけが正しい場所に出て文字が元の位置に残る。
+    #[test]
+    fn the_contents_move_with_the_anchored_box() {
+        let root = div().w(Px(400.0)).h(Px(300.0))
+            .child(div().id("trigger").pos(40.0, 100.0).w(Px(120.0)).h(Px(32.0)))
+            .child(
+                div().id("menu").overlay()
+                    .anchor_to("trigger", Placement::Below)
+                    .w(Px(200.0)).h(Px(80.0))
+                    .child(div().id("item").w(Px(200.0)).h(Px(30.0))),
+            );
+        let b = build_tree(&root, 400.0, 300.0);
+        let item = b.region_rect("item").expect("項目が出ていない");
+        assert_eq!(item.origin.y, 100.0 + 32.0 + 4.0);
+        assert_eq!(item.origin.x, 40.0);
+    }
+
+    /// **相手が居なければ何も起きない。** 前フレームの位置に飛ぶより、
+    /// 書いたとおりに出るほうが原因を追える。
+    #[test]
+    fn an_unknown_anchor_leaves_the_element_where_it_was_written() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().id("menu").overlay()
+                .anchor_to("居ない", Placement::Below)
+                .pos(7.0, 9.0)
+                .w(Px(50.0)).h(Px(50.0)),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        let menu = b.region_rect("menu").unwrap();
+        assert_eq!((menu.origin.x, menu.origin.y), (7.0, 9.0));
+    }
+
+    /// **スクロールした一覧の中のトリガーにも追随する。**
+    /// 行が上へ流れた分だけメニューも上がること。
+    #[test]
+    fn an_anchor_inside_a_scrolled_list_follows_the_row() {
+        let rows: Vec<Element> = (0..20)
+            .map(|i| div().id(format!("row-{i}")).w(Px(300.0)).h(Px(40.0)))
+            .collect();
+        let root = div().w(Px(400.0)).h(Px(300.0))
+            .child(
+                div().id("list").scroll_manual(0.0, 120.0)
+                    .w(Px(300.0)).h(Px(200.0)).flex_col()
+                    .children(rows),
+            )
+            .child(
+                div().id("menu").overlay()
+                    .anchor_to("row-5", Placement::Below)
+                    .w(Px(150.0)).h(Px(40.0)),
+            );
+        let b = build_tree(&root, 400.0, 300.0);
+        let row = b.region_rect("row-5").expect("行が見えていない");
+        let menu = b.region_rect("menu").unwrap();
+        assert_eq!(
+            menu.origin.y,
+            row.origin.y + row.size.height + 4.0,
+            "スクロール量を足し忘れると、メニューだけ元の位置に残る"
+        );
+    }
+}

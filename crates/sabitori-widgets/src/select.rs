@@ -32,7 +32,7 @@
 //! }
 //! ```
 
-use sabitori_core::element::{div, text, Element, Px, Role};
+use sabitori_core::element::{div, text, Element, Percent, Placement, Px, Role};
 use sabitori_core::forms::dropdown_trigger;
 use sabitori_core::{Color, Rect};
 
@@ -257,6 +257,46 @@ impl DropdownState {
                 .h(Px(viewport_h))
                 .pos(0.0, 0.0)
                 .overlay()
+                .child(menu),
+        )
+    }
+
+    /// **トリガーの下に浮くメニュー。**
+    ///
+    /// [`DropdownState::overlay_at`] と同じ見た目だが、**アンカー矩形も
+    /// ビューポートの大きさも要らない** — 位置と幅はレイアウトの後に
+    /// トリガーの箱から決まる ([#75] の 4)。
+    ///
+    /// `overlay_at` は 1 フレーム前のビルド結果から矩形を拾う必要があり、
+    /// 開いた最初のフレームだけ位置がずれた。`menu_inline` は下の内容を
+    /// 押し下げるので、フォームの中では行が飛び跳ねる。
+    ///
+    /// ```ignore
+    /// div().w_full().h_full().children([
+    ///     state.trigger(&style, ctx.hovered.as_deref()),
+    ///     // 画面いっぱいの入れ物の直下に置く (背景が親の 100% を取る)
+    /// ]).children(state.menu(ctx.hovered.as_deref(), &style))
+    /// ```
+    ///
+    /// 閉じているときは `None`。
+    ///
+    /// [#75]: https://github.com/Mutafika/sabitori/issues/75
+    pub fn menu(&self, hovered: Option<&str>, style: &DropdownStyle) -> Option<Element> {
+        if !self.open {
+            return None;
+        }
+        let menu = self
+            .menu_panel(hovered, style)
+            .anchor_to(self.trigger_id(), Placement::Below)
+            .anchor_match_width()
+            .anchor_gap(2.0);
+
+        Some(
+            div()
+                .id(self.backdrop_id())
+                .overlay()
+                .w(Percent(100.0))
+                .h(Percent(100.0))
                 .child(menu),
         )
     }
