@@ -35,6 +35,10 @@
   - **`Harness::run_until_idle()`** — 非同期の結果を待つ (9)。上の `Tasks` 参照。
   - `polyline` が `sabitori::*` から使えるようになった (10)。`arc` は元から
     出ていて、polyline だけ落ちていた。
+  - **`polyline().points_normalized(..)`** — 点を箱に対する割合 (`0.0..=1.0`) で
+    渡せる (11)。`view()` の中では要素の幅が分からない (レイアウトはあとに走る)
+    ので、アプリは「窓の幅からサイドバーを引く」計算を自分で書いていた。
+    箱が決まってから掛けるので、リサイズにもそのまま追随する。
 
   あわせて `table` の doc に、**大きさを書かないと中身ごと消える**ことを
   書いた (`table(..).w_full().h_full()`)。伸縮列は親の幅から余りを取り、本体は
@@ -169,6 +173,13 @@ issue のうち 11 件 ([#60](https://github.com/Mutafika/sabitori/issues/60)〜
 headless Chromium に実際に描かせて確認している (`e2e/web/`)。
 
 ### Changed（破壊的）
+
+- **`forms` のラベルが等幅ではなくなった** ([#75](https://github.com/Mutafika/sabitori/issues/75) の 6)。
+  `checkbox` / `radio` / `dropdown_trigger` / `segment_control` /
+  `labeled_slider` / `labeled_progress_bar` のラベルに `.mono()` が固定で
+  付いていて、「ベーシック (¥1,100/日)」の ASCII 部分だけ等幅になる、といった
+  見た目になっていた。**数値の読み取り欄 (`numeric_input` の値、スライダー・
+  進捗の数値) は等幅のまま** — 桁が変わるたびに幅が揺れると落ち着かないので。
 
 - **コンテナが「中身より縦に小さくなれる」条件を絞った**
   ([#60](https://github.com/Mutafika/sabitori/issues/60))。これまで全ての

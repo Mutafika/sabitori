@@ -990,11 +990,21 @@ fn emit_commands(
         }
         ElementKind::Polyline(pl) => {
             // Points are local to the element box; offset to absolute px.
+            //
+            // `normalized` なら箱に対する割合。**ここで掛ける** — `view()` の
+            // 中では箱の大きさがまだ決まっていないので、アプリ側では書けない
+            // (#75 の 11)。`w` / `h` は scale 済みなので、ここでは掛け直さない。
             if pl.points.len() >= 2 {
                 let pts = pl
                     .points
                     .iter()
-                    .map(|(px, py)| Point::new(abs_x + *px * scale, abs_y + *py * scale))
+                    .map(|(px, py)| {
+                        if pl.normalized {
+                            Point::new(abs_x + *px * w, abs_y + *py * h)
+                        } else {
+                            Point::new(abs_x + *px * scale, abs_y + *py * scale)
+                        }
+                    })
                     .collect();
                 target.commands.push(RenderCommand::Polyline(PolylineDraw {
                     points: pts,
@@ -2358,7 +2368,43 @@ mod tests {
         assert_eq!(d.corner_radii.top_left, 8.0);
     }
 
-/// **`polyline()` が、大きさを書かなくても描かれること。**
+    /// **割合で渡した点が、箱の大きさに合わせて解決されること (#75 の 11)。**
+    ///
+    /// `view()` の中では要素の幅が分からない (レイアウトはあとに走る) ので、
+    /// アプリは「窓の幅からサイドバーを引く」といった計算を自分で書いていた。
+    /// 箱が決まってから掛けるほうが、リサイズにもそのまま追随する。
+    #[test]
+    fn normalized_polyline_points_resolve_against_the_box() {
+        use crate::element::*;
+        let chart = |w: f32| {
+            div().w(Px(w)).h(Px(100.0)).flex_col().child(
+                polyline()
+                    .points_normalized([(0.0, 1.0), (0.5, 0.0), (1.0, 0.5)])
+                    .stroke_width(2.0)
+                    .stroke_color(crate::Color::WHITE)
+                    .w_full()
+                    .h_full(),
+            )
+        };
+
+        for width in [200.0, 640.0] {
+            let r = build_tree(&chart(width), 800.0, 600.0);
+            let drawn = r
+                .render_list
+                .commands
+                .iter()
+                .find_map(|c| match c {
+                    RenderCommand::Polyline(p) => Some(p),
+                    _ => None,
+                })
+                .expect("線が無い");
+            assert_eq!(drawn.points[0], Point::new(0.0, 100.0), "左下");
+            assert_eq!(drawn.points[1], Point::new(width / 2.0, 0.0), "真ん中の上");
+            assert_eq!(drawn.points[2], Point::new(width, 50.0), "右の中ほど");
+        }
+    }
+
+    /// **`polyline()` が、大きさを書かなくても描かれること。**
     ///
     /// 形を決めているのは点であって箱ではないのに、箱が 0 の要素は描画ごと
     /// 飛ばされていた。`flex_col` の中に置けば高さは中身なり = 0 になるので、

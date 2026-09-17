@@ -1062,11 +1062,22 @@ pub enum ElementKind {
 #[derive(Clone, Debug)]
 pub struct PolylineKind {
     /// Vertices in logical px, relative to the element's layout box origin.
+    ///
+    /// [`normalized`](Self::normalized) が立っていると `0.0..=1.0` の割合として
+    /// 読まれ、レイアウトが決まった箱の大きさに掛けられる。
     pub points: Vec<(f32, f32)>,
     /// Stroke width (logical px).
     pub width: f32,
     /// Stroke color.
     pub color: Color,
+    /// 点を箱に対する割合 (`0.0..=1.0`) として読むか。
+    ///
+    /// **`view()` の中では要素の幅が分からない** — レイアウトはそのあとに
+    /// 走るので、グラフを描くアプリは「窓の幅からサイドバーの幅を引く」
+    /// といった計算を自分で書いていた。箱が決まってから掛けるほうが、
+    /// リサイズにも勝手に追随する
+    /// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 11)。
+    pub normalized: bool,
 }
 
 /// Layout-independent arc parameters. Wrapped inside [`ElementKind::Arc`].
@@ -1304,6 +1315,7 @@ pub fn polyline() -> Element {
             points: Vec::new(),
             width: 1.5,
             color: Color::TRANSPARENT,
+            normalized: false,
         }),
         style: Box::default(),
         children: Vec::new(),
@@ -2405,6 +2417,28 @@ impl Element {
     }
 
     /// Set the stroke color of a polyline.
+    /// 点を**箱に対する割合** (`0.0..=1.0`) として読む。
+    ///
+    /// `view()` の中では要素の幅が分からない (レイアウトはあとに走る) ので、
+    /// 0〜100% のグラフは割合で渡すほうが素直に書ける。リサイズにもそのまま
+    /// 追随する ([#75](https://github.com/Mutafika/sabitori/issues/75) の 11)。
+    ///
+    /// ```ignore
+    /// polyline()
+    ///     .points_normalized(rates.iter().enumerate()
+    ///         .map(|(i, r)| (i as f32 / (n - 1) as f32, 1.0 - r / 100.0)))
+    ///     .stroke_width(2.0)
+    /// ```
+    ///
+    /// y は**下向き**なので、上が 100% のグラフは `1.0 - 値` を渡す。
+    pub fn points_normalized(mut self, pts: impl IntoIterator<Item = (f32, f32)>) -> Self {
+        if let ElementKind::Polyline(p) = &mut self.kind {
+            p.points = pts.into_iter().collect();
+            p.normalized = true;
+        }
+        self
+    }
+
     pub fn stroke_color(mut self, c: Color) -> Self {
         if let ElementKind::Polyline(p) = &mut self.kind {
             p.color = c;

@@ -42,6 +42,8 @@ pub fn numeric_input(
     let active_border = if editing { focus_border_color } else { border_color };
 
     let mut inner_children: Vec<Element> = vec![
+        // 数値は等幅のまま。桁が変わるたびに幅が揺れると、ドラッグ中の値が
+        // 落ち着かない (ラベルの等幅は #75 の 6 で外した)。
         text(display_text)
             .mono()
             .font_size(13.0)
@@ -131,7 +133,6 @@ pub fn checkbox(
         .children([
             box_el,
             text(label)
-                .mono()
                 .font_size(14.0)
                 .color(text_color)
                 .shrink(0.0),
@@ -265,7 +266,6 @@ pub fn radio(
         .children([
             circle,
             text(label)
-                .mono()
                 .font_size(14.0)
                 .color(text_color)
                 .shrink(0.0),
@@ -358,7 +358,6 @@ pub fn labeled_slider(
         .h(Px(24.0))
         .children([
             text(label)
-                .mono()
                 .font_size(12.0)
                 .color(text_color)
                 .w(Px(label_w))
@@ -406,7 +405,6 @@ pub fn dropdown_trigger(
         .label(selected_label)
         .children([
             text(selected_label)
-                .mono()
                 .font_size(14.0)
                 .color(text_color)
                 .shrink(0.0),
@@ -475,7 +473,6 @@ pub fn labeled_progress_bar(
         .items_center()
         .children([
             text(label)
-                .mono()
                 .font_size(12.0)
                 .color(text_color)
                 .w(Px(label_w))
@@ -554,7 +551,6 @@ pub fn segment_control(
                 .shrink(0.0)
                 .child(
                     text(*label)
-                        .mono()
                         .font_size(13.0)
                         .color(seg_text)
                         .shrink(0.0),
