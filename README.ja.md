@@ -92,11 +92,11 @@ div().scroll("file-list").flex_1().flex_col().children(rows)
 
 配線はこれで全部です。ホイールの配送も慣性のばねもフレーム跨ぎの位置保持もランタイムがやります。**`on_scroll` を実装してはいけません** — ホイールは既に届いているので、自分でも受けると二重に動きます。
 
-位置を読むのは `ctx.scroll_info("file-list")`、プログラムから動かすのは `scroll_intents()` の戻り値：
+位置を読むのは `ctx.scroll_info("file-list")`、プログラムから動かすのは `scroll_intents()` の戻り値です。**書いた軸だけ動く** (`ScrollIntent::x` / `::y` / `::xy`) ので、縦を指定して横が左端へ飛ぶことはありません：
 
 ```rust
-fn scroll_intents(&mut self) -> Vec<(String, f32)> {
-    self.pending.take().map(|y| ("file-list".into(), y)).into_iter().collect()
+fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
+    self.pending.take().map(|y| ScrollIntent::y("file-list", y)).into_iter().collect()
 }
 ```
 

@@ -2064,11 +2064,11 @@ impl DeclarativeApp for FilerApp {
 
     /// 溜めておいたスクロール要求をランタイムへ渡す。 `.scroll(id)` コンテナへの
     /// プログラム的なスクロールはこの口から行う (自分で位置を書き換えない)。
-    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+    fn scroll_intents(&mut self) -> Vec<sabitori::ScrollIntent> {
         self.tabs
             .iter_mut()
             .filter_map(|t| t.pending_scroll.take())
-            .map(|y| (FILE_SCROLL_ID.to_string(), y))
+            .map(|y| sabitori::ScrollIntent::y(FILE_SCROLL_ID, y))
             .collect()
     }
 

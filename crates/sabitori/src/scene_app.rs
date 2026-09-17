@@ -1100,9 +1100,13 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
                 // Apply programmatic scroll requests now that content extents
                 // are known, so `smooth_scroll_to` clamps to the real range.
-                for (id, y) in self.app.scroll_intents() {
-                    if let Some(sv) = self.scroll_states.get_mut(&id) {
-                        sv.smooth_scroll_to(y);
+                for intent in self.app.scroll_intents() {
+                    if let Some(sv) = self.scroll_states.get_mut(&intent.id) {
+                        // 指定した軸だけ動かす (declarative 側と同じ規則)。
+                        sv.smooth_scroll_to_xy(
+                            intent.x.unwrap_or_else(|| sv.scroll_x.target()),
+                            intent.y.unwrap_or_else(|| sv.scroll_y.target()),
+                        );
                     }
                 }
                 // Build the overlay tree: external `overlay_view()` + tooltip

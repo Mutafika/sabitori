@@ -560,9 +560,30 @@ impl<A: DeclarativeApp> Harness<A> {
         }
     }
 
+    /// 横に `dx` だけスクロールする (`scroll` の横版)。
+    ///
+    /// ホイールの経路 (`wheel_at`) と違って**その場で位置を動かす**ので、
+    /// 座標も符号の向きも気にせずに書ける。ガント表や横に長い表の
+    /// 「左端へ戻す」を確かめるのに使う ([#74])。
+    ///
+    /// [#74]: https://github.com/Mutafika/sabitori/issues/74
+    pub fn scroll_x(&mut self, id: &str, dx: f32) {
+        if let Some(sv) = self.state.scroll_states.get_mut(id) {
+            sv.on_scroll_xy(-dx, 0.0);
+            for _ in 0..240 {
+                sv.tick(1.0 / 60.0);
+            }
+        }
+    }
+
     /// 管理スクロールコンテナの現在位置。 管理対象でなければ `None`。
     pub fn scroll_y(&self, id: &str) -> Option<f32> {
         self.state.scroll_states.get(id).map(|sv| sv.scroll_y.value())
+    }
+
+    /// 管理スクロールコンテナの現在の横位置。
+    pub fn scroll_x_of(&self, id: &str) -> Option<f32> {
+        self.state.scroll_states.get(id).map(|sv| sv.scroll_x.value())
     }
 
     /// このフレームに居る id を並べる。 assert が落ちたときの手掛かり用。

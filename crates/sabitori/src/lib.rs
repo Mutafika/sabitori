@@ -55,7 +55,14 @@ pub mod ios_keyboard;
 /// 貼り付けが canvas だけでは届かないため (issue #73)。
 #[cfg(target_arch = "wasm32")]
 pub mod web_ime;
-pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, UiCapture, run_declarative};
+/// Web の URL と戻るボタン (History) の橋渡し (issue #74)。
+#[cfg(target_arch = "wasm32")]
+pub mod web_history;
+/// DOM 起点の出来事でランタイムを起こす口。lazy_render が既定 true なので、
+/// これが無いと積んだ入力が誰にも汲まれない (issue #73 / #74)。
+#[cfg(target_arch = "wasm32")]
+pub mod web_wake;
+pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, ScrollIntent, UiCapture, run_declarative};
 pub use scene_app::SceneApp;
 pub use scene_app::run_scene;
 pub use sabitori_gpu::{GpuContext, SceneRenderContext, UiOverlayRenderer};

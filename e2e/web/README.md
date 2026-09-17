@@ -43,6 +43,11 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 node drive.mjs http://127.0.0.1:8099/index.html /tmp/last.png probes/ime.mjs
 ```
 
+`probes/history.mjs` は **URL と戻るボタン (#74)** を見る: 押すと
+`location.hash` が変わり、戻ると画面も戻る。**「URL は戻ったのに画面が戻らない」**
+がここで見つかった — `lazy_render` が既定 true なので、DOM 起点の出来事では
+ランタイムが起きず、積んだものが誰にも汲まれない (`web_wake`)。
+
 `probes/clipboard.mjs` は **web のクリップボード (#76)** を通しで見る:
 打つ → ⌘A → ⌘X で欄が空になる → ⌘V で戻る。クリップボードの中身は CDP から
 直接読めないので、**貼り戻して**確かめている。
@@ -66,6 +71,7 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/last.png probes/ime.mjs
 | `polyline()` の折れ線 | wasm の初期化から `LineRenderer` が落ちた (#66) |
 | `rounded(Px(999.0))` のピル | 角丸の半径の丸めが外れた (#71) |
 | `text_input` | 隠し textarea の橋渡しが切れた = IME が届かない (#73) |
+| 「詳細をひらく」ボタン | URL / 戻るボタンの橋渡しが切れた (#74) |
 | そもそも画面が出る | GPU の limits を要求しすぎている (#72) |
 
 CI には載せていない。wasm の成果物が 35MB あり、毎 PR で焼くには重すぎる。

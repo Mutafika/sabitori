@@ -74,6 +74,8 @@ web-sys = { workspace = true, features = [
     # DOM の copy / cut / paste でクリップボードを扱う (#76)。navigator.clipboard は
     # Promise で同期 API に載らず、http では使えない。
     "ClipboardEvent", "DataTransfer",
+    # URL と戻るボタン (#74)。
+    "History", "Location",
 ] }
 console_error_panic_hook.workspace = true
 console_log.workspace = true

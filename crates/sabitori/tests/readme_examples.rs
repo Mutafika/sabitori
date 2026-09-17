@@ -155,8 +155,8 @@ div().scroll("file-list").flex_1().flex_col().children(rows)
             .h_full()
         }
 
-fn scroll_intents(&mut self) -> Vec<(String, f32)> {
-    self.pending.take().map(|y| ("file-list".into(), y)).into_iter().collect()
+fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
+    self.pending.take().map(|y| ScrollIntent::y("file-list", y)).into_iter().collect()
 }
     }
 }

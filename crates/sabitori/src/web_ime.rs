@@ -75,6 +75,11 @@ struct Bridge {
 
 fn push(event: InputEvent) {
     QUEUE.with(|q| q.borrow_mut().push(event));
+    // **積んだら起こす。** 汲むのは描画フレームの中で、そのフレームは
+    // `lazy_render` のせいで「何か起きた」ときしか回らない。ソフトキーボードで
+    // 打っているあいだ canvas には winit のイベントが 1 つも来ないので、
+    // ここで起こさないと次に画面を触るまで文字が出ない (crate::web_wake)。
+    crate::web_wake::wake();
 }
 
 /// ランタイムが毎フレーム汲む。
@@ -260,6 +265,7 @@ fn build() -> Option<Bridge> {
         clear_textarea();
     }));
     keep.push(listen(target, "cut", |e| {
+        crate::web_wake::wake();
         if write_clipboard(&e) {
             // **書けたときだけ**合図を立てる。順序が逆だと、書けなかった環境で
             // 「切り取ったのにどこにも残らない」が復活する (issue #33)。

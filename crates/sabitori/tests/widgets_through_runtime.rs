@@ -12,7 +12,7 @@
 //! 通せる。 widget が Element を返す形に揃った (0.4.0) からこそ書ける。
 
 use sabitori::testing::Harness;
-use sabitori::{div, Element, InputEvent, Px, ViewContext};
+use sabitori::{div, DeclarativeApp, Element, InputEvent, Px, ScrollIntent, ViewContext};
 use sabitori_widgets::{
     split_pane, table, table_clicked_row, tree_clicked_row, tree_view, virtual_list, Cell,
     SplitDirection, SplitPaneState, SplitPaneStyle, TableColumn, TableState, TableStyle, TreeNode,
@@ -380,10 +380,10 @@ impl sabitori::DeclarativeApp for FilerShape {
             .children(children)
     }
 
-    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+    fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
         self.pending_scroll
             .take()
-            .map(|y| ("file-list".to_string(), y))
+            .map(|y| ScrollIntent::y("file-list", y))
             .into_iter()
             .collect()
     }
@@ -575,5 +575,88 @@ fn a_focusable_non_text_element_is_not_reported() {
     assert!(
         h.unrouted_text_inputs().is_empty(),
         "テキスト欄でないものは対象外"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 横スクロール (#74)
+// ---------------------------------------------------------------------------
+
+/// 横にも縦にも動く表 (配車表のガント相当)。
+#[derive(Default)]
+struct Gantt {
+    reset_timeline: bool,
+    jump_to_row: Option<f32>,
+}
+
+impl DeclarativeApp for Gantt {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        let rows: Vec<Element> = (0..40)
+            .map(|_| div().w(Px(3000.0)).h(Px(40.0)))
+            .collect();
+        div().w_full().h_full().child(
+            div()
+                .id("timeline")
+                .scroll("timeline")
+                .w(Px(600.0))
+                .h(Px(400.0))
+                .flex_col()
+                .children(rows),
+        )
+    }
+
+    fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
+        let mut out = Vec::new();
+        if std::mem::take(&mut self.reset_timeline) {
+            // 期間を変えたら時間軸だけ左端へ。**縦は動かさない。**
+            out.push(ScrollIntent::x("timeline", 0.0));
+        }
+        if let Some(y) = self.jump_to_row.take() {
+            out.push(ScrollIntent::y("timeline", y));
+        }
+        out
+    }
+}
+
+/// **横位置をアプリから戻せること。** これが無いと、期間を変えても時間軸が
+/// 前の位置のままで、帯が画面外に居る。回避策は「読み直すたびに増える番号を
+/// scroll の id に混ぜて状態ごと作り直す」で、スクロール位置の記憶が毎回
+/// 捨てられていた。
+#[test]
+fn an_intent_can_move_the_horizontal_axis() {
+    let mut h = Harness::new(Gantt::default(), 800.0, 600.0);
+    h.frame();
+
+    h.scroll_x("timeline", 900.0);
+    h.frame();
+    assert!(h.scroll_x_of("timeline").unwrap() > 800.0, "まず横へ動かす");
+
+    h.app_mut().reset_timeline = true;
+    h.frame();
+    h.settle();
+
+    assert_eq!(h.scroll_x_of("timeline"), Some(0.0), "左端へ戻っていない");
+}
+
+/// **書いた軸だけ動くこと。** 縦を指定しただけで横が左端へ飛ぶと、
+/// ガント表では「行を選ぶたびに時間軸が朝に戻る」になる。
+#[test]
+fn an_intent_leaves_the_other_axis_alone() {
+    let mut h = Harness::new(Gantt::default(), 800.0, 600.0);
+    h.frame();
+
+    h.scroll_x("timeline", 900.0);
+    h.frame();
+    let x_before = h.scroll_x_of("timeline").unwrap();
+
+    h.app_mut().jump_to_row = Some(300.0);
+    h.frame();
+    h.settle();
+
+    assert_eq!(h.scroll_y("timeline"), Some(300.0), "縦は動いていること");
+    assert_eq!(
+        h.scroll_x_of("timeline"),
+        Some(x_before),
+        "縦の指定で横が動いた"
     );
 }

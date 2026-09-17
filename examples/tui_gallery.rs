@@ -2345,10 +2345,10 @@ impl DeclarativeApp for Gallery {
         root.children(root_kids)
     }
 
-    fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+    fn scroll_intents(&mut self) -> Vec<sabitori::ScrollIntent> {
         self.sidebar_scroll_intent
             .take()
-            .map(|y| vec![("sidebar".to_string(), y)])
+            .map(|y| vec![sabitori::ScrollIntent::y("sidebar", y)])
             .unwrap_or_default()
     }
 

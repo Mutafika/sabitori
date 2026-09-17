@@ -9,15 +9,27 @@ use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
 
 struct App {
     name: TextInputState,
+    /// #74: URL と戻るボタン。`#/detail/<n>` を出し入れする。
+    detail: Option<u32>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self { name: TextInputState::new("お名前") }
+        Self { name: TextInputState::new("お名前"), detail: None }
     }
 }
 
 impl DeclarativeApp for App {
+    fn url_fragment(&self) -> Option<String> {
+        Some(self.fragment())
+    }
+
+    fn on_url_changed(&mut self, fragment: &str) {
+        self.detail = fragment
+            .strip_prefix("#/detail/")
+            .and_then(|n| n.parse().ok());
+    }
+
     fn view(&self, ctx: &ViewContext) -> Element {
         div()
             .w_full()
@@ -39,6 +51,23 @@ impl DeclarativeApp for App {
                     &self.name,
                     &TextInputStyle::default_dark(),
                 )),
+                // #74: 画面を変えると URL が変わり、戻るボタンで戻れるか
+                div().flex_row().gap(8.0).p(Px(8.0)).children([
+                    div()
+                        .id("open-detail")
+                        .px_pad(Px(10.0))
+                        .py(Px(6.0))
+                        .bg(Color::from_hex("#2f6fed"))
+                        .click(ctx, "open-detail", |app: &mut App| {
+                            app.detail = Some(app.detail.unwrap_or(0) + 1)
+                        })
+                        .child(text("詳細をひらく").color(Color::WHITE)),
+                    text(match self.detail {
+                        Some(n) => format!("詳細 #{n}"),
+                        None => "一覧".to_string(),
+                    })
+                    .color(Color::WHITE),
+                ]),
                 // #71: ピルが描かれるか
                 div()
                     .id("pill")
@@ -48,6 +77,15 @@ impl DeclarativeApp for App {
                     .rounded(Px(999.0))
                     .child(text("貸出可能").color(Color::BLACK)),
             ])
+    }
+}
+
+impl App {
+    fn fragment(&self) -> String {
+        match self.detail {
+            Some(n) => format!("#/detail/{n}"),
+            None => "#/list".to_string(),
+        }
     }
 }
 

@@ -137,6 +137,62 @@ pub struct UiCapture {
     pub wants_keyboard: bool,
 }
 
+/// アプリからの「ここまでスクロールしてほしい」という要求。
+///
+/// [`DeclarativeApp::scroll_intents`] が返す。指定した軸だけが動く —
+/// `y` だけ書けば横位置はそのまま、`x` だけ書けば縦位置はそのまま。
+///
+/// # なぜ両軸なのか
+///
+/// 以前は `(id, y)` の組しか渡せなかった。配車表 (車両 × 時間のガント) で
+/// 期間を変えたときに時間軸を左端へ戻す、が**書く手段ごと無かった**。
+/// 回避策は「読み直すたびに増える番号を scroll の id に混ぜて、状態ごと
+/// 作り直す」で、スクロール位置の記憶が毎回捨てられていた
+/// ([#74](https://github.com/Mutafika/sabitori/issues/74))。
+///
+/// ```ignore
+/// fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
+///     // 期間を変えたら時間軸だけ左端へ。縦 (車両の並び) は動かさない。
+///     std::mem::take(&mut self.reset_timeline)
+///         .then(|| ScrollIntent::x("dispatch-timeline", 0.0))
+///         .into_iter()
+///         .collect()
+/// }
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollIntent {
+    /// `.scroll(id)` を書いたコンテナの id。
+    pub id: String,
+    /// 横位置 (px)。`None` なら今の位置のまま。
+    pub x: Option<f32>,
+    /// 縦位置 (px)。`None` なら今の位置のまま。
+    pub y: Option<f32>,
+}
+
+impl ScrollIntent {
+    /// 縦だけ動かす。
+    pub fn y(id: impl Into<String>, y: f32) -> Self {
+        Self { id: id.into(), x: None, y: Some(y) }
+    }
+
+    /// 横だけ動かす。
+    pub fn x(id: impl Into<String>, x: f32) -> Self {
+        Self { id: id.into(), x: Some(x), y: None }
+    }
+
+    /// 両方動かす。
+    pub fn xy(id: impl Into<String>, x: f32, y: f32) -> Self {
+        Self { id: id.into(), x: Some(x), y: Some(y) }
+    }
+}
+
+/// 旧い `(id, y)` の組をそのまま渡せる。`.into()` を足すだけで移行できる。
+impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
+    fn from((id, y): (S, f32)) -> Self {
+        Self::y(id, y)
+    }
+}
+
 /// アプリ本体。 `view()` だけ実装すれば動く。
 ///
 /// # 描かれないフレームがある
@@ -404,7 +460,36 @@ pub trait DeclarativeApp: 'static {
     /// Return pending programmatic scroll requests for `.scroll(id)` containers.
     /// Drained once per frame after layout. `(id, y)` — pass `f32::MAX` for "bottom".
     /// Return empty to leave scroll untouched (user controls it via wheel).
-    fn scroll_intents(&mut self) -> Vec<(String, f32)> { Vec::new() }
+    fn scroll_intents(&mut self) -> Vec<ScrollIntent> { Vec::new() }
+
+    /// 今の画面を表す URL の断片 (web のみ)。
+    ///
+    /// 変わったらランタイムが `history.pushState` する。戻る / 進む と
+    /// 再読み込みが効くようになり、詳細画面の URL を人に渡せる。
+    /// native では呼ばれるが何も起きない。
+    ///
+    /// ```ignore
+    /// fn url_fragment(&self) -> Option<String> {
+    ///     Some(match &self.route {
+    ///         Route::List => "#/vehicles".into(),
+    ///         Route::Detail(id) => format!("#/vehicle/{id}"),
+    ///     })
+    /// }
+    /// fn on_url_changed(&mut self, fragment: &str) {
+    ///     self.route = Route::parse(fragment);
+    /// }
+    /// ```
+    ///
+    /// `Route` との対応はアプリが持つ。ランタイムは**文字列を出し入れする
+    /// だけ**で、経路の意味には触らない
+    /// ([#74](https://github.com/Mutafika/sabitori/issues/74))。
+    fn url_fragment(&self) -> Option<String> { None }
+
+    /// 戻る / 進む、または起動時の URL。[`Self::url_fragment`] の対。
+    ///
+    /// ランタイムが `pushState` した直後には**呼ばれない** (アプリが既に
+    /// その画面に居るので、呼ぶと自分の遷移を自分で解釈し直すことになる)。
+    fn on_url_changed(&mut self, _fragment: &str) {}
 
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
@@ -1673,6 +1758,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         }
                     }
 
+                    // URL と戻るボタン (#74)。アプリが名乗る断片を押し、
+                    // 戻る / 進む / 起動時の URL を渡す。
+                    crate::web_history::ensure_attached();
+                    if let Some(fragment) = crate::web_history::take() {
+                        self.app.on_url_changed(&fragment);
+                        self.dirty = true;
+                    }
+                    crate::web_history::sync(self.app.url_fragment().as_deref());
+
                     // 切り取りは「クリップボードへ書けてから消す」(issue #33)。
                     // 書けたかを知っているのはブラウザの `cut` イベントなので、
                     // 合図を汲んでからここで消す。
@@ -2517,9 +2611,14 @@ impl<A: DeclarativeApp> AppState<A> {
         crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
 
         // Apply programmatic scroll requests after content_height is known
-        for (id, y) in self.app.scroll_intents() {
-            if let Some(sv) = self.scroll_states.get_mut(&id) {
-                sv.smooth_scroll_to(y);
+        for intent in self.app.scroll_intents() {
+            if let Some(sv) = self.scroll_states.get_mut(&intent.id) {
+                // 指定した軸だけ動かす。片方を 0 で埋めると、縦を指定しただけで
+                // 横が左端へ飛ぶ (ガント表で毎回見出しへ戻される)。
+                sv.smooth_scroll_to_xy(
+                    intent.x.unwrap_or_else(|| sv.scroll_x.target()),
+                    intent.y.unwrap_or_else(|| sv.scroll_y.target()),
+                );
             }
         }
         // 登録済みテキスト欄からのスクロール要求 — キャレットが箱の外に出たら
@@ -4131,6 +4230,10 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                         gpu.resize(size.width, size.height, window.scale_factor());
                     }
                     let mut s = inner.borrow_mut();
+                    // DOM の橋渡し (IME / History) が 1 フレーム起こせるように
+                    // 窓を渡す。lazy_render が既定 true なので、これが無いと
+                    // 積んだ入力が誰にも汲まれない。
+                    crate::web_wake::set_window(window.clone());
                     let r = init_renderers(&s.app, &gpu);
                     s.renderer = Some(gpu);
                     s.text_renderer = Some(r.text);
@@ -4241,7 +4344,7 @@ mod frame_tests {
         /// runtime calls `view` fresh every frame, and so does this.
         tree: Option<Box<dyn Fn() -> Element>>,
         /// Handed to the runtime by `scroll_intents`.
-        intents: Vec<(String, f32)>,
+        intents: Vec<ScrollIntent>,
         /// Handed to the runtime by `build_probes`.
         probes: Vec<String>,
         /// `probe_positions` as of the most recent `on_build`.
@@ -4282,7 +4385,7 @@ mod frame_tests {
             }
         }
 
-        fn scroll_intents(&mut self) -> Vec<(String, f32)> {
+        fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
             std::mem::take(&mut self.intents)
         }
 
@@ -4476,7 +4579,7 @@ mod frame_tests {
         run_frame(&mut state, 400.0, 300.0);
         assert_eq!(state.scroll_states["pane"].scroll_y.target(), 0.0);
 
-        state.app.intents = vec![("pane".to_string(), 120.0)];
+        state.app.intents = vec![ScrollIntent::y("pane", 120.0)];
         run_frame(&mut state, 400.0, 300.0);
 
         assert_eq!(state.scroll_states["pane"].scroll_y.target(), 120.0);
@@ -4501,7 +4604,7 @@ mod frame_tests {
         });
 
         run_frame(&mut state, 400.0, 300.0);
-        state.app.intents = vec![("pane".to_string(), 100_000.0)];
+        state.app.intents = vec![ScrollIntent::y("pane", 100_000.0)];
         run_frame(&mut state, 400.0, 300.0);
 
         let pane = &state.scroll_states["pane"];

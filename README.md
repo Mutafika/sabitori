@@ -92,11 +92,11 @@ div().scroll("file-list").flex_1().flex_col().children(rows)
 
 That is the whole wiring. The runtime routes the wheel, runs the momentum spring, and keeps the position across frames. Do **not** implement `on_scroll` for it — the wheel is already delivered, so adding your own handler scrolls twice.
 
-Read the position back with `ctx.scroll_info("file-list")`, and scroll programmatically by returning from `scroll_intents()`:
+Read the position back with `ctx.scroll_info("file-list")`, and scroll programmatically by returning from `scroll_intents()`. Each intent moves only the axes it names (`ScrollIntent::x` / `::y` / `::xy`), so scrolling one axis never resets the other:
 
 ```rust
-fn scroll_intents(&mut self) -> Vec<(String, f32)> {
-    self.pending.take().map(|y| ("file-list".into(), y)).into_iter().collect()
+fn scroll_intents(&mut self) -> Vec<ScrollIntent> {
+    self.pending.take().map(|y| ScrollIntent::y("file-list", y)).into_iter().collect()
 }
 ```
 
