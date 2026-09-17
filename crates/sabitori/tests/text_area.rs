@@ -387,3 +387,66 @@ fn a_paste_invalidates_a_pending_click() {
         "貼り付け後もカーソルが末尾に居ること (クリック位置に飛んでいない)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 指定した行数の箱 (#70)
+// ---------------------------------------------------------------------------
+
+/// **空欄でも、指定した行数ぶんの箱が見えること。**
+///
+/// v0.11.2 では枠と背景が中身 (`field`) 側に付いていて、中身は中身なりの
+/// 高さしか持たなかった。結果、`text_area(.., 6)` を置いても空欄のときは
+/// 1 行ぶんの枠しか描かれず、下に 5 行ぶんの透明な領域が残る。フォームに
+/// 不自然な空白ができ、枠の下を押しても欄に入らない。
+#[test]
+fn an_empty_text_area_draws_the_box_it_was_asked_for() {
+    let h = app();
+
+    let viewport = h.rect_of("body::viewport").expect("viewport");
+    let field = h.rect_of("body").expect("field");
+
+    assert!(
+        field.size.height >= viewport.size.height - 0.5,
+        "空欄の枠が {}px しかない (箱は {}px)",
+        field.size.height,
+        viewport.size.height
+    );
+}
+
+/// 箱の下半分を押しても欄に入ること。枠が 1 行ぶんしか無いと、空欄の
+/// テキストエリアは「上端だけが当たり判定」になる。
+#[test]
+fn clicking_the_lower_half_of_an_empty_text_area_focuses_it() {
+    let mut h = app();
+
+    let viewport = h.rect_of("body::viewport").expect("viewport");
+    h.click_at(
+        viewport.center().x,
+        viewport.origin.y + viewport.size.height - 4.0,
+    );
+
+    assert_eq!(h.focused_id(), Some("body"));
+}
+
+/// 中身が箱より高くなったら、今までどおり中身が伸びてスクロールする
+/// (箱に潰されない = 溢れたぶんが黙って消えない)。
+#[test]
+fn a_full_text_area_still_grows_and_scrolls() {
+    let mut h = app();
+    h.click("body");
+    for i in 0..12 {
+        h.text(&format!("行 {i}"));
+        h.key(Key::Enter, Modifiers::default());
+    }
+    h.frame();
+
+    // `rect_of` はクリップ後の矩形を返す (箱より大きくならない) ので、
+    // 中身の高さはスクロールの採寸で見る。
+    let m = &h.build().scroll_measures["body::viewport"];
+    assert!(
+        m.content_height > m.viewport_height,
+        "中身 {}px が箱 {}px に潰されている",
+        m.content_height,
+        m.viewport_height
+    );
+}
