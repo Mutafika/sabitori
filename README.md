@@ -293,9 +293,9 @@ let close = div().id("close").role(Role::Button).label("Close");   // icon-only 
 let heading = text("Settings").role(Role::Heading).heading(2);
 ```
 
-The tree reaches the OS. On native, an [accesskit](https://accesskit.dev) adapter is attached to every window, so VoiceOver / NVDA / Orca read the UI and can activate it — a screen reader pressing a button runs the same handler a mouse click would. Nothing is sent while no assistive technology is listening, so the cost of having it is close to zero.
+The tree reaches the OS. On native, an [accesskit](https://accesskit.dev) adapter is attached to the app window, so VoiceOver / NVDA / Orca read the UI and can activate it — a screen reader pressing a button runs the same handler a mouse click would. Nothing is sent while no assistive technology is listening, so the cost of having it is close to zero.
 
-Reading order is the order you wrote things in, and plain text is part of the tree (body copy is read, not just controls). A control's name comes from `.label()` if you set one, otherwise from the text inside it — so `button("Save")` already announces itself.
+Reading order is the order you wrote things in, and plain text is part of the tree (body copy is read, not just controls). A control's name comes from `.label()` if you set one, otherwise from the text inside it — so `button("Save")` already announces itself. Only what is currently on screen is exposed: rows scrolled out of a list are absent until they scroll back in.
 
 ## Examples
 
