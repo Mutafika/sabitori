@@ -517,6 +517,7 @@ fn build_tree_impl(
         probes,
         &mut probe_positions,
         &anchor_positions,
+        (0.0, 0.0),
     );
 
     // Reverse each list so front-most (last drawn) comes first for picking,
@@ -777,6 +778,7 @@ fn collect_anchor_boxes(
     parent_x: f32,
     parent_y: f32,
     parent_scale: f32,
+    parent_scroll: (f32, f32),
     wanted: &std::collections::HashSet<String>,
     rects: &mut std::collections::HashMap<String, Rect>,
     pending: &mut Vec<(taffy::NodeId, Anchor)>,
@@ -784,8 +786,14 @@ fn collect_anchor_boxes(
     let Ok(layout) = taffy.layout(taffy_node) else { return };
     let style = &element.style;
     let scale = parent_scale * style.scale;
-    let slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
-    let slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    let mut slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
+    let mut slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    if style.sticky_x {
+        slot_x += parent_scroll.0 * parent_scale;
+    }
+    if style.sticky_y {
+        slot_y += parent_scroll.1 * parent_scale;
+    }
     let w = layout.size.width * scale;
     let h = layout.size.height * scale;
     let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
@@ -800,16 +808,10 @@ fn collect_anchor_boxes(
         pending.push((taffy_node, a.clone()));
     }
 
-    let child_offset_x = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) {
-        -style.scroll_x
-    } else {
-        0.0
-    };
-    let child_offset_y = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) {
-        -style.scroll_y
-    } else {
-        0.0
-    };
+    let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
+    let child_offset_x = if clips { -style.scroll_x } else { 0.0 };
+    let child_offset_y = if clips { -style.scroll_y } else { 0.0 };
+    let child_scroll = if clips { (style.scroll_x, style.scroll_y) } else { parent_scroll };
 
     let children = taffy.children(taffy_node).unwrap_or_default();
     for (i, child) in element.children.iter().enumerate() {
@@ -821,6 +823,7 @@ fn collect_anchor_boxes(
                 abs_x + child_offset_x * scale,
                 abs_y + child_offset_y * scale,
                 scale,
+                child_scroll,
                 wanted,
                 rects,
                 pending,
@@ -925,7 +928,7 @@ fn resolve_anchors(
     let mut rects = std::collections::HashMap::new();
     let mut pending: Vec<(taffy::NodeId, Anchor)> = Vec::new();
     collect_anchor_boxes(
-        taffy, root, root_node, 0.0, 0.0, 1.0, &wanted, &mut rects, &mut pending,
+        taffy, root, root_node, 0.0, 0.0, 1.0, (0.0, 0.0), &wanted, &mut rects, &mut pending,
     );
 
     // 幅合わせ (`anchor_match_width`) は**レイアウトに効く**ので、幅を書き換えて
@@ -949,7 +952,7 @@ fn resolve_anchors(
         rects.clear();
         pending.clear();
         collect_anchor_boxes(
-            taffy, root, root_node, 0.0, 0.0, 1.0, &wanted, &mut rects, &mut pending,
+            taffy, root, root_node, 0.0, 0.0, 1.0, (0.0, 0.0), &wanted, &mut rects, &mut pending,
         );
     }
 
@@ -1038,6 +1041,9 @@ fn emit_commands(
     // `Element::anchor_to` で貼り付け先から決まった画面位置 (taffy のノード単位)。
     // ここに載っている要素は、taffy が置いた場所ではなくこちらへ出る。
     anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
+    // いちばん近い「切る入れ物」が子に課しているスクロール量 (素の px)。
+    // `sticky_x` / `sticky_y` はこれを打ち消して元の位置に留まる。
+    parent_scroll: (f32, f32),
 ) {
     let disabled = parent_disabled || element.disabled;
     let layout = taffy.layout(taffy_node).expect("Missing layout");
@@ -1057,6 +1063,14 @@ fn emit_commands(
     // converts them to screen px; this element's own factor is not in play yet.
     let mut slot_x = parent_x + (layout.location.x + style.translate_x) * parent_scale;
     let mut slot_y = parent_y + (layout.location.y + style.translate_y) * parent_scale;
+    // 留まる要素は、入れ物が課したスクロール量を打ち消す (`position: sticky`)。
+    // 打ち消すだけなので、留まる先は**レイアウトが置いた位置**そのもの。
+    if style.sticky_x {
+        slot_x += parent_scroll.0 * parent_scale;
+    }
+    if style.sticky_y {
+        slot_y += parent_scroll.1 * parent_scale;
+    }
     // 貼り付け先から決まった位置があればそちらへ。子は `abs_x` / `abs_y` から
     // 下りるので、中身も丸ごと一緒に動く。
     if let Some(&(ax, ay)) = anchor_positions.get(&taffy_node) {
@@ -1126,7 +1140,9 @@ fn emit_commands(
                     no_select, scale,
                     parent_clip,
                     disabled,
-                    probes, probe_positions, anchor_positions,
+                    // 大きさ 0 の入れ物は切らない (切るものは上で返している)
+                    // ので、留まる相手は親から素通し。
+                    probes, probe_positions, anchor_positions, parent_scroll,
                 );
             }
         }
@@ -1412,8 +1428,12 @@ fn emit_commands(
     };
 
     // Scroll offset — shift children when overflow is Hidden or Scroll
-    let child_offset_x = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) { -style.scroll_x } else { 0.0 };
-    let child_offset_y = if matches!(style.overflow, Overflow::Hidden | Overflow::Scroll) { -style.scroll_y } else { 0.0 };
+    let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
+    let child_offset_x = if clips { -style.scroll_x } else { 0.0 };
+    let child_offset_y = if clips { -style.scroll_y } else { 0.0 };
+    // 子から見た「いちばん近い切る入れ物のスクロール量」。切らない入れ物は
+    // 素通しするので、行 → セルと入れ子にしても留まる相手は変わらない。
+    let child_scroll = if clips { (style.scroll_x, style.scroll_y) } else { parent_scroll };
 
     // Recurse into children
     let taffy_children = taffy.children(taffy_node).unwrap_or_default();
@@ -1450,7 +1470,10 @@ fn emit_commands(
                 // win compared to the risk of culling a wide row in a
                 // horizontal scroller).
                 let child_top = child_layout.location.y;
-                if child_bottom < viewport_top || child_top > viewport_bottom {
+                // 留まる要素は**間引かない**。レイアウト上の位置は流れていくので、
+                // ふつうに間引くと見出し行がスクロールの途中で消える。
+                let sticky = child_elem.style.sticky_x || child_elem.style.sticky_y;
+                if !sticky && (child_bottom < viewport_top || child_top > viewport_bottom) {
                     count_elements(child_elem, element_counter);
                     // Culled from drawing, but still locatable — that is the whole
                     // point of a probe (scroll-to-element targets off-screen rows).
@@ -1474,7 +1497,7 @@ fn emit_commands(
                 no_select, scale,
                 child_clip,
                 disabled,
-                probes, probe_positions, anchor_positions,
+                probes, probe_positions, anchor_positions, child_scroll,
             );
         }
     }
@@ -4141,6 +4164,128 @@ mod anchor_tests {
             menu.origin.y,
             row.origin.y + row.size.height + 4.0,
             "スクロール量を足し忘れると、メニューだけ元の位置に残る"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sticky_tests {
+    //! **スクロールしても置いていかれない列・行** ([#75] の 2)。
+    //!
+    //! ガントチャートで車両名の列を固定し、時間軸だけ横に流す。これが無いと
+    //! 左右 2 枚の表に割るしかなく、**行の高さが中身で変わる表では高さを
+    //! 揃えられない**。
+    //!
+    //! [#75]: https://github.com/Mutafika/sabitori/issues/75
+
+    use super::*;
+    use crate::element::{div, Px};
+
+    /// 車両名 (固定) + 時間軸 (流れる) の 1 行を 3 行ぶん。
+    fn gantt(scroll_x: f32) -> BuildResult {
+        let rows: Vec<Element> = (0..3)
+            .map(|i| {
+                div().flex_row().w(Px(1200.0)).h(Px(40.0)).children([
+                    div().id(format!("name-{i}")).sticky_x().w(Px(160.0)).h(Px(40.0)),
+                    div().id(format!("bar-{i}")).w(Px(1040.0)).h(Px(40.0)),
+                ])
+            })
+            .collect();
+        let root = div().w(Px(600.0)).h(Px(300.0)).child(
+            div()
+                .id("gantt")
+                .scroll_manual(scroll_x, 0.0)
+                .w(Px(600.0))
+                .h(Px(300.0))
+                .flex_col()
+                .children(rows),
+        );
+        build_tree(&root, 600.0, 300.0)
+    }
+
+    #[test]
+    fn a_sticky_column_stays_put_while_the_rest_scrolls() {
+        let at0 = gantt(0.0);
+        let name0 = at0.region_rect("name-0").unwrap();
+        let bar0 = at0.region_rect("bar-0").unwrap();
+
+        // 100px 流す (当たり判定は入れ物で切られるので、左端を割らない量で見る)。
+        let at100 = gantt(100.0);
+        let name = at100.region_rect("name-0").expect("名前の列が消えた");
+        let bar = at100.region_rect("bar-0").expect("時間軸が消えた");
+
+        assert_eq!(name.origin.x, name0.origin.x, "固定した列が流れている");
+        assert_eq!(bar.origin.x, bar0.origin.x - 100.0, "時間軸が流れていない");
+    }
+
+    /// **固定した列は、流れてくる中身の上に来る。** 下になると、通り過ぎる
+    /// バーに隠れて読めなくなる。
+    #[test]
+    fn a_sticky_column_paints_over_the_scrolling_content() {
+        let root = div().w(Px(600.0)).h(Px(100.0)).child(
+            div().id("g").scroll_manual(200.0, 0.0).w(Px(600.0)).h(Px(100.0)).child(
+                div().flex_row().w(Px(1200.0)).h(Px(40.0)).children([
+                    div().id("name").sticky_x().w(Px(160.0)).h(Px(40.0)).bg(Color::WHITE),
+                    div().id("bar").w(Px(1040.0)).h(Px(40.0)).bg(Color::BLACK),
+                ]),
+            ),
+        );
+        let b = build_tree(&root, 600.0, 100.0);
+        // 先に書いた列が後から描かれる = 手前。
+        let order: Vec<Color> = b
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Rect(r) if r.fill_color.a > 0.0 => Some(r.fill_color),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order.last().copied(),
+            Some(Color::WHITE),
+            "固定した列が先に描かれている (バーの下に隠れる)"
+        );
+    }
+
+    /// **縦に留まる見出し行。** スクロールで消えないこと (間引かれないこと)。
+    #[test]
+    fn a_sticky_header_row_survives_scrolling_past_it() {
+        let mut rows: Vec<Element> =
+            vec![div().id("head").sticky_y().w(Px(400.0)).h(Px(32.0))];
+        rows.extend(
+            (0..40).map(|i| div().id(format!("row-{i}")).w(Px(400.0)).h(Px(32.0))),
+        );
+        let root = div().w(Px(400.0)).h(Px(200.0)).child(
+            div()
+                .id("list")
+                .scroll_manual(0.0, 600.0)
+                .w(Px(400.0))
+                .h(Px(200.0))
+                .flex_col()
+                .children(rows),
+        );
+        let b = build_tree(&root, 400.0, 200.0);
+        let head = b.region_rect("head").expect("見出しが消えた");
+        assert_eq!(head.origin.y, 0.0, "見出しが上へ流れている");
+    }
+
+    /// 入れ子になっていても、留まる相手は**いちばん近い切る入れ物**。
+    #[test]
+    fn sticky_pins_to_the_nearest_scroll_container() {
+        let root = div().w(Px(600.0)).h(Px(200.0)).child(
+            div().id("outer").scroll_manual(100.0, 0.0).w(Px(600.0)).h(Px(200.0)).child(
+                // 行 (切らない入れ物) を挟む。
+                div().flex_row().w(Px(1200.0)).h(Px(40.0)).child(
+                    div().id("pinned").sticky_x().w(Px(100.0)).h(Px(40.0)),
+                ),
+            ),
+        );
+        let b = build_tree(&root, 600.0, 200.0);
+        assert_eq!(
+            b.region_rect("pinned").unwrap().origin.x,
+            0.0,
+            "間に入れ物を挟むと留まらない"
         );
     }
 }

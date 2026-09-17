@@ -17,6 +17,39 @@
 
 ### Added
 
+- **スクロールしても置いていかれない `sticky_x()` / `sticky_y()`**
+  ([#75](https://github.com/Mutafika/sabitori/issues/75) の 2)。ガントチャートで
+  車両名の列を固定し、時間軸だけ横に流す。これが無いと左右 2 枚の表に割るしか
+  なく、**行の高さが中身で変わる表では高さを揃えられなかった**。
+
+  ```rust
+  div().scroll("gantt").w_full().h_full().flex_col().children(rows)
+  // 行の中身
+  div().flex_row().children([
+      div().sticky_x().w(Px(160.0)).child(text(&v.name)),  // 固定
+      timeline(v),                                          // 流れる
+  ])
+  ```
+
+  留まる相手は**いちばん近いスクロールの入れ物**なので、行とセルに分けても
+  効く。留まる要素は流れてくる中身の上に来る (`z` を 1 に上げる) し、
+  スクロールの外に出ても間引かれない (見出し行が途中で消えない)。
+
+- **時刻ピッカー / 日時ピッカー `TimePickerState` / `DateTimePickerState`**
+  ([#75](https://github.com/Mutafika/sabitori/issues/75) の 1)。`DatePickerState`
+  は年月日しか選べず、予約・配車の画面は「日付はカレンダー、時刻は `HH:MM` の
+  文字欄 + 自前検証」になっていた。
+
+  - 分の刻み (`with_minute_step`、既定 15) と営業時間 (`with_hour_range`)。
+    範囲の外の時刻は**押せないし、選択も範囲の中へ寄る** — 外のままだと
+    「選ばれているのに一覧に無い」になって押して直せない。
+  - `parse_hhmm(s)` — 実際に打たれる形を受ける (`9:30` `0930` `9時30分`
+    `０９：３０`)。**読めない入力では今の値を変えない** (打ちかけの `9:` で
+    時刻が 0 時に戻らない)。`24:00` は受けない (日付をまたぐ意味づけは
+    アプリのもの)。
+  - `DateTimePickerState::as_minutes()` — 期間の比較が数でできる。
+    「貸出より前の返却」を弾くのに文字列を組み立てて比べなくてよい。
+
 - **浮かせる要素を、別の要素の箱に貼り付ける `Element::anchor_to(id, placement)`**
   ([#75](https://github.com/Mutafika/sabitori/issues/75) の 4)。ドロップダウンや
   ポップオーバーを「トリガーのすぐ下」に出すには相手の画面上の位置が要るが、

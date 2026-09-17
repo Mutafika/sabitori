@@ -704,6 +704,10 @@ pub struct ElementStyle {
     /// Clickable/hoverable byte ranges in a text element (in-body links).
     /// `.link_ranges(..)`.
     pub link_ranges: Option<Vec<LinkRange>>,
+    /// 横スクロールしても置いていかれない ([`Element::sticky_x`])。
+    pub sticky_x: bool,
+    /// 縦スクロールしても置いていかれない ([`Element::sticky_y`])。
+    pub sticky_y: bool,
     /// **別の要素の箱に貼り付けて浮かせる指定** ([`Element::anchor_to`])。
     ///
     /// レイアウトが終わってから相手の箱を見て位置を決めるので、`view()` の中で
@@ -815,6 +819,8 @@ impl Default for ElementStyle {
             scrollbar_thumb: None,
             highlight: Vec::new(),
             link_ranges: None,
+            sticky_x: false,
+            sticky_y: false,
             anchor: None,
         }
     }
@@ -2163,6 +2169,45 @@ impl Element {
     /// Set position to absolute.
     pub fn absolute(mut self) -> Self {
         self.style.position = Position::Absolute;
+        self
+    }
+
+    /// **横スクロールしても置いていかれない** (CSS の `position: sticky` 相当)。
+    ///
+    /// いちばん近いスクロールの入れ物の横スクロール量を打ち消すので、
+    /// 中身が左へ流れても**この要素だけ元の位置に留まる**。ガントチャートの
+    /// 車両名の列、表の見出し列がこれ
+    /// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 2)。
+    ///
+    /// ```ignore
+    /// div().scroll("gantt").w_full().h_full().flex_col().children(rows)
+    /// // 行の中身:
+    /// div().flex_row().children([
+    ///     div().sticky_x().w(Px(160.0)).child(text(&v.name)),  // 固定
+    ///     timeline(v),                                          // 流れる
+    /// ])
+    /// ```
+    ///
+    /// これが無かったころは左右 2 枚の表に割る必要があり、**行の高さが中身で
+    /// 変わる表では揃えられなかった**。
+    ///
+    /// 流れてくる中身の**上**に来るよう `z` を 1 に上げる (書いていない場合)。
+    /// 上げないと、留まっている列の上を他の列が通り過ぎて隠れる。
+    pub fn sticky_x(mut self) -> Self {
+        self.style.sticky_x = true;
+        if self.style.z_index == 0 {
+            self.style.z_index = 1;
+        }
+        self
+    }
+
+    /// **縦スクロールしても置いていかれない。** 表の見出し行に使う。
+    /// 詳細は [`Element::sticky_x`]。
+    pub fn sticky_y(mut self) -> Self {
+        self.style.sticky_y = true;
+        if self.style.z_index == 0 {
+            self.style.z_index = 1;
+        }
         self
     }
 
