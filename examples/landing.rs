@@ -107,7 +107,7 @@ fn backdrop(w: f32, h: f32, t: f32) -> Element {
         let speed = 5.0 + 22.0 * hash01(i * 11 + 4);
         let y = (ry * h - t * speed).rem_euclid(h + 24.0) - 12.0;
         let size = 1.1 + 2.6 * depth;
-        let twinkle = 0.08 + 0.30 * (0.5 + 0.5 * (t * (1.0 + 2.0 * hash01(i * 13 + 6)) + rx * 6.28).sin());
+        let twinkle = 0.08 + 0.30 * (0.5 + 0.5 * (t * (1.0 + 2.0 * hash01(i * 13 + 6)) + rx * std::f32::consts::TAU).sin());
         kids.push(
             div()
                 .absolute()

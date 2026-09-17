@@ -119,7 +119,7 @@ fn backdrop(w: f32, h: f32, t: f32) -> Element {
         let y = (ry * h - t * speed).rem_euclid(h + 24.0) - 12.0;
         let x = rx * w;
         let size = 0.9 + 2.4 * depth;
-        let twinkle = 0.08 + 0.34 * (0.5 + 0.5 * (t * (1.0 + 2.0 * hash01(i * 13 + 6)) + rx * 6.28).sin());
+        let twinkle = 0.08 + 0.34 * (0.5 + 0.5 * (t * (1.0 + 2.0 * hash01(i * 13 + 6)) + rx * std::f32::consts::TAU).sin());
         if i % 7 == 0 {
             let g = hex(TEXT_HI);
             let a = (twinkle * depth * 1.4).min(1.0);

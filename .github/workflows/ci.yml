@@ -1,0 +1,70 @@
+# タグを打つ前に、build / test / clippy / wasm が通っていることを保証する。
+#
+# 実際に起きたこと: v0.11.2 の直前に「cargo clippy が止まる」を直すだけの
+# コミットが要った (8814563)。タグで使う利用者 (mearie / naruhodo /
+# sabitori-renta) から見ると、タグが打たれた時点でビルドが通る保証がどこにも
+# 無い状態だった ([#68](https://github.com/Mutafika/sabitori/issues/68))。
+#
+# wasm を別ジョブで持つのは、native だけ通って web が落ちる形が実際にあったため。
+# v0.11.1 は「view() を組むだけで wasm が落ちない版」、v0.11.2 時点では wasm の
+# 初期化に LineRenderer が無く web でだけ polyline が消えていた (#66)。
+# native のテストでは 1 つも落ちない類の壊れ方なので、コンパイルだけでも回す。
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # winit / arboard を Linux でビルドするのに要る。macOS の手元では
+      # 要らないので、ここで落ちたらこの行を疑うこと。
+      - name: システム依存 (winit / arboard)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config
+
+      # --locked は license.yml と揃える。CI が勝手に解決し直すと、上流が
+      # patch を出しただけで赤くなる。
+      - name: cargo build
+        run: cargo build --workspace --all-targets --locked
+
+      # GPU を使うテスト (シェーダーのピクセル確認など) は、アダプタが取れない
+      # 環境では自分で skip する。落とさずに残りを回す。
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      # deny になっている lint (approx_constant など) でだけ落ちる。既存の
+      # warning は数が多いので -D warnings にはしない — 全部潰すまで赤いままの
+      # ゲートは、誰も読まなくなるゲートなので。
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # templates/wasm の手順が前提にしているのはこれが通ること。
+      - name: wasm ビルド
+        run: cargo build -p sabitori --target wasm32-unknown-unknown --locked

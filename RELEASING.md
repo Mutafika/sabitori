@@ -15,6 +15,19 @@
 
 API が安定したら `1.0.0` を切る。
 
+> **⚠️ patch に破壊的変更を混ぜない。** ここが守られていれば、タグ依存の
+> 利用者は「patch なら CHANGELOG を読まずに上げてよい」と判断できる。逆に
+> 一度でも混ぜると、以後どの patch も読まないと上げられなくなる。
+>
+> 実際 v0.11.2 (patch) の CHANGELOG には `### Changed（破壊的）` があった
+> — `InputEvent::PointerPressed` のフィールド追加と `InputEvent::Wheel` の
+> 追加で、自前で組み立てている所と網羅 `match` が壊れた
+> ([#68](https://github.com/Mutafika/sabitori/issues/68))。
+>
+> **判定は CHANGELOG の見出しでする。** `[Unreleased]` に `### Added` か
+> `### Changed（破壊的）` があるなら minor。`### Fixed` / `### Documentation`
+> だけなら patch。
+
 ## 手順
 
 1. `main` を最新にする（リリース対象の PR はマージ済みにしておく）。
@@ -22,6 +35,24 @@ API が安定したら `1.0.0` を切る。
    ```sh
    git switch main && git pull
    ```
+
+   **緑であることを確認してから進む。** タグは利用側 (mearie / naruhodo /
+   sabitori-renta) が直接指すので、通らないタグは配ったその瞬間に事故になる。
+   `.github/workflows/ci.yml` が push / PR / タグで同じものを回しているが、
+   手元でも 1 回通しておく:
+
+   ```sh
+   cargo build --workspace --all-targets --locked
+   cargo test  --workspace --locked
+   cargo clippy --workspace --all-targets --locked
+   cargo build -p sabitori --target wasm32-unknown-unknown --locked
+   ```
+
+   > wasm を毎回見るのは、**native だけ通って web が落ちる**形が実際にあった
+   > から。v0.11.2 は wasm の初期化に `LineRenderer` が無く、web でだけ
+   > `polyline()` が 1 本も描かれなかった
+   > ([#66](https://github.com/Mutafika/sabitori/issues/66))。native のテストは
+   > 1 つも落ちない。
 
 2. **CHANGELOG.md** の `[Unreleased]` を新バージョンに繰り上げ、日付を入れる。
    下部の compare リンクも更新する。

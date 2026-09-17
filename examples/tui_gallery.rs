@@ -526,7 +526,7 @@ impl Gallery {
             let seed = i as f32 * 7.31;
             let speed_x = ((seed * 1.3).sin() * 0.5 + 0.5) * 30.0 + 10.0;
             let speed_y = ((seed * 2.7).cos() * 0.5 + 0.5) * 20.0 + 5.0;
-            let phase_x = seed * 3.14;
+            let phase_x = seed * std::f32::consts::PI;
             let phase_y = seed * 1.57;
 
             let x = ((elapsed * speed_x * 0.02 + phase_x).sin() * 0.5 + 0.5) * (area_w - 6.0);
@@ -535,9 +535,9 @@ impl Gallery {
 
             let hue = (i as f32 / count as f32 + elapsed * 0.1) % 1.0;
             let color = Color::new(
-                (hue * 6.28).sin() * 0.5 + 0.5,
-                ((hue + 0.33) * 6.28).sin() * 0.5 + 0.5,
-                ((hue + 0.66) * 6.28).sin() * 0.5 + 0.5,
+                (hue * std::f32::consts::TAU).sin() * 0.5 + 0.5,
+                ((hue + 0.33) * std::f32::consts::TAU).sin() * 0.5 + 0.5,
+                ((hue + 0.66) * std::f32::consts::TAU).sin() * 0.5 + 0.5,
                 0.7,
             );
             dots.push((x, y, size, color));
@@ -892,7 +892,7 @@ impl Gallery {
         div().w_full().flex_col().gap(12.0).children([
             self.lbl("Sparkline", 15.0, 700, t.primary).shrink(0.0),
             line("CPU Load", a.cyan, 0.0, 40),
-            line("Network I/O", a.green, 3.14, 40),
+            line("Network I/O", a.green, std::f32::consts::PI, 40),
             line("Disk IOPS", a.yellow, 1.57, 40),
             self.lbl("Per-bar height animated with sine wave + per-bar alpha.", 12.5, 400, t.text_disabled).shrink(0.0),
         ])
@@ -909,7 +909,7 @@ impl Gallery {
         let mut grid_rows: Vec<Element> = Vec::new();
         for row in 0..rows {
             let cells: Vec<Element> = (0..cols).map(|col| {
-                let seed = (col as f32 * 7.31 + row as f32 * 3.14) as u32;
+                let seed = (col as f32 * 7.31 + row as f32 * std::f32::consts::PI) as u32;
                 let speed = 1.5 + (seed % 10) as f32 * 0.3;
                 let phase = (elapsed * speed + col as f32 * 0.5) % (rows as f32 * 1.5);
                 let dist = (phase - row as f32).abs();
