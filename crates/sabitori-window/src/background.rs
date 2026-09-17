@@ -21,6 +21,27 @@
 //!   真っ白な画像になる。
 //!
 //! macOS 以外の native では 1. 相当が無いため何もしない (env は無視)。wasm も同様。
+//!
+//! # 外から窓を探すとき (macOS)
+//!
+//! **プロセスの窓は 1 枚ではない。** `CGWindowListCopyWindowInfo` で数えると、
+//! アプリの窓のほかに
+//!
+//! - メニューバーぶんの窓 (`3840x30` のような、画面幅 × 30 のもの) が数枚
+//! - **見えない `500x500` の窓が 1 枚** — AppKit の Touch Bar 窓 (`TUINSWindow`)。
+//!   起動から数秒後に macOS が勝手に作る。sabitori のものではないし、
+//!   Touch Bar の無い Mac でも作られる
+//!   ([#75](https://github.com/Mutafika/sabitori/issues/75) の 17)。
+//!
+//! が混ざる。「いちばん大きい窓」で選ぶと、窓を小さくした瞬間に取り違える。
+//! 確実なのは次のどちらか:
+//!
+//! - **アクセシビリティ経由** (`System Events` / `AXUIElement`) で名前で引く。
+//!   v0.13.0 から sabitori の窓は支援技術のツリーに出るので
+//!   ([#25](https://github.com/Mutafika/sabitori/issues/25))、
+//!   `AXWindow` はアプリの窓だけが並ぶ (Touch Bar 窓は出てこない)。
+//! - `CGWindowList` なら **`kCGWindowName` が空でなく、`kCGWindowIsOnscreen` が
+//!   true** のものを取る。上の 2 種類はどちらも名前が空。
 
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoop;
