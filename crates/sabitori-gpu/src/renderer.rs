@@ -33,6 +33,95 @@ pub(crate) fn choose_alpha_mode(
     }
 }
 
+/// The limits sabitori genuinely needs from a GPU, whatever the platform
+/// baseline says.
+///
+/// * 2048² is the glyph atlas ([`sabitori_text`]).
+/// * rect.wgsl passes 34 inter-stage components — above the WebGL2 baseline's
+///   own default of 31, so this one has to be asked for explicitly.
+const MINIMUM_LIMITS: &[(&str, u32, fn(&wgpu::Limits) -> u32)] = &[
+    ("max_texture_dimension_2d", 2048, |l| l.max_texture_dimension_2d),
+    ("max_inter_stage_shader_components", 34, |l| {
+        l.max_inter_stage_shader_components
+    }),
+];
+
+/// Decide what to pass as `required_limits`, given the baseline we would like.
+///
+/// `request_device` treats these limits as *requirements*: if the adapter
+/// reports less than any one of them, device creation fails outright. Both
+/// baselines we start from claim headroom sabitori never uses —
+/// `downlevel_webgl2_defaults()` asks for `max_color_attachments = 8` where
+/// SwiftShader offers 6, and `Limits::default()` asks for an 8192² texture
+/// where older integrated GPUs stop at 4096 — so asking for the baseline
+/// wholesale means "this device cannot start sabitori at all" for reasons that
+/// have nothing to do with what we draw (#72).
+///
+/// So: keep the baseline when the adapter can meet it (unchanged behaviour on
+/// capable hardware, and the baseline still guards against quietly relying on
+/// a strong GPU's headroom), and otherwise fall back to exactly what the
+/// adapter reports, naming what came up short in the log.
+fn resolve_limits(adapter: &wgpu::Adapter, baseline: wgpu::Limits) -> wgpu::Limits {
+    let available = adapter.limits();
+
+    if let Some(short) = first_unmet_minimum(&available) {
+        let info = adapter.get_info();
+        panic!(
+            "This GPU cannot run sabitori: it reports {} = {}, and sabitori needs at least {} \
+             (adapter: {} / {:?} / {:?}).",
+            short.name,
+            short.have,
+            short.needed,
+            info.name,
+            info.device_type,
+            info.backend,
+        );
+    }
+
+    pick_limits(baseline, available)
+}
+
+/// A limit sabitori needs that the adapter does not offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UnmetLimit {
+    pub name: &'static str,
+    pub needed: u32,
+    pub have: u32,
+}
+
+/// First entry of [`MINIMUM_LIMITS`] the adapter cannot satisfy, if any.
+///
+/// Pure so it can be unit-tested without a GPU — see the tests at the bottom
+/// of this module.
+pub(crate) fn first_unmet_minimum(available: &wgpu::Limits) -> Option<UnmetLimit> {
+    MINIMUM_LIMITS.iter().find_map(|(name, needed, get)| {
+        let have = get(available);
+        (have < *needed).then_some(UnmetLimit {
+            name,
+            needed: *needed,
+            have,
+        })
+    })
+}
+
+/// The baseline when the adapter can meet it, otherwise the adapter's own
+/// limits (and a log line naming every limit that came up short).
+///
+/// Pure so it can be unit-tested without a GPU.
+pub(crate) fn pick_limits(baseline: wgpu::Limits, available: wgpu::Limits) -> wgpu::Limits {
+    if baseline.check_limits(&available) {
+        return baseline;
+    }
+
+    baseline.check_limits_with_fail_fn(&available, false, |name, wanted, allowed| {
+        tracing::warn!(
+            "GPU below the baseline limit {name} (baseline wants {wanted}, adapter has {allowed}); \
+             requesting the adapter's own limits instead"
+        );
+    });
+    available
+}
+
 /// Identifies which phase of layered rendering the draw callback is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderPhase {
@@ -152,7 +241,7 @@ impl GpuRenderer {
 
         // Use downlevel limits on WASM for broader compatibility
         #[cfg(target_arch = "wasm32")]
-        let required_limits = {
+        let baseline = {
             let mut l = wgpu::Limits::downlevel_webgl2_defaults()
                 .using_resolution(adapter.limits());
             // rect.wgsl passes 34 inter-stage components; the conservative
@@ -164,7 +253,8 @@ impl GpuRenderer {
             l
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let required_limits = wgpu::Limits::default();
+        let baseline = wgpu::Limits::default();
+        let required_limits = resolve_limits(&adapter, baseline);
 
         let (device, queue) = adapter
             .request_device(
@@ -373,7 +463,7 @@ impl GpuRenderer {
             .await
             .expect("Failed to find a suitable GPU adapter");
 
-        let required_limits = wgpu::Limits::default();
+        let required_limits = resolve_limits(&adapter, wgpu::Limits::default());
 
         let (device, queue) = adapter
             .request_device(
@@ -1110,7 +1200,7 @@ impl GpuRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::choose_alpha_mode;
+    use super::{choose_alpha_mode, first_unmet_minimum, pick_limits, UnmetLimit};
     use wgpu::CompositeAlphaMode::{Inherit, Opaque, PostMultiplied, PreMultiplied};
 
     // Regression guard for the "see-through window" bug: a non-transparent app
@@ -1157,5 +1247,72 @@ mod tests {
         // never reach.
         assert_eq!(choose_alpha_mode(&[Inherit], false), Inherit);
         assert_eq!(choose_alpha_mode(&[Inherit], true), Inherit);
+    }
+
+    /// SwiftShader などの上限の低い WebGL2 環境。baseline を丸ごと「必須」として
+    /// 要求すると request_device が LimitsExceeded で落ちて画面が出ない (#72)。
+    /// baseline に届かない項目が 1 つでもあれば、アダプタの実値で要求すること。
+    #[test]
+    fn a_weak_adapter_gets_its_own_limits_instead_of_the_baseline() {
+        let baseline = wgpu::Limits::downlevel_webgl2_defaults();
+        // 実測値: SwiftShader は max_color_attachments = 6、baseline は 8。
+        let available = wgpu::Limits {
+            max_color_attachments: 6,
+            ..wgpu::Limits::downlevel_webgl2_defaults()
+        };
+
+        let picked = pick_limits(baseline.clone(), available.clone());
+        assert_eq!(picked.max_color_attachments, 6);
+        assert!(
+            picked.check_limits(&available),
+            "要求がアダプタの上限を超えていたら request_device が失敗する"
+        );
+    }
+
+    /// 足りているアダプタでは baseline のまま = 既存機種の挙動を 1 つも変えない。
+    #[test]
+    fn a_capable_adapter_keeps_the_baseline() {
+        let baseline = wgpu::Limits::downlevel_webgl2_defaults();
+        let available = wgpu::Limits {
+            max_inter_stage_shader_components: 60,
+            ..wgpu::Limits::default()
+        };
+
+        assert_eq!(pick_limits(baseline.clone(), available), baseline);
+    }
+
+    /// baseline より寛容なアダプタでも、baseline を超える要求に引き上げない
+    /// (強い GPU の余裕に黙って寄りかからないための下限であって、上限ではない)。
+    #[test]
+    fn a_strong_adapter_is_not_asked_for_more_than_the_baseline() {
+        let baseline = wgpu::Limits::downlevel_webgl2_defaults();
+        let picked = pick_limits(baseline.clone(), wgpu::Limits::default());
+        assert_eq!(picked.max_texture_dimension_2d, baseline.max_texture_dimension_2d);
+    }
+
+    /// sabitori が本当に必要とする下限は、どの項目が足りないかを名前で返す
+    /// (request_device の「最初に引っかかった項目」より原因が分かる)。
+    #[test]
+    fn the_minimum_sabitori_needs_is_reported_by_name() {
+        assert_eq!(first_unmet_minimum(&wgpu::Limits::default()), None);
+        assert_eq!(
+            first_unmet_minimum(&wgpu::Limits::downlevel_webgl2_defaults()),
+            Some(UnmetLimit {
+                name: "max_inter_stage_shader_components",
+                needed: 34,
+                have: wgpu::Limits::downlevel_webgl2_defaults().max_inter_stage_shader_components,
+            }),
+            "webgl2 の既定 31 は rect.wgsl の 34 に足りない"
+        );
+
+        let tiny = wgpu::Limits {
+            max_texture_dimension_2d: 1024,
+            ..wgpu::Limits::default()
+        };
+        assert_eq!(
+            first_unmet_minimum(&tiny).map(|u| u.name),
+            Some("max_texture_dimension_2d"),
+            "グリフアトラスは 2048² を張る"
+        );
     }
 }

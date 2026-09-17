@@ -17,6 +17,18 @@
 
 ### Fixed
 
+- **上限の低い WebGL2 環境で、起動時に必ず panic していた**
+  ([#72](https://github.com/Mutafika/sabitori/issues/72))。wasm の GPU 初期化が
+  `downlevel_webgl2_defaults()` を**そのまま必須として**要求していたため、
+  アダプタが 1 項目でも下回ると `request_device` が失敗して画面が出なかった
+  (headless Chromium / SwiftShader は `max_color_attachments` が 6、既定は 8)。
+  sabitori はその余裕を使っていない。アダプタが基準を満たす時は従来どおり
+  基準で要求し、満たさない時はアダプタの実値で要求するようにした
+  (足りなかった項目は `warn` に名前入りで出る)。native の `Limits::default()`
+  も同じ扱いにした — 古い内蔵 GPU で同じことが起きる。sabitori が本当に必要と
+  する下限 (グリフアトラスの 2048²、`rect.wgsl` の inter-stage 34) は別に見て、
+  足りない場合はどの項目がいくつ足りないかを名前で言う。
+
 - **角丸の半径が箱の半分を超えると矩形が丸ごと消えていた**
   ([#71](https://github.com/Mutafika/sabitori/issues/71))。CSS の定番どおり
   `.rounded(Px(999.0))` でピルを書くと、背景も枠も 1px も描かれなかった
