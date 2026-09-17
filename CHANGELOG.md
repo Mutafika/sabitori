@@ -17,6 +17,14 @@
 
 ### Added
 
+- **web の実機確認の足場 `e2e/web/`。** wasm は「native のテストが 1 つも
+  落ちないのに web だけ壊れている」が起きる（初期化の写し落ち #66、GPU の
+  limits #72、スタック食い潰し #56）。本物の Chromium に描かせて PNG を見る
+  ための最小の足場を置いた。依存は Chrome と Node だけ（`npm install` 不要 —
+  CDP を Node 組み込みの `WebSocket` で叩く）。`--use-angle=swiftshader` を
+  わざと指定していて、上限の低い GPU でだけ落ちる形も踏める。CI には載せて
+  いない（成果物が 35MB あり毎 PR には重い）。手順は `e2e/web/README.md`。
+
 - **パスワード欄 `TextInputState::new_secure(placeholder)`**
   ([#61](https://github.com/Mutafika/sabitori/issues/61))。ログイン画面の
   パスワードが平文で見えていた（`mask` / `password` / `secure` はどこにも

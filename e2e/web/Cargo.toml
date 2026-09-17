@@ -1,0 +1,14 @@
+# ワークスペースには入れない (`[workspace]` を自分で持つ)。wasm でしかビルド
+# しないものを `cargo test --workspace` の対象に混ぜないため。
+[package]
+name = "sabitori-e2e-web"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sabitori = { path = "../../crates/sabitori" }
+sabitori-core = { path = "../../crates/sabitori-core" }
+sabitori-widgets = { path = "../../crates/sabitori-widgets" }
+
+[workspace]
