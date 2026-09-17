@@ -958,6 +958,15 @@ pub struct Element {
     pub label: Option<String>,
     /// 見出しの階層 (1 が最上位)。 [`Role::Heading`] のときだけ意味がある。
     pub heading_level: Option<u8>,
+    /// 無効状態。押しても鳴らず、フォーカスも当たらない (HTML の `disabled`)。
+    /// [`Element::disabled`] で設定する。
+    ///
+    /// 押下そのものは**吸う** — 無効なボタンを押しても、下に居る親のクリックが
+    /// 代わりに鳴ったりはしない (ブラウザと同じ)。右クリックは通る
+    /// (コンテキストメニューは「操作」ではない)。
+    pub disabled: bool,
+    /// Style overrides while disabled. `button()` は既定で薄くなる。
+    pub disabled_style: Option<Box<StateStyle>>,
     /// Style overrides when hovered. Box なのは style と同じ理由 (#56、220B×2)。
     pub hover_style: Option<Box<StateStyle>>,
     /// Style overrides when pressed/active.
@@ -1115,6 +1124,19 @@ pub fn apply_state_styles(
     hovered_id: &Option<String>,
     pressed_id: &Option<String>,
 ) {
+    apply_state_styles_inner(element, hovered_id, pressed_id, false);
+}
+
+/// `inherited_disabled` = 祖先のどれかが `.disabled(true)` だった。無効な入れ物の
+/// 中身は、自分が無効を名乗っていなくても hover / active を当てない
+/// (`emit_commands` の当たり判定と同じ継承)。
+fn apply_state_styles_inner(
+    element: &mut Element,
+    hovered_id: &Option<String>,
+    pressed_id: &Option<String>,
+    inherited_disabled: bool,
+) {
+    let disabled = inherited_disabled || element.disabled;
     let is_hovered = element
         .id
         .as_deref()
@@ -1123,7 +1145,24 @@ pub fn apply_state_styles(
         .id
         .as_deref()
         .is_some_and(|id| pressed_id.as_deref() == Some(id));
-    if is_hovered || is_pressed {
+    // 無効な要素は hover / active を当てない — 押せないものが押せそうに
+    // 見えるのが一番悪い。代わりに disabled_style を畳む (#62)。
+    if disabled {
+        // 薄さは宣言した要素にだけ畳む。入れ子で重ねると、無効なフォームの中の
+        // 無効なボタンだけが二重に薄くなる。
+        if element.disabled {
+            let Element { style, disabled_style, .. } = element;
+            if let Some(d) = disabled_style.as_ref() {
+                // `animated = false` で畳む = 色や不透明度も即時に当てる。
+                // hover / active で animated を立てるのは「StyleAnimator が
+                // バネで補間しているから上書きするな」という意味だが、
+                // animator に無効状態という概念は無い。ここで譲ると、
+                // `button()` の既定の薄さが `transitions` を持つせいで
+                // 永久に当たらない = 押せないボタンが押せる見た目のまま残る。
+                fold_state_style(style, d, false);
+            }
+        }
+    } else if is_hovered || is_pressed {
         let animated = !element.transitions.is_empty();
         // style と hover_style/active_style を同時に触るので、フィールド分割で
         // 借用を割る。
@@ -1140,7 +1179,7 @@ pub fn apply_state_styles(
         }
     }
     for child in &mut element.children {
-        apply_state_styles(child, hovered_id, pressed_id);
+        apply_state_styles_inner(child, hovered_id, pressed_id, disabled);
     }
 }
 
@@ -1191,6 +1230,8 @@ pub fn div() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        disabled_style: None,
         role: None,
         label: None,
         heading_level: None,
@@ -1229,6 +1270,8 @@ pub fn text(content: impl Into<String>) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        disabled_style: None,
         role: None,
         label: None,
         heading_level: None,
@@ -1264,6 +1307,8 @@ pub fn polyline() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        disabled_style: None,
         role: None,
         label: None,
         heading_level: None,
@@ -1306,6 +1351,8 @@ pub fn arc() -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        disabled_style: None,
         role: None,
         label: None,
         heading_level: None,
@@ -1332,6 +1379,8 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        disabled_style: None,
         role: None,
         label: None,
         heading_level: None,
@@ -1365,6 +1414,11 @@ pub fn button(label: impl Into<String>) -> Element {
         on_click: None,
         on_hover: None,
         focusable: false,
+        disabled: false,
+        // 押せないボタンは薄くなる — hover/active の既定と同じ考えで、
+        // 色に触らず (パレットを知らないので) 不透明度だけ落とす。
+        // `.disabled_style()` を書けば丸ごと置き換わる。
+        disabled_style: Some(Box::new(StateStyle { opacity: Some(0.45), ..StateStyle::default() })),
         // ボタンは既定で役割を名乗る。 支援技術から「押せるもの」として見える
         // かどうかを、 呼び出し側が毎回書かないで済むように (issue #21)。
         // 名前は中のラベルから取れるので `label` は None のまま。
@@ -2505,6 +2559,43 @@ impl Element {
     /// ```
     pub fn active(mut self, f: impl FnOnce(StateStyle) -> StateStyle) -> Self {
         self.active_style = Some(Box::new(f(StateStyle::default())));
+        self
+    }
+
+    /// 無効にする (HTML の `disabled`)。
+    ///
+    /// ```ignore
+    /// button("保存").disabled(self.saving).click(ctx, "save", App::save)
+    /// div().disabled(true).child(text("送信中…"))
+    /// ```
+    ///
+    /// 無効な要素は:
+    ///
+    /// - `click` / `on_click` が**鳴らない**。押下は吸うので、下に居る親の
+    ///   クリックが代わりに鳴ることもない (ブラウザと同じ)。
+    /// - `hover` / `active` のスタイルが当たらない。代わりに
+    ///   [`disabled_style`](Self::disabled_style) が畳まれる
+    ///   (`button()` は既定で薄くなる)。
+    /// - Tab のフォーカス送りから外れ、クリックでもフォーカスが入らない。
+    /// - カーソルが [`Cursor::NotAllowed`] になる。
+    ///
+    /// 右クリック (`on_right_click`) は通る — コンテキストメニューは
+    /// 「操作」ではないため。
+    ///
+    /// 引数は `bool` なので、送信中フラグをそのまま渡せる。ボタンごとに
+    /// 「busy なら click を付けない」分岐を書くと、1 か所忘れた所が
+    /// 二重送信になる ([#62](https://github.com/Mutafika/sabitori/issues/62))。
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// 無効なときのスタイル上書き。`hover` / `active` と同じ形。
+    /// ```ignore
+    /// div().bg(accent).disabled_style(|s| s.bg(muted).color(text_dim))
+    /// ```
+    pub fn disabled_style(mut self, f: impl FnOnce(StateStyle) -> StateStyle) -> Self {
+        self.disabled_style = Some(Box::new(f(StateStyle::default())));
         self
     }
 

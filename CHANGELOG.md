@@ -15,6 +15,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Element::disabled(bool)` / `Element::disabled_style(..)`**
+  ([#62](https://github.com/Mutafika/sabitori/issues/62))。送信中の二重押しを
+  止める手段が、これまでアプリ任せだった（`button()` にも `div().click(..)` にも
+  無効状態が無く、メニュー項目にだけ概念があった）。`busy` なら `click` を
+  付けない、という分岐を全ボタンに書くと 1 か所忘れた所が二重送信になる。
+
+  ```rust
+  button("保存").disabled(self.saving).click(ctx, "save", App::save)
+  div().disabled(true)                       // 任意の要素に書ける
+  ```
+
+  無効な要素は `click` / `on_click` が鳴らず、hover / active のスタイルも
+  当たらず、Tab のフォーカス送りからも外れ、カーソルが `NotAllowed` になる。
+  **押下は吸う** — 無効なボタンを押しても、下に居る親のクリックが代わりに
+  鳴ったりはしない（ブラウザと同じ）。右クリックは通る（コンテキストメニューは
+  「操作」ではない）。無効は**子孫にも効く**ので、送信中はフォームの入れ物ごと
+  `.disabled(true)` で止められる（`<fieldset disabled>` と同じ）。
+  `button()` は既定で薄くなり、`.disabled_style(|s| ..)` で丸ごと置き換えられる。
+  `HitRegion::disabled` にも出るので、accesskit を繋ぐとき (#25) にそのまま渡せる。
+
+
 ### Documentation
 
 - **README / ROADMAP が実装とずれていたのを直した**

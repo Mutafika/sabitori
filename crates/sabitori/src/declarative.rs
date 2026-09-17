@@ -1311,7 +1311,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                                             self.focused_id = region.id.clone();
                                             focus_set = true;
                                         }
-                                        if region.clickable {
+                                        // 無効な要素は click を鳴らさない。ここで
+                                        // `break` は通るので押下は吸われ、下に居る
+                                        // 親のクリックが代わりに鳴ることはない (#62)。
+                                        if region.clickable && !region.disabled {
                                             click_target = region.id.clone();
                                         }
                                         if let Some(ref drag_data) = region.drag_data {
@@ -2937,8 +2940,10 @@ impl<A: DeclarativeApp> AppState<A> {
                             }
                         }
                     }
-                    // Handle click (still fires for draggable elements)
-                    if region.clickable {
+                    // Handle click (still fires for draggable elements)。
+                    // 無効な要素は鳴らないが、`break` は通るので押下は吸う
+                    // (下の親が代わりに鳴らない = ブラウザと同じ) (#62)。
+                    if region.clickable && !region.disabled {
                         click_target = region.id.clone();
                         hit_clickable_or_drag = true;
                     }

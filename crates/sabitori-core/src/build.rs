@@ -54,6 +54,10 @@ pub struct HitRegion {
     pub hoverable: bool,
     /// Whether this region can receive focus.
     pub focusable: bool,
+    /// 無効な要素 (`.disabled(true)`) か、その子孫。ポインタは**吸う**が、
+    /// click も focus も起きない (#62)。`is_interactive` は true のまま —
+    /// 下の要素へ抜けさせないための吸収そのものが役目なので。
+    pub disabled: bool,
     /// Tooltip text (if set via `.tooltip("...")`).
     pub tooltip: Option<String>,
     /// Drag payload data (if set via `.draggable("...")`).
@@ -514,6 +518,7 @@ fn build_tree_impl(
         false,
         1.0,
         None,
+        false,
         probes,
         &mut probe_positions,
     );
@@ -781,9 +786,15 @@ fn emit_commands(
     // 直す係数で、 opacity と同じく乗算で下りていく。
     parent_scale: f32,
     parent_clip: Option<Rect>,
+    // 祖先が無効なら子孫も無効 (HTML の `<fieldset disabled>` と同じ)。
+    // 送信中にフォームごと `.disabled(true)` で止められるようにするため。
+    // 見た目の `disabled_style` は宣言した要素にだけ畳む (`apply_state_styles`)
+    // ので、入れ子にしても薄さは重ならない。
+    parent_disabled: bool,
     probes: &std::collections::HashSet<String>,
     probe_positions: &mut std::collections::HashMap<String, f32>,
 ) {
+    let disabled = parent_disabled || element.disabled;
     let layout = taffy.layout(taffy_node).expect("Missing layout");
     let style = &element.style;
     // `scale` cascades multiplicatively like opacity: `parent_scale` is what
@@ -856,6 +867,7 @@ fn emit_commands(
                     hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
                     no_select, scale,
                     parent_clip,
+                    disabled,
                     probes, probe_positions,
                 );
             }
@@ -1041,13 +1053,18 @@ fn emit_commands(
                 element_index: index,
                 id: element.id.clone(),
                 clickable,
-                has_click_handler: element.on_click.is_some(),
+                // 無効な要素はハンドラを持っていても鳴らないので、
+                // 「本物の click 対象」ではない (テキスト選択の判定がこれを見る)。
+                has_click_handler: element.on_click.is_some() && !disabled,
                 hoverable,
-                focusable: element.focusable,
+                focusable: element.focusable && !disabled,
+                disabled,
                 tooltip: element.tooltip.clone(),
-                drag_data: element.drag_data.clone(),
-                drop_zone: element.drop_zone,
-                cursor: element.cursor,
+                drag_data: if disabled { None } else { element.drag_data.clone() },
+                drop_zone: element.drop_zone && !disabled,
+                // 無効なら、明示指定を押しのけて NotAllowed。押せないものに
+                // 手のカーソルが出るのが一番紛らわしい。
+                cursor: if disabled { Some(Cursor::NotAllowed) } else { element.cursor },
                 role: element.role,
                 label: element.label.clone(),
                 heading_level: element.heading_level,
@@ -1188,6 +1205,7 @@ fn emit_commands(
                 hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
                 no_select, scale,
                 child_clip,
+                disabled,
                 probes, probe_positions,
             );
         }
