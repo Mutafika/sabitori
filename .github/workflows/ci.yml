@@ -53,8 +53,12 @@ jobs:
 
       # GPU を使うテスト (シェーダーのピクセル確認など) は、アダプタが取れない
       # 環境では自分で skip する。落とさずに残りを回す。
+      #
+      # `--no-fail-fast` は**要る**。既定では最初に落ちたテストバイナリで
+      # 打ち切るので、プラットフォーム依存の失敗が複数あると「直す → 押す →
+      # 次の 1 件が出る」を 1 件ずつ繰り返すことになる (実際にそうなった)。
       - name: cargo test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       # deny になっている lint (approx_constant など) でだけ落ちる。既存の
       # warning は数が多いので -D warnings にはしない — 全部潰すまで赤いままの

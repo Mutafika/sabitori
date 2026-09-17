@@ -1977,6 +1977,13 @@ mod nav_tests {
         assert!(s.on_key(Key::Down, word()));
         assert_eq!(s.cursor_pos, 7, "段落の末尾");
 
+        // **文書の端は macOS だけ。** Windows / Linux では段落と同じ Ctrl が
+        // 割り当たっていて区別が付かない (文書の端は Ctrl+Home / End の担当)。
+        // ここで両方を要求すると、非 macOS では「段落へ動いたのに文書の端を
+        // 期待する」テストになる。
+        if !MAC {
+            return;
+        }
         assert!(s.on_key(Key::Up, doc()));
         assert_eq!(s.cursor_pos, 0, "文書の先頭");
         assert!(s.on_key(Key::Down, doc()));
@@ -2275,12 +2282,19 @@ mod secure_tests {
         assert_eq!(s.next_word(), s.text.len());
     }
 
-    /// ⌥⌫ は「1 語ぶん」ではなく先頭まで消す (同じ理由)。
+    /// 単語単位の削除 (macOS は ⌥⌫、他は Ctrl+⌫) は「1 語ぶん」ではなく
+    /// 先頭まで消す (同じ理由)。
     #[test]
     fn word_delete_clears_to_the_start() {
         let mut s = secure_with("hunter2 swordfish");
-        let alt = Modifiers { alt: true, ..Default::default() };
-        assert!(s.on_key(Key::Backspace, alt));
+        // 修飾キーはプラットフォームで違う。`alt` 決め打ちにすると、
+        // Linux / Windows では単語削除として解釈されず素通りする。
+        let word_mod = if cfg!(target_os = "macos") {
+            Modifiers { alt: true, ..Default::default() }
+        } else {
+            Modifiers { ctrl: true, ..Default::default() }
+        };
+        assert!(s.on_key(Key::Backspace, word_mod));
         assert_eq!(s.text, "");
     }
 
