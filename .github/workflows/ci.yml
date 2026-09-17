@@ -33,12 +33,18 @@ jobs:
 
       # winit / arboard を Linux でビルドするのに要る。macOS の手元では
       # 要らないので、ここで落ちたらこの行を疑うこと。
-      - name: システム依存 (winit / arboard)
+      #
+      # CJK フォントも入れる。sabitori は日本語を出すのが前提の道具で、
+      # 文字送りのテストはシステムのフォントを実際に測る。素の runner には
+      # CJK の面が 1 つも無いので、入れないと「豆腐の幅」を測ることになる
+      # (テスト側も面が無ければ skip するが、CI では本当に測りたい)。
+      - name: システム依存 (winit / arboard / CJK フォント)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config
+            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config \
+            fonts-noto-cjk
 
       # --locked は license.yml と揃える。CI が勝手に解決し直すと、上流が
       # patch を出しただけで赤くなる。

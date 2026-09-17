@@ -808,12 +808,40 @@ mod tests {
     #[test]
     fn full_width_cjk_advances_about_one_em() {
         let mut s = shaper();
+        if !has_cjk_face(&mut s) {
+            // CJK の面が 1 つも入っていない環境 (素の Linux コンテナなど) では、
+            // 測っているのは豆腐の幅であって書体の性質ではない。CI には
+            // `fonts-noto-cjk` を入れてあるので、ここを通るのは手元の
+            // 最小コンテナくらい。
+            eprintln!("skip: CJK フォントが入っていない");
+            return;
+        }
         let w = measure(&mut s, "室名室名", None).size.width - 2.0;
         let per_char = w / 4.0;
         assert!(
             (per_char - EM).abs() < 0.15 * EM,
             "{per_char} px/char at {EM}px em — expected about 1em"
         );
+    }
+
+    /// システムに CJK を描ける面があるか。
+    ///
+    /// **測った幅では判定しない** — 幅で判定すると、本物の回帰 (CJK の送りが
+    /// 0 になる等) まで「フォントが無い」と見なして黙って通してしまう。
+    /// フォント DB に対して直接聞く。
+    fn has_cjk_face(s: &mut TextShaper) -> bool {
+        use cosmic_text::fontdb::Database;
+        fn supports(db: &Database, id: cosmic_text::fontdb::ID) -> bool {
+            db.with_face_data(id, |data, index| {
+                ttf_parser::Face::parse(data, index)
+                    .map(|f| f.glyph_index('室').is_some())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        }
+        let db = s.font_system.db();
+        let ids: Vec<_> = db.faces().map(|f| f.id).collect();
+        ids.into_iter().any(|id| supports(db, id))
     }
 
 

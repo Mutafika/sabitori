@@ -156,6 +156,12 @@ headless Chromium に実際に描かせて確認している (`e2e/web/`)。
 
 ### Fixed
 
+- **CJK の文字送りのテストが、CJK フォントの無い環境で落ちていた。** 測って
+  いたのは豆腐の幅で、書体の性質ではなかった。フォント DB に「この面は CJK を
+  描けるか」を直接聞いて、無ければ skip するようにした（幅で判定すると、本物の
+  回帰まで「フォントが無い」と見なして黙って通してしまう）。CI には
+  `fonts-noto-cjk` を入れてあるので、そこでは本当に測る。
+
 - **`examples/filer.rs` が macOS 以外でビルドできなかった。** macOS 限定の
   `sabitori::macos_drag` を無条件に呼んでいた。ライブラリには影響しないが、
   `cargo build --workspace --all-targets` が Linux / Windows で落ちる。

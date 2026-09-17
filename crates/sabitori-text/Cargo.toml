@@ -26,3 +26,9 @@ etagere.workspace = true
 wgpu.workspace = true
 bytemuck = { workspace = true }
 tracing.workspace = true
+
+[dev-dependencies]
+# フォント DB に「この面は CJK を描けるか」を直接聞くためだけに使う (テスト専用)。
+# 幅で判定すると、本物の回帰まで「フォントが無い」と見なして黙って通してしまう。
+# 依存ツリーには既に居る (fontdb 経由) ので、新しく引くものは無い。
+ttf-parser = "0.25"
