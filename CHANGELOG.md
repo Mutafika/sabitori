@@ -17,6 +17,30 @@
 
 ### Added
 
+- **Web で ⌘C / ⌘X / ⌘V が効くようになった**
+  ([#76](https://github.com/Mutafika/sabitori/issues/76))。wasm の
+  `clipboard.rs` は空実装で、コピーもカットも黙って何も起きなかった
+  （`navigator.clipboard` が Promise を返すので同期 API に載らない、が理由）。
+  予約番号・住所・電話番号を画面から写すのは業務アプリの毎日の操作なので、
+  Web 版だけ使えないのは痛い。
+
+  `navigator.clipboard` ではなく **DOM の `copy` / `cut` / `paste` イベント**を
+  使う。イベントの中なら同期で読み書きでき、**社内 LAN の http でも動き**
+  （`navigator.clipboard` は https / localhost 限定）、読み取りの許可ダイアログも
+  出ない。`copy` / `cut` は「選択が無いと飛ばない」ので、⌘C / ⌘X の keydown で
+  隠し textarea に選択文字列を入れて `select()` してから既定動作に委ねている。
+  切り取りは **クリップボードへ書けてから**本文を消す（issue #33 の規律のまま）。
+  native と同じ規則（伏字の欄からは出さない・視覚選択は読み取り専用）を
+  1 箇所 (`clipboard_selection`) で見るようにしたので、web でだけ漏れることが
+  起きない。
+
+- **`Modifiers::primary()` / `word()` / `line()`。** ショートカットの修飾キーを
+  決める `cfg!(target_os = "macos")` が各所に散っていて、**wasm32 では必ず
+  false** になっていた（`target_os` は `"unknown"`）。つまり
+  **Mac のブラウザでは ⌘C も ⌘A も ⌘← も一切効かなかった**。1 つの wasm を
+  Mac の人も Windows の人も開くので、ビルド時に決めること自体が間違っている。
+  web では ⌘ と Ctrl の両方を主修飾キーとして受ける。native の挙動は不変。
+
 - **Web の日本語 IME・ソフトキーボード・貼り付けが届くようになった**
   ([#73](https://github.com/Mutafika/sabitori/issues/73))。wasm のランタイムは
   canvas 1 枚で DOM の入力要素を持たないため、winit が拾える範囲しか届いて

@@ -63,7 +63,11 @@ await new Promise((r) => setTimeout(r, 8000));
 
 const globals = { send, logs, errors, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
 if (extra) {
-  const mod = await import(extra);
+  // 相対パスをそのまま import() するとパッケージ名として解決されるので、
+  // 必ず file:// に直す (`probes/ime.mjs` で ERR_MODULE_NOT_FOUND になる)。
+  const { pathToFileURL } = await import("node:url");
+  const { resolve } = await import("node:path");
+  const mod = await import(pathToFileURL(resolve(extra)).href);
   await mod.default(globals);
 }
 

@@ -93,6 +93,53 @@ pub struct Modifiers {
     pub meta: bool,
 }
 
+impl Modifiers {
+    /// ショートカットの「主修飾キー」が押されているか (macOS の ⌘、他は Ctrl)。
+    ///
+    /// # wasm でビルド対象から OS は決められない
+    ///
+    /// `cfg!(target_os = "macos")` は wasm32 では**必ず false** になる
+    /// (`target_os` は `"unknown"`)。そのため web では ⌘ が主修飾キーとして
+    /// 扱われず、**Mac のブラウザで ⌘C も ⌘A も ⌘← も一切効かない**状態に
+    /// なっていた。1 つのビルドを Mac の人も Windows の人も開くので、ビルド
+    /// 時に決めること自体が間違っている。
+    ///
+    /// web では **⌘ と Ctrl の両方**を主修飾キーとして受ける。閲覧者の OS を
+    /// `navigator` から嗅ぐ手もあるが、そのために入力の層をブラウザ API に
+    /// 依存させる価値は無い。誤爆するのは「Mac で Ctrl+C」くらいで、canvas の
+    /// アプリに端末のような Ctrl+C の意味は無い。
+    pub fn primary(self) -> bool {
+        if cfg!(target_arch = "wasm32") {
+            self.meta || self.ctrl
+        } else if cfg!(target_os = "macos") {
+            self.meta
+        } else {
+            self.ctrl
+        }
+    }
+
+    /// 単語単位で動く / 消す修飾キー (macOS の ⌥、他は Ctrl)。
+    pub fn word(self) -> bool {
+        if cfg!(target_arch = "wasm32") {
+            // web では両方受ける。`primary` と同じ理由。
+            self.alt || self.ctrl
+        } else if cfg!(target_os = "macos") {
+            self.alt
+        } else {
+            self.ctrl
+        }
+    }
+
+    /// 行頭 / 行末へ動く修飾キー。macOS の ⌘ にしか無い (他は Home / End)。
+    pub fn line(self) -> bool {
+        if cfg!(target_arch = "wasm32") {
+            self.meta
+        } else {
+            cfg!(target_os = "macos") && self.meta
+        }
+    }
+}
+
 /// Bit for the primary button (mouse left, or touch/pen primary contact).
 pub const BUTTON_PRIMARY: u8 = 1 << 0;
 /// Bit for the secondary button (mouse right).
@@ -677,5 +724,56 @@ mod click_counter_tests {
         let mut c = ClickCounter::new();
         assert_eq!(c.press_now(at(0.0, 0.0), LEFT, PointerKind::Mouse), 1);
         assert_eq!(c.press_now(at(0.0, 0.0), LEFT, PointerKind::Mouse), 2);
+    }
+}
+
+#[cfg(test)]
+mod modifier_tests {
+    use super::*;
+
+    fn meta() -> Modifiers {
+        Modifiers { meta: true, ..Default::default() }
+    }
+    fn ctrl() -> Modifiers {
+        Modifiers { ctrl: true, ..Default::default() }
+    }
+
+    /// **web では ⌘ と Ctrl の両方が主修飾キー。**
+    ///
+    /// 1 つの wasm を Mac の人も Windows の人も開く。`cfg!(target_os)` は
+    /// wasm32 で必ず `"unknown"` になるので、ビルド時に決めると **Mac の
+    /// ブラウザで ⌘C も ⌘A も効かない**という形で片方が死ぬ。
+    #[test]
+    fn the_web_takes_either_command_or_control() {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        assert!(meta().primary(), "Mac のブラウザで ⌘ が効かない");
+        assert!(ctrl().primary(), "Windows のブラウザで Ctrl が効かない");
+    }
+
+    /// native は OS の作法どおり (ここを web に合わせて広げると、macOS で
+    /// Ctrl+C が端末の作法と食い違う)。
+    #[test]
+    fn native_follows_the_platform() {
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
+        if cfg!(target_os = "macos") {
+            assert!(meta().primary());
+            assert!(!ctrl().primary());
+            assert!(meta().line(), "⌘← は行頭へ");
+        } else {
+            assert!(ctrl().primary());
+            assert!(!meta().primary());
+            assert!(!meta().line(), "行頭へ動く修飾キーは macOS にしか無い");
+        }
+    }
+
+    /// 修飾キー無しはどれでもない。
+    #[test]
+    fn nothing_pressed_is_nothing() {
+        let none = Modifiers::default();
+        assert!(!none.primary() && !none.word() && !none.line());
     }
 }

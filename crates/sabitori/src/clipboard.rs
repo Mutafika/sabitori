@@ -108,21 +108,13 @@ pub(crate) fn test_set_writable(writable: bool) {
 ///
 /// ⇧+Insert（X11 の慣習）は見ていない。 必要なら足すこと。
 pub fn is_paste_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
-    let primary = if cfg!(target_os = "macos") {
-        modifiers.meta
-    } else {
-        modifiers.ctrl
-    };
+    let primary = modifiers.primary();
     key == sabitori_input::Key::V && primary
 }
 
 /// このキー入力がコピーの要求か。
 pub fn is_copy_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
-    let primary = if cfg!(target_os = "macos") {
-        modifiers.meta
-    } else {
-        modifiers.ctrl
-    };
+    let primary = modifiers.primary();
     key == sabitori_input::Key::C && primary
 }
 
@@ -130,11 +122,7 @@ pub fn is_copy_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Mod
 ///
 /// ⇧+Delete（Windows の古い慣習）は見ていない。 必要なら足すこと。
 pub fn is_cut_shortcut(key: sabitori_input::Key, modifiers: sabitori_input::Modifiers) -> bool {
-    let primary = if cfg!(target_os = "macos") {
-        modifiers.meta
-    } else {
-        modifiers.ctrl
-    };
+    let primary = modifiers.primary();
     key == sabitori_input::Key::X && primary
 }
 

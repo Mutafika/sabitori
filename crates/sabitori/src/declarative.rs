@@ -1672,6 +1672,16 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             self.app.on_input(&e);
                         }
                     }
+
+                    // 切り取りは「クリップボードへ書けてから消す」(issue #33)。
+                    // 書けたかを知っているのはブラウザの `cut` イベントなので、
+                    // 合図を汲んでからここで消す。
+                    if crate::web_ime::take_cut_written() {
+                        self.cut_focused_selection();
+                    }
+                    // `copy` / `cut` は同期で答える必要があり、Rust へ問い合わせる
+                    // 余裕が無い。入力を反映した**この時点の**選択を置いておく。
+                    crate::web_ime::set_selection(self.clipboard_selection());
                 }
 
                 // Read the surface geometry through a shared borrow and let it
@@ -3128,36 +3138,53 @@ impl<A: DeclarativeApp> AppState<A> {
     /// とき (wasm、 arboard がハンドルを開けない環境) に切り取った文字列がどこにも
     /// 残らない — issue #33 で報告された症状そのものを、 別の原因で再現してしまう。
     fn copy_or_cut(&mut self, cut: bool) {
-        // 欄は `Rc` なので、 ハンドルを 1 つ複製して `self` の借用から外す
-        // (`&mut self` と `managed_text_field` の借用が重なるため)。
+        let Some((text, cuttable)) = self.clipboard_selection() else { return };
+        if cut && !cuttable {
+            return;
+        }
+        if crate::clipboard::write_text(&text) && cut {
+            self.cut_focused_selection();
+        }
+    }
+
+    /// クリップボードへ出す文字列と、**それを切り取れるか**。
+    ///
+    /// 上の表のとおり: フォーカス中の登録済みの欄が優先で、そこからなら切り取れる。
+    /// 欄に居なければ画面の視覚選択で、こちらは読み取り専用。伏字の欄 (#61) は
+    /// どちらにもしない — 画面が ● でもクリップボードへ出るのは平文なので。
+    ///
+    /// native の ⌘C / ⌘X と、web の `copy` / `cut` イベント (#76) が**同じ規則**を
+    /// 見るように 1 箇所にしてある。片方だけ直すと、web でだけ伏字が漏れる、
+    /// といった形で割れる。
+    pub(crate) fn clipboard_selection(&self) -> Option<(String, bool)> {
+        let field = self
+            .focused_id
+            .as_deref()
+            .and_then(|id| self.managed_text_field(id));
+        match field {
+            Some(field) => {
+                if field.is_secure() {
+                    return None;
+                }
+                field
+                    .selected_text()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| (t, true))
+            }
+            None => self.selected_text().map(|t| (t, false)),
+        }
+    }
+
+    /// フォーカス中の欄の選択範囲を消す。**書けてから呼ぶこと** (issue #33)。
+    pub(crate) fn cut_focused_selection(&mut self) {
         let field = self
             .focused_id
             .clone()
             .and_then(|id| self.managed_text_field(&id).cloned());
-        match field {
-            Some(field) => {
-                // 伏字の欄からは、コピーも切り取りもさせない。画面が ● でも
-                // クリップボードへ出るのは平文なので、ここが空いていると
-                // 「隠したつもりの値が ⌘C で出る」ことになる (#61)。
-                // 貼り付けは別経路なので通る。
-                if field.is_secure() {
-                    return;
-                }
-                // 切り出しは欄の中でやる — 選択範囲を持っているのは欄なので、
-                // char 境界の責任をここに持ち込まない。
-                let Some(text) = field.selected_text().filter(|t| !t.is_empty()) else {
-                    return;
-                };
-                if crate::clipboard::write_text(&text) && cut {
-                    field.cut_selection();
-                }
+        if let Some(field) = field {
+            if !field.is_secure() {
+                field.cut_selection();
             }
-            None if !cut => {
-                if let Some(text) = self.selected_text() {
-                    crate::clipboard::write_text(&text);
-                }
-            }
-            None => {}
         }
     }
 

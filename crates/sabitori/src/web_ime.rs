@@ -51,6 +51,15 @@ thread_local! {
     static BRIDGE: RefCell<Option<Bridge>> = const { RefCell::new(None) };
     /// 今のフレームの、管理テキスト欄の画面矩形 (論理 px)。
     static FIELDS: RefCell<Vec<Rect>> = const { RefCell::new(Vec::new()) };
+    /// 今の選択文字列と、それを切り取れるか。ランタイムが毎フレーム更新する。
+    ///
+    /// `copy` / `cut` の DOM イベントは**同期で**答えないといけないので、
+    /// Rust 側へ問い合わせる余裕が無い。前フレームの値を置いておく。
+    /// ⌘A の直後 1 フレーム (16ms) だけ古い値になるが、人の指では作れない間隔。
+    static SELECTION: RefCell<Option<(String, bool)>> = const { RefCell::new(None) };
+    /// `cut` イベントでクリップボードに**書けた**という合図。ランタイムが
+    /// 汲んで、そこで初めて本文を消す (「書けてから消す」issue #33)。
+    static CUT_WRITTEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 struct Bridge {
@@ -80,6 +89,19 @@ pub fn drain() -> Vec<InputEvent> {
 /// 前フレームの矩形を置いておく。
 pub fn set_fields(rects: Vec<Rect>) {
     FIELDS.with(|f| *f.borrow_mut() = rects);
+}
+
+/// 今の選択文字列を渡す (`copy` / `cut` が同期で読む)。
+///
+/// `cuttable` が `false` なら画面の視覚選択 = 読み取り専用なので、⌘X は
+/// 何もしない (native と同じ規則。[`AppState::clipboard_selection`] を参照)。
+pub fn set_selection(selection: Option<(String, bool)>) {
+    SELECTION.with(|s| *s.borrow_mut() = selection);
+}
+
+/// `cut` でクリップボードへ書けたか。汲むと下りる。
+pub fn take_cut_written() -> bool {
+    CUT_WRITTEN.with(|c| c.replace(false))
 }
 
 /// 隠し `<textarea>` を body に置き、listener を張る。2 回目以降は何もしない。
@@ -120,6 +142,17 @@ pub fn set_active(active: bool, caret: Option<(f32, f32, f32, f32)>) {
                 let _ = style.set_property("left", &format!("{x}px"));
                 let _ = style.set_property("top", &format!("{y}px"));
                 let _ = style.set_property("height", &format!("{}px", h.max(1.0)));
+            }
+            // **焦点を毎フレーム確かめ直す。**
+            //
+            // `pointerup` の中で当てるのは iOS のため (ユーザー操作の中で
+            // focus しないとキーボードが出ない) だが、それだけに頼ると
+            // winit 側が canvas に焦点を戻す順番と競って、**押したのに打てない**
+            // 回が出る (実際に headless Chrome で再現した)。欄に焦点がある間は
+            // ここで取り返す。デスクトップのブラウザは操作の外でも focus できる
+            // ので、これが効く。
+            if !is_focused(&bridge.textarea) {
+                let _ = el.focus();
             }
         } else if is_focused(&bridge.textarea) {
             let _ = el.blur();
@@ -221,6 +254,20 @@ fn build() -> Option<Bridge> {
         clear_textarea();
     }));
 
+    // --- クリップボード (#76) -------------------------------------------
+    keep.push(listen(target, "copy", |e| {
+        write_clipboard(&e);
+        clear_textarea();
+    }));
+    keep.push(listen(target, "cut", |e| {
+        if write_clipboard(&e) {
+            // **書けたときだけ**合図を立てる。順序が逆だと、書けなかった環境で
+            // 「切り取ったのにどこにも残らない」が復活する (issue #33)。
+            CUT_WRITTEN.with(|c| c.set(true));
+        }
+        clear_textarea();
+    }));
+
     // --- 編集キー -------------------------------------------------------
     keep.push(listen(target, "keydown", |e| {
         let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else { return };
@@ -240,6 +287,27 @@ fn build() -> Option<Bridge> {
         // ⌘V / Ctrl+V は流さない — ブラウザが `paste` → `input` を出すので、
         // そちらで本文ごと受け取る。両方流すと二重に貼られる。
         if matches!(key, Key::V) && (mods.meta || mods.ctrl) {
+            return;
+        }
+
+        // ⌘C / ⌘X もブラウザのイベントに委ねる (#76)。
+        //
+        // `navigator.clipboard` は Promise を返すので同期の `write_text` に
+        // 載らず、しかも安全なコンテキスト (https / localhost) でしか使えない
+        // — 社内 LAN の http で配る業務アプリでは使えない。DOM の `copy` /
+        // `cut` なら、イベントの中で同期に読み書きできて、許可ダイアログも
+        // 出ない。
+        //
+        // ただし **`copy` / `cut` は「選択が無いと出ない」**。隠し textarea は
+        // 常に空なので、ここで選択文字列を入れて `select()` してから既定動作に
+        // 委ねる。そうして初めてイベントが飛ぶ。
+        if matches!(key, Key::C | Key::X) && (mods.meta || mods.ctrl) {
+            let sel = SELECTION.with(|s| s.borrow().clone());
+            let Some((text, cuttable)) = sel else { return };
+            if text.is_empty() || (matches!(key, Key::X) && !cuttable) {
+                return;
+            }
+            select_in_textarea(&text);
             return;
         }
 
@@ -314,6 +382,33 @@ fn clear_textarea() {
     BRIDGE.with(|b| {
         if let Some(bridge) = b.borrow().as_ref() {
             bridge.textarea.set_value("");
+        }
+    });
+}
+
+/// `copy` / `cut` の中で、今の選択をクリップボードへ書く。書けたら `true`。
+fn write_clipboard(e: &web_sys::Event) -> bool {
+    let Some(ce) = e.dyn_ref::<web_sys::ClipboardEvent>() else { return false };
+    let Some(data) = ce.clipboard_data() else { return false };
+    let sel = SELECTION.with(|s| s.borrow().clone());
+    let Some((text, _)) = sel else { return false };
+    if text.is_empty() {
+        return false;
+    }
+    if data.set_data("text/plain", &text).is_err() {
+        return false;
+    }
+    // 自分で入れたので、ブラウザの既定動作 (textarea の選択をコピー) は止める。
+    e.prevent_default();
+    true
+}
+
+/// textarea に文字列を入れて全選択する。`copy` / `cut` を発火させるため。
+fn select_in_textarea(text: &str) {
+    BRIDGE.with(|b| {
+        if let Some(bridge) = b.borrow().as_ref() {
+            bridge.textarea.set_value(text);
+            let _ = bridge.textarea.set_selection_range(0, text.len() as u32);
         }
     });
 }

@@ -424,11 +424,7 @@ impl TextInputInner {
             return false;
         }
 
-        let is_cmd = if cfg!(target_os = "macos") {
-            modifiers.meta
-        } else {
-            modifiers.ctrl
-        };
+        let is_cmd = modifiers.primary();
         // 移動・削除の「単位」を決める修飾キー。 プラットフォームで名前が違う
         // だけで、 意味は同じ:
         //
@@ -441,8 +437,8 @@ impl TextInputInner {
         // Windows / Linux に「行頭へ動く修飾キー」は無い (Home キーが担当) ので
         // `line_mod` は macOS でしか立たない。 ここで嘘の対応表を作ると、
         // Ctrl+← が単語移動ではなく行頭移動になる。
-        let word_mod = if cfg!(target_os = "macos") { modifiers.alt } else { modifiers.ctrl };
-        let line_mod = cfg!(target_os = "macos") && modifiers.meta;
+        let word_mod = modifiers.word();
+        let line_mod = modifiers.line();
         let doc_mod = is_cmd;
         // ⇧ 以外の修飾キーが乗っているか。 **乗っているのに対応する操作を
         // 実装していないなら、 消費してはいけない** (issue #33 と同じ規律) —

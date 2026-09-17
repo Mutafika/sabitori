@@ -43,6 +43,15 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 node drive.mjs http://127.0.0.1:8099/index.html /tmp/last.png probes/ime.mjs
 ```
 
+`probes/clipboard.mjs` は **web のクリップボード (#76)** を通しで見る:
+打つ → ⌘A → ⌘X で欄が空になる → ⌘V で戻る。クリップボードの中身は CDP から
+直接読めないので、**貼り戻して**確かめている。
+
+> プローブが `Input.dispatchKeyEvent` に `commands: ["cut"]` を渡しているのは
+> **CDP の都合**。合成したキーイベントはブラウザの編集コマンドを起こさない
+> (実際の打鍵だけが起こす)。渡さないと `cut` / `copy` が飛ばず、橋渡しが
+> 壊れているように見える。実機では要らない。
+
 `probes/ime.mjs` は **web の日本語入力 (#73)** を通しで見る: 欄を押す →
 `にほんご` を変換中にする → `日本語` を確定 → `abc` を足す → Backspace →
 ⇧← で選択。各段で PNG を吐くので、**変換中の文字が欄に見えているか**まで
