@@ -1400,7 +1400,20 @@ fn convert_to_taffy_style(
         | ElementKind::Arc(_)
         | ElementKind::Polyline(_) => (
             convert_min_dimension(style.min_width),
-            convert_min_dimension(style.min_height),
+            // 縦だけは、必要な所にしか 0 を置かない。Taffy 0.7〜0.9 は、
+            // **子コンテナに定値の `min_height` があると**、padding を持つ親の
+            // 自動高さが `max(0, padding*2 - 子の高さ)` だけ膨らむ
+            // (`min_width` だけなら起きない)。padding 32 のログインカードの下に
+            // 49px の空白が出る、という形で表に出た (#60)。
+            //
+            // 上の理屈が要るのは「中身より小さくなれないと困る」文脈だけ:
+            // 伸び縮みする行 (`grow`) と、自分で切る入れ物 (`overflow`)。
+            // 素の `div()` は中身なりで良いので CSS どおり `auto` に戻す。
+            if needs_zero_min_height(style) {
+                convert_min_dimension(style.min_height)
+            } else {
+                convert_dimension(style.min_height)
+            },
         ),
     };
 
@@ -1603,6 +1616,29 @@ fn convert_dimension(d: Dimension) -> taffy::Dimension {
 /// Like [`convert_dimension`], but resolves an unset (`Auto`) minimum to `0`
 /// instead of CSS's automatic minimum size. Used for container min-sizes — see
 /// the comment at the `Div` arm of `convert_to_taffy_style` for why.
+/// この入れ物に `min-height: 0` を置くべきか。
+///
+/// 置くのは「中身より縦に小さくなれないと壊れる」文脈だけ:
+///
+/// - `grow` を書いた行 — 余りを取るために、中身の高さを下回れる必要がある。
+///   `min-height: auto` のままだと中身より小さくなれず、その中のスクロール枠の
+///   ビューポートが中身と同じ高さになって**スクロールが黙って効かなくなる**
+///   (レイアウトは正しく見えるのに、ホイールだけ何も起きない)。
+/// - 自分で切る入れ物 (`overflow: hidden/scroll`) — CSS も flex item の
+///   automatic minimum size が 0 になる条件に挙げている。
+/// - 上限を書いた入れ物 (`max_height`) — 上限より下に来られないと意味が無い。
+///
+/// `flex_shrink` は見ない — 既定が 1.0 なので、見ると全部の入れ物が該当して
+/// しまい、絞ったことにならない。
+///
+/// それ以外 (素の `div()`) は CSS どおり `auto`。Taffy の膨らみ (#60) を
+/// 踏まないためと、「中身なりに伸びる」が普通の期待だから。
+fn needs_zero_min_height(style: &ElementStyle) -> bool {
+    style.flex_grow > 0.0
+        || style.overflow != Overflow::Visible
+        || style.max_height != Dimension::Auto
+}
+
 fn convert_min_dimension(d: Dimension) -> taffy::Dimension {
     match d {
         Dimension::Auto => taffy::Dimension::Length(0.0),
@@ -2725,6 +2761,173 @@ mod container_min_size_tests {
         }
     }
 
+    /// **padding のあるカードが、中身の合計どおりの高さになること (#60)。**
+    ///
+    /// 子がコンテナ (`div`) だと、親の箱だけが縦に伸びて下に空白が余っていた。
+    /// 子の位置も大きさも正しいので、余った空白の理由がどこにも見えない。
+    /// 余分は子 1 個あたり `max(0, padding*2 - 子の高さ)` — padding 32 の
+    /// ログインカードで 49px、エラー表示が 1 個増えるたびに 31px 増えた。
+    #[test]
+    fn a_padded_card_is_exactly_its_padding_plus_its_children() {
+        let card = |p: f32, inner_pad: f32| {
+            let child = div()
+                .id("a")
+                .p(Px(inner_pad))
+                .child(div().h(Px(15.0)));
+            div()
+                .id("card")
+                .w(Px(380.0))
+                .p(Px(p))
+                .flex_col()
+                .children([child, div().id("last").h(Px(10.0))])
+        };
+
+        for (p, inner_pad) in [(10.0, 0.0), (32.0, 0.0), (32.0, 11.0), (10.0, 5.0)] {
+            let tree = div()
+                .w(Px(1280.0))
+                .h(Px(820.0))
+                .flex_col()
+                .items_center()
+                .child(card(p, inner_pad));
+            let built = build_tree(&tree, 1280.0, 820.0);
+            let h = built
+                .hit_regions
+                .iter()
+                .find(|r| r.id.as_deref() == Some("card"))
+                .expect("card")
+                .rect
+                .size
+                .height;
+            let expected = p * 2.0 + (15.0 + inner_pad * 2.0) + 10.0;
+            assert_eq!(
+                h, expected,
+                "padding {p} / 子の padding {inner_pad}: カードが {h}px (期待 {expected}px)"
+            );
+        }
+    }
+
+    /// **grid の 2 段目の子が、1 段目の行の高さに引き伸ばされないこと (#60)。**
+    ///
+    /// トラック (グリッド全体) は正しいのに子だけがはみ出すので、下の段と
+    /// 重なる。2 列のフォームで 1 段目のドロップダウンを開くと、下の段の欄が
+    /// 全部伸びる、という形で表に出た。
+    #[test]
+    fn grid_items_in_later_rows_keep_their_own_height() {
+        let item = |id: &str, h: f32| {
+            div()
+                .id(id)
+                .flex_col()
+                .children([div().h(Px(40.0)), div().h(Px(h))])
+        };
+        let tree = div().w(Px(600.0)).h(Px(600.0)).flex_col().child(
+            grid()
+                .id("grid")
+                .w_full()
+                .grid_cols(vec![Track::fr(1.0), Track::fr(1.0)])
+                .gap(10.0)
+                .children([
+                    item("a", 200.0),
+                    item("b", 175.0),
+                    item("c", 150.0),
+                    item("d", 75.0),
+                ]),
+        );
+
+        let built = build_tree(&tree, 600.0, 600.0);
+        let height = |id: &str| {
+            built
+                .hit_regions
+                .iter()
+                .find(|r| r.id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("{id} が居ない"))
+                .rect
+                .size
+                .height
+        };
+
+        // 同じ段の中で低い方が段の高さまで伸びるのは CSS どおり (align: stretch)。
+        // 壊れていたのは、2 段目が**1 段目の**高さまで伸びていたこと。
+        assert_eq!(height("a"), 240.0, "1 段目 = 40 + 200");
+        assert_eq!(height("b"), 240.0, "1 段目のもう 1 枚も段の高さ");
+        assert_eq!(height("c"), 190.0, "2 段目 = 40 + 150 (1 段目の 240 ではない)");
+        assert_eq!(height("d"), 190.0, "2 段目のもう 1 枚も 2 段目の高さ");
+        assert_eq!(height("grid"), 440.0, "全体は 240 + gap 10 + 190");
+    }
+
+    /// **上流 (Taffy) の挙動そのものを置いておく。**
+    ///
+    /// `needs_zero_min_height` で縦の 0 を絞ったのは、Taffy 0.7.7 / 0.8 / 0.9 に
+    /// 「子コンテナに定値の `min_height` があると、padding を持つ親の自動高さが
+    /// `max(0, padding*2 - 子の高さ)` だけ膨らむ」という挙動があるため
+    /// ([#60](https://github.com/Mutafika/sabitori/issues/60))。`min_width` だけ
+    /// なら起きない = 縦だけの話。
+    ///
+    /// Taffy を上げたら `cargo test -p sabitori-core -- --ignored` で叩く。
+    /// **通るようになったら上流が直った**ということなので、絞り込みを外して
+    /// 素の 0 に戻してよい (スクロールの穴が塞がるぶん、そちらの方が素直)。
+    #[test]
+    #[ignore = "上流 Taffy の未修正バグ。直ったら通る"]
+    fn upstream_taffy_does_not_inflate_a_padded_parent() {
+        use taffy::prelude::*;
+
+        fn card_height(p: f32, child_min_zero: bool) -> f32 {
+            let mut t: TaffyTree<()> = TaffyTree::new();
+            let content = t
+                .new_leaf(Style {
+                    size: Size { width: auto(), height: length(15.0) },
+                    ..Default::default()
+                })
+                .unwrap();
+            let child = t
+                .new_with_children(
+                    Style {
+                        min_size: if child_min_zero {
+                            Size { width: length(0.0), height: length(0.0) }
+                        } else {
+                            Size { width: auto(), height: auto() }
+                        },
+                        ..Default::default()
+                    },
+                    &[content],
+                )
+                .unwrap();
+            let last = t
+                .new_leaf(Style {
+                    size: Size { width: auto(), height: length(10.0) },
+                    ..Default::default()
+                })
+                .unwrap();
+            let card = t
+                .new_with_children(
+                    Style {
+                        flex_direction: FlexDirection::Column,
+                        size: Size { width: length(380.0), height: auto() },
+                        padding: Rect {
+                            left: length(p),
+                            right: length(p),
+                            top: length(p),
+                            bottom: length(p),
+                        },
+                        ..Default::default()
+                    },
+                    &[child, last],
+                )
+                .unwrap();
+            t.compute_layout(card, Size::MAX_CONTENT).unwrap();
+            t.layout(card).unwrap().size.height
+        }
+
+        for p in [10.0, 32.0] {
+            let expected = p * 2.0 + 15.0 + 10.0;
+            assert_eq!(card_height(p, false), expected, "min auto (正しい)");
+            assert_eq!(
+                card_height(p, true),
+                expected,
+                "padding {p}: 子に min_size: 0 があると親が膨らむ"
+            );
+        }
+    }
+
     /// Deterministic measurer that actually wraps: the width is capped at the
     /// offered `max_width` and the height grows with the line count. Real apps
     /// always run with a measurer, and the `Text` arm only falls back to a
@@ -3435,3 +3638,4 @@ mod overlay_content_tests {
         assert_eq!((rects, images, texts), (0, 0, 0));
     }
 }
+

@@ -76,6 +76,24 @@
 
 ### Fixed
 
+- **padding のあるカードが縦に膨らむ / grid の 2 段目が 1 段目の高さになる**
+  ([#60](https://github.com/Mutafika/sabitori/issues/60))。padding 32 の
+  ログインカードの下に 49px の空白が出て、エラー表示が 1 個増えるたびに 31px
+  増えた。子の位置も大きさも正しいので、余った空白の理由がどこにも見えない。
+  2 列 grid では、下の段のカードが上の段と同じ高さまで伸びて重なった。
+
+  どちらも根は 1 つ。`sabitori-core` はコンテナの最小サイズを CSS の `auto`
+  ではなく 0 にしていた（`grow(1.0)` の行が中身の高さに膨らんでスクロールが
+  効かなくなる、の対策）。Taffy 0.7〜0.9 には「子コンテナに定値の `min_height`
+  があると、padding を持つ親の自動高さが `max(0, padding*2 - 子の高さ)` だけ
+  膨らむ」挙動があり、この 0 がそれを踏んでいた（`min_width` だけなら起きない）。
+
+  **縦の 0 は、必要な所にだけ置くようにした** — `grow` を書いた入れ物、自分で
+  切る入れ物 (`overflow: hidden/scroll`)、上限を書いた入れ物 (`max_height`)。
+  素の `div()` は CSS どおり `auto` に戻る。スクロールの対策 2 件はテストで
+  そのまま通っている。上流の挙動は `#[ignore]` のテストに置いたので、Taffy を
+  上げたら `cargo test -p sabitori-core -- --ignored` で直ったかを見られる。
+
 - **`text_area` の枠と背景が、指定した行数の箱に付くようになった**
   ([#70](https://github.com/Mutafika/sabitori/issues/70))。`text_area(.., 4)` で
   4 行ぶんの欄を置いても、空欄のときは **1 行ぶんの枠しか描かれず**、その下に
