@@ -20,6 +20,17 @@ impl Default for App {
 }
 
 impl DeclarativeApp for App {
+    /// 欄の中身が変わったら console に出す。
+    ///
+    /// **絵では assert できない**ものをここから見る。#81 (打った英数字が
+    /// 1 文字も入らない) は、スクショだと「欄が placeholder のまま」にしか
+    /// 見えず、probe から確かめようがなかった。
+    fn tick(&mut self, _dt: f32) {
+        if self.name.take_changed() {
+            log::info!("name={}", self.name.text());
+        }
+    }
+
     fn url_fragment(&self) -> Option<String> {
         Some(self.fragment())
     }

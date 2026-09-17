@@ -30,6 +30,16 @@ trunk build                                   # 初回は数分 (フォント 10
 node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 ```
 
+probes/ にあるもの:
+
+| probe | 見ているもの |
+|---|---|
+| `typing.mjs` | **素の打鍵**で英数字が入るか (#81)。`Input.insertText` は使わない — あれは keydown を通らないので、「keydown を止めていて文字が届かない」形をすり抜ける |
+| `ime.mjs` | 日本語の変換・編集キー (#73) |
+| `clipboard.mjs` | ⌘C / ⌘X / ⌘V (#76) |
+| `history.mjs` | URL と戻るボタン (#74) |
+| `files.mjs` | ダウンロード (#77) |
+
 `drive.mjs` は CDP (Chrome DevTools Protocol) を Node の組み込み `WebSocket`
 だけで叩く。出力は console のログ・例外・PNG。**`--use-angle=swiftshader` は
 わざと**指定している — 実 GPU では通って弱い環境で落ちる、が #72 の形なので。

@@ -311,6 +311,24 @@
 
 ### Fixed
 
+- **web で英数字が 1 文字も入らなかった**
+  ([#81](https://github.com/Mutafika/sabitori/issues/81)、v0.12.0 の回帰)。
+  隠し textarea の keydown が、修飾キーの付かないキーで `prevent_default()`
+  していた。止めるとブラウザは textarea に文字を入れず `input` も出さないので、
+  流れるのは `KeyInput` だけになる。ところが **`InputEvent` で文字を運ぶのは
+  `ImeCommit` / `Paste` だけ**なので、打った文字がどこにも届かない。変換を
+  通した日本語と貼り付けだけが入り、**ログイン画面でパスワードが打てなかった**。
+
+  印字可能なキー (`KeyboardEvent.key` が 1 文字) は止めず、ブラウザに
+  入れさせて既存の `input` (`insertText` → `CharInput`) から受ける。修飾キー
+  付き (⌘A / Ctrl+Z) は今までどおり止めて `KeyInput` を流す。
+
+  判断そのものは wasm でしかコンパイルされない `web_ime` から `web_keys` へ
+  切り出した — **あの中に置くと CI のテストが 1 行も走らない**。あわせて
+  `e2e/web/probes/typing.mjs` を足した。`Input.insertText` ではなく**本物の
+  打鍵**を送るので、この形はもうすり抜けない (前の probe は `insertText` で
+  確かめていて、そこが穴だった)。
+
 - **`mod a11y;` が macOS だけになっていた** (リリース直前に自分で入れた穴)。
   `lib.rs` の宣言は「`#[cfg(..)]` の次の行が対象」なので、既存の宣言の**直前**に
   差し込むと cfg が移る。手元 (macOS) では両方通り、**Linux の CI で初めて

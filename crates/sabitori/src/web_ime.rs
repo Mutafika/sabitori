@@ -288,6 +288,27 @@ fn build() -> Option<Bridge> {
             alt: ke.alt_key(),
             meta: ke.meta_key(),
         };
+        // **文字を入れるキーはブラウザに任せる** (#81)。
+        //
+        // ここで `prevent_default()` すると、ブラウザは textarea に文字を
+        // 入れず `input` も出さない。流れるのは `KeyInput` だけだが、
+        // **`InputEvent` で文字を運ぶのは `ImeCommit` / `Paste` だけ**なので、
+        // 打った英数字がどこにも届かない (v0.12.0 の web は、変換を通した
+        // 日本語だけ入ってパスワードが 1 文字も打てなかった)。native は
+        // `keymap::char_inputs` が打鍵から文字を作って渡しているが、web に
+        // それに当たるものは無い — Shift や配列 (JIS の `@`、EU の記号) を
+        // 考えると `Key::A` から復元することもできない。
+        //
+        // ブラウザに入れさせれば `input` (`insertText`) から `CharInput` として
+        // 受け取れる。そちらの経路は既にある (ソフトキーボード・音声入力用)。
+        //
+        // 修飾キー付き (⌘A / Ctrl+Z) は文字ではなく命令なので、今までどおり
+        // 止めて `KeyInput` を流す。`KeyboardEvent.key` は印字可能なら
+        // **その文字そのもの**、そうでなければ `"Enter"` のような名前になる。
+        if !mods.meta && !mods.ctrl && crate::web_keys::is_printable(&ke.key()) {
+            return;
+        }
+
         let Some(key) = map_key(&ke.key()) else { return };
 
         // ⌘V / Ctrl+V は流さない — ブラウザが `paste` → `input` を出すので、
@@ -485,3 +506,4 @@ fn map_key(key: &str) -> Option<Key> {
         }
     })
 }
+

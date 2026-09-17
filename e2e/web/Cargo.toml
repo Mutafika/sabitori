@@ -10,5 +10,7 @@ publish = false
 sabitori = { path = "../../crates/sabitori" }
 sabitori-core = { path = "../../crates/sabitori-core" }
 sabitori-widgets = { path = "../../crates/sabitori-widgets" }
+# 欄の中身を console に出す (絵では assert できないものを probe から見る)。
+log = "0.4"
 
 [workspace]
