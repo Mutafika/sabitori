@@ -43,6 +43,10 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 node drive.mjs http://127.0.0.1:8099/index.html /tmp/last.png probes/ime.mjs
 ```
 
+`probes/files.mjs` は **ファイル保存 (#77)** を見る: 押すとダウンロードが
+始まり、保存されたファイルの中身が一致する (CDP の `Browser.setDownloadBehavior`
+で保存先を取る)。
+
 `probes/history.mjs` は **URL と戻るボタン (#74)** を見る: 押すと
 `location.hash` が変わり、戻ると画面も戻る。**「URL は戻ったのに画面が戻らない」**
 がここで見つかった — `lazy_render` が既定 true なので、DOM 起点の出来事では

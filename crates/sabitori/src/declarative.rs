@@ -485,6 +485,15 @@ pub trait DeclarativeApp: 'static {
     /// ([#74](https://github.com/Mutafika/sabitori/issues/74))。
     fn url_fragment(&self) -> Option<String> { None }
 
+    /// [`files::pick`] の結果。`key` は要求したときに付けた札。
+    ///
+    /// 「キャンセル」と「この環境では選べない」は
+    /// [`PickResult`](crate::files::PickResult) で分かれる — 空の `Vec` に
+    /// まとめると、アプリが出すべき案内を決められない。
+    ///
+    /// [`files::pick`]: crate::files::pick
+    fn on_files_picked(&mut self, _key: &str, _result: crate::files::PickResult) {}
+
     /// 戻る / 進む、または起動時の URL。[`Self::url_fragment`] の対。
     ///
     /// ランタイムが `pushState` した直後には**呼ばれない** (アプリが既に
@@ -2495,6 +2504,17 @@ impl<A: DeclarativeApp> AppState<A> {
         h: f32,
         measurer: &dyn sabitori_core::build::TextMeasure,
     ) -> FrameBuild {
+        // ファイル選択の結果を、`view()` を呼ぶ**前**に配る (#77)。
+        //
+        // ダイアログの完了は OS / ブラウザ起点で、フレームとも時間とも同期
+        // しない。`advance` (時間) ではなくここ (フレーム) に置くのは、
+        // `Harness::frame()` が通るのがこちらだから — 向こうに置くと、
+        // テストが `tick` を書かない限り結果が永遠に届かない。
+        for (key, result) in crate::files::take_results() {
+            self.app.on_files_picked(&key, result);
+            self.dirty = true;
+        }
+
         // アプリが主張するフォーカスを、 `view()` を呼ぶ**前**に当てる (#28)。
         // こうしておくと、 掴んだその同じフレームの `ctx.focused` にもう出て
         // いる — ポップアップが開いた最初の描画からフォーカス枠が光る。

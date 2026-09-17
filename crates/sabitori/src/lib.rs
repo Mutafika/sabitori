@@ -43,6 +43,8 @@ pub(crate) mod input_router;
 pub mod scene_app;
 /// システムクリップボードの読み書き (issue #20)。
 pub mod clipboard;
+/// ファイルを選ぶ・保存する (issue #77)。
+pub mod files;
 /// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
 pub mod testing;
 #[cfg(target_os = "macos")]

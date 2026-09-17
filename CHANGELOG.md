@@ -17,6 +17,34 @@
 
 ### Added
 
+- **ファイルを選ぶ・保存する `sabitori::files`**
+  ([#77](https://github.com/Mutafika/sabitori/issues/77))。ネイティブには
+  ウィンドウへのドラッグ＆ドロップしか無く「ボタンを押して選ぶ」ができず、
+  web には `on_file_drop` すら届かなかった。バックアップのリストアと CSV 出力
+  という、業務アプリでは外せない 2 つが書けない。
+
+  ```rust
+  files::pick("restore", PickOptions::new().accept([".db"]));   // 結果は後で届く
+  files::save("vehicles_20260915.csv", &csv_bytes);             // その場で保存
+  ```
+
+  選択の結果は `DeclarativeApp::on_files_picked(key, result)` に届く。
+  **`Cancelled` と `Unsupported` を分けてある** — 空の `Vec` にまとめると、
+  押しても何も言わない画面になる。`Harness` からは
+  `files::test_deliver(key, result)` で差し込めるので、読み込み・復元・画面の
+  更新まで**ダイアログ無しでテストできる**。
+
+  | | 選ぶ | 保存する |
+  |---|---|---|
+  | macOS | `NSOpenPanel` | `NSSavePanel` |
+  | web | `<input type=file>` | Blob + `<a download>` |
+  | Windows / Linux | **未対応** (`Unsupported` が返る) | **未対応** (`false`) |
+
+  Windows / Linux は `rfd` を足すことになるが、Linux の既定バックエンドが
+  GTK3 で**使わない利用者にも GTK の開発ヘッダを要求する**ため、依存を足すかは
+  別の判断として残してある。web のダウンロードは headless Chromium で中身まで
+  確認済み (`e2e/web/probes/files.mjs`)。
+
 - **Web の URL と戻るボタン (History)** と、**アプリからの横スクロール**
   ([#74](https://github.com/Mutafika/sabitori/issues/74))。
 

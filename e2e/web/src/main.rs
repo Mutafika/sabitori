@@ -54,6 +54,16 @@ impl DeclarativeApp for App {
                 // #74: 画面を変えると URL が変わり、戻るボタンで戻れるか
                 div().flex_row().gap(8.0).p(Px(8.0)).children([
                     div()
+                        .id("save-csv")
+                        .px_pad(Px(10.0))
+                        .py(Px(6.0))
+                        .bg(Color::from_hex("#3ddc84"))
+                        .click(ctx, "save-csv", |_app: &mut App| {
+                            // #77: ダウンロードが始まるか
+                            sabitori::files::save("vehicles.csv", "車両,状態\nR-0042,貸出可能\n".as_bytes());
+                        })
+                        .child(text("CSV を保存").color(Color::BLACK)),
+                    div()
                         .id("open-detail")
                         .px_pad(Px(10.0))
                         .py(Px(6.0))
