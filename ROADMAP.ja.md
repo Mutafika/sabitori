@@ -4,13 +4,13 @@
 
 ## 現在地
 
-`0.11.2` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
+`0.12.0` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
 利用側は **git タグ依存**が前提（クレート間が path 依存で、シェーダーをクレート外から
 `include_str!` しているため）。
 
 直近の focus は、実際に業務アプリ（予約管理）を sabitori で書いて出てきた穴を埋めること。
 下の「業務アプリ / Web で足りていないもの」がその一覧で、どれも issue になっている。
-リリースラインは **`0.11.x` の一本**。各版の内容は [CHANGELOG.md](./CHANGELOG.md) を参照。
+リリースラインは **`0.12.x` の一本**。各版の内容は [CHANGELOG.md](./CHANGELOG.md) を参照。
 
 ## 実装済み
 

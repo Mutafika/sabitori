@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**ステータス**: pre-release (`0.11.2`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。利用側は **git タグ依存**が前提です（クレート間が path 依存で、シェーダーをクレート外から `include_str!` しているため）。各版の内容は [CHANGELOG.md](CHANGELOG.md)、この先の予定は [ROADMAP.ja.md](ROADMAP.ja.md) を参照。
+**ステータス**: pre-release (`0.12.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。利用側は **git タグ依存**が前提です（クレート間が path 依存で、シェーダーをクレート外から `include_str!` しているため）。各版の内容は [CHANGELOG.md](CHANGELOG.md)、この先の予定は [ROADMAP.ja.md](ROADMAP.ja.md) を参照。
 
 ## 特徴
 

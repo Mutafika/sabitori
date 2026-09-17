@@ -15,6 +15,36 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-17
+
+**業務アプリを実際に書いて出てきた穴をまとめて塞いだ版。web で日本語が打てて、
+⌘C が効いて、ピルが描かれる。**
+
+外部アプリ (予約管理、約 20 画面) を v0.11.2 で書き起こして立った 18 件の
+issue のうち 11 件 ([#60](https://github.com/Mutafika/sabitori/issues/60)〜
+[#76](https://github.com/Mutafika/sabitori/issues/76)) を直した版。web 側は
+headless Chromium に実際に描かせて確認している (`e2e/web/`)。
+
+### Changed（破壊的）
+
+- **コンテナが「中身より縦に小さくなれる」条件を絞った**
+  ([#60](https://github.com/Mutafika/sabitori/issues/60))。これまで全ての
+  コンテナに `min-height: 0` を置いていたのを、`grow` を書いた入れ物・自分で
+  切る入れ物 (`overflow`)・上限を書いた入れ物 (`max_height`) だけにした。
+  **素の `div()` は CSS どおり中身なりの高さを下回らなくなる**ので、
+  「親を中身より小さく潰していた」レイアウトは見た目が変わる。下の Fixed の
+  2 症状（padding のある親が膨らむ / grid の 2 段目が 1 段目の高さになる）の
+  対価。スクロールが効かなくなる形は元のテストで塞いだまま。
+- **`Role` に `Password` が増えた** ([#61](https://github.com/Mutafika/sabitori/issues/61))。
+  `Role` を網羅 `match` している所は腕を足すこと。
+- **`Element` にフィールドが 2 つ増えた** (`disabled` / `disabled_style`、
+  [#62](https://github.com/Mutafika/sabitori/issues/62))。ビルダー経由なら無変更。
+  構造体リテラルで組んでいる所は `..Default::default()` か明示が要る。
+- **`HitRegion` に `disabled` が増えた**。自前で組み立てている所 (テスト等) は
+  1 行足す。
+- **`TextRenderer::set_preferred_family` が `bool` を返すようになった**
+  (`set_preferred_monospace_family` と揃えた)。値を無視している呼び出しは無変更。
+
 ### Added
 
 - **Web で ⌘C / ⌘X / ⌘V が効くようになった**
@@ -3058,6 +3088,7 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
 [Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.11.2...HEAD
+[0.12.0]: https://github.com/Mutafika/sabitori/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/Mutafika/sabitori/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/Mutafika/sabitori/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Mutafika/sabitori/compare/v0.10.0...v0.11.0
