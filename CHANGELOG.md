@@ -17,6 +17,35 @@
 
 ### Added
 
+- **非同期の結果を UI に戻す `Tasks<App>`**
+  ([#64](https://github.com/Mutafika/sabitori/issues/64))。「押す → 裏で API を
+  呼ぶ → 結果で状態を更新して再描画」の定番の形が無く、2 つのアプリが同じ
+  受け皿を別々に手書きしていた (wasm は `spawn_local` + `Rc<RefCell<Vec<Msg>>>`、
+  native は `thread::spawn` + `mpsc`、どちらも `poll_dirty` で drain)。しかも
+  **`Harness` は `poll_dirty` を呼ばない**ので、テストのためだけの `pump()` が
+  アプリ本体に生えていた。
+
+  ```rust
+  struct App { tasks: Tasks<App>, /* … */ }
+  fn tasks(&self) -> Option<&Tasks<Self>> { Some(&self.tasks) }
+
+  // クリック処理の引数は `&mut App` のまま — 形は何も変わらない
+  app.tasks.spawn(async move { api.dashboard().await }, |app, res| {
+      app.loading = false;
+      app.dashboard = res.ok();
+  });
+  ```
+
+  終わったら**自動で当たって再描画される**。`Tasks::cancel_all()` で世代が
+  進み、画面を離れたあとに届いた応答は捨てられる。テストは
+  `Harness::run_until_idle()` で待てる (5 秒で panic — 固まるテストは落ちる
+  テストより厄介なので)。
+
+  native は**スレッド 1 本 + `pollster`** で、tokio を持ち込んでいない —
+  GUI の道具が非同期ランタイムを選んでしまうのを避けるため。待ち方が
+  「IO をブロックする」形 (`reqwest::blocking` など) でもそのまま動く。
+  wasm は `spawn_local` で、`Send` を要求しない。
+
 - **ファイルを選ぶ・保存する `sabitori::files`**
   ([#77](https://github.com/Mutafika/sabitori/issues/77))。ネイティブには
   ウィンドウへのドラッグ＆ドロップしか無く「ボタンを押して選ぶ」ができず、

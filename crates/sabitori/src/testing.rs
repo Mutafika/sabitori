@@ -560,6 +560,36 @@ impl<A: DeclarativeApp> Harness<A> {
         }
     }
 
+    /// **保留中の非同期タスクが全部終わるまで待ち、結果を反映してから 1 フレーム
+    /// 組む** ([#64])。
+    ///
+    /// これが無かったので、アプリは `#[cfg(test)]` で `pump()` のような口を
+    /// 自分に生やしていた。テストのためだけの入口が本体に残る形。
+    ///
+    /// タスクが 5 秒で終わらなければ panic する — 「待ち続けて固まるテスト」は
+    /// 落ちるテストより厄介なので。
+    ///
+    /// [#64]: https://github.com/Mutafika/sabitori/issues/64
+    pub fn run_until_idle(&mut self) -> &BuildResult {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // 1 フレーム組むと、届いている結果がアプリに当たる
+            // (`build_frame` が汲む)。
+            self.frame();
+            let pending = self.state.app.tasks().map(|t| t.pending()).unwrap_or(0);
+            if pending == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "非同期タスクが 5 秒で終わらない (残り {pending} 件)"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // 最後の結果を当てたフレームをもう 1 枚。
+        self.frame()
+    }
+
     /// 横に `dx` だけスクロールする (`scroll` の横版)。
     ///
     /// ホイールの経路 (`wheel_at`) と違って**その場で位置を動かす**ので、

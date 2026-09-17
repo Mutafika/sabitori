@@ -79,6 +79,6 @@ arboard = { version = "3", default-features = false }
 # macOS native
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSURL", "NSArray", "NSString"] }
-objc2-app-kit = { version = "0.3", features = ["NSDragging", "NSPasteboard", "NSView", "NSImage", "NSWindow", "NSResponder", "NSEvent", "NSApplication"] }
+objc2-app-kit = { version = "0.3", features = ["NSDragging", "NSPasteboard", "NSView", "NSImage", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSOpenPanel", "NSSavePanel", "NSPanel"] }
 # iOS native (software keyboard via hidden UITextField — see sabitori/src/ios_keyboard.rs)
 objc2-ui-kit = { version = "0.3", features = ["UIView", "UIResponder", "UIControl", "UITextField"] }

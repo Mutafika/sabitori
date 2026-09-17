@@ -485,6 +485,25 @@ pub trait DeclarativeApp: 'static {
     /// ([#74](https://github.com/Mutafika/sabitori/issues/74))。
     fn url_fragment(&self) -> Option<String> { None }
 
+    /// 非同期タスクの受け皿を渡す ([#64])。
+    ///
+    /// ```ignore
+    /// struct App { tasks: Tasks<App>, /* … */ }
+    /// fn tasks(&self) -> Option<&Tasks<Self>> { Some(&self.tasks) }
+    /// ```
+    ///
+    /// 渡すと、終わったタスクの結果が**毎フレーム自動で当たり、再描画も
+    /// 走る**。`poll_dirty` を書く必要は無い。`Harness` からは
+    /// [`run_until_idle`](crate::testing::Harness::run_until_idle) で待てる。
+    ///
+    /// [#64]: https://github.com/Mutafika/sabitori/issues/64
+    fn tasks(&self) -> Option<&crate::tasks::Tasks<Self>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
     /// [`files::pick`] の結果。`key` は要求したときに付けた札。
     ///
     /// 「キャンセル」と「この環境では選べない」は
@@ -2513,6 +2532,16 @@ impl<A: DeclarativeApp> AppState<A> {
         for (key, result) in crate::files::take_results() {
             self.app.on_files_picked(&key, result);
             self.dirty = true;
+        }
+
+        // 終わった非同期タスクの結果を当てる (#64)。ハンドルを 1 つ複製して
+        // からアプリの借用を切る — `&self.app.tasks()` を握ったままでは
+        // `&mut self.app` を渡せない。
+        if let Some(tasks) = self.app.tasks().cloned() {
+            for apply in tasks.drain() {
+                apply(&mut self.app);
+                self.dirty = true;
+            }
         }
 
         // アプリが主張するフォーカスを、 `view()` を呼ぶ**前**に当てる (#28)。

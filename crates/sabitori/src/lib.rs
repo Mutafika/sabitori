@@ -45,6 +45,8 @@ pub mod scene_app;
 pub mod clipboard;
 /// ファイルを選ぶ・保存する (issue #77)。
 pub mod files;
+/// 非同期の結果を UI に戻す (issue #64)。
+pub mod tasks;
 /// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
 pub mod testing;
 #[cfg(target_os = "macos")]
@@ -65,6 +67,7 @@ pub mod web_history;
 #[cfg(target_arch = "wasm32")]
 pub mod web_wake;
 pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, ScrollIntent, UiCapture, run_declarative};
+pub use tasks::Tasks;
 pub use scene_app::SceneApp;
 pub use scene_app::run_scene;
 pub use sabitori_gpu::{GpuContext, SceneRenderContext, UiOverlayRenderer};

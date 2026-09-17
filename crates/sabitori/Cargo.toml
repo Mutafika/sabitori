@@ -50,6 +50,9 @@ log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# 非同期タスク (tasks)。native はスレッド 1 本の中で future を待つ。tokio を
+# 持ち込まないのは、GUI の道具が非同期ランタイムを選んでしまうのを避けるため (#64)。
+pollster.workspace = true
 arboard.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
 # ホットリロード (feature = "hot-reload")。パッチを作るのは `dx` CLI 側で、ここに
