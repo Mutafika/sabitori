@@ -15,6 +15,23 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- **README / ROADMAP が実装とずれていたのを直した**
+  ([#67](https://github.com/Mutafika/sabitori/issues/67))。版表記が README.ja /
+  README (英) は `0.6.0`、ROADMAP は `0.4.0` のまま `0.11.2` まで来ていた
+  （タグ依存の利用者は README でどの版の説明かを判断するので、ここがずれると
+  CHANGELOG を全部読むことになる）。4 ファイルの版表記をテストで縛ったので、
+  次からは上げ忘れると `readme_examples` が落ちる。
+  ウィジェットの説明も実態に合わせた — 「Element を返す入口はすべて
+  `(ctx, id, …)`」は成り立っておらず、実際は 4 通りある (`forms` は ctx を
+  取らず色を引数で受ける、`DropdownState` などは状態のメソッド、`Modal` /
+  `ToastManager` は overlay を作ってアプリが tick を回す)。表にした。
+  ROADMAP には、業務アプリと Web で足りていないものを issue リンク付きで
+  並べた節を足した（やる / やらないの宣言ではなく、「待つか自前で書くか」を
+  利用側が判断できるようにするため）。
+
+
 ### Fixed
 
 - **web で `polyline()` が 1 本も描かれなかった / `preferred_font_family()` が

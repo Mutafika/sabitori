@@ -4,13 +4,13 @@
 
 ## 現在地
 
-`0.4.0` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
-`0.4.0` で「コンパイルは通るのに黙って効かない API」を削除し、ウィジェット層を
-「Element を返す自由関数」に統一した。今後は accesskit アダプタ、続いて API 安定化と
-未着手領域（macOS ネイティブ統合・物理単位レイアウト）の実装が中心。
+`0.11.2` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
+利用側は **git タグ依存**が前提（クレート間が path 依存で、シェーダーをクレート外から
+`include_str!` しているため）。
 
-リリースラインは **`0.4.x` の一本**。`0.2.x` 保守ブランチは `v0.3.1` で `main` に合流済みで、
-以後保守しない。各版の内容は [CHANGELOG.md](./CHANGELOG.md) を参照。
+直近の focus は、実際に業務アプリ（予約管理）を sabitori で書いて出てきた穴を埋めること。
+下の「業務アプリ / Web で足りていないもの」がその一覧で、どれも issue になっている。
+リリースラインは **`0.11.x` の一本**。各版の内容は [CHANGELOG.md](./CHANGELOG.md) を参照。
 
 ## 実装済み
 
@@ -94,6 +94,23 @@ StyleAnimator / PresenceAnimator
 - ⬜ inter-crate dep に `version = "..."` を併記
 - ⬜ `release-plz` セットアップでロックステップ release 自動化
 - ⬜ docs.rs 用 `#[doc]` コメント整備
+
+### 業務アプリ / Web で足りていないもの
+
+実際に業務アプリ（予約管理、約 20 画面）を sabitori で書いて出てきた穴。
+やる / やらないをここで宣言はしていない（まだ決めていない）が、**どれも issue があり、
+消費側の回避策も issue に書いてある**ので「待つか自前で書くか」はそこで判断できる。
+
+- ⬜ Web の日本語 IME・ソフトキーボード（隠し textarea の橋渡し）— [#73](https://github.com/Mutafika/sabitori/issues/73)
+- ⬜ Web のクリップボード（`copy` / `paste` イベント経由）— [#76](https://github.com/Mutafika/sabitori/issues/76)
+- ⬜ Web の URL / 戻るボタン（History）と、アプリからの横スクロール — [#74](https://github.com/Mutafika/sabitori/issues/74)
+- ⬜ ファイルを選ぶ / 保存する口（native のダイアログ / Web の input・ダウンロード）— [#77](https://github.com/Mutafika/sabitori/issues/77)
+- ⬜ HTTP クライアント（POST/PUT/DELETE・JSON・Cookie）を native/wasm 共通で — [#63](https://github.com/Mutafika/sabitori/issues/63)
+- ⬜ 非同期の結果を UI に戻す標準の形（`Tasks`）— [#64](https://github.com/Mutafika/sabitori/issues/64)
+- ⬜ ライトテーマと、ウィジェット既定スタイルの `AppTheme` 追従 — [#65](https://github.com/Mutafika/sabitori/issues/65)
+- ⬜ フォーム: パスワード欄 [#61](https://github.com/Mutafika/sabitori/issues/61) / disabled 状態 [#62](https://github.com/Mutafika/sabitori/issues/62)
+- ⬜ 小粒の部品（時刻ピッカー・sticky・表のセルに Element など）— [#75](https://github.com/Mutafika/sabitori/issues/75)
+- ⬜ グラフ / 印刷・画面外描画 / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) の 11・12 と個別検討
 
 ### その他検討中
 - ⬜ WebSocket / SSE クライアント

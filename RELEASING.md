@@ -54,6 +54,12 @@ API が安定したら `1.0.0` を切る。
    cargo update --workspace
    ```
 
+   > **README / ROADMAP の版表記も一緒に直す** (4 ファイルの冒頭)。忘れると
+   > `cargo test -p sabitori --test readme_examples` が落ちる — 過去に README が
+   > `0.6.0`、ROADMAP が `0.4.0` と名乗ったまま `0.11.2` まで来て、利用側が
+   > 「どの版の説明か」を判断できなくなった
+   > ([#67](https://github.com/Mutafika/sabitori/issues/67))。
+
    > `Cargo.lock` は**追跡している**ので、これもコミット対象になる
    > （ワークスペースメンバーのバージョンが書き換わる）。ライブラリだが lock を
    > 追跡しているのは、CI を再現可能にするため — 追跡しないと CI が毎回まっさらに

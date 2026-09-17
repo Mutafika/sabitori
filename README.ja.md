@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**ステータス**: pre-release (`0.6.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。`0.5.0` は CSS にあって無かった穴 — grid / `align-self` / `aspect-ratio` / `z-index` / `text-align` — を埋め、折り返す複数行テキスト欄を足した版、`0.6.0` は WASM ビルドに日本語込みのフォールバックフォントを積んで、`fonts()` を 1 行も書かずに日本語 UI が web で出るようにした版です — [CHANGELOG.md](CHANGELOG.md) を参照。
+**ステータス**: pre-release (`0.11.2`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。利用側は **git タグ依存**が前提です（クレート間が path 依存で、シェーダーをクレート外から `include_str!` しているため）。各版の内容は [CHANGELOG.md](CHANGELOG.md)、この先の予定は [ROADMAP.ja.md](ROADMAP.ja.md) を参照。
 
 ## 特徴
 
@@ -265,7 +265,14 @@ let sheet = grid()
 - **状態** はアプリに持たせる struct： `TextInputState` / `TableState` / `DropdownState` / `SplitPaneState`
 - **見た目** は `view()` から呼ぶ自由関数： `text_input(ctx, id, &state, &style) -> Element`
 
-Element を返す入口は**すべて `snake_case` の自由関数で、第 1 引数が `&ViewContext`、第 2 引数が `id`** です。`sabitori_core::forms`（`checkbox` / `radio` / `slider` / `segment_control` / `progress_bar` / `numeric_input` / `collapsing_header` / `dropdown_trigger`）も同じ形なので、ウィジェットごとに調べ直す必要はありません。
+Element を返す入口の形は、今のところ 4 通りあります。**一番使うもの（テキスト欄・表・木）は `(ctx, id, &state, &style)` で揃っています**が、それ以外は下の表を見てください。揃えるのは今後の課題です（[#67](https://github.com/Mutafika/sabitori/issues/67)）。
+
+| 形 | 呼び方 | これに当てはまるもの |
+|---|---|---|
+| `(ctx, id, &state, &style)` | `text_input(ctx, "name", &self.name, &style)` | `text_input` / `text_area` / `table` / `tree_view` / `split_pane` / `virtual_list` |
+| `(id, …)` — ctx を取らず、色を引数で受ける | `checkbox("agree", "同意する", self.agreed, TEXT, ACCENT, BORDER)` | `sabitori_core::forms` の全部（`checkbox` / `radio` / `slider` / `segment_control` / `progress_bar` / `numeric_input` / `collapsing_header` / `dropdown_trigger`） |
+| 状態のメソッド + クリックの解釈 | `self.select.trigger(&style, ctx.hovered.as_deref())` と `menu_inline(..)`、押されたら `handle_click(id)` | `DropdownState` / `DatePickerState` / `ColorPickerState` / `MenuBarState` |
+| overlay を作ってアプリが tick を回す | `modal.to_overlay(..)` | `Modal` / `ToastManager` / `ContextMenuState` |
 
 ```rust
 div().flex_col().children([

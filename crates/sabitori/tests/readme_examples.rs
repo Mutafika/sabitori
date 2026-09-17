@@ -616,3 +616,29 @@ fn the_japanese_readme_carries_the_same_code() {
         );
     }
 }
+
+/// **README / ROADMAP が名乗る版が、実際の版と一致していること。**
+///
+/// v0.11.2 の時点で README.ja は `0.6.0`、README (英) も `0.6.0`、ROADMAP は
+/// `0.4.0` と名乗っていた。タグ依存の利用者はまず README を見て「どの版の説明か」
+/// を判断するので、ここがずれていると CHANGELOG を全部読む羽目になる
+/// ([#67](https://github.com/Mutafika/sabitori/issues/67))。
+///
+/// 版は上げるたびに動くので、人が 4 ファイルを直すのを覚えている形にはしない。
+#[test]
+fn the_docs_name_the_version_we_actually_are() {
+    let version = env!("CARGO_PKG_VERSION");
+    for (name, src) in [
+        ("README.md", include_str!("../../../README.md")),
+        ("README.ja.md", include_str!("../../../README.ja.md")),
+        ("ROADMAP.md", include_str!("../../../ROADMAP.md")),
+        ("ROADMAP.ja.md", include_str!("../../../ROADMAP.ja.md")),
+    ] {
+        // 「ステータス」/「現在地」の段落は先頭にあるので、そこだけ見る。
+        let head: String = src.lines().take(20).collect::<Vec<_>>().join("\n");
+        assert!(
+            head.contains(&format!("`{version}`")),
+            "{name} が `{version}` を名乗っていない (冒頭 20 行にバージョンが無い)"
+        );
+    }
+}

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**Status**: pre-release (`0.6.0`). The core feature set is in place and the WASM target builds via `templates/wasm/`. `0.5.0` fills the CSS-shaped gaps — grid, `align-self`, `aspect-ratio`, `z-index`, `text-align` — and adds a wrapping multi-line text field; `0.6.0` bundles a Japanese-capable fallback font into WASM builds, so a Japanese UI renders on the web without writing `fonts()` at all. See [CHANGELOG.md](CHANGELOG.md).
+**Status**: pre-release (`0.11.2`). The core feature set is in place and the WASM target builds via `templates/wasm/`. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate. See [CHANGELOG.md](CHANGELOG.md) for what landed in each version, and [ROADMAP.md](ROADMAP.md) for what is planned.
 
 ## Features
 
@@ -265,7 +265,14 @@ Two kinds, and the split is the API:
 - **State** is a struct you keep on your app: `TextInputState`, `TableState`, `DropdownState`, `SplitPaneState`.
 - **Visuals** are free functions you call from `view()`: `text_input(ctx, id, &state, &style) -> Element`.
 
-Every Element-producing entry point is a `snake_case` free function taking `&ViewContext` first and `id` second. `sabitori_core::forms` (`checkbox`, `radio`, `slider`, `segment_control`, `progress_bar`, `numeric_input`, `collapsing_header`, `dropdown_trigger`) follows the same shape, so there is nothing to look up per widget.
+Element-producing entry points come in four shapes today. **The ones you reach for most — text fields, tables, trees — are all `(ctx, id, &state, &style)`**; the rest are listed below. Unifying them is still open ([#67](https://github.com/Mutafika/sabitori/issues/67)).
+
+| Shape | Call | What uses it |
+|---|---|---|
+| `(ctx, id, &state, &style)` | `text_input(ctx, "name", &self.name, &style)` | `text_input`, `text_area`, `table`, `tree_view`, `split_pane`, `virtual_list` |
+| `(id, …)` — no ctx, colors passed in | `checkbox("agree", "I agree", self.agreed, TEXT, ACCENT, BORDER)` | everything in `sabitori_core::forms` (`checkbox`, `radio`, `slider`, `segment_control`, `progress_bar`, `numeric_input`, `collapsing_header`, `dropdown_trigger`) |
+| Methods on the state, plus click interpretation | `self.select.trigger(&style, ctx.hovered.as_deref())` with `menu_inline(..)`, then `handle_click(id)` | `DropdownState`, `DatePickerState`, `ColorPickerState`, `MenuBarState` |
+| Builds an overlay the app ticks itself | `modal.to_overlay(..)` | `Modal`, `ToastManager`, `ContextMenuState` |
 
 ```rust
 div().flex_col().children([

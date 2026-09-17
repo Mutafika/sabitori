@@ -4,9 +4,9 @@
 
 ## Current Status
 
-`0.4.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. `0.4.0` removed the APIs that compiled but silently did nothing, and unified the widget layer on Element-returning free functions. Next focus: the accesskit adapter, then API stabilization and the unimplemented areas (macOS native integration, physical-unit layout).
+`0.11.2` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate.
 
-Releases ship from a single line — now `0.4.x`. The `0.2.x` maintenance branch was merged back into `main` at `v0.3.1` and is no longer maintained. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
+The current focus is closing the gaps that showed up writing a real line-of-business app (a rental/reservation system) on sabitori; "What line-of-business apps and the web still need" below is that list, and every entry has an issue. Releases ship from a single line — now `0.11.x`. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
 
 ## Implemented
 
@@ -90,6 +90,24 @@ StyleAnimator / PresenceAnimator
 - ⬜ `version = "..."` on inter-crate dependencies
 - ⬜ `release-plz` setup for lockstep release automation
 - ⬜ `#[doc]` comments for docs.rs
+
+### What line-of-business apps and the web still need
+
+Gaps found by writing a real reservation-management app (~20 screens) on sabitori.
+Nothing here is a commitment yet — but **every entry has an issue, with the
+workaround the app is using written down in it**, so consumers can decide
+whether to wait or write their own.
+
+- ⬜ Japanese IME / soft keyboard on the web (hidden-textarea bridge) — [#73](https://github.com/Mutafika/sabitori/issues/73)
+- ⬜ Clipboard on the web (via `copy` / `paste` events) — [#76](https://github.com/Mutafika/sabitori/issues/76)
+- ⬜ URL / back button (History) on the web, and driving horizontal scroll from the app — [#74](https://github.com/Mutafika/sabitori/issues/74)
+- ⬜ Picking and saving files (native dialogs / web input + download) — [#77](https://github.com/Mutafika/sabitori/issues/77)
+- ⬜ An HTTP client (POST/PUT/DELETE, JSON, cookies) shared by native and wasm — [#63](https://github.com/Mutafika/sabitori/issues/63)
+- ⬜ A standard way to get async results back into the UI (`Tasks`) — [#64](https://github.com/Mutafika/sabitori/issues/64)
+- ⬜ A light theme, and widget default styles that follow `AppTheme` — [#65](https://github.com/Mutafika/sabitori/issues/65)
+- ⬜ Forms: password fields [#61](https://github.com/Mutafika/sabitori/issues/61), disabled state [#62](https://github.com/Mutafika/sabitori/issues/62)
+- ⬜ Small parts (time picker, sticky, Elements in table cells, …) — [#75](https://github.com/Mutafika/sabitori/issues/75)
+- ⬜ Charts / printing / off-screen rendering / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) items 11–12, plus separate calls
 
 ### Under Consideration
 - ⬜ WebSocket / SSE client
