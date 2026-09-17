@@ -46,7 +46,9 @@ fn everything_an_app_writes_is_reachable_from_the_facade() {
     // 画面外に描く / 実行時フォント (#75 の 12・13)
     let sheet = offscreen::Sheet::a4().dpi(300.0);
     assert_eq!(sheet.pixel_size(), (2480, 3508));
-    assert!(fonts::count() >= 0);
+    let before = fonts::count();
+    fonts::add(Vec::new()); // 空は積まれない
+    assert_eq!(fonts::count(), before);
 }
 
 /// ファイルを選ぶ・保存する (#77) と、テーマ (#65)。
