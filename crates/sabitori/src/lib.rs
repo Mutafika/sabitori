@@ -53,6 +53,11 @@ pub mod testing;
 /// 支援技術 (VoiceOver / NVDA / Orca) へツリーを渡す (#25)。native だけ。
 #[cfg(not(target_arch = "wasm32"))]
 mod a11y;
+/// 実行時にフォントを足す (#75 の 13)。
+pub mod fonts;
+/// 画面外に描く (帳票・印刷・画像の書き出し) (#75 の 12)。native だけ。
+#[cfg(not(target_arch = "wasm32"))]
+pub mod offscreen;
 pub mod macos_drag;
 #[cfg(target_os = "macos")]
 pub mod macos_blur;

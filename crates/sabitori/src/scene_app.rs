@@ -102,6 +102,8 @@ struct SceneAppState<A: SceneApp> {
     measure_cache: std::cell::RefCell<MeasureCache>,
     last_frame: Instant,
     last_build: Option<sabitori_core::build::BuildResult>,
+    /// 実行時に積まれたフォントのうち、組版へ入れた本数 (#75 の 13)。
+    fonts_applied: usize,
     /// 支援技術へのツリー送出 (#25)。declarative ランタイムと同じ 1 実装を使う。
     #[cfg(not(target_arch = "wasm32"))]
     a11y: Option<crate::a11y::Bridge>,
@@ -165,6 +167,26 @@ struct SceneAppState<A: SceneApp> {
 }
 
 impl<A: SceneApp> SceneAppState<A> {
+    /// [`crate::fonts::add`] で積まれたフォントを組版に入れる
+    /// (declarative 版と同じ規約 — 積んだら測り直す)。
+    fn apply_pending_fonts(&mut self) {
+        if self.text_renderer.is_none() {
+            return;
+        }
+        let pending = crate::fonts::since(self.fonts_applied);
+        if pending.is_empty() {
+            return;
+        }
+        self.fonts_applied += pending.len();
+        if let Some(tr) = self.text_renderer.as_mut() {
+            for data in pending {
+                tr.load_font(data);
+            }
+        }
+        self.measure_cache.borrow_mut().clear();
+        self.dirty = true;
+    }
+
     /// 支援技術から来た操作をアプリへ流す。
     ///
     /// declarative 版と同じ規約 — 押す / 焦点を移すを、ふつうの入力と同じ
@@ -1362,6 +1384,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         // 支援技術からの操作を、ふつうのクリック・フォーカスと同じ道へ (#25)。
         #[cfg(not(target_arch = "wasm32"))]
         self.pump_a11y_requests();
+        // 実行時に積まれたフォントを組版へ入れる (#75 の 13)。
+        self.apply_pending_fonts();
 
         // 刻みは描画と独立に、決まった間隔で回す。描かないフレームでも
         // ばねは進み、アプリの `tick` は外から来た変化を拾える。
@@ -1425,6 +1449,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,
+        fonts_applied: 0,
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,
@@ -1480,6 +1505,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,
+        fonts_applied: 0,
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,

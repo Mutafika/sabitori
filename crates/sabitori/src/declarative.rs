@@ -988,6 +988,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// missing glyphs persist until the user interacts. Cleared each render by
     /// re-reading the atlas state.
     atlas_recover_pending: bool,
+    /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
+    fonts_applied: usize,
     /// 支援技術へのツリー送出 (#25)。窓を作るときに一緒に作る。
     /// **スクリーンリーダが起きていないあいだは何もしない** — 変換ごと
     /// 省かれるので、ふつうの起動で費用はほぼゼロ。
@@ -2089,6 +2091,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // 支援技術からの操作 (押す / 焦点を移す) を、ふつうの操作と同じ道へ。
         #[cfg(not(target_arch = "wasm32"))]
         self.pump_a11y_requests();
+        // 実行時に積まれたフォントを組版へ入れる (#75 の 13)。
+        self.apply_pending_fonts();
 
         // Run all ticks on the fixed cadence. They drive animations
         // (style spring, scroll spring, presence) and app-side async
@@ -2536,6 +2540,7 @@ impl<A: DeclarativeApp> AppState<A> {
             image_ctx,
             pending_redraw: true,
             atlas_recover_pending: false,
+            fonts_applied: 0,
             #[cfg(not(target_arch = "wasm32"))]
             a11y: None,
             extras: std::collections::HashMap::new(),
@@ -2791,6 +2796,31 @@ impl<A: DeclarativeApp> AppState<A> {
     /// declarative app was rendered from a build it was never told about, and
     /// `hit_regions` was unreachable. Keeping this the only writer of
     /// `last_build` makes that pairing impossible to get wrong again.
+    /// [`crate::fonts::add`] で積まれたフォントを組版に入れる。
+    ///
+    /// **レンダラが立つまでは積んだまま待つ。** wasm はレンダラの初期化が
+    /// 非同期なので、起動直後に積まれたフォントをここで捨てると
+    /// 「たまに絵文字が出ない」になる。
+    fn apply_pending_fonts(&mut self) {
+        if self.text_renderer.is_none() {
+            return;
+        }
+        let pending = crate::fonts::since(self.fonts_applied);
+        if pending.is_empty() {
+            return;
+        }
+        self.fonts_applied += pending.len();
+        if let Some(tr) = self.text_renderer.as_mut() {
+            for data in pending {
+                tr.load_font(data);
+            }
+        }
+        // 幅は face で変わる。**測り直さないと、新しい face で描いた文字が
+        // 古い幅の箱に入る** (行が重なる / はみ出す)。
+        self.measure_cache.borrow_mut().clear();
+        self.dirty = true;
+    }
+
     /// 今フレームのツリーを支援技術へ送る。
     ///
     /// **スクリーンリーダが起きていなければ何も起きない** — `update` の中で

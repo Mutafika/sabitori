@@ -17,6 +17,40 @@
 
 ### Added
 
+- **画面外に描く `sabitori::offscreen`**
+  ([#75](https://github.com/Mutafika/sabitori/issues/75) の 12)。窓を開かずに
+  ツリーを画像にする。これが無いので、業務アプリは**帳票だけ HTML を組んで
+  ブラウザの印刷に投げて**いた (画面と帳票で書き方が 2 つに割れる)。
+
+  ```rust
+  let page = offscreen::render(&invoice(&order), Sheet::a4().dpi(300.0))?;
+  page.save_png("請求書.png")?;
+  ```
+
+  レイアウトは **CSS px と同じ論理 px** で回り、`dpi` は書き出す解像度だけを
+  変える (72dpi でも 300dpi でも行数は変わらない)。文字は実フォントで測って
+  から組むので、折り返しも画面と同じ。地の色は**既定で白** — 透明のまま
+  印刷に回すと紙が黒くなる。GPU が取れなければ白紙ではなく
+  `RenderError::NoGpu` を返す。
+
+- **実行時にフォントを足せる `sabitori::fonts::add(bytes)`**
+  ([#75](https://github.com/Mutafika/sabitori/issues/75) の 13)。`fonts()` は
+  起動時に 1 回、中身はビルド時の `include_bytes!` に限られていたので、
+  wasm では**組み込みに無いもの (太字・絵文字・別の等幅) を二度と出せなかった**。
+  アプリは絵文字を図形で描き直し、太字は諦めていた。
+
+  ```rust
+  self.tasks.spawn(
+      async { http::get("/fonts/NotoEmoji.ttf").send().await?.bytes().await },
+      |_app, res| { if let Ok(b) = res { sabitori::fonts::add(b); } },
+  );
+  ```
+
+  積むと**測り直しが走る**ので、すでに出ている文字も新しい face で組み直される
+  (測り直さないと、新しい字が古い幅の箱に入って重なる)。積んだフォントは
+  `offscreen` でも同じように使われる — 入れないと画面では出ている字が
+  帳票だけ豆腐になる。
+
 - **支援技術が読み上げて、操作できるようになった**
   ([#25](https://github.com/Mutafika/sabitori/issues/25))。[#21] で意味層
   (`Role` / `label` / `heading`) は入っていたが OS へ渡す部分が無く、
