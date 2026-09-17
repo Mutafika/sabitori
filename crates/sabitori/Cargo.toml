@@ -50,6 +50,9 @@ log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# 支援技術への橋渡し (#25)。wasm では要らない (DOM が無いので別の話になる)。
+accesskit.workspace = true
+accesskit_winit.workspace = true
 # 非同期タスク (tasks)。native はスレッド 1 本の中で future を待つ。tokio を
 # 持ち込まないのは、GUI の道具が非同期ランタイムを選んでしまうのを避けるため (#64)。
 pollster.workspace = true
@@ -85,6 +88,10 @@ web-sys = { workspace = true, features = [
 ] }
 console_error_panic_hook.workspace = true
 console_log.workspace = true
+
+# Linux の支援技術 (Orca) は D-Bus (at-spi) 越しなので、そこだけ非同期一式が要る。
+[target.'cfg(target_os = "linux")'.dependencies]
+accesskit_winit = { workspace = true, features = ["accesskit_unix", "async-io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

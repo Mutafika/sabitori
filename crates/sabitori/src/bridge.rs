@@ -903,6 +903,7 @@ mod tests {
 
     fn rotated_text(rotation: f32) -> TextDraw {
         TextDraw {
+            element_index: 0,
             content: "室名".into(),
             position: sabitori_core::Point::new(100.0, 100.0),
             max_width: 200.0,
@@ -969,6 +970,7 @@ mod tests {
     fn tall_text_straddling_clip_top_is_not_culled() {
         let clip = Rect::new(0.0, 0.0, 300.0, 400.0); // viewport
         let make = |pos_y: f32, max_h: f32| TextDraw {
+            element_index: 0,
             content: "あ".repeat(400),
             position: sabitori_core::Point::new(0.0, pos_y),
             max_width: 280.0,

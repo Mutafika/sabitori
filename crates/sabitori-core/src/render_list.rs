@@ -139,6 +139,13 @@ impl Default for RectDraw {
 /// Draw text at a position.
 #[derive(Clone, Debug)]
 pub struct TextDraw {
+    /// 深さ優先の添字 ([`HitRegion::element_index`](crate::build::HitRegion::element_index)
+    /// と同じ番号)。
+    ///
+    /// これを持っていないと、**文字がツリーのどこに居たか**が描画結果から
+    /// 分からない。支援技術へ渡すツリーは書いた順に読ませる必要があるので、
+    /// 当たり領域と突き合わせるための番号が要る (#25)。
+    pub element_index: usize,
     /// The text content.
     pub content: String,
     /// Top-left position in logical pixels.

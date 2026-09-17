@@ -293,7 +293,9 @@ let close = div().id("close").role(Role::Button).label("閉じる");   // アイ
 let heading = text("設定").role(Role::Heading).heading(2);
 ```
 
-意味の層は入っていて `hit_regions` まで通っています。OS 側のアダプタ（accesskit）はまだ繋がっていません。
+ツリーは OS まで届きます。native では窓ごとに [accesskit](https://accesskit.dev) のアダプタが付くので、VoiceOver / NVDA / Orca から読み上げられ、**操作もできます** — スクリーンリーダーがボタンを押すと、マウスで押したときと同じ処理が走ります。支援技術が動いていないあいだは何も送らないので、付いていることの費用はほぼゼロです。
+
+読み上げの順は**書いた順**で、ただの文字もツリーに入ります（押せるものだけでなく本文も読まれます）。名前は `.label()` があればそれ、無ければ**中の文字**なので、`button("保存")` はそのままで名乗ります。
 
 ## サンプル
 
@@ -395,7 +397,6 @@ WASM 固有の要件（`wgpu` の `webgl` feature、フォントの同梱、WebG
 実装済み機能と未着手領域は [ROADMAP.ja.md](ROADMAP.ja.md) にまとめてあります。
 
 主な未着手項目：
-- accesskit アダプタ（意味の層を VoiceOver / NVDA / Narrator まで届ける）
 - macOS ネイティブ統合（NSStatusItem / 透過 NSWindow / 通知）
 - 物理単位（`Mm` / `Pt`）と正確な PPI 検出
 - crates.io 公開準備（メタデータ整理 + `release-plz` 自動化）

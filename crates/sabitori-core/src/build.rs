@@ -1194,6 +1194,7 @@ fn emit_commands(
             // （箱だけ縮んで中の字が元の位置に残る、を防ぐ）。
             let padding = scale_edges(resolve_edges_px(&style.padding), scale);
             target.commands.push(RenderCommand::Text(TextDraw {
+                element_index: index,
                 content: content.clone(),
                 position: Point::new(abs_x + padding.0, abs_y + padding.1),
                 max_width: (w - padding.0 - padding.2).max(0.0),
@@ -1217,6 +1218,7 @@ fn emit_commands(
             // Button label is centered text
             let padding = scale_edges(resolve_edges_px(&style.padding), scale);
             target.commands.push(RenderCommand::Text(TextDraw {
+                element_index: index,
                 content: label.clone(),
                 position: Point::new(abs_x + padding.0, abs_y + padding.1),
                 max_width: (w - padding.0 - padding.2).max(0.0),

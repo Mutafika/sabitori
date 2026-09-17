@@ -102,6 +102,9 @@ struct SceneAppState<A: SceneApp> {
     measure_cache: std::cell::RefCell<MeasureCache>,
     last_frame: Instant,
     last_build: Option<sabitori_core::build::BuildResult>,
+    /// 支援技術へのツリー送出 (#25)。declarative ランタイムと同じ 1 実装を使う。
+    #[cfg(not(target_arch = "wasm32"))]
+    a11y: Option<crate::a11y::Bridge>,
     mouse_x: f32,
     mouse_y: f32,
     hovered_id: Option<String>,
@@ -162,6 +165,54 @@ struct SceneAppState<A: SceneApp> {
 }
 
 impl<A: SceneApp> SceneAppState<A> {
+    /// 支援技術から来た操作をアプリへ流す。
+    ///
+    /// declarative 版と同じ規約 — 押す / 焦点を移すを、ふつうの入力と同じ
+    /// 出口 (`dispatch_click` / `focused_id`) に通す。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pump_a11y_requests(&mut self) {
+        let requests = match self.a11y.as_mut() {
+            Some(a11y) => a11y.take_requests(),
+            None => return,
+        };
+        for request in requests {
+            match request {
+                crate::a11y::Request::Click(id) => {
+                    let rect = self
+                        .last_build
+                        .as_ref()
+                        .and_then(|b| b.region_rect(&id))
+                        .unwrap_or(sabitori_core::Rect::new(0.0, 0.0, 0.0, 0.0));
+                    let (x, y) = (
+                        rect.origin.x + rect.size.width / 2.0,
+                        rect.origin.y + rect.size.height / 2.0,
+                    );
+                    self.dispatch_click(Some(&id), 1, x, y);
+                }
+                crate::a11y::Request::Focus(id) => {
+                    self.focused_id = Some(id);
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// 今フレームのツリーを支援技術へ送る。
+    ///
+    /// 支援技術が起きていなければ何もしない (変換ごと省かれる)。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn push_a11y_tree(&mut self) {
+        let (Some(build), Some(window)) = (self.last_build.as_ref(), self.window.as_ref()) else {
+            return;
+        };
+        let scale = window.scale_factor() as f32;
+        let title = self.app.title().to_string();
+        let focused = self.focused_id.clone();
+        if let Some(a11y) = self.a11y.as_mut() {
+            a11y.update(build, &title, focused.as_deref(), scale);
+        }
+    }
+
     /// ポインタ直下のホバー / tooltip / cursor を引き直し、変化をアプリへ通知する。
     /// 解決そのものは [`crate::runtime_shared::resolve_hover`] — declarative と
     /// 同じ関数を呼ぶ。
@@ -336,7 +387,14 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         attrs = sabitori_window::background::apply_background_attrs(attrs);
         // 生の相対マウスモーションを受け取る（中/右ボタンドラッグ中も止まらないカメラ操作用）。
         event_loop.listen_device_events(DeviceEvents::Always);
+        // 支援技術のアダプタは**表示する前に**付ける (accesskit の要件)。
+        let was_visible = attrs.visible;
+        attrs = attrs.with_visible(false);
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        self.a11y = Some(crate::a11y::Bridge::new(event_loop, &window));
+        if was_visible {
+            window.set_visible(true);
+        }
         sabitori_window::background::finish_background_window(&window);
         // Enable IME so Japanese (and other) input methods deliver
         // preedit/commit events to the `WindowEvent::Ime` handler. Without
@@ -396,6 +454,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // アプリが処理する前にアダプタへ (accesskit_winit の要件)。
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(a11y), Some(window)) = (self.a11y.as_mut(), self.window.as_ref()) {
+            a11y.process_event(window, &event);
+        }
         // 再描画そのもの以外は全部フレームの無効化として扱う: 入力・フォーカス・
         // リサイズ・IME・ドロップは、レイアウトかヒットテストのどちらかを変える。
         // declarative と同じ扱い — 非 lazy でも立てておく (読む者が居なければ
@@ -1255,6 +1318,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 if let Some(ref b) = self.last_build {
                     self.app.on_build(b);
                 }
+                // 支援技術へも同じフレームを渡す (#25)。レンダラの借用が
+                // 切れたここで — 描画中は `&mut self` をもう 1 本取れない。
+                #[cfg(not(target_arch = "wasm32"))]
+                self.push_a11y_tree();
 
                 self.text_renderer = Some(tr);
                 // Fresh layout may move UI under the (stationary) pointer.
@@ -1291,6 +1358,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
 
         let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = Instant::now();
+
+        // 支援技術からの操作を、ふつうのクリック・フォーカスと同じ道へ (#25)。
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pump_a11y_requests();
 
         // 刻みは描画と独立に、決まった間隔で回す。描かないフレームでも
         // ばねは進み、アプリの `tick` は外から来た変化を拾える。
@@ -1354,6 +1425,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        a11y: None,
         mouse_x: 0.0,
         mouse_y: 0.0,
         hovered_id: None,
@@ -1407,6 +1480,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        a11y: None,
         mouse_x: 0.0,
         mouse_y: 0.0,
         hovered_id: None,

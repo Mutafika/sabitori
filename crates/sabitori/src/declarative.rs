@@ -988,6 +988,11 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// missing glyphs persist until the user interacts. Cleared each render by
     /// re-reading the atlas state.
     atlas_recover_pending: bool,
+    /// 支援技術へのツリー送出 (#25)。窓を作るときに一緒に作る。
+    /// **スクリーンリーダが起きていないあいだは何もしない** — 変換ごと
+    /// 省かれるので、ふつうの起動で費用はほぼゼロ。
+    #[cfg(not(target_arch = "wasm32"))]
+    a11y: Option<crate::a11y::Bridge>,
     /// Secondary windows declared via `DeclarativeApp::extra_windows`.
     /// Keyed by winit `WindowId` so `window_event` can dispatch in O(1).
     /// Empty for single-window apps — zero overhead by default.
@@ -1086,7 +1091,17 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             attrs = attrs.with_accepts_first_mouse(true);
         }
         attrs = sabitori_window::background::apply_background_attrs(attrs);
+        // **表示する前に**支援技術のアダプタを作る必要がある (accesskit の要件で、
+        // 表示済みの窓に付けようとすると panic する)。そのため窓は必ず非表示で
+        // 作り、アダプタを付けてから出す。バックグラウンド起動の隠し窓も同じ道を
+        // 通る (向こうは `finish_background_window` が画面外へ運んでから出す)。
+        let was_visible = attrs.visible;
+        attrs = attrs.with_visible(false);
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        self.a11y = Some(crate::a11y::Bridge::new(event_loop, &window));
+        if was_visible {
+            window.set_visible(true);
+        }
         sabitori_window::background::finish_background_window(&window);
 
         // Platform-specific post-creation configuration. winit doesn't
@@ -1153,6 +1168,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         if self.extras.contains_key(&id) {
             self.handle_extra_event(event_loop, id, event);
             return;
+        }
+        // 支援技術のアダプタにも見せる (窓の移動・大きさ・焦点を追うため)。
+        // **アプリが処理する前に**渡すこと — accesskit_winit の要件。
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(a11y), Some(window)) = (self.a11y.as_mut(), self.window.as_ref()) {
+            a11y.process_event(window, &event);
         }
         // Any event other than the redraw itself counts as a frame
         // invalidation: input, focus, resize, IME, drop, etc. all change
@@ -2065,6 +2086,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = Instant::now();
 
+        // 支援技術からの操作 (押す / 焦点を移す) を、ふつうの操作と同じ道へ。
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pump_a11y_requests();
+
         // Run all ticks on the fixed cadence. They drive animations
         // (style spring, scroll spring, presence) and app-side async
         // drains (e.g. mpsc channel polls). Cheap enough to run every
@@ -2511,6 +2536,8 @@ impl<A: DeclarativeApp> AppState<A> {
             image_ctx,
             pending_redraw: true,
             atlas_recover_pending: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            a11y: None,
             extras: std::collections::HashMap::new(),
             text_layouts: Vec::new(),
             selection: None,
@@ -2764,8 +2791,59 @@ impl<A: DeclarativeApp> AppState<A> {
     /// declarative app was rendered from a build it was never told about, and
     /// `hit_regions` was unreachable. Keeping this the only writer of
     /// `last_build` makes that pairing impossible to get wrong again.
+    /// 今フレームのツリーを支援技術へ送る。
+    ///
+    /// **スクリーンリーダが起きていなければ何も起きない** — `update` の中で
+    /// 変換ごと省かれるので、ふつうの起動で費用はほぼゼロ。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn push_a11y_tree(&mut self) {
+        let (Some(build), Some(window)) = (self.last_build.as_ref(), self.window.as_ref()) else {
+            return;
+        };
+        let scale = window.scale_factor() as f32;
+        let title = self.app.title().to_string();
+        let focused = self.focused_id.clone();
+        if let Some(a11y) = self.a11y.as_mut() {
+            a11y.update(build, &title, focused.as_deref(), scale);
+        }
+    }
+
+    /// 支援技術から来た操作をアプリへ流す。
+    ///
+    /// **ふつうのクリック・フォーカスと同じ道を通す** — 別扱いにすると、
+    /// マウスでは動くのに読み上げからは動かない (あるいはその逆) が生まれる。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pump_a11y_requests(&mut self) {
+        let requests = match self.a11y.as_mut() {
+            Some(a11y) => a11y.take_requests(),
+            None => return,
+        };
+        for request in requests {
+            match request {
+                crate::a11y::Request::Click(id) => {
+                    let rect = self
+                        .last_build
+                        .as_ref()
+                        .and_then(|b| b.region_rect(&id))
+                        .unwrap_or(sabitori_core::Rect::new(0.0, 0.0, 0.0, 0.0));
+                    let (x, y) = (
+                        rect.origin.x + rect.size.width / 2.0,
+                        rect.origin.y + rect.size.height / 2.0,
+                    );
+                    self.dispatch_click(Some(&id), 1, x, y);
+                }
+                crate::a11y::Request::Focus(id) => {
+                    self.focused_id = Some(id);
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     pub(crate) fn commit_build(&mut self, build: BuildResult) {
         self.last_build = Some(build);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.push_a11y_tree();
         // `last_build` was just assigned, so the app always sees this frame.
         if let Some(ref build) = self.last_build {
             self.app.on_build(build);

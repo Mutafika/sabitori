@@ -50,6 +50,9 @@ pub mod tasks;
 /// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
 pub mod testing;
 #[cfg(target_os = "macos")]
+/// 支援技術 (VoiceOver / NVDA / Orca) へツリーを渡す (#25)。native だけ。
+#[cfg(not(target_arch = "wasm32"))]
+mod a11y;
 pub mod macos_drag;
 #[cfg(target_os = "macos")]
 pub mod macos_blur;

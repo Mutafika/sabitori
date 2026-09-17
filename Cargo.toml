@@ -26,6 +26,13 @@ rust-version = "1.85"
 # GPU
 wgpu = { version = "24", features = ["webgl"] }
 winit = "0.30"
+# 支援技術 (VoiceOver / NVDA / Orca) へツリーを渡す (#25)。native だけ。
+#
+# 既定の feature は Linux の atspi (async-io / zbus / tokio 級の非同期一式) を
+# どのプラットフォームでも引き込むので切ってある。Linux ぶんは sabitori 側で
+# target ごとに足す。`rwh_06` は winit 0.30 の raw-window-handle に合わせるため。
+accesskit = "0.25"
+accesskit_winit = { version = "0.34", default-features = false, features = ["rwh_06"] }
 bytemuck = { version = "1", features = ["derive"] }
 
 # Math
