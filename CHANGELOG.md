@@ -17,6 +17,31 @@
 
 ### Added
 
+- **業務 API を叩ける HTTP `sabitori_net::http`**
+  ([#63](https://github.com/Mutafika/sabitori/issues/63))。これまで
+  `fetch_bytes(url)` は **GET でバイト列を取るだけ**で、メソッド・ヘッダ・
+  ボディ・Cookie・ステータスコードを扱えなかった。結果、REST のクライアントが
+  **アプリごとに、しかも native (`reqwest::blocking`) と wasm (`web_sys` 手書き)
+  で別々に**書かれていた。
+
+  ```rust
+  let res = http::post("/api/auth/verify")
+      .json(&creds)?            // feature = "json"
+      .credentials(true)        // Cookie セッション
+      .timeout(Duration::from_secs(10))
+      .send()
+      .await?;
+  if res.status() == 401 { /* 認証エラーの画面 */ }
+  let me: Me = res.error_for_status()?.json()?;
+  ```
+
+  **エラーは「繋がらない」(`Transport`) と「HTTP エラー」(`Status`) を分ける** —
+  一緒にすると「ネットワークを確認してください」と「入力が正しくありません」を
+  出し分けられない。`Status` は**本文も持つ** (業務 API は理由を JSON で返す)。
+  `Response::for_test(status, body)` があるので、本物の API 無しで
+  「401 ならこの画面」を書ける。`fetch_bytes` はこの上に載せ替えたので、
+  GET だけ Cookie やヘッダの扱いが別物になることは無い。
+
 - **非同期の結果を UI に戻す `Tasks<App>`**
   ([#64](https://github.com/Mutafika/sabitori/issues/64))。「押す → 裏で API を
   呼ぶ → 結果で状態を更新して再描画」の定番の形が無く、2 つのアプリが同じ
@@ -249,6 +274,13 @@ headless Chromium に実際に描かせて確認している (`e2e/web/`)。
 
 
 ### Fixed
+
+- **`Handle` だけを持ち回した tokio が、元の `Runtime` の drop で黙って
+  止まっていた。** 画像ロード用のランタイムを `AppState` が持っていたので、
+  状態を作り直すと以後の `spawn` が何も走らせず、待っている側は永久に
+  終わらない。プロセスで 1 つのランタイムを画像ロードと `Tasks` が共有する
+  形にした (テストを 1 本ずつ走らせると通るのに、まとめて走らせると落ちる、
+  という形で出た)。
 
 - **DOM 起点の出来事でランタイムが起きなかった。** `lazy_render()` は既定で
   `true` なので、描くのは「何か起きた」フレームだけ。ところが web の橋渡しが

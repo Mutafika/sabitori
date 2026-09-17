@@ -39,14 +39,16 @@
 //!
 //! | | 走る場所 | 要件 |
 //! |---|---|---|
-//! | native | スレッド 1 本 + [`pollster`] | `Future` と結果が `Send` |
+//! | native | ランタイムが持つ tokio (画像ロードと同じもの) | `Future` と結果が `Send` |
 //! | wasm | `spawn_local` (同じスレッド) | `Send` は要らない |
 //!
-//! native に tokio を持ち込んでいないのは、**GUI の道具が非同期ランタイムを
-//! 選んでしまう**のを避けるため。スレッドの中で待つので、待ち方が「IO を
-//! ブロックする」形でも動く (`reqwest::blocking` など)。tokio の reactor を
-//! 要する future (tokio の timer / socket) を直接渡すことはできない —
-//! その場合はアプリ側で tokio を持ち、その `Runtime` の中で完結させること。
+//! native で tokio に載せるのは、**reactor を要する future をそのまま渡せる
+//! ようにする**ため。`reqwest` の非同期クライアント ([`sabitori_net`] の
+//! HTTP もこれ) は tokio の上でしか進まないので、素のスレッドで
+//! `pollster::block_on` すると動かない。
+//!
+//! ランタイムがまだ立っていない場合 (単体テストなど) は、スレッドを 1 本使って
+//! [`pollster`] で待つ。IO をブロックするだけの future はどちらでも動く。
 //!
 //! # 画面を離れたら捨てる
 //!
@@ -145,6 +147,36 @@ impl<A: 'static> Tasks<A> {
     }
 }
 
+/// プロセスで 1 つの tokio。画像ロードと非同期タスクが共有する。
+///
+/// **`Handle` だけを持ち回さない。** `Handle` は生きている `Runtime` を指す
+/// だけの参照で、元の `Runtime` が drop されると `spawn` は**黙って何も
+/// 走らせない**。ランタイムをアプリの状態 (`AppState`) が持つ形にしていたら、
+/// 状態を作り直したテストで後続のタスクが永久に終わらなくなった。
+/// ここで `Runtime` ごと抱えて、プロセスが終わるまで生かす。
+#[cfg(not(target_arch = "wasm32"))]
+fn shared_runtime() -> Option<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name("sabitori-io")
+                .build()
+                .map_err(|e| tracing::warn!("tokio を立てられない: {e}"))
+                .ok()
+        })
+        .as_ref()
+}
+
+/// 画像ロードなど、ランタイム側が同じ tokio に乗るための口。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn runtime_handle() -> Option<tokio::runtime::Handle> {
+    shared_runtime().map(|rt| rt.handle().clone())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl<A: 'static> Tasks<A> {
     /// 裏で走らせて、終わったら `on_done` をアプリに当てる。
@@ -161,10 +193,23 @@ impl<A: 'static> Tasks<A> {
             i.pending += 1;
             i.generation
         };
-        std::thread::spawn(move || {
-            let out = pollster::block_on(fut);
-            Self::deliver(&inbox, generation, Box::new(move |app: &mut A| on_done(app, out)));
-        });
+        match runtime_handle() {
+            // ランタイムの tokio に載せる。reactor があるので、`reqwest` の
+            // ような「待つのに reactor が要る」future もそのまま進む。
+            Some(handle) => {
+                handle.spawn(async move {
+                    let out = fut.await;
+                    Self::deliver(&inbox, generation, Box::new(move |app: &mut A| on_done(app, out)));
+                });
+            }
+            // まだランタイムが立っていない (単体テストなど)。スレッド 1 本で待つ。
+            None => {
+                std::thread::spawn(move || {
+                    let out = pollster::block_on(fut);
+                    Self::deliver(&inbox, generation, Box::new(move |app: &mut A| on_done(app, out)));
+                });
+            }
+        }
     }
 }
 

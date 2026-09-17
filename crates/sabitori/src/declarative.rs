@@ -952,10 +952,6 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     image_pending: std::sync::Arc<std::sync::Mutex<Vec<(String, sabitori_core::image_cache::CacheState)>>>,
     /// Pre-built `ImageCtx` handed to each frame's `ViewContext`.
     image_ctx: sabitori_core::ImageCtx,
-    /// Owned tokio runtime that spawns image fetches (native only). Kept
-    /// alive by holding it in `AppState`.
-    #[cfg(not(target_arch = "wasm32"))]
-    _image_runtime: std::sync::Arc<tokio::runtime::Runtime>,
     /// Set in `new_events` when winit wakes from `WaitCancelled`/`Init`
     /// (i.e. an OS event arrived). Consumed in `about_to_wait` to trigger
     /// exactly one redraw per wake. This is what makes the variable
@@ -2428,20 +2424,15 @@ impl<A: DeclarativeApp> AppState<A> {
             sabitori_core::image_cache::ImageCache::new(),
         ));
         let image_pending = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        #[cfg(not(target_arch = "wasm32"))]
-        let image_runtime = std::sync::Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .thread_name("sabitori-image")
-                .build()
-                .expect("image runtime"),
-        );
+        // 画像ロードと非同期タスク (#64) は**同じ tokio** に載せる。GUI の道具が
+        // ランタイムを 2 つ立てる理由は無いし、`Handle` だけを持ち回すと元の
+        // `Runtime` が drop された瞬間に spawn が黙って効かなくなる
+        // (`tasks::shared_runtime` の doc を参照)。
         #[cfg(not(target_arch = "wasm32"))]
         let image_ctx = crate::image_runtime::make_image_ctx(
             image_cache.clone(),
             image_pending.clone(),
-            image_runtime.handle().clone(),
+            crate::tasks::runtime_handle().expect("tokio runtime"),
         );
         #[cfg(target_arch = "wasm32")]
         let image_ctx = crate::image_runtime::make_image_ctx(
@@ -2492,8 +2483,6 @@ impl<A: DeclarativeApp> AppState<A> {
             image_cache,
             image_pending,
             image_ctx,
-            #[cfg(not(target_arch = "wasm32"))]
-            _image_runtime: image_runtime,
             pending_redraw: true,
             atlas_recover_pending: false,
             extras: std::collections::HashMap::new(),

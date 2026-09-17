@@ -5,12 +5,21 @@ edition.workspace = true
 license.workspace = true
 description = "Async URL → ImageData resolver + cache for Sabitori"
 
+[features]
+# JSON の組み立て / 読み取り。業務 API を叩くなら普通は要るが、画像を取るだけの
+# 利用者に serde を背負わせないよう既定では off。
+json = ["dep:serde", "dep:serde_json"]
+
 [dependencies]
 sabitori-core = { path = "../sabitori-core" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# cookies: Cookie セッションの業務 API (#63)。クライアントを使い回して jar を
+# 保たないと、ログインで受け取ったセッションが次のリクエストへ渡らない。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -25,4 +34,8 @@ web-sys = { version = "0.3", features = [
     "Response",
     "Headers",
     "Blob",
+    # 業務 API (#63): Cookie・中断 (timeout)。
+    "RequestCredentials",
+    "AbortController",
+    "AbortSignal",
 ] }

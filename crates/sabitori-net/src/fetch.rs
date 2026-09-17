@@ -11,58 +11,28 @@ fn local_host(url: &str) -> bool {
         || url.starts_with("http://[::1]")
 }
 
-/// Fetch bytes at `url`. On success returns the raw body; on non-2xx status
-/// or I/O error returns a human-readable string.
-#[cfg(not(target_arch = "wasm32"))]
+/// GET してバイト列を返す。2xx でなければ人が読めるエラー文字列。
+///
+/// **[`crate::http`] の上に載っている。** 以前は native (reqwest) と wasm
+/// (web_sys) の 2 本立てを**この関数が丸ごと 2 回**書いていた。1 本に寄せて
+/// あるので、Cookie・ヘッダ・時間切れの扱いが GET だけ別物になることは無い
+/// ([#63](https://github.com/Mutafika/sabitori/issues/63))。
 pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("sabitori-net/0.1")
-        .build()
-        .map_err(|e| format!("build client: {e}"))?;
-    let mut req = client.get(url);
+    let mut req = crate::http::get(url);
+
+    // ローカル API 宛だけ bearer を足す (この関数だけの約束。上の doc を参照)。
+    #[cfg(not(target_arch = "wasm32"))]
     if local_host(url) {
         if let Ok(t) = std::env::var("SABITORI_LOCAL_BEARER") {
             if !t.is_empty() {
-                req = req.bearer_auth(t);
+                req = req.header("authorization", format!("Bearer {t}"));
             }
         }
     }
-    let resp = req.send().await.map_err(|e| format!("send: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("http {} for {}", resp.status().as_u16(), url));
-    }
-    let bytes = resp.bytes().await.map_err(|e| format!("read body: {e}"))?;
-    Ok(bytes.to_vec())
-}
 
-#[cfg(target_arch = "wasm32")]
-pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    use js_sys::Uint8Array;
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestInit, RequestMode, Response};
-
-    let opts = RequestInit::new();
-    opts.set_method("GET");
-    opts.set_mode(RequestMode::Cors);
-    let req = Request::new_with_str_and_init(url, &opts)
-        .map_err(|e| format!("new request: {e:?}"))?;
-    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
-    let resp_value = JsFuture::from(window.fetch_with_request(&req))
-        .await
-        .map_err(|e| format!("fetch: {e:?}"))?;
-    let resp: Response = resp_value.dyn_into().map_err(|_| "not a Response".to_string())?;
+    let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.ok() {
         return Err(format!("http {} for {}", resp.status(), url));
     }
-    let buf = JsFuture::from(
-        resp.array_buffer()
-            .map_err(|e| format!("array_buffer: {e:?}"))?,
-    )
-    .await
-    .map_err(|e| format!("array_buffer await: {e:?}"))?;
-    let u8 = Uint8Array::new(&buf);
-    let mut bytes = vec![0u8; u8.length() as usize];
-    u8.copy_to(&mut bytes);
-    Ok(bytes)
+    Ok(resp.bytes().to_vec())
 }
