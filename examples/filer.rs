@@ -1989,7 +1989,12 @@ impl DeclarativeApp for FilerApp {
                     let paths: Vec<&Path> = drag.file_indices.iter()
                         .filter_map(|&i| tab.files.get(i).map(|f| f.path.as_path()))
                         .collect();
+                    // OS へファイルとして渡す口は今のところ macOS だけ。
+                    // 他の OS では掴んで動かすところまでは動く。
+                    #[cfg(target_os = "macos")]
                     sabitori::macos_drag::copy_paths_to_clipboard(&paths);
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = &paths;
                 }
             }
         }
@@ -2028,7 +2033,10 @@ impl DeclarativeApp for FilerApp {
                         .filter_map(|&i| tab.files.get(i).map(|f| f.path.clone()))
                         .collect();
                     let path_refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+                    #[cfg(target_os = "macos")]
                     sabitori::macos_drag::start_file_drag(window, &path_refs);
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = (window, &path_refs);
                 }
             }
             // Always clear drag when cursor leaves

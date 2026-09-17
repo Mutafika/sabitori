@@ -156,6 +156,11 @@ headless Chromium に実際に描かせて確認している (`e2e/web/`)。
 
 ### Fixed
 
+- **`examples/filer.rs` が macOS 以外でビルドできなかった。** macOS 限定の
+  `sabitori::macos_drag` を無条件に呼んでいた。ライブラリには影響しないが、
+  `cargo build --workspace --all-targets` が Linux / Windows で落ちる。
+  新しい CI (下記) が初回の実行で拾ったもの。
+
 - **`polyline()` が、大きさを書かないと 1 本も描かれなかった。**
   形を決めているのは点であって箱ではないのに、箱が 0 の要素は描画ごと
   飛ばされていた。`flex_col` の中に置けば高さは中身なり = 0 になるので、
