@@ -39,6 +39,15 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 生の呼び出しで、`Input.dispatchKeyEvent` や `Input.imeSetComposition` で
 キー入力・IME の変換まで送れる。
 
+```sh
+node drive.mjs http://127.0.0.1:8099/index.html /tmp/last.png probes/ime.mjs
+```
+
+`probes/ime.mjs` は **web の日本語入力 (#73)** を通しで見る: 欄を押す →
+`にほんご` を変換中にする → `日本語` を確定 → `abc` を足す → Backspace →
+⇧← で選択。各段で PNG を吐くので、**変換中の文字が欄に見えているか**まで
+目で確かめられる (assert では書けない部分)。
+
 ## 何を見ているか
 
 `src/main.rs` は**回帰が起きたら絵で分かる**ものだけを置く:
@@ -47,6 +56,7 @@ node drive.mjs http://127.0.0.1:8099/index.html /tmp/shot.png
 |---|---|
 | `polyline()` の折れ線 | wasm の初期化から `LineRenderer` が落ちた (#66) |
 | `rounded(Px(999.0))` のピル | 角丸の半径の丸めが外れた (#71) |
+| `text_input` | 隠し textarea の橋渡しが切れた = IME が届かない (#73) |
 | そもそも画面が出る | GPU の limits を要求しすぎている (#72) |
 
 CI には載せていない。wasm の成果物が 35MB あり、毎 PR で焼くには重すぎる。

@@ -51,6 +51,10 @@ pub mod macos_drag;
 pub mod macos_blur;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
+/// Web の文字入力の橋渡し (隠し textarea)。日本語 IME・ソフトキーボード・
+/// 貼り付けが canvas だけでは届かないため (issue #73)。
+#[cfg(target_arch = "wasm32")]
+pub mod web_ime;
 pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, UiCapture, run_declarative};
 pub use scene_app::SceneApp;
 pub use scene_app::run_scene;

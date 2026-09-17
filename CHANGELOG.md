@@ -17,6 +17,24 @@
 
 ### Added
 
+- **Web の日本語 IME・ソフトキーボード・貼り付けが届くようになった**
+  ([#73](https://github.com/Mutafika/sabitori/issues/73))。wasm のランタイムは
+  canvas 1 枚で DOM の入力要素を持たないため、winit が拾える範囲しか届いて
+  いなかった — **変換 (`compositionupdate` / `compositionend`) も `insertText`
+  も来ない**。さらに iPadOS / Android は入力要素にフォーカスしないとソフト
+  キーボードを出さないので、**タブレットではテキスト欄に 1 文字も打てなかった**。
+
+  隠し `<textarea>` の橋渡しをランタイムに入れた (`web_ime`、iOS の
+  `ios_keyboard` と同じ形)。変換中の文字列は preedit としてその場に出て、
+  キャレットも preedit の中に立つ。確定・`insertText`・貼り付け・Backspace・
+  矢印・Home/End・Enter・Tab・Escape・⌘ 付きのキーが届く。焦点の当て方は
+  **canvas の `pointerup` の中で `textarea.focus()`** — iOS はユーザー操作の
+  ハンドラの中でないとキーボードを出さないため。アプリ側の配線は不要
+  (ランタイムは `register_managed` で欄を知っているので、欄の列挙も要らない)。
+
+  実機確認は `e2e/web/probes/ime.mjs` (headless Chromium + CDP の
+  `Input.imeSetComposition`)。
+
 - **web の実機確認の足場 `e2e/web/`。** wasm は「native のテストが 1 つも
   落ちないのに web だけ壊れている」が起きる（初期化の写し落ち #66、GPU の
   limits #72、スタック食い潰し #56）。本物の Chromium に描かせて PNG を見る

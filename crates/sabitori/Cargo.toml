@@ -64,7 +64,14 @@ serde_json = { version = "1", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+web-sys = { workspace = true, features = [
+    "Window", "Document", "Element", "HtmlCanvasElement",
+    # 隠し textarea の橋渡し (web_ime)。canvas だけでは IME・ソフトキーボード・
+    # 貼り付けが届かない (#73)。
+    "HtmlElement", "HtmlTextAreaElement", "CssStyleDeclaration", "Node",
+    "EventTarget", "Event", "InputEvent", "CompositionEvent", "KeyboardEvent",
+    "PointerEvent", "MouseEvent", "UiEvent",
+] }
 console_error_panic_hook.workspace = true
 console_log.workspace = true
 

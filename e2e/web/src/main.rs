@@ -5,11 +5,20 @@
 
 use sabitori::*;
 use sabitori_core::element::polyline;
+use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
 
-struct App;
+struct App {
+    name: TextInputState,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self { name: TextInputState::new("お名前") }
+    }
+}
 
 impl DeclarativeApp for App {
-    fn view(&self, _ctx: &ViewContext) -> Element {
+    fn view(&self, ctx: &ViewContext) -> Element {
         div()
             .w_full()
             .h_full()
@@ -23,6 +32,13 @@ impl DeclarativeApp for App {
                         .stroke_width(3.0)
                         .stroke_color(Color::from_hex("#7dcfff")),
                 ),
+                // #73: 日本語 IME が届くか (隠し textarea の橋渡し)
+                div().w(Px(320.0)).p(Px(8.0)).child(text_input(
+                    ctx,
+                    "name",
+                    &self.name,
+                    &TextInputStyle::default_dark(),
+                )),
                 // #71: ピルが描かれるか
                 div()
                     .id("pill")
@@ -36,5 +52,5 @@ impl DeclarativeApp for App {
 }
 
 fn main() {
-    run_declarative(App);
+    run_declarative(App::default());
 }

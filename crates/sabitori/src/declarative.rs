@@ -1628,6 +1628,52 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     }
                 }
 
+                // Web: canvas には入力要素が無いので、隠し `<textarea>` に
+                // 実際のテキスト入力セッションを張らせて、そこで起きたことを
+                // 汲む (#73)。iOS の上のブロックと同じ形。
+                //
+                // **欄の矩形を毎フレーム渡す**のが要点。ソフトキーボードは
+                // 「ユーザー操作のハンドラの中で focus()」しないと出ないので、
+                // pointerup の中で Rust に問い合わせる余裕が無い。
+                #[cfg(target_arch = "wasm32")]
+                {
+                    crate::web_ime::ensure_attached();
+
+                    let field_rects: Vec<sabitori_core::Rect> = self
+                        .last_build
+                        .as_ref()
+                        .map(|b| {
+                            b.hit_regions
+                                .iter()
+                                .filter(|r| {
+                                    r.id
+                                        .as_deref()
+                                        .is_some_and(|id| self.managed_text_field(id).is_some())
+                                })
+                                .map(|r| r.rect)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    crate::web_ime::set_fields(field_rects);
+
+                    let on_a_field = self
+                        .focused_id
+                        .as_deref()
+                        .is_some_and(|id| self.managed_text_field(id).is_some());
+                    crate::web_ime::set_active(on_a_field, self.managed_ime_area());
+
+                    for e in crate::web_ime::drain() {
+                        let handled = self.route_to_managed(&e)
+                            || match self.focused_id {
+                                Some(ref fid) => self.app.on_focused_input(fid, &e),
+                                None => false,
+                            };
+                        if !handled {
+                            self.app.on_input(&e);
+                        }
+                    }
+                }
+
                 // Read the surface geometry through a shared borrow and let it
                 // end here: `build_frame` below needs `&mut self`, so the
                 // renderer can't stay borrowed across it. It is re-acquired
