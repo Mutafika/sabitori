@@ -556,20 +556,26 @@ impl TextInputInner {
             // 長い段落の中で 1 回押しただけで段落ごと飛ぶ。 実測が要るので予約だけ。
             // ⌘↑ / ⌘↓ は文書の先頭 / 末尾、 ⌥↑ / ⌥↓ は段落 (`\n` 区切り) の端。
             // どちらも実測が要らないので予約せずその場で動かす。
-            Key::Up if self.multiline && doc_mod => {
-                self.move_to(0, modifiers.shift);
-                true
-            }
-            Key::Down if self.multiline && doc_mod => {
-                self.move_to(self.text.len(), modifiers.shift);
-                true
-            }
+            // **段落を先に見る。** Windows / Linux では「文書の端」も「段落の端」も
+            // 主修飾キーが Ctrl で、文書を先に見ると Ctrl+↑↓ が文書の端になり、
+            // **段落移動に割り当てるキーが無くなる**。文書の端は Ctrl+Home /
+            // Ctrl+End が既に担当している (下の Home / End の腕) ので、
+            // Ctrl+↑↓ は段落に回すのが Windows / Linux の作法。
+            // macOS は段落が ⌥、文書が ⌘ で別のキーなので、順序は効かない。
             Key::Up if self.multiline && word_mod => {
                 self.move_to(self.paragraph_start(), modifiers.shift);
                 true
             }
             Key::Down if self.multiline && word_mod => {
                 self.move_to(self.paragraph_end(), modifiers.shift);
+                true
+            }
+            Key::Up if self.multiline && doc_mod => {
+                self.move_to(0, modifiers.shift);
+                true
+            }
+            Key::Down if self.multiline && doc_mod => {
+                self.move_to(self.text.len(), modifiers.shift);
                 true
             }
             Key::Up | Key::Down if self.multiline && modified => false,
@@ -1977,16 +1983,12 @@ mod nav_tests {
         assert!(s.on_key(Key::Down, word()));
         assert_eq!(s.cursor_pos, 7, "段落の末尾");
 
-        // **文書の端は macOS だけ。** Windows / Linux では段落と同じ Ctrl が
-        // 割り当たっていて区別が付かない (文書の端は Ctrl+Home / End の担当)。
-        // ここで両方を要求すると、非 macOS では「段落へ動いたのに文書の端を
-        // 期待する」テストになる。
-        if !MAC {
-            return;
-        }
-        assert!(s.on_key(Key::Up, doc()));
+        // 文書の端へ動くキーはプラットフォームで違う。macOS は ⌘↑↓、
+        // Windows / Linux は Ctrl+Home / Ctrl+End (Ctrl+↑↓ は上のとおり段落)。
+        let (up, down) = if MAC { (Key::Up, Key::Down) } else { (Key::Home, Key::End) };
+        assert!(s.on_key(up, doc()));
         assert_eq!(s.cursor_pos, 0, "文書の先頭");
-        assert!(s.on_key(Key::Down, doc()));
+        assert!(s.on_key(down, doc()));
         assert_eq!(s.cursor_pos, text.len(), "文書の末尾");
     }
 
