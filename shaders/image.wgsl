@@ -44,6 +44,27 @@ var<private> QUAD_VERTICES: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2<f32>(0.0, 1.0),
 );
 
+// Shrink the radii so neighbouring corners never overlap, the way CSS does
+// (CSS Backgrounds 3 §5.5). `sdf_rounded_rect` measures distance from the
+// inner corner circle, so a radius larger than half the box puts every
+// pixel — the centre included — outside the shape and nothing is drawn.
+// `build_tree` already clamps what it emits; this covers instances assembled
+// elsewhere (scene nodes, the runtime's own overlays).
+// radii = (top_left, top_right, bottom_right, bottom_left).
+fn clamp_corner_radii(radii: vec4<f32>, size: vec2<f32>) -> vec4<f32> {
+    let r = max(radii, vec4<f32>(0.0));
+    var f = 1.0;
+    let top = r.x + r.y;
+    let right = r.y + r.z;
+    let bottom = r.z + r.w;
+    let left = r.w + r.x;
+    if top > 0.0 { f = min(f, size.x / top); }
+    if right > 0.0 { f = min(f, size.y / right); }
+    if bottom > 0.0 { f = min(f, size.x / bottom); }
+    if left > 0.0 { f = min(f, size.y / left); }
+    return r * min(f, 1.0);
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -65,7 +86,7 @@ fn vs_main(
     let center = instance.rect.xy + instance.rect.zw * 0.5;
     out.local_pos = pixel_pos - center;
     out.half_size = instance.rect.zw * 0.5;
-    out.corner_radii = instance.corner_radii;
+    out.corner_radii = clamp_corner_radii(instance.corner_radii, instance.rect.zw);
     out.opacity = instance.params.x;
 
     return out;

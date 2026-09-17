@@ -414,4 +414,131 @@ mod tests {
         queue.submit(std::iter::once(encoder.finish()));
         device.poll(wgpu::Maintain::Wait);
     }
+
+    /// GPU に実際に描かせて、ピル (`radius > 箱の半分`) が塗られることを見る。
+    ///
+    /// `sdf_rounded_rect` は角の円の内側からの距離を測るので、半径が箱の半分を
+    /// 超えると中心まで「形の外」になり、**矩形が丸ごと消える** (#71)。CPU 側
+    /// (`build_tree`) の丸めはここを通らないので、これはシェーダーの丸めその
+    /// ものの確認になる。
+    #[test]
+    fn a_radius_larger_than_the_box_still_paints_a_pill() {
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("skip: GPU adapter not available");
+            return;
+        };
+        let (w, h): (u32, u32) = (128, 64); // 128*4 = 512 = 256 の倍数 (行パディング無し)
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let mut ui = UiOverlayRenderer::new(&device, format);
+        ui.update_globals(&queue, w as f32, h as f32, 1.0);
+
+        // CSS の定番どおりの書き方。箱は 100 × 22、半径は 999。
+        let (bx, by, bw, bh) = (14.0f32, 21.0f32, 100.0f32, 22.0f32);
+        let mut pill: RectInstance = bytemuck::Zeroable::zeroed();
+        pill.rect = [bx, by, bw, bh];
+        pill.corner_radii = [999.0; 4];
+        pill.fill_color = [0.0, 1.0, 0.0, 1.0];
+        ui.upload_rects(&device, &queue, &[pill], &[]);
+
+        let pixels = render_to_rgba(&device, &queue, w, h, format, |pass| ui.draw_base(pass));
+        let at = |x: u32, y: u32| -> [u8; 4] {
+            let i = ((y * w + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+
+        // 中心は塗られている (丸めが無いと、ここが透明のまま = 背景が消える)。
+        let center = at((bx + bw / 2.0) as u32, (by + bh / 2.0) as u32);
+        assert!(
+            center[3] > 250 && center[1] > 200,
+            "ピルの中心が塗られていない: {center:?}"
+        );
+
+        // 左端の真ん中も塗られている = 半円になっている。
+        let left_edge = at(bx as u32 + 1, (by + bh / 2.0) as u32);
+        assert!(left_edge[3] > 250, "左端が欠けている: {left_edge:?}");
+
+        // 角は抜けている = 角丸として描かれている (ただの矩形ではない)。
+        let corner = at(bx as u32, by as u32);
+        assert!(corner[3] < 10, "角が丸くない: {corner:?}");
+
+        // 箱の外は透明のまま。
+        let outside = at(bx as u32 - 4, by as u32);
+        assert_eq!(outside[3], 0, "箱の外に漏れている: {outside:?}");
+    }
+
+    /// offscreen テクスチャに描いて RGBA を読み戻す。
+    fn render_to_rgba(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        w: u32,
+        h: u32,
+        format: wgpu::TextureFormat,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Vec<u8> {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("readback_target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("readback_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            draw(&mut pass);
+        }
+
+        let bpr = w * 4;
+        assert_eq!(bpr % 256, 0, "bytes_per_row は 256 の倍数であること");
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (bpr * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range().to_vec();
+        drop(buf);
+        data
+    }
 }

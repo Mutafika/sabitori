@@ -1484,10 +1484,17 @@ impl Element {
     }
 
     /// Set corner radius (all corners).
+    ///
+    /// A radius larger than the box is clamped at build time the way CSS
+    /// clamps `border-radius`, so the pill idiom `rounded(Px(999.0))` draws a
+    /// pill instead of nothing.
+    ///
+    /// `Percent` is **not** resolved against the box: the value is taken as
+    /// pixels. Use `Px`, or `Px(999.0)` for a pill.
     pub fn rounded(mut self, d: Dimension) -> Self {
         let r = match d {
             Dimension::Px(v) => v,
-            Dimension::Percent(v) => v, // percentage of min(width, height) resolved later
+            Dimension::Percent(v) => v, // taken as px — see the note above
             Dimension::Auto => 0.0,
         };
         self.style.corner_radius = Corners::all(r);
@@ -1495,6 +1502,8 @@ impl Element {
     }
 
     /// Set corner radius with a raw f32 (pixels).
+    ///
+    /// Clamped to the box at build time, so `rounded_px(999.0)` is a pill.
     pub fn rounded_px(mut self, r: f32) -> Self {
         self.style.corner_radius = Corners::all(r);
         self

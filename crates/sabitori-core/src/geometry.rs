@@ -166,6 +166,50 @@ impl Corners<f32> {
             self.bottom_left,
         ]
     }
+
+    /// Shrink the radii so neighbouring corners never overlap, the way CSS
+    /// does (CSS Backgrounds 3 §5.5): if the two radii on any side add up to
+    /// more than that side's length, *every* radius is scaled by the same
+    /// factor. Negative radii are treated as zero.
+    ///
+    /// This is what makes the CSS pill idiom (`rounded_px(999.0)`) work. The
+    /// rounded-rect SDF measures distance from the inner corner circle, so a
+    /// radius larger than half the box puts every pixel — the centre
+    /// included — outside the shape and the rect is not drawn at all. Clamp
+    /// here, where the box size is known, rather than leaving each caller to
+    /// pick a radius that happens to fit.
+    pub fn clamped_to_size(self, width: f32, height: f32) -> Self {
+        let r = Self {
+            top_left: self.top_left.max(0.0),
+            top_right: self.top_right.max(0.0),
+            bottom_right: self.bottom_right.max(0.0),
+            bottom_left: self.bottom_left.max(0.0),
+        };
+        let w = width.max(0.0);
+        let h = height.max(0.0);
+
+        let mut f: f32 = 1.0;
+        for (sum, side) in [
+            (r.top_left + r.top_right, w),
+            (r.top_right + r.bottom_right, h),
+            (r.bottom_right + r.bottom_left, w),
+            (r.bottom_left + r.top_left, h),
+        ] {
+            if sum > 0.0 {
+                f = f.min(side / sum);
+            }
+        }
+
+        if f >= 1.0 {
+            return r;
+        }
+        Self {
+            top_left: r.top_left * f,
+            top_right: r.top_right * f,
+            bottom_right: r.bottom_right * f,
+            bottom_left: r.bottom_left * f,
+        }
+    }
 }
 
 /// Per-edge values (e.g., padding, margin).
@@ -194,5 +238,54 @@ impl<T: Copy> Edges<T> {
             bottom: value,
             left: value,
         }
+    }
+}
+
+#[cfg(test)]
+mod corner_clamp_tests {
+    use super::*;
+
+    /// CSS のピル (`border-radius: 999px`) は、半径が箱の半分に丸められて
+    /// 端が半円になる。丸めないと SDF が全画素を「外」と判定して矩形が消える。
+    #[test]
+    fn pill_radius_collapses_to_half_the_short_side() {
+        let c = Corners::all(999.0).clamped_to_size(80.0, 22.0);
+        assert_eq!(c.to_array(), [11.0, 11.0, 11.0, 11.0]);
+    }
+
+    /// 収まる半径は 1px も動かさない (既存の見た目を変えないこと)。
+    #[test]
+    fn radius_that_fits_is_untouched() {
+        let c = Corners::all(8.0).clamped_to_size(120.0, 60.0);
+        assert_eq!(c.to_array(), [8.0, 8.0, 8.0, 8.0]);
+        // ちょうど半分も収まる
+        let exact = Corners::all(30.0).clamped_to_size(120.0, 60.0);
+        assert_eq!(exact.to_array(), [30.0, 30.0, 30.0, 30.0]);
+    }
+
+    /// 角ごとに違う半径は、辺ごとの和で決まる 1 つの比率で全角を縮める
+    /// (角ごとに別々に丸めると、辺の途中で曲率が飛ぶ)。
+    #[test]
+    fn adjacent_corners_scale_by_one_shared_factor() {
+        // 上辺 = 100, tl + tr = 150 → f = 2/3。他の辺はこれより緩い。
+        let c = Corners::new(50.0, 100.0, 0.0, 0.0).clamped_to_size(100.0, 400.0);
+        assert!((c.top_left - 100.0 / 3.0).abs() < 1e-3, "tl={}", c.top_left);
+        assert!((c.top_right - 200.0 / 3.0).abs() < 1e-3, "tr={}", c.top_right);
+        assert_eq!((c.bottom_right, c.bottom_left), (0.0, 0.0));
+    }
+
+    /// 片側だけ丸い箱は、その辺の長さまで使える (半分ではない)。
+    #[test]
+    fn a_lone_corner_may_reach_the_full_side() {
+        let c = Corners::new(999.0, 0.0, 0.0, 0.0).clamped_to_size(40.0, 90.0);
+        assert_eq!(c.to_array(), [40.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// 半径 0・サイズ 0 で 0 除算や NaN を作らない。
+    #[test]
+    fn degenerate_boxes_stay_finite() {
+        assert_eq!(Corners::all(0.0).clamped_to_size(0.0, 0.0).to_array(), [0.0; 4]);
+        assert_eq!(Corners::all(6.0).clamped_to_size(0.0, 10.0).to_array(), [0.0; 4]);
+        assert_eq!(Corners::all(-4.0).clamped_to_size(10.0, 10.0).to_array(), [0.0; 4]);
     }
 }

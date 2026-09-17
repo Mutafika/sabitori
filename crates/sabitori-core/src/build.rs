@@ -885,7 +885,8 @@ fn emit_commands(
 
         target.commands.push(RenderCommand::Rect(RectDraw {
             rect,
-            corner_radii: scale_corners(style.corner_radius, scale),
+            corner_radii: scale_corners(style.corner_radius, scale)
+                .clamped_to_size(rect.size.width, rect.size.height),
             fill_color: apply_opacity(bg, effective_opacity),
             border_color: apply_opacity(style.border_color, effective_opacity),
             border_width: style.border_width * scale,
@@ -988,7 +989,8 @@ fn emit_commands(
                 key: key.clone(),
                 data: data.clone(),
                 rect,
-                corner_radii: scale_corners(style.corner_radius, scale),
+                corner_radii: scale_corners(style.corner_radius, scale)
+                    .clamped_to_size(rect.size.width, rect.size.height),
                 opacity: effective_opacity,
                 object_fit: style.object_fit,
             }));
@@ -2293,6 +2295,43 @@ mod tests {
         assert_eq!(d.rect.origin.x, 0.0);
         assert_eq!(d.rect.size.width, 120.0);
         assert_eq!(d.corner_radii.top_left, 8.0);
+    }
+
+    /// CSS のピル (`rounded_px(999.0)`) は、半径が箱の半分に丸められて描かれる。
+    /// 丸めないと SDF が全画素を「外」と判定し、背景が 1px も出ない (#71)。
+    #[test]
+    fn pill_radius_is_clamped_to_the_box() {
+        let root = div()
+            .w(Px(80.0))
+            .h(Px(22.0))
+            .bg(Color::WHITE)
+            .rounded_px(999.0);
+        let d = *build_tree(&root, 800.0, 600.0)
+            .render_list
+            .rects()
+            .next()
+            .unwrap();
+
+        assert_eq!(d.corner_radii.to_array(), [11.0; 4]);
+    }
+
+    /// 丸めは scale 済みの箱に対して行う (半径も箱も同じ倍率で縮む)。
+    #[test]
+    fn pill_radius_is_clamped_after_scaling() {
+        let root = div()
+            .w(Px(80.0))
+            .h(Px(22.0))
+            .bg(Color::WHITE)
+            .rounded_px(999.0)
+            .scaled(0.5);
+        let d = *build_tree(&root, 800.0, 600.0)
+            .render_list
+            .rects()
+            .next()
+            .unwrap();
+
+        assert_eq!(d.rect.size.height, 11.0);
+        assert_eq!(d.corner_radii.to_array(), [5.5; 4]);
     }
 
     /// button の label はコントロールのキャプションであって本文ではないので、
