@@ -590,6 +590,33 @@ impl<A: DeclarativeApp> Harness<A> {
         self.frame()
     }
 
+    /// `id` が見えるまでスクロールする ([#75] の 8)。
+    ///
+    /// 画面外の保存ボタンを押すテストで、「見えるまで少しずつスクロールする
+    /// 関数」をアプリ側のテストに書かせないための口。`container` は
+    /// `.scroll(id)` を書いたコンテナの id。
+    ///
+    /// 見つからない / 届かないときは `false`。
+    ///
+    /// [#75]: https://github.com/Mutafika/sabitori/issues/75
+    pub fn scroll_into_view(&mut self, container: &str, id: &str) -> bool {
+        // 画面に出ていれば終わり。`hit_regions` は見えているものしか持たない
+        // ので、`rect_of` が返る = 見えている。
+        for _ in 0..200 {
+            if self.rect_of(id).is_some() {
+                return true;
+            }
+            let before = self.scroll_y(container);
+            self.scroll(container, 40.0);
+            self.frame();
+            // これ以上動かないなら、そこに無い。
+            if self.scroll_y(container) == before {
+                return self.rect_of(id).is_some();
+            }
+        }
+        self.rect_of(id).is_some()
+    }
+
     /// 横に `dx` だけスクロールする (`scroll` の横版)。
     ///
     /// ホイールの経路 (`wheel_at`) と違って**その場で位置を動かす**ので、

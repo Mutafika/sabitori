@@ -208,7 +208,45 @@ pub fn table_clicked_header(id: &str, clicked: &str) -> Option<usize> {
 ///
 /// `id` はスクロールコンテナの id でもある。 高さは呼び出し側が決める
 /// (`.h(Px(..))` か `.flex_1()` を結果に繋ぐ)。
+/// > **表は自分の箱いっぱいに広がる前提。箱に大きさを与えること。**
+/// >
+/// > 伸縮列 ([`TableColumn::flex`]) は親の幅から余りを取り、本体は
+/// > `flex_1` で残りの高さを取る。そのため**大きさが中身なりの入れ物**に
+/// > 入れると、幅ゼロの列と高さゼロの本体になって**中身ごと消える**
+/// > (panic もログも無い)。**根に置くだけでは足りない** — 根も中身なりの
+/// > 大きさになる。`table(..).w_full().h_full()` と書くか、大きさのある
+/// > 入れ物の中で `.flex_1()` を足すこと。
 pub fn table(ctx: &ViewContext, id: &str, state: &TableState, style: &TableStyle) -> Element {
+    table_with(ctx, id, state, style, |_, _, _| None)
+}
+
+/// [`table`] に**セルの中身を自分で組む口**を足した版 ([#75] の 3)。
+///
+/// `render_cell(row, col, cell)` が `Some(element)` を返したセルは、その要素を
+/// 描く。`None` なら今までどおり [`Cell`] の文字を描く。ステータスのバッジ、
+/// 行内のボタン、進捗バーなど「文字では足りないセル」のための口 — これが
+/// 無くて、色付きの文字で代用していた。
+///
+/// ```ignore
+/// table_with(ctx, "vehicles", &self.table, &style, |row, col, cell| {
+///     (col == 2).then(|| badge(&cell.text, self.status_color(row)))
+/// })
+/// ```
+///
+/// [`Cell::text`] は `Some` を返した場合も**読み上げに使われる**ので、
+/// バッジにも文字の等価物を入れておくこと。
+///
+/// > **セルの中に `.id()` を置くなら、行ごとに違う id にすること。** 同じ id が
+/// > 木に 2 つあると、片方のアニメーション状態がもう片方に漏れる。
+///
+/// [#75]: https://github.com/Mutafika/sabitori/issues/75
+pub fn table_with(
+    ctx: &ViewContext,
+    id: &str,
+    state: &TableState,
+    style: &TableStyle,
+    render_cell: impl Fn(usize, usize, &Cell) -> Option<Element>,
+) -> Element {
     let body_id = format!("{id}::body");
 
     // 見えている行だけ作る。 ランタイムが持つスクロール位置から範囲を貰う。
@@ -226,7 +264,7 @@ pub fn table(ctx: &ViewContext, id: &str, state: &TableState, style: &TableStyle
         body_children.push(div().h(Px(spacer_top)).shrink(0.0));
     }
     for row in first..end {
-        body_children.push(table_row(ctx, id, state, style, row));
+        body_children.push(table_row(ctx, id, state, style, row, &render_cell));
     }
     if spacer_bottom > 0.0 {
         body_children.push(div().h(Px(spacer_bottom)).shrink(0.0));
@@ -287,6 +325,7 @@ fn table_row(
     state: &TableState,
     style: &TableStyle,
     row: usize,
+    render_cell: &impl Fn(usize, usize, &Cell) -> Option<Element>,
 ) -> Element {
     let row_id = table_row_id(id, row);
     let selected = state.selected == Some(row);
@@ -308,6 +347,8 @@ fn table_row(
         .enumerate()
         .map(|(col, c)| {
             let cell = state.rows.get(row).and_then(|r| r.get(col));
+            // アプリが組んだ中身が先。無ければ今までどおり文字を描く。
+            let custom = cell.and_then(|cell| render_cell(row, col, cell));
             let content = cell.map(|c| c.text.as_str()).unwrap_or("");
             let mut label = text(content)
                 .font_size(style.font_size)
@@ -315,6 +356,7 @@ fn table_row(
             if cell.is_some_and(|c| c.bold) {
                 label = label.bold();
             }
+            let inner = custom.unwrap_or(label);
             sized(div(), c.width)
                 .role(Role::Cell)
                 .h_full()
@@ -322,7 +364,7 @@ fn table_row(
                 .flex_row()
                 .items_center()
                 .overflow_hidden()
-                .child(label)
+                .child(inner)
         })
         .collect();
 

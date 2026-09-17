@@ -46,6 +46,13 @@ pub struct TextInputInner {
     /// 立つと Enter が改行になり、 貼り付けが改行を保ち、 ↑↓ と Home/End が
     /// **視覚行**で動くようになる。
     pub multiline: bool,
+    /// [`TextInputState::take_changed`] が前に見たときの本文。
+    ///
+    /// **変更のたびに数える形にしていない。** 打鍵・貼り付け・IME 確定・削除・
+    /// `set_text` と本文が動く経路は 10 個以上あり、1 つ足し忘れると
+    /// 「たまに検索が走らない」という最悪の壊れ方をする。中身を突き合わせる
+    /// なら経路を数え漏らしようがない。
+    pub last_seen: String,
     /// 伏字の欄か (パスワード)。 [`TextInputState::new_secure`] が立てる。
     ///
     /// 立つと、 中身は [`MASK_CHAR`] × 文字数で表示され、 キャレットも選択も
@@ -226,6 +233,7 @@ impl TextInputInner {
             blink: 0.0,
             caret_offset: (0.0, 0.0),
             multiline: false,
+            last_seen: String::new(),
             secure: false,
             caret: CaretPos::default(),
             pending: None,
@@ -963,6 +971,34 @@ impl TextInputState {
         let s = Self::new(placeholder);
         s.set_secure(true);
         s
+    }
+
+    /// **前に見てから本文が変わったか。** 見たら下りる。
+    ///
+    /// 検索欄でサーバー検索を投げる、入力に応じて検証する、といった
+    /// 「変わったときだけ何かする」を書くための口
+    /// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 5)。
+    /// これが無くて、アプリは全件を持って `view()` の中で絞っていた。
+    ///
+    /// ```ignore
+    /// fn tick(&mut self, _dt: f32) {
+    ///     if self.query.take_changed() {
+    ///         self.debounce = Some(Instant::now());   // 打ち終わりを待つ
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// 変更の経路 (打鍵・貼り付け・IME 確定・削除・`set_text`) を数えるのでは
+    /// なく、**中身を突き合わせて**答える。経路を 1 つ足し忘れて「たまに
+    /// 検索が走らない」が起きない形。
+    pub fn take_changed(&self) -> bool {
+        let mut inner = self.0.borrow_mut();
+        if inner.last_seen == inner.text {
+            return false;
+        }
+        let text = inner.text.clone();
+        inner.last_seen = text;
+        true
     }
 
     /// 伏字かどうかを切り替える (「パスワードを表示」のトグル)。

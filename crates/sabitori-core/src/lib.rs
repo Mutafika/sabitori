@@ -14,8 +14,8 @@ pub use theme::AppTheme;
 
 // Re-export key element API items at crate root for convenience.
 pub use element::{
-    arc, div, text, button, image, ArcKind, Cursor, Element, ElementKind, HighlightSpec, ImageData,
-    LinkRange, ObjectFit, Role, ScrollOwner, Typography,
+    arc, div, text, button, image, polyline, ArcKind, Cursor, Element, ElementKind, HighlightSpec,
+    ImageData, LinkRange, ObjectFit, PolylineKind, Role, ScrollOwner, Typography,
 };
 pub use element::{Dimension, Px, Percent, Auto, DimensionExt};
 // レイアウト基本型。 `sabitori-style::props` が別々に定義していたものを 0.4.0 で

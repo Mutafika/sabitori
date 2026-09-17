@@ -88,7 +88,7 @@ pub use split_pane::{
 };
 pub use style_animator::StyleAnimator;
 pub use table::{
-    table, table_clicked_header, table_clicked_row, table_header_id, table_row_id, Cell,
+    table, table_clicked_header, table_clicked_row, table_header_id, table_row_id, table_with, Cell,
     TableColumn, TableState, TableStyle,
 };
 pub use text_input::{

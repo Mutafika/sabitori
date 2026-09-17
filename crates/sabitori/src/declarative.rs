@@ -408,6 +408,28 @@ pub trait DeclarativeApp: 'static {
     /// 1 回回せば `h.focused_id()` に出る ([#28](https://github.com/Mutafika/sabitori/issues/28))。
     fn desired_focus(&self) -> Option<String> { None }
 
+    /// **1 回だけ**焦点を当てたい要素の id ([#75] の 14)。
+    ///
+    /// [`Self::desired_focus`] との違いは意味:
+    ///
+    /// | | 意味 | 使う場面 |
+    /// |---|---|---|
+    /// | `desired_focus` | 主張し**続ける** (毎フレーム引き戻す) | モーダルから出さない |
+    /// | `take_focus_once` | 1 回だけ当てる | 画面を開いたら検索欄へ |
+    ///
+    /// `&mut self` なので、溜めておいた要求をそのまま取り出せる:
+    ///
+    /// ```ignore
+    /// fn take_focus_once(&mut self) -> Option<String> {
+    ///     self.focus_next.take()
+    /// }
+    /// ```
+    ///
+    /// 当てたあとユーザーが別の欄を押せば、そのまま移る (引き戻さない)。
+    ///
+    /// [#75]: https://github.com/Mutafika/sabitori/issues/75
+    fn take_focus_once(&mut self) -> Option<String> { None }
+
     /// The caret rectangle to hand the platform IME, in window-logical pixels
     /// `(x, y, width, height)` — where the conversion / candidate window should
     /// anchor (e.g. Japanese 変換候補). Polled once per frame; the runtime calls
@@ -881,6 +903,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) last_build: Option<BuildResult>,
     pub(crate) mouse_x: f32,
     pub(crate) mouse_y: f32,
+    /// [`DeclarativeApp::take_focus_once`] から汲んだ「1 回だけ」の焦点要求。
+    /// 次に焦点を解決するときに 1 度だけ当てて消える (#75 の 14)。
+    pending_focus_once: Option<String>,
     /// `focused_id` と同じく Harness から読めるようにしてある (#49)。
     pub(crate) hovered_id: Option<String>,
     /// 現在押されている要素の id。`active_style` (= `.active()` / `.pressable()`)
@@ -2455,6 +2480,7 @@ impl<A: DeclarativeApp> AppState<A> {
             last_build: None,
             mouse_x: 0.0,
             mouse_y: 0.0,
+            pending_focus_once: None,
             hovered_id: None,
             pressed_id: None,
             last_cursor: None,
@@ -3978,7 +4004,14 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 実装は [`crate::runtime_shared::apply_desired_focus`] — scene_app と
     /// 共有する。 掴んだら `wants_keyboard` も変わるので capture を押し直す。
     pub(crate) fn apply_desired_focus(&mut self) {
-        if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
+        if let Some(once) = self.app.take_focus_once() {
+            self.pending_focus_once = Some(once);
+        }
+        if crate::runtime_shared::apply_desired_focus(
+            &self.app,
+            &mut self.focused_id,
+            &mut self.pending_focus_once,
+        ) {
             self.push_ui_capture();
         }
     }

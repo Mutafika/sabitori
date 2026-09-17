@@ -109,6 +109,8 @@ struct SceneAppState<A: SceneApp> {
     /// `AppState` と同じ意味・同じ寿命（押下で入り、解放・キャンセル・離脱で消える）。
     pressed_id: Option<String>,
     focused_id: Option<String>,
+    /// take_focus_once から汲んだ「1 回だけ」の焦点要求 (#75 の 14)。
+    pending_focus_once: Option<String>,
     /// Last cursor we asked winit to display, to dedup `set_cursor`. Mirrors
     /// the field of the same name in the declarative `AppState`.
     last_cursor: Option<sabitori_core::Cursor>,
@@ -247,7 +249,15 @@ impl<A: SceneApp> SceneAppState<A> {
         // tick 後: アプリが主張するフォーカスを当てる (モーダルが開いた最初の
         // フレームで中の入力欄を掴む)。判断は declarative / Harness と同じ
         // 1 実装を通す (#28)。
-        if crate::runtime_shared::apply_desired_focus(&self.app, &mut self.focused_id) {
+        // 1 回だけの要求も declarative と同じ場所で汲む (#75 の 14)。
+        if let Some(once) = self.app.take_focus_once() {
+            self.pending_focus_once = Some(once);
+        }
+        if crate::runtime_shared::apply_desired_focus(
+            &self.app,
+            &mut self.focused_id,
+            &mut self.pending_focus_once,
+        ) {
             self.push_ui_capture();
         }
         crate::runtime_shared::advance_animators(
@@ -1349,6 +1359,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         hovered_id: None,
         pressed_id: None,
         focused_id: None,
+        pending_focus_once: None,
         last_cursor: None,
         last_ime_area: None, last_ime_allowed: true,
         modifiers: Modifiers::default(),
@@ -1401,6 +1412,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         hovered_id: None,
         pressed_id: None,
         focused_id: None,
+        pending_focus_once: None,
         last_cursor: None,
         last_ime_area: None, last_ime_allowed: true,
         modifiers: Modifiers::default(),

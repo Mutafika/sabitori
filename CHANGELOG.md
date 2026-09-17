@@ -17,6 +17,30 @@
 
 ### Added
 
+- **業務アプリで毎画面ぶつかっていた小粒の穴**
+  ([#75](https://github.com/Mutafika/sabitori/issues/75) のうち 5 件)。
+
+  - **`table_with(..)`** — 表のセルに自分で組んだ要素を置ける (3)。ステータスの
+    バッジ、行内のボタン、進捗バー。これが無くて色付きの文字で代用していた。
+    `Cell::text` は `Some` を返した場合も読み上げに使われる。
+  - **`TextInputState::take_changed()`** — 前に見てから本文が変わったか (5)。
+    検索欄のデバウンスに使う。**変更の回数を数えるのではなく中身を突き合わせて**
+    答えるので、打鍵・貼り付け・IME 確定・削除・`set_text` のどれでも取りこぼさない
+    (経路を 1 つ数え漏らすと「たまに検索が走らない」になる)。
+  - **`DeclarativeApp::take_focus_once()`** — 1 回だけ焦点を当てる (14)。
+    `desired_focus` は「主張し続ける」(モーダルから出さない) 意味なので、
+    「開いたら検索欄へ」は別の口にした。当てたあとユーザーが別の欄を押せば
+    そのまま移る。
+  - **`Harness::scroll_into_view(container, id)`** — 画面外のボタンまで送る (8)。
+  - **`Harness::run_until_idle()`** — 非同期の結果を待つ (9)。上の `Tasks` 参照。
+  - `polyline` が `sabitori::*` から使えるようになった (10)。`arc` は元から
+    出ていて、polyline だけ落ちていた。
+
+  あわせて `table` の doc に、**大きさを書かないと中身ごと消える**ことを
+  書いた (`table(..).w_full().h_full()`)。伸縮列は親の幅から余りを取り、本体は
+  `flex_1` で高さを取るので、大きさが中身なりの入れ物では両方 0 になる。
+  v0.11.2 でも同じ挙動 (回帰ではない)。
+
 - **業務 API を叩ける HTTP `sabitori_net::http`**
   ([#63](https://github.com/Mutafika/sabitori/issues/63))。これまで
   `fetch_bytes(url)` は **GET でバイト列を取るだけ**で、メソッド・ヘッダ・

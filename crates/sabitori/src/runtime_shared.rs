@@ -139,10 +139,21 @@ pub(crate) fn ui_capture(
 /// つまり `desired_focus` を使うアプリは、 **テストすると必ず
 /// 「フォーカスが入らない」ように見える**。 実機では動くのに。 #19 で
 /// `advance` を括り出したのと同じ穴が、 1 行下に残っていた形。
+/// アプリの焦点の主張を当てる。
+///
+/// `once` は [`DeclarativeApp::take_focus_once`] で汲んだ「1 回だけ」の要求。
 pub(crate) fn apply_desired_focus<A: DeclarativeApp>(
     app: &A,
     focused_id: &mut Option<String>,
+    last_desired: &mut Option<String>,
 ) -> bool {
+    // **1 回だけの要求が先。** こちらは「開いたら入れる」で、`desired_focus`
+    // は「開いている間は出さない」。意味が違うので別の口にしてある
+    // ([#75](https://github.com/Mutafika/sabitori/issues/75) の 14)。
+    if let Some(once) = last_desired.take() {
+        *focused_id = Some(once);
+        return true;
+    }
     let Some(desired) = app.desired_focus() else {
         return false;
     };
