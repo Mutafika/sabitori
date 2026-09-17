@@ -835,8 +835,15 @@ fn emit_commands(
     let no_select = parent_no_select || element.no_select;
     let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
 
-    // Skip invisible elements
-    if w <= 0.0 || h <= 0.0 {
+    // Skip invisible elements.
+    //
+    // `polyline()` だけは例外。形を決めているのは点であって箱ではないので、
+    // 箱が 0 でも描くものがある。`flex_col` の中に置くと高さは中身なり = 0 に
+    // なるため、ここで飛ばすと**明示的に大きさを書かない限り 1 本も描かれない**
+    // (panic もログも無い)。`arc()` は半径を箱から出すので例外にしない —
+    // 0 の箱なら本当に描くものが無い。
+    let draws_without_a_box = matches!(element.kind, ElementKind::Polyline(_));
+    if (w <= 0.0 || h <= 0.0) && !draws_without_a_box {
         // A zero-sized CLIPPING container (overflow Hidden/Scroll) shows
         // nothing: cull the entire subtree. Recursing here would emit the
         // children UNCLIPPED — taffy still lays them out at their natural
@@ -2349,6 +2356,48 @@ mod tests {
         assert_eq!(d.rect.origin.x, 0.0);
         assert_eq!(d.rect.size.width, 120.0);
         assert_eq!(d.corner_radii.top_left, 8.0);
+    }
+
+/// **`polyline()` が、大きさを書かなくても描かれること。**
+    ///
+    /// 形を決めているのは点であって箱ではないのに、箱が 0 の要素は描画ごと
+    /// 飛ばされていた。`flex_col` の中に置けば高さは中身なり = 0 になるので、
+    /// 「明示的に w/h を書いた人だけ線が出る」状態で、panic もログも無い。
+    #[test]
+    fn a_polyline_draws_without_an_explicit_box() {
+        use crate::element::*;
+        let chart = |line: Element| {
+            div()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .flex_col()
+                .child(div().id("chart").w(Px(300.0)).h(Px(120.0)).child(line))
+        };
+        let line = || {
+            polyline()
+                .points(vec![(0.0, 100.0), (80.0, 20.0), (160.0, 90.0)])
+                .stroke_width(3.0)
+                .stroke_color(crate::Color::WHITE)
+        };
+
+        for (label, tree) in [
+            ("大きさ無し", chart(line())),
+            ("大きさあり", chart(line().w_full().h_full())),
+        ] {
+            let r = build_tree(&tree, 400.0, 300.0);
+            let drawn: Vec<&PolylineDraw> = r
+                .render_list
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    RenderCommand::Polyline(p) => Some(p),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(drawn.len(), 1, "{label}: 線が描かれていない");
+            // 点は要素の箱が原点。chart は (0, 0) 始まり。
+            assert_eq!(drawn[0].points[0], Point::new(0.0, 100.0), "{label}");
+        }
     }
 
     /// CSS のピル (`rounded_px(999.0)`) は、半径が箱の半分に丸められて描かれる。

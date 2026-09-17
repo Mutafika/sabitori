@@ -76,6 +76,14 @@
 
 ### Fixed
 
+- **`polyline()` が、大きさを書かないと 1 本も描かれなかった。**
+  形を決めているのは点であって箱ではないのに、箱が 0 の要素は描画ごと
+  飛ばされていた。`flex_col` の中に置けば高さは中身なり = 0 になるので、
+  「明示的に `w`/`h` を書いた人だけ線が出る」状態で、panic もログも無い。
+  `polyline()` だけ例外にした（`arc()` は半径を箱から出すので据え置き）。
+  [#66](https://github.com/Mutafika/sabitori/issues/66) の「web で線が出ない」を
+  headless Chromium で追っていて見つかったもの。
+
 - **padding のあるカードが縦に膨らむ / grid の 2 段目が 1 段目の高さになる**
   ([#60](https://github.com/Mutafika/sabitori/issues/60))。padding 32 の
   ログインカードの下に 49px の空白が出て、エラー表示が 1 個増えるたびに 31px
