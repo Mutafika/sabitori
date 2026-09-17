@@ -480,6 +480,10 @@ pub enum Role {
     TextInput,
     /// 複数行のテキスト入力。
     TextArea,
+    /// 伏字のテキスト入力 (パスワード欄)。支援技術には「中身を読み上げては
+    /// いけない欄」として伝わる (ARIA の `textbox` + `aria-hidden` 相当ではなく、
+    /// accesskit の `PasswordInput`)。
+    Password,
     /// on/off の切り替え。
     Checkbox,
     /// 排他選択の 1 つ。

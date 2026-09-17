@@ -17,6 +17,25 @@
 
 ### Added
 
+- **パスワード欄 `TextInputState::new_secure(placeholder)`**
+  ([#61](https://github.com/Mutafika/sabitori/issues/61))。ログイン画面の
+  パスワードが平文で見えていた（`mask` / `password` / `secure` はどこにも
+  無かった）。業務アプリは最初の画面がログインなので、必ずここで止まる。
+
+  ```rust
+  password: TextInputState::new_secure("パスワード"),
+  // view() は今までどおり
+  text_input(ctx, "password", &self.password, &style)
+  ```
+
+  表示は `●` × **文字数**（バイト数ではない — 長さが漏れる）。キャレットも
+  選択範囲も伏字に対して測るので、途中を押せばそこに立つ。あわせて**平文が
+  外へ出る道を閉じた**: コピー / 切り取りが効かない（貼り付けは通る）、
+  焦点があるあいだ IME を切る（変換中の平文が preedit として欄に出るため）、
+  単語移動 (⌥← / ⌥⌫) が先頭 / 末尾に潰れる（押した回数と止まった桁から
+  語の区切りが読めるため）。支援技術には新しい `Role::Password` で伝わる。
+  `set_secure(false)` で平文に戻せる（「パスワードを表示」トグル）。
+
 - **`Element::disabled(bool)` / `Element::disabled_style(..)`**
   ([#62](https://github.com/Mutafika/sabitori/issues/62))。送信中の二重押しを
   止める手段が、これまでアプリ任せだった（`button()` にも `div().click(..)` にも

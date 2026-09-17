@@ -1908,7 +1908,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Enable/disable the platform IME per app policy (deduped). Disabling
         // cancels an in-flight composition, so a dialog closing mid-composition
         // doesn't leave an orphaned candidate window.
-        let ime_allowed = self.app.ime_allowed();
+        // 伏字の欄に焦点があるあいだは IME を切る。変換中の文字列は preedit と
+        // して**平文のまま**欄に出るので、伏字の意味が無くなる (#61)。
+        let ime_allowed = self.app.ime_allowed() && !self.focused_field_is_secure();
         if ime_allowed != self.last_ime_allowed {
             self.last_ime_allowed = ime_allowed;
             if let Some(w) = self.window.as_ref() {
@@ -2683,6 +2685,16 @@ impl<A: DeclarativeApp> AppState<A> {
             .and_then(|(_, t)| t.as_any().downcast_ref::<TextInputState>())
     }
 
+    /// フォーカス中の欄が伏字 (パスワード) か。
+    ///
+    /// IME を止めるかの判定に使う。焦点が欄に無ければ `false`。
+    fn focused_field_is_secure(&self) -> bool {
+        self.focused_id
+            .as_deref()
+            .and_then(|id| self.managed_text_field(id))
+            .is_some_and(|f| f.is_secure())
+    }
+
     /// フォーカス中の要素が登録済みなら、 そこへイベントを流す。 消費したら `true`。
     ///
     /// **アプリの `on_focused_input` より先**に見る。 登録されている欄は
@@ -3078,6 +3090,13 @@ impl<A: DeclarativeApp> AppState<A> {
             .and_then(|id| self.managed_text_field(&id).cloned());
         match field {
             Some(field) => {
+                // 伏字の欄からは、コピーも切り取りもさせない。画面が ● でも
+                // クリップボードへ出るのは平文なので、ここが空いていると
+                // 「隠したつもりの値が ⌘C で出る」ことになる (#61)。
+                // 貼り付けは別経路なので通る。
+                if field.is_secure() {
+                    return;
+                }
                 // 切り出しは欄の中でやる — 選択範囲を持っているのは欄なので、
                 // char 境界の責任をここに持ち込まない。
                 let Some(text) = field.selected_text().filter(|t| !t.is_empty()) else {
@@ -5150,6 +5169,125 @@ mod clipboard_tests {
 
         assert_eq!(h.app().name.text(), "abcd", "書けなかったのだから消さない");
         crate::clipboard::test_set_writable(true);
+    }
+
+    // -----------------------------------------------------------------
+    // 伏字の欄 (#61)
+    // -----------------------------------------------------------------
+
+    struct SecretForm {
+        password: TextInputState,
+    }
+
+    impl DeclarativeApp for SecretForm {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            sabitori_core::div()
+                .flex_col()
+                .w_full()
+                .h_full()
+                .child(text_input(ctx, "password", &self.password, &Form::style()))
+        }
+    }
+
+    fn secret_field() -> Harness<SecretForm> {
+        crate::clipboard::test_clear();
+        let mut h = Harness::new(
+            SecretForm { password: TextInputState::new_secure("パスワード") },
+            400.0,
+            200.0,
+        );
+        h.frame();
+        h.click("password");
+        h.text("hunter2");
+        h.key(Key::A, primary()); // 全選択
+        h
+    }
+
+    /// **⌘C で平文がクリップボードへ出ない。** 画面が ● でも、コピーできて
+    /// しまえば隠した意味が無い。
+    #[test]
+    fn a_secure_field_does_not_copy_its_plaintext() {
+        let mut h = secret_field();
+        // 「触っていない」ことを見たいので、目印を入れてから押す。
+        crate::clipboard::write_text("前に入れたもの");
+
+        h.key(Key::C, primary());
+
+        assert_eq!(
+            crate::clipboard::read_text().as_deref(),
+            Some("前に入れたもの"),
+            "クリップボードは触られていないこと (空文字で潰すのも駄目)"
+        );
+        assert_eq!(h.app().password.text(), "hunter2");
+    }
+
+    /// ⌘X も同じ。しかも**本文を消してもいけない** — 「切り取ったのに
+    /// どこにも残っていない」が一番たちが悪い (issue #33 と同じ形)。
+    #[test]
+    fn a_secure_field_does_not_cut_either() {
+        let mut h = secret_field();
+
+        h.key(Key::X, primary());
+
+        assert_eq!(crate::clipboard::read_text(), None);
+        assert_eq!(h.app().password.text(), "hunter2", "消してもいない");
+    }
+
+    /// 貼り付けは通る。パスワード管理ソフトから貼れないと実用にならない。
+    #[test]
+    fn a_secure_field_still_accepts_paste() {
+        crate::clipboard::test_clear();
+        crate::clipboard::write_text("s3cret");
+        let mut h = Harness::new(
+            SecretForm { password: TextInputState::new_secure("パスワード") },
+            400.0,
+            200.0,
+        );
+        h.frame();
+        h.click("password");
+
+        h.key(Key::V, primary());
+
+        assert_eq!(h.app().password.text(), "s3cret");
+    }
+
+    /// 伏字の欄に焦点があるあいだ、プラットフォームの IME を止める。
+    /// 変換中の文字列は preedit として**平文のまま**欄に出るため。
+    #[test]
+    fn the_ime_is_off_while_a_secure_field_has_focus() {
+        let mut h = secret_field();
+        assert!(h.state.focused_field_is_secure());
+
+        // 焦点を外せば戻る。
+        h.click("password");
+        h.state.focused_id = None;
+        assert!(!h.state.focused_field_is_secure());
+    }
+
+    /// 伏字の欄の**途中を押したら、そこにキャレットが立つ**こと。
+    ///
+    /// 表示は ● の並びで、本文とバイト位置が一致しない。測った桁を本文へ
+    /// 戻し損ねると、押した所と違う場所に文字が入る (アプリ側の回避策では
+    /// 「キャレットが常に末尾」になっていた)。
+    #[test]
+    fn clicking_inside_a_secure_field_lands_on_the_right_character() {
+        let mut h = Harness::new(
+            SecretForm { password: TextInputState::new_secure("パスワード") },
+            400.0,
+            200.0,
+        );
+        h.frame();
+        h.click("password");
+        h.text("hunter2");
+        h.frame();
+
+        // StubMeasure は 1 文字 = font_size * 0.5 = 7px。padding は 8px。
+        let rect = h.rect_of("password").expect("password");
+        h.click_at(rect.origin.x + 8.0 + 7.0 * 3.0 + 1.0, rect.center().y);
+        h.frame();
+
+        h.text("X");
+        assert_eq!(h.app().password.text(), "hunXter2");
     }
 
     /// 選択が無ければクリップボードは書き換えない。 「⌘C を押したら手元の

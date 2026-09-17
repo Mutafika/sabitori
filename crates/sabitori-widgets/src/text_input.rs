@@ -46,6 +46,14 @@ pub struct TextInputInner {
     /// 立つと Enter が改行になり、 貼り付けが改行を保ち、 ↑↓ と Home/End が
     /// **視覚行**で動くようになる。
     pub multiline: bool,
+    /// 伏字の欄か (パスワード)。 [`TextInputState::new_secure`] が立てる。
+    ///
+    /// 立つと、 中身は [`MASK_CHAR`] × 文字数で表示され、 キャレットも選択も
+    /// その伏字に対して測られる。 あわせて**平文が外へ出る道を閉じる**:
+    /// コピー / 切り取りができず、 IME が切れ (変換中の平文が preedit として
+    /// 見えるため)、 単語移動が先頭 / 末尾に潰れる (単語境界は語の長さを漏らす)。
+    /// 貼り付けは通る。
+    pub secure: bool,
     /// 直近の [`text_input`] / [`text_area`] が実測したキャレット位置。
     /// 欄の内側 (padding の内側) が原点。
     pub caret: CaretPos,
@@ -167,6 +175,37 @@ fn next_word_boundary(text: &str, i: usize) -> usize {
     i
 }
 
+/// 伏字に使う文字。 幅の広い `●` は等幅でなくても桁が揃って読みやすい。
+pub const MASK_CHAR: char = '\u{25CF}'; // ●
+
+/// 伏字の表示文字列。 **文字数**ぶん並べる (バイト数ではない — 「ほげ」が
+/// 6 個の ● になると長さが漏れる)。
+fn masked(text: &str) -> String {
+    let mut out = String::with_capacity(text.chars().count() * MASK_CHAR.len_utf8());
+    for _ in text.chars() {
+        out.push(MASK_CHAR);
+    }
+    out
+}
+
+/// 本文のバイト位置 → 伏字表示のバイト位置。
+///
+/// 伏字は 1 文字 = `MASK_CHAR.len_utf8()` バイトの固定長なので、 「手前に何文字
+/// あるか」を数えて掛ければよい。
+fn mask_offset(text: &str, byte: usize) -> usize {
+    let byte = floor_boundary(text, byte.min(text.len()));
+    text[..byte].chars().count() * MASK_CHAR.len_utf8()
+}
+
+/// 伏字表示のバイト位置 → 本文のバイト位置 (`mask_offset` の逆)。
+fn unmask_offset(text: &str, byte: usize) -> usize {
+    let chars = byte / MASK_CHAR.len_utf8();
+    text.char_indices()
+        .nth(chars)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
+}
+
 /// `i` を char 境界まで切り下げる。 バイト位置を扱う計算の保険。
 fn floor_boundary(text: &str, mut i: usize) -> usize {
     while i > 0 && !text.is_char_boundary(i) {
@@ -187,6 +226,7 @@ impl TextInputInner {
             blink: 0.0,
             caret_offset: (0.0, 0.0),
             multiline: false,
+            secure: false,
             caret: CaretPos::default(),
             pending: None,
             desired_x: None,
@@ -266,11 +306,19 @@ impl TextInputInner {
 
     /// キャレットから見て前の単語の先頭 (⌥← / Ctrl+← の行き先)。
     pub fn prev_word(&self) -> usize {
+        if self.secure {
+            // 伏字で単語単位に動くと、 押した回数と止まった桁から語の区切りが
+            // 読める。 一般的な伏字欄と同じく先頭 / 末尾へ潰す。
+            return 0;
+        }
         prev_word_boundary(&self.text, self.cursor_pos)
     }
 
     /// キャレットから見て次の単語の末尾 (⌥→ / Ctrl+→ の行き先)。
     pub fn next_word(&self) -> usize {
+        if self.secure {
+            return self.text.len();
+        }
         next_word_boundary(&self.text, self.cursor_pos)
     }
 
@@ -316,6 +364,13 @@ impl TextInputInner {
     /// The preedit text is displayed with an underline at the cursor position
     /// but is **not** committed to the buffer yet.
     pub fn on_ime_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) {
+        if self.secure {
+            // 伏字の欄では変換中の平文をそのまま欄に出すことになるので、
+            // preedit は受けない。 ランタイムは欄に焦点があるあいだ IME 自体を
+            // 切るが、 web の橋渡し (#73) など別経路から届く可能性があるので
+            // ここでも閉じておく。 確定 (`on_ime_commit`) は通す。
+            return;
+        }
         self.preedit.text = text;
         self.preedit.cursor = cursor;
     }
@@ -723,6 +778,11 @@ impl TextInputInner {
     /// 変換中は preedit の中の編集位置を指す (IME が `cursor` を教えてくれない
     /// 場合は preedit の末尾)。 プレースホルダ表示中は 0。
     pub fn caret_byte_offset(&self) -> usize {
+        if self.secure {
+            // 伏字では preedit が立たない (IME を切っている) ので、 本文の
+            // カーソル位置をそのまま伏字の桁に直すだけ。
+            return mask_offset(&self.text, self.cursor_pos);
+        }
         if self.preedit.is_active() {
             let within = self
                 .preedit
@@ -741,6 +801,15 @@ impl TextInputInner {
 
     /// Text to display, including preedit composing text spliced in at cursor.
     pub fn display_text_with_preedit(&self) -> String {
+        if self.secure {
+            // 空欄は placeholder のまま — 「何を入れる欄か」は伏せる必要が無い
+            // (ブラウザの `<input type=password placeholder=..>` と同じ)。
+            return if self.text.is_empty() {
+                self.placeholder.clone()
+            } else {
+                masked(&self.text)
+            };
+        }
         if self.preedit.is_active() {
             let mut buf = String::with_capacity(self.text.len() + self.preedit.text.len());
             buf.push_str(&self.text[..self.cursor_pos]);
@@ -864,6 +933,60 @@ impl TextInputState {
         let s = Self::new(placeholder);
         s.set_text(text);
         s
+    }
+
+    /// 伏字の欄 (パスワード) を作る。
+    ///
+    /// ```ignore
+    /// struct App { password: TextInputState }
+    /// // App::default()
+    /// password: TextInputState::new_secure("パスワード"),
+    /// // view()
+    /// text_input(ctx, "password", &self.password, &style)
+    /// ```
+    ///
+    /// 表示は [`MASK_CHAR`] (`●`) × **文字数**。キャレットも選択範囲もその
+    /// 伏字に対して測るので、位置がずれない。あわせて平文が外へ出る道を閉じる:
+    ///
+    /// - **コピー / 切り取りができない** (⌘C / ⌘X で平文がクリップボードに
+    ///   出ない)。貼り付けは通る。
+    /// - **IME を切る** — 変換中の平文が preedit として欄に見えてしまうため。
+    ///   欄に焦点があるあいだ、ランタイムがプラットフォームの IME を止める。
+    /// - **単語移動 (⌥← / ⌥⌫ など) が先頭 / 末尾に潰れる** — 押した回数と
+    ///   止まった桁から語の区切りが読めるため。
+    /// - 支援技術には [`Role::Password`] として伝わる。
+    ///
+    /// [`Role::Password`]: sabitori_core::element::Role::Password
+    pub fn new_secure(placeholder: impl Into<String>) -> Self {
+        let s = Self::new(placeholder);
+        s.set_secure(true);
+        s
+    }
+
+    /// 伏字かどうかを切り替える (「パスワードを表示」のトグル)。
+    ///
+    /// 平文に戻した瞬間からコピーも IME も通るようになる — 表示できるなら
+    /// 隠す意味が無いので。
+    pub fn set_secure(&self, secure: bool) {
+        self.0.borrow_mut().secure = secure;
+    }
+
+    /// 伏字の欄か。
+    pub fn is_secure(&self) -> bool {
+        self.0.borrow().secure
+    }
+
+    /// 本文のバイト範囲を、 表示文字列のバイト範囲に直す。 伏字でなければ素通し。
+    /// 選択範囲を実フォントで測るのに使う。
+    pub fn to_display_range(&self, start: usize, end: usize) -> (usize, usize) {
+        let inner = self.0.borrow();
+        if !inner.secure {
+            return (start, end);
+        }
+        (
+            mask_offset(&inner.text, start),
+            mask_offset(&inner.text, end),
+        )
     }
 
     /// 中身を読む。
@@ -1116,7 +1239,19 @@ impl TextInputState {
             return;
         }
 
-        let cursor = self.0.borrow().cursor_pos;
+        // 伏字では `display` が ● の並びなので、 本文のバイト位置がそのままでは
+        // 使えない。 測る前に伏字の桁へ直し、 測った結果は本文へ戻す。
+        let secure = self.0.borrow().secure;
+        let to_display = |b: usize| {
+            let inner = self.0.borrow();
+            if secure { mask_offset(&inner.text, b) } else { b }
+        };
+        let from_display = |b: usize| {
+            let inner = self.0.borrow();
+            if secure { unmask_offset(&inner.text, b) } else { b }
+        };
+
+        let cursor = to_display(self.0.borrow().cursor_pos);
         let here = ctx.caret_pos(display, cursor, shape);
         let mid = here.line_height * 0.5;
 
@@ -1140,7 +1275,7 @@ impl TextInputState {
             PendingMove::ToPoint { x, y, select } => ((x - pad, y - pad), select, false, false),
         };
 
-        let target = ctx.offset_at(display, point, shape);
+        let target = from_display(ctx.offset_at(display, point, shape));
         let mut inner = self.0.borrow_mut();
         inner.desired_x = if remember_x { Some(keep_x) } else { None };
         if delete {
@@ -1364,7 +1499,14 @@ fn field(
     // ここで測る `display` には変換中の文字が割り込んでいる。 そのまま当てると
     // 無関係な場所が塗られる。 選択自体は残す — IME の確定時に
     // `delete_selection` で置き換わるのが正しい挙動なので。
-    let selection = if input.is_composing() { None } else { input.selection_range() };
+    // 選択範囲は本文のバイト位置。 伏字では `display` が ● の並びなので、
+    // 測る前に伏字の桁へ直す (直さないと、 マルチバイト文字を含む本文で
+    // 塗る場所がずれる)。
+    let selection = if input.is_composing() {
+        None
+    } else {
+        input.selection_range().map(|(a, b)| input.to_display_range(a, b))
+    };
     if let (Some(sel_color), Some(range)) = (style.selection, selection) {
         for r in ctx.range_rects(&display, range, shape) {
             layers.insert(
@@ -1402,7 +1544,12 @@ fn field(
         // 支援技術から「テキスト入力」として見えるように (issue #21)。
         // 名前は placeholder から取る — 空欄のときに何を入れる欄なのか
         // 分かるのは placeholder だけなので。
-        .role(sabitori_core::element::Role::TextInput)
+        // 伏字の欄は「中身を読み上げてはいけない欄」として伝える (#61)。
+        .role(if input.is_secure() {
+            sabitori_core::element::Role::Password
+        } else {
+            sabitori_core::element::Role::TextInput
+        })
         .label(input.placeholder())
         .w_full()
         .p_px(style.padding)
@@ -2057,5 +2204,116 @@ mod clipboard_tests {
         s.on_focused_input(&InputEvent::Paste { text: "X".into() });
         assert!(!s.preedit.is_active());
         assert_eq!(s.text, "X");
+    }
+}
+
+/// 伏字の欄 (#61)。
+///
+/// 業務アプリは最初の画面がログインなので、ここが無いと最初の画面で止まる。
+/// 大事なのは「● に見える」ことではなく、**平文が外へ出る道が全部閉じている**
+/// こと — 表示だけ伏せてコピーが通る欄は、隠しているつもりで隠せていない。
+#[cfg(test)]
+mod secure_tests {
+    use super::*;
+    use sabitori_input::{Key, Modifiers};
+
+    fn secure_with(text: &str) -> TextInputInner {
+        let mut s = TextInputInner::new("パスワード");
+        s.secure = true;
+        s.text = text.to_string();
+        s.cursor_pos = s.text.len();
+        s
+    }
+
+    /// 表示は ● × **文字数**。バイト数で並べると、「ほげ」が 6 個になって
+    /// 長さが漏れる。
+    #[test]
+    fn the_mask_counts_characters_not_bytes() {
+        let s = secure_with("あい1");
+        assert_eq!(s.display_text_with_preedit(), "●●●");
+        assert_eq!(s.text, "あい1", "本文はそのまま");
+    }
+
+    /// 空欄は placeholder のまま。何を入れる欄なのかは伏せる必要が無い
+    /// (ブラウザの `<input type=password placeholder=..>` と同じ)。
+    #[test]
+    fn an_empty_secure_field_still_shows_its_placeholder() {
+        let s = secure_with("");
+        assert_eq!(s.display_text_with_preedit(), "パスワード");
+    }
+
+    /// キャレットは**伏字の上の**位置を返す。本文のバイト位置をそのまま
+    /// 返すと、マルチバイト文字を含むパスワードでキャレットがずれる。
+    #[test]
+    fn the_caret_is_measured_on_the_mask() {
+        let mut s = secure_with("あい1");
+        s.cursor_pos = "あい".len(); // 本文では 6 バイト目
+        assert_eq!(s.caret_byte_offset(), 2 * MASK_CHAR.len_utf8(), "● 2 個ぶん");
+    }
+
+    /// 伏字↔本文のバイト位置は往復できる。クリックした桁を本文の位置に
+    /// 戻せないと、押した所と違う場所に文字が入る。
+    #[test]
+    fn offsets_round_trip_between_mask_and_text() {
+        let text = "あaい1";
+        for (i, _) in text.char_indices().chain([(text.len(), ' ')]) {
+            let there = mask_offset(text, i);
+            assert_eq!(unmask_offset(text, there), i, "byte {i}");
+        }
+    }
+
+    /// 単語移動は先頭 / 末尾に潰れる。⌥← を押した回数と止まった桁から
+    /// 語の区切りが読めてしまうため。
+    #[test]
+    fn word_motion_collapses_to_the_ends() {
+        let mut s = secure_with("hunter2 swordfish");
+        assert_eq!(s.prev_word(), 0);
+        s.cursor_pos = 0;
+        assert_eq!(s.next_word(), s.text.len());
+    }
+
+    /// ⌥⌫ は「1 語ぶん」ではなく先頭まで消す (同じ理由)。
+    #[test]
+    fn word_delete_clears_to_the_start() {
+        let mut s = secure_with("hunter2 swordfish");
+        let alt = Modifiers { alt: true, ..Default::default() };
+        assert!(s.on_key(Key::Backspace, alt));
+        assert_eq!(s.text, "");
+    }
+
+    /// 変換中の平文を欄に出さない。ランタイムは伏字の欄に焦点があるあいだ
+    /// IME 自体を切るが、web の橋渡し (#73) など別経路から届きうるので
+    /// 欄の側でも閉じる。確定は通す。
+    #[test]
+    fn composition_never_reaches_a_secure_field() {
+        let mut s = secure_with("");
+        s.on_ime_preedit("にほん".into(), None);
+        assert!(!s.preedit.is_active(), "変換中の平文が欄に出ている");
+        assert_eq!(s.display_text_with_preedit(), "パスワード");
+
+        s.on_ime_commit("日本");
+        assert_eq!(s.text, "日本", "確定した文字は入る");
+        assert_eq!(s.display_text_with_preedit(), "●●");
+    }
+
+    /// 平文に戻せば、伏字の制限も一緒に外れる (「パスワードを表示」トグル)。
+    #[test]
+    fn turning_the_mask_off_restores_normal_behaviour() {
+        let state = TextInputState::new_secure("パスワード");
+        state.set_text("hunter2");
+        assert_eq!(state.display_text_with_preedit(), "●●●●●●●");
+
+        state.set_secure(false);
+        assert_eq!(state.display_text_with_preedit(), "hunter2");
+        assert!(!state.is_secure());
+    }
+
+    /// 選択範囲も伏字の桁へ直る (直さないと塗る場所がずれる)。
+    #[test]
+    fn the_selection_is_mapped_onto_the_mask() {
+        let state = TextInputState::new_secure("パスワード");
+        state.set_text("あい1");
+        let m = MASK_CHAR.len_utf8();
+        assert_eq!(state.to_display_range(0, "あい".len()), (0, 2 * m));
     }
 }
