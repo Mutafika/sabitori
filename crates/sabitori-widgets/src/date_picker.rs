@@ -40,6 +40,33 @@ pub struct DatePickerStyle {
 }
 
 impl DatePickerStyle {
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// date_picker(ctx, "id", &state, &DatePickerStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            bg: theme.surface,
+            border: theme.border,
+            header_fg: theme.text_primary,
+            weekday_fg: theme.text_secondary,
+            day_fg: theme.text_primary,
+            muted_fg: theme.text_secondary,
+            selected_bg: theme.primary,
+            selected_fg: theme.on_primary(),
+            hover_bg: theme.hover_bg,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             bg: Color::from_hex("#22223a"),

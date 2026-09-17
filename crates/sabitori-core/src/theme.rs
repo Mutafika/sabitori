@@ -110,6 +110,53 @@ impl AppTheme {
             error: Color::from_hex("#ff5555"),
         }
     }
+
+    /// 中立的な明色テーマ。
+    ///
+    /// プリセットが暗色 5 種しか無く、業務画面 (予約管理・請求など) を書くと
+    /// 全フィールドを手で組むことになっていた
+    /// ([#65](https://github.com/Mutafika/sabitori/issues/65))。特定のブランドに
+    /// 寄せず、長時間見る業務画面で目が痛くならない彩度に留めてある。
+    ///
+    /// - `bg` は紙ではなく**薄いグレー**。真っ白な地に白いカードを置くと、
+    ///   境界が枠線頼みになって沈む。
+    /// - `surface` が白 = カード・入力欄。`elevated` も白で、影と枠で浮かせる。
+    pub fn light() -> Self {
+        Self {
+            bg: Color::from_hex("#f4f5f7"),
+            surface: Color::from_hex("#ffffff"),
+            elevated: Color::from_hex("#ffffff"),
+            border: Color::from_hex("#d7dbe0"),
+            primary: Color::from_hex("#2f6fed"),
+            text_primary: Color::from_hex("#1b1d21"),
+            text_secondary: Color::from_hex("#6b7280"),
+            hover_bg: Color::from_hex("#eef1f5"),
+            select_bg: Color::from_hex("#dce8fb"),
+            success: Color::from_hex("#1a7f37"),
+            warning: Color::from_hex("#b45309"),
+            error: Color::from_hex("#d13438"),
+        }
+    }
+
+    /// 地が暗いテーマか。
+    ///
+    /// ウィジェットの既定を組むときに、テーマ側に無い色 (選択中の文字色など) を
+    /// どちらへ倒すかの判断に使う。
+    pub fn is_dark(&self) -> bool {
+        self.bg.luminance() < 0.5
+    }
+
+    /// `primary` の上に置く文字の色。白か黒の読める方。
+    ///
+    /// `AppTheme` に「primary の上の色」は無いので、コントラストから決める。
+    /// 決め打ちで白にすると、明るい primary (黄緑など) のテーマで読めなくなる。
+    pub fn on_primary(&self) -> Color {
+        if self.primary.contrast_ratio(Color::WHITE) >= self.primary.contrast_ratio(Color::BLACK) {
+            Color::WHITE
+        } else {
+            Color::BLACK
+        }
+    }
 }
 
 impl Default for AppTheme {

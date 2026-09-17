@@ -1334,6 +1334,32 @@ impl TextInputStyle {
     /// **README が最初からこれを書いていたのに、 関数は存在しなかった。**
     /// `readme_examples.rs` が README を逐語で写さず自前に構築していたので、
     /// 「README のコードが通ること」を見ているつもりで通っていなかった。
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// text_input(ctx, "id", &state, &TextInputStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            bg: theme.surface,
+            border: theme.border,
+            text: theme.text_primary,
+            placeholder: theme.text_secondary,
+            focus_border: Some(theme.primary),
+            preedit: Some(theme.select_bg),
+            selection: Some(theme.select_bg),
+            caret: None,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             bg: Color::from_hex("#202020"),

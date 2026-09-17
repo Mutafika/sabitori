@@ -274,6 +274,8 @@ Element-producing entry points come in four shapes today. **The ones you reach f
 | Methods on the state, plus click interpretation | `self.select.trigger(&style, ctx.hovered.as_deref())` with `menu_inline(..)`, then `handle_click(id)` | `DropdownState`, `DatePickerState`, `ColorPickerState`, `MenuBarState` |
 | Builds an overlay the app ticks itself | `modal.to_overlay(..)` | `Modal`, `ToastManager`, `ContextMenuState` |
 
+Besides `default_dark()`, every style type above has **`from_theme(&ctx.theme)`**, so a light business UI (`AppTheme::light()`) does not mean re-assigning colors per widget.
+
 ```rust
 div().flex_col().children([
     text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),

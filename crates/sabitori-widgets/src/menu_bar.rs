@@ -90,6 +90,34 @@ pub struct MenuBarStyle {
 }
 
 impl MenuBarStyle {
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// menu_bar(ctx, "id", &state, &MenuBarStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            bar_bg: theme.surface,
+            label_fg: theme.text_primary,
+            label_hover_bg: theme.hover_bg,
+            label_open_bg: theme.select_bg,
+            menu_bg: theme.elevated,
+            menu_border: theme.border,
+            item_fg: theme.text_primary,
+            item_disabled_fg: theme.text_secondary,
+            shortcut_fg: theme.text_secondary,
+            item_hover_bg: theme.hover_bg,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             bar_bg: Color::from_hex("#1a1a2e"),

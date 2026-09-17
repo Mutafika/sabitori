@@ -144,6 +144,27 @@ pub struct SplitPaneStyle {
 }
 
 impl SplitPaneStyle {
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// split_pane(ctx, "id", &state, &SplitPaneStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            divider: theme.border,
+            divider_hover: theme.primary,
+            divider_active: theme.primary,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             divider: Color::from_hex("#2a2a44"),

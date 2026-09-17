@@ -167,6 +167,28 @@ pub struct TreeViewStyle {
 }
 
 impl TreeViewStyle {
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// tree_view(ctx, "id", &state, &TreeViewStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            fg: theme.text_primary,
+            fg_selected: theme.text_primary,
+            bg_hover: theme.hover_bg,
+            bg_selected: theme.select_bg,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             fg: Color::from_hex("#c8c8dc"),

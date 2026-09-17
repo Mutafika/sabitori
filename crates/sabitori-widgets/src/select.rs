@@ -56,6 +56,32 @@ pub struct DropdownStyle {
 }
 
 impl DropdownStyle {
+    /// [`AppTheme`] から組む。
+    ///
+    /// **色はテーマから、寸法は `default_dark()` と同じ**。テーマを差し替えても
+    /// ウィジェットが追従しないのが [#65] の中身で、既定が全部「いつもの紫」に
+    /// なっていた。`ctx.theme` をそのまま渡せる:
+    ///
+    /// ```ignore
+    /// dropdown(ctx, "id", &state, &DropdownStyle::from_theme(&ctx.theme))
+    /// ```
+    ///
+    /// [`AppTheme`]: sabitori_core::AppTheme
+    /// [#65]: https://github.com/Mutafika/sabitori/issues/65
+    pub fn from_theme(theme: &sabitori_core::AppTheme) -> Self {
+        Self {
+            bg: theme.surface,
+            bg_hover: theme.hover_bg,
+            fg: theme.text_primary,
+            fg_selected: theme.text_primary,
+            border_color: theme.border,
+            border_active: theme.primary,
+            menu_bg: theme.elevated,
+            menu_item_hover: theme.hover_bg,
+            ..Self::default_dark()
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             bg: Color::from_hex("#1e1e2e"),

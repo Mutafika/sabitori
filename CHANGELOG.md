@@ -15,6 +15,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`AppTheme::light()` と、全ウィジェット style の `from_theme(&theme)`**
+  ([#65](https://github.com/Mutafika/sabitori/issues/65))。プリセットが暗色
+  5 種しか無く、業務画面 (予約管理・請求) を書くと `AppTheme` の全フィールドを
+  手で組むことになっていた。さらに **テーマを差し替えてもウィジェットは追従
+  しなかった** — `default_dark()` を持つ 9 型がどれも `AppTheme` と繋がって
+  おらず、何も指定しないアプリは全部「いつもの紫」になっていた。
+
+  ```rust
+  text_input(ctx, "name", &self.name, &TextInputStyle::from_theme(&ctx.theme))
+  ```
+
+  色はテーマから、寸法は `default_dark()` と同じ。9 型すべてに入れてあり、
+  **「1 型だけ忘れる」をテストで縛った**（`default_dark` があって `from_theme`
+  が無い型を、ソースを読んで落とす）。あわせて `AppTheme::is_dark()` と
+  `on_primary()`（primary の上に置く文字の色を、コントラストから白か黒で選ぶ）。
+  既定 6 プリセット全部で、本文が地に対して WCAG AA (4.5:1) を満たすことも
+  テストで見ている。`default_dark()` は残してあるので既存アプリは無変更。
+
+
 ## [0.12.0] - 2026-09-17
 
 **業務アプリを実際に書いて出てきた穴をまとめて塞いだ版。web で日本語が打てて、

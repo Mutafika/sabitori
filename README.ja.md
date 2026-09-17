@@ -274,6 +274,8 @@ Element を返す入口の形は、今のところ 4 通りあります。**一�
 | 状態のメソッド + クリックの解釈 | `self.select.trigger(&style, ctx.hovered.as_deref())` と `menu_inline(..)`、押されたら `handle_click(id)` | `DropdownState` / `DatePickerState` / `ColorPickerState` / `MenuBarState` |
 | overlay を作ってアプリが tick を回す | `modal.to_overlay(..)` | `Modal` / `ToastManager` / `ContextMenuState` |
 
+スタイルは `default_dark()` のほかに **`from_theme(&ctx.theme)`** があります（上の表の style 型はすべて対応）。`AppTheme::light()` を含むテーマをそのまま渡せるので、明るい業務画面でも部品ごとに色を配り直す必要はありません。
+
 ```rust
 div().flex_col().children([
     text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),
