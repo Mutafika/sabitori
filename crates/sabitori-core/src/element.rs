@@ -704,6 +704,10 @@ pub struct ElementStyle {
     /// Clickable/hoverable byte ranges in a text element (in-body links).
     /// `.link_ranges(..)`.
     pub link_ranges: Option<Vec<LinkRange>>,
+    /// 文字ごとの前景色 ([`Element::color_spans`])。`None` = 単色。
+    ///
+    /// `Arc` なのは、毎フレーム複製しないため (#80 と同じ理由)。
+    pub color_spans: Option<std::sync::Arc<[ColorSpan]>>,
     /// 横スクロールしても置いていかれない ([`Element::sticky_x`])。
     pub sticky_x: bool,
     /// 縦スクロールしても置いていかれない ([`Element::sticky_y`])。
@@ -714,6 +718,41 @@ pub struct ElementStyle {
     /// 座標を知らなくてよい。`Box` なのは、ほとんどの要素で `None` のまま
     /// `ElementStyle` を太らせないため。
     pub anchor: Option<Box<Anchor>>,
+}
+
+/// **本文のバイト範囲に別の前景色を塗る指定** ([`Element::color_spans`])。
+///
+/// 文字ごとに色が変わる格子 (端末・表・コード・差分) を、**1 行 1 要素**で
+/// 書くためのもの。これが無かったころは 1 文字 1 要素にするしかなく、
+/// 80×24 の端末で 1920 要素/フレームになっていた
+/// ([#78](https://github.com/Mutafika/sabitori/issues/78))。
+///
+/// 範囲は `text()` に渡した文字列のバイト位置。折り返しても切り詰められても
+/// 意味は変わらない (範囲外になった分は塗られないだけ)。重なったときは
+/// **先に書いたほうが勝つ** (`HighlightSpec` と同じ)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorSpan {
+    pub start: usize,
+    pub end: usize,
+    pub color: Color,
+}
+
+impl From<(std::ops::Range<usize>, Color)> for ColorSpan {
+    fn from((range, color): (std::ops::Range<usize>, Color)) -> Self {
+        Self { start: range.start, end: range.end, color }
+    }
+}
+
+impl From<&(std::ops::Range<usize>, Color)> for ColorSpan {
+    fn from((range, color): &(std::ops::Range<usize>, Color)) -> Self {
+        Self { start: range.start, end: range.end, color: *color }
+    }
+}
+
+impl From<&ColorSpan> for ColorSpan {
+    fn from(s: &ColorSpan) -> Self {
+        *s
+    }
 }
 
 /// 浮かせる要素を**別の要素の箱に貼り付ける**指定 ([`Element::anchor_to`])。
@@ -819,6 +858,7 @@ impl Default for ElementStyle {
             scrollbar_thumb: None,
             highlight: Vec::new(),
             link_ranges: None,
+            color_spans: None,
             sticky_x: false,
             sticky_y: false,
             anchor: None,
@@ -2224,6 +2264,41 @@ impl Element {
     /// Set position to absolute.
     pub fn absolute(mut self) -> Self {
         self.style.position = Position::Absolute;
+        self
+    }
+
+    /// **文字ごとに前景色を変える** ([#78])。
+    ///
+    /// 範囲は本文のバイト位置。当たらなかった文字は `color()` の色のまま。
+    /// **1 行 1 要素のまま**色が付くので、端末・表・コード・差分のような
+    /// 「1 行の中で色が何度も変わる」画面が要素数で潰れない (80×24 の端末で
+    /// 1920 要素 → 24 要素)。
+    ///
+    /// ```ignore
+    /// text("ls -la src/")
+    ///     .color(fg)
+    ///     .color_spans([(0..2, cyan), (3..6, dim), (7..11, blue)])
+    /// ```
+    ///
+    /// シェーピングのキャッシュは色を鍵に含めないので、**色を変えても組み直さない**。
+    /// 作り置きした span をそのまま渡すなら [`Element::color_spans_shared`]。
+    ///
+    /// [#78]: https://github.com/Mutafika/sabitori/issues/78
+    pub fn color_spans(mut self, spans: impl IntoIterator<Item = impl Into<ColorSpan>>) -> Self {
+        let spans: Vec<ColorSpan> = spans.into_iter().map(Into::into).collect();
+        self.style.color_spans = if spans.is_empty() {
+            None
+        } else {
+            Some(std::sync::Arc::from(spans.as_slice()))
+        };
+        self
+    }
+
+    /// [`Element::color_spans`] の、**作り置きをそのまま渡す**版。複製しない。
+    ///
+    /// 端末のように行ごとの色が前フレームと変わらないことが多い画面で使う。
+    pub fn color_spans_shared(mut self, spans: std::sync::Arc<[ColorSpan]>) -> Self {
+        self.style.color_spans = (!spans.is_empty()).then_some(spans);
         self
     }
 

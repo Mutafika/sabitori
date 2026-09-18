@@ -193,6 +193,15 @@ pub struct TextRenderer {
 /// for it and it survived the `max_width` clip — so `hits.len() >= glyphs.len()`.
 struct ShapedRun {
     glyphs: Vec<GlyphInstance>,
+    /// `glyphs[i]` が出た本文のバイト範囲。**`glyphs` と添字が揃っている**
+    /// (`hits` は揃っていない — あちらはアトラスに入らなかった分も持つ)。
+    ///
+    /// 前景色のスパン ([#78]) を引くのに要る。シェーピングの結果は色を含まない
+    /// ので、キャッシュはこれまでどおり 1 本で足りる — 色は毎回この範囲から
+    /// 塗り分けるだけ。
+    ///
+    /// [#78]: https://github.com/Mutafika/sabitori/issues/78
+    glyph_bytes: Vec<(u32, u32)>,
     hits: Vec<GlyphHit>,
 }
 
@@ -433,6 +442,7 @@ fn shape_run(
     buffer.shape_until_scroll(ctx.font_system, false);
 
     let mut glyphs: Vec<GlyphInstance> = Vec::new();
+    let mut glyph_bytes: Vec<(u32, u32)> = Vec::new();
     let mut hits: Vec<GlyphHit> = Vec::new();
 
     for (line_idx, run) in buffer.layout_runs().enumerate() {
@@ -492,6 +502,7 @@ fn shape_run(
                     continue;
                 }
 
+                glyph_bytes.push((glyph.start as u32, glyph.end as u32));
                 glyphs.push(GlyphInstance {
                     // Origin-relative: the caller re-adds its own (x, y).
                     position: [gx - x, gy - y],
@@ -515,7 +526,33 @@ fn shape_run(
         }
     }
 
-    ShapedRun { glyphs, hits }
+    ShapedRun { glyphs, glyph_bytes, hits }
+}
+
+/// 前景色のスパン — 本文のバイト範囲に別の色を塗る ([#78])。
+///
+/// 範囲は**本文のバイト**で、`text()` に渡した文字列に対する位置。折り返しても
+/// 切り詰められても、範囲の意味は変わらない (範囲外になった分は塗られないだけ)。
+///
+/// [#78]: https://github.com/Mutafika/sabitori/issues/78
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorSpan {
+    pub start: usize,
+    pub end: usize,
+    /// linear RGBA。`Color::to_array()` の形。
+    pub color: [f32; 4],
+}
+
+/// glyph のバイト範囲に当たるスパンの色を返す。無ければ `None`。
+///
+/// **glyph の開始バイトが入っている最初のスパン**を採る。スパンが重なって
+/// いるときは先に書いたほうが勝つ (`HighlightSpec` と同じ規則)。
+fn span_color(spans: &[ColorSpan], start: u32, end: u32) -> Option<[f32; 4]> {
+    let (s, e) = (start as usize, end as usize);
+    spans
+        .iter()
+        .find(|sp| sp.start <= s && (s < sp.end || (s == e && s <= sp.end)))
+        .map(|sp| sp.color)
 }
 
 impl TextRenderer {
@@ -833,6 +870,35 @@ impl TextRenderer {
         max_lines: Option<u32>,
         typo: Typography,
     ) -> Vec<GlyphInstance> {
+        self.prepare_text_spans(
+            text, x, y, font_size, color, &[], max_width, bold, monospace, family_override,
+            max_lines, typo,
+        )
+    }
+
+    /// [`TextRenderer::prepare_text_styled`] の**文字ごとに色を変えられる**版
+    /// ([#78](https://github.com/Mutafika/sabitori/issues/78))。
+    ///
+    /// `spans` は本文のバイト範囲と色。当たらなかった glyph は `color` で塗る。
+    /// **シェーピングのキャッシュは共有する** — 鍵に色は入っていないので、
+    /// 同じ文字列なら色違いでも 1 回しか組まない。端末や差分表示のように
+    /// 「1 行の中で色が何度も変わる」画面が、1 行 1 要素で書ける。
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_spans(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: Color,
+        spans: &[ColorSpan],
+        max_width: Option<f32>,
+        bold: bool,
+        monospace: bool,
+        family_override: Option<&str>,
+        max_lines: Option<u32>,
+        typo: Typography,
+    ) -> Vec<GlyphInstance> {
         // Snap size *before* it feeds the cache key, the shaped Buffer, and
         // cosmic-text's physical/atlas key — a continuously-drifting size
         // otherwise misses every cache each frame (reshape + re-raster + full
@@ -859,10 +925,14 @@ impl TextRenderer {
         let color_arr = color.to_array();
         let run = &self.glyph_cache[&key];
         let mut out = Vec::with_capacity(run.glyphs.len());
-        for g in &run.glyphs {
+        for (i, g) in run.glyphs.iter().enumerate() {
             let mut gi = *g;
             gi.position = [g.position[0] + x, g.position[1] + y];
-            gi.color = color_arr;
+            // 既定は単色。スパンに当たった glyph だけ塗り替える (#78)。
+            gi.color = match run.glyph_bytes.get(i) {
+                Some(&(s, e)) => span_color(spans, s, e).unwrap_or(color_arr),
+                None => color_arr,
+            };
             out.push(gi);
         }
         out
@@ -883,6 +953,30 @@ impl TextRenderer {
         y: f32,
         font_size: f32,
         color: Color,
+        max_width: Option<f32>,
+        bold: bool,
+        monospace: bool,
+        family_override: Option<&str>,
+        max_lines: Option<u32>,
+        typo: Typography,
+    ) -> (Vec<GlyphInstance>, Vec<GlyphHit>) {
+        self.prepare_text_with_hits_spans(
+            text, x, y, font_size, color, &[], max_width, bold, monospace, family_override,
+            max_lines, typo,
+        )
+    }
+
+    /// [`TextRenderer::prepare_text_with_hits`] の**文字ごとに色を変えられる**版
+    /// ([#78](https://github.com/Mutafika/sabitori/issues/78))。
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_with_hits_spans(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: Color,
+        spans: &[ColorSpan],
         max_width: Option<f32>,
         bold: bool,
         monospace: bool,
@@ -914,10 +1008,13 @@ impl TextRenderer {
         let color_arr = color.to_array();
         let run = &self.glyph_cache[&key];
         let mut instances = Vec::with_capacity(run.glyphs.len());
-        for g in &run.glyphs {
+        for (i, g) in run.glyphs.iter().enumerate() {
             let mut gi = *g;
             gi.position = [g.position[0] + x, g.position[1] + y];
-            gi.color = color_arr;
+            gi.color = match run.glyph_bytes.get(i) {
+                Some(&(s, e)) => span_color(spans, s, e).unwrap_or(color_arr),
+                None => color_arr,
+            };
             instances.push(gi);
         }
         let mut hits = Vec::with_capacity(run.hits.len());
@@ -1469,5 +1566,60 @@ mod shaping_cache_tests {
         // …but position is deliberately NOT in the key.
         f.with_hits("Cache key", 500.0, 500.0, 14.0, None, td, false);
         assert_eq!(f.cache.len(), 4, "position must never add an entry");
+    }
+}
+
+#[cfg(test)]
+mod color_span_tests {
+    //! **前景色のスパンが、どの glyph に当たるか** ([#78])。
+    //!
+    //! 境界を 1 バイト間違えると「行の色が 1 文字ずつずれる」形で出る。
+    //! 端末の格子ではそれが全行に出るので、ここで境界を固定する。
+    //!
+    //! [#78]: https://github.com/Mutafika/sabitori/issues/78
+
+    use super::{span_color, ColorSpan};
+
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+    fn spans() -> Vec<ColorSpan> {
+        vec![
+            ColorSpan { start: 0, end: 2, color: RED },
+            ColorSpan { start: 3, end: 6, color: BLUE },
+        ]
+    }
+
+    #[test]
+    fn a_glyph_inside_a_span_takes_its_color() {
+        assert_eq!(span_color(&spans(), 0, 1), Some(RED));
+        assert_eq!(span_color(&spans(), 1, 2), Some(RED));
+        assert_eq!(span_color(&spans(), 3, 4), Some(BLUE));
+        assert_eq!(span_color(&spans(), 5, 6), Some(BLUE));
+    }
+
+    /// **終端は含まない** (`start..end` の半開区間)。含めると隣の範囲と
+    /// 1 文字ぶん重なる。
+    #[test]
+    fn the_end_of_a_span_is_exclusive() {
+        assert_eq!(span_color(&spans(), 2, 3), None, "2 は最初の範囲の外");
+        assert_eq!(span_color(&spans(), 6, 7), None, "6 は 2 つ目の範囲の外");
+    }
+
+    /// どの範囲にも当たらない glyph は `None` (呼び出し側が既定色で塗る)。
+    #[test]
+    fn a_glyph_outside_every_span_has_no_color() {
+        assert_eq!(span_color(&[], 0, 1), None);
+        assert_eq!(span_color(&spans(), 10, 11), None);
+    }
+
+    /// 重なったら**先に書いたほうが勝つ** (`HighlightSpec` と同じ規則)。
+    #[test]
+    fn the_first_span_wins_when_they_overlap() {
+        let overlapping = vec![
+            ColorSpan { start: 0, end: 4, color: RED },
+            ColorSpan { start: 2, end: 6, color: BLUE },
+        ];
+        assert_eq!(span_color(&overlapping, 3, 4), Some(RED));
     }
 }

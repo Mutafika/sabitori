@@ -49,6 +49,24 @@
 
 ### Added
 
+- **文字ごとに前景色を変えられる `Element::color_spans(..)`**
+  ([#78](https://github.com/Mutafika/sabitori/issues/78))。色をバイト範囲で
+  指定できる口が**背景 (`HighlightSpec`) と下線 (`LinkRange`) にしか無かった**
+  ので、文字ごとに色が変わる UI (端末・表・コード・差分) は **1 文字 1 要素**に
+  するしかなかった。80×24 の端末で 1920 要素/フレーム。
+
+  ```rust
+  text("ls -la src/")
+      .color(fg)
+      .color_spans([(0..2, cyan), (3..6, dim), (7..11, blue)])
+  ```
+
+  **1 行 1 要素のまま**色が付く (80×24 なら 1920 → 24 要素)。シェーピングの
+  鍵に色は入っていないので、**色を変えても組み直さない**。作り置きした範囲を
+  そのまま渡す `color_spans_shared(Arc<[ColorSpan]>)` もある。
+
+  `tui::gradient_text` も 1 要素になった (中で 1 文字ずつ並べていた)。
+
 - **見えていない窓では描かなくなった**
   ([#79](https://github.com/Mutafika/sabitori/issues/79))。`WindowEvent::Occluded`
   を受けていなかったので、最小化しても・別の窓に完全に覆われても

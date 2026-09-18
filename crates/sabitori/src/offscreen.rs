@@ -467,6 +467,41 @@ mod tests {
         assert!(dark > 50, "文字が 1 画素も出ていない (暗い画素 {dark})");
     }
 
+    /// **文字ごとに色が変わること** ([#78](https://github.com/Mutafika/sabitori/issues/78))。
+    ///
+    /// 1 要素のまま左半分が赤、右半分が青になる。ずれていたら「格子の色が
+    /// 1 文字ずつずれる」形で出るので、実際の画素で見る。
+    #[test]
+    fn color_spans_paint_different_glyphs_differently() {
+        gpu_or_skip!();
+        // 等幅で 2 文字。前半 (1 バイト) を赤、後半を青に。
+        let view = div().w(Px(120.0)).h(Px(40.0)).p(Px(4.0)).child(
+            text("AB")
+                .font_size(28.0)
+                .mono()
+                .color(Color::from_hex("#0000ff"))
+                .color_spans([(0..1, Color::from_hex("#ff0000"))]),
+        );
+        let out = render(&view, Sheet::px(120.0, 40.0)).unwrap();
+
+        // 画素を色ごとに数える (どこに出るかは書体次第なので、数で見る)。
+        let mut red = 0;
+        let mut blue = 0;
+        for y in 0..out.height {
+            for x in 0..out.width {
+                let p = out.pixel(x, y).unwrap();
+                if p[0] > 150 && p[2] < 100 {
+                    red += 1;
+                }
+                if p[2] > 150 && p[0] < 100 {
+                    blue += 1;
+                }
+            }
+        }
+        assert!(red > 10, "赤い文字が出ていない (赤 {red} 画素)");
+        assert!(blue > 10, "青い文字が出ていない (青 {blue} 画素)");
+    }
+
     /// PNG として保存できること。
     #[test]
     fn it_encodes_to_png() {

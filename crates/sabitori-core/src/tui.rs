@@ -292,22 +292,25 @@ pub fn progress_bar(
 /// Render per-character colored text. `color_fn` receives the char index
 /// (0-based) and returns the [`Color`] for that character.
 pub fn gradient_text(content: &str, color_fn: impl Fn(usize) -> Color) -> Element {
-    let children: Vec<Element> = content
-        .chars()
+    // **1 要素のまま文字ごとに色を変える** ([#78])。以前は 1 文字 1 要素で
+    // 並べていたので、文字数ぶんの要素とシェーピングが要った。
+    //
+    // [#78]: https://github.com/Mutafika/sabitori/issues/78
+    let spans: Vec<crate::element::ColorSpan> = content
+        .char_indices()
         .enumerate()
-        .map(|(i, ch)| {
-            text(ch.to_string())
-                .mono()
-                .font_size(14.0)
-                .color(color_fn(i))
-                .shrink(0.0)
+        .map(|(i, (byte, ch))| crate::element::ColorSpan {
+            start: byte,
+            end: byte + ch.len_utf8(),
+            color: color_fn(i),
         })
         .collect();
 
-    div()
-        .flex_row()
+    text(content)
+        .mono()
+        .font_size(14.0)
         .shrink(0.0)
-        .children(children)
+        .color_spans(spans)
 }
 
 // ---------------------------------------------------------------------------

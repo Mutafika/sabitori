@@ -174,6 +174,8 @@ pub struct TextDraw {
     pub max_lines: Option<u32>,
     /// Extended typographic controls (weight / letter-spacing / line-height).
     pub typo: crate::element::Typography,
+    /// 文字ごとの前景色 (`Element::color_spans`)。`None` = 単色 (#78)。
+    pub color_spans: Option<std::sync::Arc<[crate::element::ColorSpan]>>,
     /// Per-range background highlights, in paint order. Empty = none.
     /// The runtime resolves the byte ranges to per-line rects from this text's
     /// glyph hitboxes and paints them below the glyphs.

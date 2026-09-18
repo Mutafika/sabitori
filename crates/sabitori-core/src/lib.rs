@@ -27,6 +27,8 @@ pub use element::{
 };
 // 浮かせる要素を別の要素に貼り付ける (`Element::anchor_to`)。
 pub use element::{Anchor, Placement};
+// 文字ごとの前景色 (`Element::color_spans`)。
+pub use element::ColorSpan;
 // grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
 // `sabitori-style` にも同名の型があり、 ファサードの glob 同士がぶつかって
 // `sabitori::Display` がどちらとも決まらなくなる。 `.grid()` / `.grid_cols()` が

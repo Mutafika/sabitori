@@ -15,6 +15,24 @@ use sabitori_gpu::wgpu;
 use sabitori_gpu::{ImageInstance, LineInstance, RectInstance, RingInstance};
 use sabitori_text::{GlyphHit, GlyphInstance, TextRenderer};
 
+/// `TextDraw` の前景色スパンを、テキスト側の型へ移す (#78)。
+///
+/// `sabitori-core` は `sabitori-text` を知らない (依存の向きが逆) ので、
+/// 同じ形の型が両側にある。写すのはここ 1 箇所。
+fn color_spans(d: &TextDraw) -> Vec<sabitori_text::ColorSpan> {
+    match &d.color_spans {
+        None => Vec::new(),
+        Some(spans) => spans
+            .iter()
+            .map(|s| sabitori_text::ColorSpan {
+                start: s.start,
+                end: s.end,
+                color: s.color.to_array(),
+            })
+            .collect(),
+    }
+}
+
 /// この文字に **hitbox を作る必要があるか** ([#80])。
 ///
 /// `hits` を読むのは 3 つだけ — テキスト選択、ハイライトの敷き、in-body
@@ -254,9 +272,12 @@ pub fn text_to_glyphs(d: &TextDraw, tr: &mut TextRenderer) -> Vec<GlyphInstance>
     } else {
         None
     };
-    let mut glyphs = tr.prepare_text_styled(
+    // 前景色のスパン (#78) はここも通す。**text を GPU に渡す道は 2 本ある**
+    // (`text_to_glyphs` と `render_list_to_gpu_with_hits`) ので、片方だけ直すと
+    // 「画面外描画では色が付くのに窓では単色」のような分かれ方をする。
+    let mut glyphs = tr.prepare_text_spans(
         &d.content, d.position.x, d.position.y,
-        d.font_size, d.color, max_width,
+        d.font_size, d.color, &color_spans(d), max_width,
         d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
         d.typo,
     );
@@ -468,17 +489,17 @@ pub fn render_list_to_gpu_with_hits(
                     None
                 };
                 let (mut produced, hits) = if needs_hit_layout(d) {
-                    let (g, h) = tr.prepare_text_with_hits(
+                    let (g, h) = tr.prepare_text_with_hits_spans(
                         &d.content, d.position.x, d.position.y,
-                        d.font_size, d.color, max_width,
+                        d.font_size, d.color, &color_spans(d), max_width,
                         d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
                         d.typo,
                     );
                     (g, Some(h))
                 } else {
-                    let g = tr.prepare_text_styled(
+                    let g = tr.prepare_text_spans(
                         &d.content, d.position.x, d.position.y,
-                        d.font_size, d.color, max_width,
+                        d.font_size, d.color, &color_spans(d), max_width,
                         d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
                         d.typo,
                     );
@@ -965,6 +986,7 @@ mod tests {
             font_family: None,
             max_lines: None,
             typo: Typography::default(),
+            color_spans: None,
             highlight: Vec::new(),
             link_ranges: None,
             rotation,
@@ -1030,6 +1052,7 @@ mod tests {
             font_family: None,
             max_lines: None,
             typo: Typography::default(),
+            color_spans: None,
             highlight: Vec::new(),
             link_ranges: None,
             rotation: 0.0,
@@ -1350,6 +1373,7 @@ mod hit_layout_tests {
             font_family: None,
             max_lines: None,
             typo: Default::default(),
+            color_spans: None,
             highlight: Vec::new(),
             link_ranges: None,
             rotation: 0.0,

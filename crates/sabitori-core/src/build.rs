@@ -1207,6 +1207,7 @@ fn emit_commands(
                 font_family: style.font_family.clone(),
                 max_lines: style.max_lines,
                 typo: style.typography(),
+                color_spans: style.color_spans.clone(),
                 highlight: style.highlight.clone(),
                 link_ranges: style.link_ranges.clone(),
                 // 同じ `style.rotation` が上の RectDraw にも渡っているが、
@@ -1231,6 +1232,7 @@ fn emit_commands(
                 font_family: style.font_family.clone(),
                 max_lines: style.max_lines,
                 typo: style.typography(),
+                color_spans: style.color_spans.clone(),
                 highlight: style.highlight.clone(),
                 link_ranges: style.link_ranges.clone(),
                 rotation: style.rotation,
@@ -4290,5 +4292,83 @@ mod sticky_tests {
             0.0,
             "間に入れ物を挟むと留まらない"
         );
+    }
+}
+
+#[cfg(test)]
+mod color_span_tests {
+    //! **文字ごとの前景色** ([#78])。
+    //!
+    //! 狙いは「1 行 1 要素のまま色が変わる」こと。要素が増えていないことと、
+    //! 指定した範囲がそのまま描画命令まで届いていることを見る。
+    //!
+    //! [#78]: https://github.com/Mutafika/sabitori/issues/78
+
+    use super::*;
+    use crate::element::{div, text, ColorSpan, Px};
+
+    const RED: Color = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+    const BLUE: Color = Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+
+    fn texts(root: &Element) -> Vec<TextDraw> {
+        build_tree(root, 400.0, 100.0)
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **1 要素のまま**、範囲と色が描画命令まで届く。
+    #[test]
+    fn a_colored_line_stays_one_text_draw() {
+        let root = div().w(Px(400.0)).h(Px(40.0)).child(
+            text("ls -la")
+                .color(BLUE)
+                .color_spans([(0..2, RED)]),
+        );
+        let drawn = texts(&root);
+        assert_eq!(drawn.len(), 1, "1 行が複数の描画命令に割れている");
+
+        let spans = drawn[0].color_spans.as_ref().expect("スパンが落ちている");
+        assert_eq!(&**spans, &[ColorSpan { start: 0, end: 2, color: RED }]);
+        assert_eq!(drawn[0].color, BLUE, "既定の色は残ること");
+    }
+
+    /// 書かなければ `None` (単色の文字が余計なものを持たない)。
+    #[test]
+    fn plain_text_carries_no_spans() {
+        let root = div().w(Px(400.0)).h(Px(40.0)).child(text("ls -la").color(BLUE));
+        assert!(texts(&root)[0].color_spans.is_none());
+    }
+
+    /// 空の指定も `None` に畳む (毎フレーム空 `Vec` を運ばない)。
+    #[test]
+    fn an_empty_span_list_folds_to_nothing() {
+        let root = div().w(Px(400.0)).h(Px(40.0)).child(
+            text("ls -la").color_spans(Vec::<ColorSpan>::new()),
+        );
+        assert!(texts(&root)[0].color_spans.is_none());
+    }
+
+    /// **`gradient_text` が 1 要素になった。** 以前は 1 文字 1 要素で、
+    /// 端末のような画面では要素数がそのまま費用になっていた。
+    #[test]
+    fn gradient_text_is_a_single_element_now() {
+        let el = crate::tui::gradient_text("虹色の文字", |i| {
+            if i % 2 == 0 { RED } else { BLUE }
+        });
+        let root = div().w(Px(400.0)).h(Px(40.0)).child(el);
+        let drawn = texts(&root);
+        assert_eq!(drawn.len(), 1, "文字ごとに要素が割れている");
+
+        let spans = drawn[0].color_spans.as_ref().expect("スパンが無い");
+        assert_eq!(spans.len(), 5, "文字数ぶんの範囲が要る");
+        // 日本語は 1 文字 3 バイト — バイト位置で持っていること。
+        assert_eq!(spans[1].start, 3);
+        assert_eq!(spans[1].end, 6);
     }
 }
