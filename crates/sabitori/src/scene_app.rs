@@ -104,6 +104,8 @@ struct SceneAppState<A: SceneApp> {
     last_build: Option<sabitori_core::build::BuildResult>,
     /// 実行時に積まれたフォントのうち、組版へ入れた本数 (#75 の 13)。
     fonts_applied: usize,
+    /// 窓が見えていない (最小化 / 完全に覆われている)。#79。
+    occluded: bool,
     /// 支援技術へのツリー送出 (#25)。declarative ランタイムと同じ 1 実装を使う。
     #[cfg(not(target_arch = "wasm32"))]
     a11y: Option<crate::a11y::Bridge>,
@@ -490,6 +492,20 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // 最小化 / 完全に覆われた (#79)。declarative 版と同じ規約 —
+            // 描くのを止めるだけで、溜まった `dirty` は消さない。
+            WindowEvent::Occluded(occluded) => {
+                if self.occluded != occluded {
+                    self.occluded = occluded;
+                    self.app.on_visibility_changed(!occluded);
+                    if !occluded {
+                        self.dirty = true;
+                        if let Some(w) = self.window.as_ref() {
+                            w.request_redraw();
+                        }
+                    }
+                }
+            }
 
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
@@ -1408,6 +1424,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             // グリフアトラスの復旧も declarative 側にしか無い。 溢れたときの
             // 振る舞いは lazy の前後で変わらない (どちらも復旧しない)。
             atlas_recover_pending: false,
+            occluded: self.occluded,
         }
         .must_draw();
 
@@ -1450,6 +1467,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_frame: Instant::now(),
         last_build: None,
         fonts_applied: 0,
+        occluded: false,
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,
@@ -1506,6 +1524,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_frame: Instant::now(),
         last_build: None,
         fonts_applied: 0,
+        occluded: false,
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,

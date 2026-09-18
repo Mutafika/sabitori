@@ -15,6 +15,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **見えていない窓では描かなくなった**
+  ([#79](https://github.com/Mutafika/sabitori/issues/79))。`WindowEvent::Occluded`
+  を受けていなかったので、最小化しても・別の窓に完全に覆われても
+  `view()` → レイアウト → 描画 → submit が回り続けていた。既定のフレーム間隔は
+  8ms で present mode も vsync を外しているので、**誰も見ていない絵を 125Hz で
+  描き続ける**ことになる (端末アプリが最小化のままログを流すと顕著)。
+
+  判定は `DrawGate` に入れた。**他のどの理由よりも強い** — `lazy_render` を
+  切っていても描かない (あれは「毎フレーム描いてほしい」であって「見えない窓も
+  描いてほしい」ではない)。溜まった `dirty` は消さないので、見えた瞬間に
+  1 枚描き直して追いつく。
+
+  アプリ側の重い更新を止めたいときのために
+  `DeclarativeApp::on_visibility_changed(&mut self, visible: bool)` を足した
+  (絵のために書く必要は無い)。
+
+  実測 (最小化 → 6 秒 → 復帰): `t=23.0 frames=2700` → `t=23.6 visibility=false`
+  → **6.1 秒のあいだ 1 フレームも描かない** → `t=29.7 visibility=true` →
+  `t=30.2 frames=2760`。
+
 ## [0.13.0] - 2026-09-17
 
 ### Added

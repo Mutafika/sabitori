@@ -679,6 +679,23 @@ pub trait DeclarativeApp: 'static {
     /// 次のクリックまで scene ごと止まる。
     fn lazy_render(&self) -> bool { true }
 
+    /// 窓が**見えるようになった / 見えなくなった**ときに呼ばれる。
+    ///
+    /// 最小化と「別の窓に完全に覆われた」の両方で `false` が来る (macOS の
+    /// `Occluded`)。ランタイムは見えないあいだ**描画を止める**ので、絵のための
+    /// 実装は要らない — ここを上書きするのは、**アプリ側の重い更新を止める**
+    /// ためだけ ([#79](https://github.com/Mutafika/sabitori/issues/79))。
+    ///
+    /// ```ignore
+    /// fn on_visibility_changed(&mut self, visible: bool) {
+    ///     self.stream.set_paused(!visible);   // 見えない間はサーバから引かない
+    /// }
+    /// ```
+    ///
+    /// 見えるようになった側では、ランタイムが**溜まった変化を 1 枚にまとめて
+    /// 描き直す**ので、アプリから再描画を要求する必要はない。
+    fn on_visibility_changed(&mut self, _visible: bool) {}
+
     /// 毎 tick の最後に問われる。`tick` が絵を変えたなら `true`。
     ///
     /// **一度きりの変化**のための口。連続して動き続けるものは
@@ -990,6 +1007,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     atlas_recover_pending: bool,
     /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
     fonts_applied: usize,
+    /// 窓が見えていない (最小化 / 完全に覆われている)。`WindowEvent::Occluded`
+    /// で立つ (#79)。
+    occluded: bool,
     /// 支援技術へのツリー送出 (#25)。窓を作るときに一緒に作る。
     /// **スクリーンリーダが起きていないあいだは何もしない** — 変換ごと
     /// 省かれるので、ふつうの起動で費用はほぼゼロ。
@@ -1188,6 +1208,21 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // 最小化 / 完全に覆われた (#79)。**描くのを止めるだけ**で、溜まった
+            // `dirty` は消さない — 見えた瞬間に 1 枚描き直して追いつく。
+            WindowEvent::Occluded(occluded) => {
+                if self.occluded != occluded {
+                    self.occluded = occluded;
+                    self.app.on_visibility_changed(!occluded);
+                    if !occluded {
+                        // 隠れているあいだの変化をまとめてここで出す。
+                        self.dirty = true;
+                        if let Some(w) = self.window.as_ref() {
+                            w.request_redraw();
+                        }
+                    }
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
                     r.resize(size.width, size.height, w.scale_factor());
@@ -2159,6 +2194,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             runtime_animating: self.runtime_animating(),
             caret_blinking: self.caret_blinking(),
             atlas_recover_pending: self.atlas_recover_pending,
+            occluded: self.occluded,
         }
         .must_draw();
 
@@ -2235,11 +2271,24 @@ pub(crate) struct DrawGate {
     pub(crate) caret_blinking: bool,
     /// グリフアトラスが溢れた直後。 次のフレームで flush + 再シェイプが要る。
     pub(crate) atlas_recover_pending: bool,
+    /// 窓が**見えていない** (最小化、または別の窓に完全に覆われている)。
+    ///
+    /// 他のどの理由よりも強い — 見えない窓のために描いても、誰も見ないまま
+    /// CPU と GPU を使うだけ ([#79](https://github.com/Mutafika/sabitori/issues/79))。
+    /// 既定のフレーム間隔は 8ms で present mode も vsync を外しているので、
+    /// 隠れたまま出力を出し続ける端末アプリは **125Hz で描き続けていた**。
+    pub(crate) occluded: bool,
 }
 
 impl DrawGate {
     /// このフレームで redraw を出すべきか。
     pub(crate) fn must_draw(self) -> bool {
+        // 見えていないなら描かない。`lazy_render` を切っていても同じ —
+        // あれは「毎フレーム描いてほしい」であって「見えない窓も描いてほしい」
+        // ではない。溜まった `dirty` は消さずに置いておき、見えた瞬間に描く。
+        if self.occluded {
+            return false;
+        }
         !self.lazy
             || self.dirty
             || self.app_dirty
@@ -2541,6 +2590,7 @@ impl<A: DeclarativeApp> AppState<A> {
             pending_redraw: true,
             atlas_recover_pending: false,
             fonts_applied: 0,
+            occluded: false,
             #[cfg(not(target_arch = "wasm32"))]
             a11y: None,
             extras: std::collections::HashMap::new(),
@@ -5823,6 +5873,45 @@ mod draw_gate_tests {
         }
     }
 
+    /// **見えていない窓では、どの理由があっても描かない** (#79)。
+    ///
+    /// 最小化したまま出力を出し続ける端末アプリが、誰も見ていない絵を
+    /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
+    #[test]
+    fn an_occluded_window_draws_for_no_reason_at_all() {
+        let reasons: [(&str, fn(&mut DrawGate)); 6] = [
+            ("入力が来た", |g| g.dirty = true),
+            ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
+            ("アプリが is_animating で名乗った", |g| g.app_animating = true),
+            ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
+            ("キャレットが点滅している", |g| g.caret_blinking = true),
+            ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+        ];
+        for (why, set) in reasons {
+            let mut g = idle();
+            g.occluded = true;
+            set(&mut g);
+            assert!(!g.must_draw(), "隠れているのに描いている ({why})");
+        }
+    }
+
+    /// **`lazy_render` を切っていても描かない。** あれは「毎フレーム描いて
+    /// ほしい」であって「見えない窓も描いてほしい」ではない。
+    #[test]
+    fn opting_out_of_lazy_does_not_override_occlusion() {
+        assert!(!DrawGate { lazy: false, occluded: true, ..DrawGate::default() }.must_draw());
+    }
+
+    /// 見えるようになったら、溜まっていた理由でそのまま描く。
+    #[test]
+    fn coming_back_into_view_draws_what_piled_up() {
+        let mut g = idle();
+        g.dirty = true;
+        g.occluded = true;
+        assert!(!g.must_draw());
+        g.occluded = false;
+        assert!(g.must_draw(), "見えたのに描き直さない");
+    }
     fn style() -> TextInputStyle {
         TextInputStyle {
             bg: sabitori_core::Color::from_hex("#202020"),
