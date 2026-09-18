@@ -1088,8 +1088,8 @@ pub enum Cursor {
 #[derive(Clone, Debug)]
 pub enum ElementKind {
     Div,
-    Text { content: String },
-    Button { label: String, accent: Option<Color> },
+    Text { content: std::sync::Arc<str> },
+    Button { label: std::sync::Arc<str>, accent: Option<Color> },
     Image { key: String, data: ImageData },
     /// Arc / ring segment — SDF-rasterized donut sector with separate
     /// active "fill" and inactive "track" colors. The element's layout
@@ -1324,10 +1324,65 @@ pub fn grid() -> Element {
     div().grid()
 }
 
+/// 読み上げ・表示する文字列。[`text`] が受ける型。
+///
+/// 中身は `Arc<str>`。**組んだツリーから描画結果まで、同じ文字列を
+/// 参照カウントで持ち回す**ので、フレームごとの複製が要らない
+/// ([#80](https://github.com/Mutafika/sabitori/issues/80))。1 画面に
+/// `text()` が数百〜千個ある UI (端末・表・コード) では、ここが効く。
+///
+/// `&str` / `String` / `&String` / `Cow<str>` から作れるので、書き方は
+/// 今までどおり。**`Arc<str>` をそのまま渡せば複製もゼロ**になる:
+///
+/// ```ignore
+/// // セルの文字列をアプリ側で使い回している場合
+/// let cell: Arc<str> = self.grid[y][x].clone();   // 参照カウントだけ
+/// text(cell)
+/// ```
+#[derive(Clone, Debug)]
+pub struct TextContent(pub std::sync::Arc<str>);
+
+impl From<&str> for TextContent {
+    fn from(s: &str) -> Self {
+        Self(std::sync::Arc::from(s))
+    }
+}
+
+impl From<String> for TextContent {
+    fn from(s: String) -> Self {
+        Self(std::sync::Arc::from(s))
+    }
+}
+
+impl From<&String> for TextContent {
+    fn from(s: &String) -> Self {
+        Self(std::sync::Arc::from(s.as_str()))
+    }
+}
+
+impl From<std::borrow::Cow<'_, str>> for TextContent {
+    fn from(s: std::borrow::Cow<'_, str>) -> Self {
+        Self(std::sync::Arc::from(s.as_ref()))
+    }
+}
+
+impl From<std::sync::Arc<str>> for TextContent {
+    /// **複製しない。** 参照カウントだけ増える。
+    fn from(s: std::sync::Arc<str>) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&std::sync::Arc<str>> for TextContent {
+    fn from(s: &std::sync::Arc<str>) -> Self {
+        Self(std::sync::Arc::clone(s))
+    }
+}
+
 /// Create a text element.
-pub fn text(content: impl Into<String>) -> Element {
+pub fn text(content: impl Into<TextContent>) -> Element {
     Element {
-        kind: ElementKind::Text { content: content.into() },
+        kind: ElementKind::Text { content: content.into().0 },
         style: Box::default(),
         children: Vec::new(),
         id: None,
@@ -1463,7 +1518,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
 }
 
 /// Create a button element with default interactive styles.
-pub fn button(label: impl Into<String>) -> Element {
+pub fn button(label: impl Into<TextContent>) -> Element {
     let mut style = Box::<ElementStyle>::default();
     style.flex_direction = FlexDirection::Row;
     style.align_items = AlignItems::Center;
@@ -1472,7 +1527,7 @@ pub fn button(label: impl Into<String>) -> Element {
     style.corner_radius = Corners::all(6.0);
 
     Element {
-        kind: ElementKind::Button { label: label.into(), accent: None },
+        kind: ElementKind::Button { label: label.into().0, accent: None },
         style,
         children: Vec::new(),
         id: None,

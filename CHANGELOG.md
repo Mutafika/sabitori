@@ -15,6 +15,38 @@
 
 ## [Unreleased]
 
+### Changed（破壊的）
+
+- **文字列を `Arc<str>` で持ち回すようにした**
+  ([#80](https://github.com/Mutafika/sabitori/issues/80))。`text()` 要素 1 個に
+  つき毎フレーム複数の `String` / `Vec` を確保していて、端末や表のように
+  `text()` が数百〜千個ある画面では、シェーピングもアトラスも効いたあとに
+  **ここが支配的**になっていた。
+
+  実測 (960 要素の格子を `build_tree` に 1 回通す):
+
+  | | 確保 / 要素 |
+  |---|---|
+  | 前 (`content` を 2 回 clone) | **2.06** |
+  | いま | **0.06** |
+
+  型が変わったのは `ElementKind::Text { content }` / `ElementKind::Button { label }` /
+  `TextDraw::content` / `TextNodeContext::content` / `TextHitLayout::content`
+  (`String` → `Arc<str>`)。**書き方は変わらない** — `text()` / `button()` は
+  `&str` / `String` / `&String` / `Cow<str>` をこれまでどおり受ける
+  (新しい `TextContent` 経由)。`Arc<str>` をそのまま渡せば**複製もゼロ**になる。
+  読む側は `&*draw.content` で `&str` になる。文字列として持ち回していた所は
+  `.to_string()` が要る。
+
+  あわせて 2 つ:
+
+  - **計測キャッシュの鍵から文字列を外した** — 引くためだけに `String` を
+    1〜2 個作っていた (taffy は 1 ノードにつき measure を複数回呼ぶので、
+    その回数だけ増える)。シェーピング側と同じ 64bit ハッシュにした。
+  - **誰も読まない hitbox を作らなくなった** — `hits` を読むのは選択・
+    ハイライト・in-body リンクの 3 つだけ。`no_select` でどれも無い文字は、
+    作った瞬間に捨てる `Vec` だった。
+
 ### Added
 
 - **見えていない窓では描かなくなった**

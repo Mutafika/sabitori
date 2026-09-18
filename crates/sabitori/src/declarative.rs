@@ -1047,10 +1047,10 @@ pub(crate) struct TextSelection {
     /// anchor 確定時点での anchor.0 が指す text 要素の content snapshot。
     /// view 切替 (list → article 等) で同じ text_idx が違うテキストを指すように
     /// なった時に selection を invalidate するために使う。
-    pub(crate) anchor_content: String,
+    pub(crate) anchor_content: std::sync::Arc<str>,
     /// head が動いた時に最新化される head.0 の content snapshot。
     /// drag 中はリアルタイム更新、 mouse_up 後は最後の値で固定。
-    pub(crate) head_content: String,
+    pub(crate) head_content: std::sync::Arc<str>,
 }
 
 impl TextSelection {
@@ -3871,10 +3871,10 @@ impl<A: DeclarativeApp> AppState<A> {
     ) {
         let Some(sel) = selection.as_ref() else { return };
         let lookup = |idx: usize| -> Option<&str> {
-            text_layouts.iter().find(|l| l.text_idx == idx).map(|l| l.content.as_str())
+            text_layouts.iter().find(|l| l.text_idx == idx).map(|l| &*l.content)
         };
-        let anchor_ok = lookup(sel.anchor.0).map_or(false, |c| c == sel.anchor_content);
-        let head_ok = lookup(sel.head.0).map_or(false, |c| c == sel.head_content);
+        let anchor_ok = lookup(sel.anchor.0).map_or(false, |c| c == &*sel.anchor_content);
+        let head_ok = lookup(sel.head.0).map_or(false, |c| c == &*sel.head_content);
         if !anchor_ok || !head_ok {
             *selection = None;
             *selecting = false;
@@ -5230,7 +5230,7 @@ mod highlight_tests {
     fn layout(len: usize, highlight: Vec<HighlightSpec>) -> TextHitLayout {
         TextHitLayout {
             text_idx: 0,
-            content: "x".repeat(len),
+            content: std::sync::Arc::from("x".repeat(len).as_str()),
             hits: (0..len)
                 .map(|i| GlyphHit {
                     byte_start: i,
@@ -5327,7 +5327,7 @@ mod highlight_tests {
     fn hit_layout(idx: usize, len: usize, x0: f32, y: f32, no_select: bool) -> TextHitLayout {
         TextHitLayout {
             text_idx: idx,
-            content: "x".repeat(len),
+            content: std::sync::Arc::from("x".repeat(len).as_str()),
             hits: (0..len)
                 .map(|i| GlyphHit {
                     byte_start: i,

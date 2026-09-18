@@ -242,7 +242,7 @@ fn cells_without_a_custom_element_still_render_text() {
         .commands
         .iter()
         .filter_map(|c| match c {
-            RenderCommand::Text(t) => Some(t.content.clone()),
+            RenderCommand::Text(t) => Some(t.content.to_string()),
             _ => None,
         })
         .collect();

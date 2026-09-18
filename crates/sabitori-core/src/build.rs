@@ -546,7 +546,8 @@ fn build_tree_impl(
 /// elements. For non-text leaves (images, empty divs) we attach `None`.
 #[derive(Clone, Debug)]
 pub struct TextNodeContext {
-    pub content: String,
+    /// 文字列は `Arc<str>` で持ち回す — 毎フレームの複製を避けるため (#80)。
+    pub content: std::sync::Arc<str>,
     pub font_size: f32,
     pub bold: bool,
     pub monospace: bool,
@@ -2374,7 +2375,7 @@ mod tests {
         assert_eq!(result.render_list.text_count(), 1);
 
         let text_cmd = result.render_list.texts().next().unwrap();
-        assert_eq!(text_cmd.content, "Hello world");
+        assert_eq!(&*text_cmd.content, "Hello world");
         assert!((text_cmd.font_size - 20.0).abs() < 0.01);
         assert!(!text_cmd.no_select, "既定は選択可能のまま");
     }
@@ -2765,7 +2766,7 @@ mod tests {
     fn button_labels_are_never_selectable() {
         let result = build_tree(&button("OK"), 800.0, 600.0);
         let label = result.render_list.texts().next().unwrap();
-        assert_eq!(label.content, "OK");
+        assert_eq!(&*label.content, "OK");
         assert!(label.no_select);
     }
 
@@ -2811,7 +2812,7 @@ mod tests {
         assert_eq!(result.render_list.text_count(), 1);
 
         let text_cmd = result.render_list.texts().next().unwrap();
-        assert_eq!(text_cmd.content, "Click me");
+        assert_eq!(&*text_cmd.content, "Click me");
     }
 
     #[test]
@@ -2869,9 +2870,9 @@ mod tests {
             ),
         );
         let closed_texts: Vec<String> = build_tree(&closed, 800.0, 600.0)
-            .render_list.texts().map(|t| t.content.clone()).collect();
+            .render_list.texts().map(|t| t.content.to_string()).collect();
         let opened_texts: Vec<String> = build_tree(&opened, 800.0, 600.0)
-            .render_list.texts().map(|t| t.content.clone()).collect();
+            .render_list.texts().map(|t| t.content.to_string()).collect();
         assert!(!closed_texts.iter().any(|t| t == "body-row"));
         assert!(opened_texts.iter().any(|t| t == "body-row"));
         // Disclosure arrow flips.
@@ -3040,7 +3041,7 @@ mod font_family_threading_tests {
             .commands
             .iter()
             .filter_map(|c| match c {
-                RenderCommand::Text(d) => Some((d.content.as_str(), d.font_family.as_deref())),
+                RenderCommand::Text(d) => Some((&*d.content, d.font_family.as_deref())),
                 _ => None,
             })
             .collect();
@@ -3069,7 +3070,7 @@ mod font_family_threading_tests {
             .commands
             .iter()
             .filter_map(|c| match c {
-                RenderCommand::Text(d) => Some((d.content.as_str(), d.rotation)),
+                RenderCommand::Text(d) => Some((&*d.content, d.rotation)),
                 _ => None,
             })
             .collect();

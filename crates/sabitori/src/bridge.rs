@@ -15,34 +15,68 @@ use sabitori_gpu::wgpu;
 use sabitori_gpu::{ImageInstance, LineInstance, RectInstance, RingInstance};
 use sabitori_text::{GlyphHit, GlyphInstance, TextRenderer};
 
-/// Cache key for text measurement.
-#[derive(Hash, Eq, PartialEq, Clone)]
-struct MeasureKey {
-    content: String,
-    font_size_x100: u32,
+/// この文字に **hitbox を作る必要があるか** ([#80])。
+///
+/// `hits` を読むのは 3 つだけ — テキスト選択、ハイライトの敷き、in-body
+/// リンクの当たり判定。`no_select` が付いていてハイライトもリンクも無い文字は、
+/// 作った瞬間に捨てる `Vec` になる。端末や表のように「選べない文字が数百個」
+/// 並ぶ画面では、これが要素ごとに 1 確保として効く。
+///
+/// **読む側を増やしたらここも増やすこと。** 増やし忘れると、選択やリンクが
+/// 「特定の文字でだけ効かない」という掴みにくい形で壊れる。
+///
+/// [#80]: https://github.com/Mutafika/sabitori/issues/80
+pub(crate) fn needs_hit_layout(d: &TextDraw) -> bool {
+    !d.no_select || !d.highlight.is_empty() || d.link_ranges.is_some()
+}
+
+/// 計測キャッシュの鍵。
+///
+/// **文字列を持たない。** 以前は `content: String` と `font_family: Option<String>`
+/// を毎回作っていたので、**引くためだけに 1〜2 個確保**していた。taffy は
+/// 1 ノードにつき measure を複数回呼ぶので、その回数だけ増える
+/// ([#80](https://github.com/Mutafika/sabitori/issues/80))。
+///
+/// 代わりに 64bit のハッシュを鍵にする — シェーピング側の `run_cache_key` が
+/// 同じ形。**鍵にする材料を 1 つ落とすと、違うものが同じ測定値を共有する**
+/// (太字だけ違う 2 つのラベルが同じ幅になる) ので、追加したら
+/// `measure_key_tests` にも 1 行足すこと。
+fn measure_key(
+    content: &str,
+    font_size: f32,
     bold: bool,
     monospace: bool,
-    /// Per-element family override (see `ElementStyle::font_family`) — part of
-    /// the key, otherwise two elements with the same text but different faces
-    /// share one (wrong) measurement.
-    font_family: Option<String>,
-    /// max_width bucketed to nearest 4 logical px. `u32::MAX` means "unconstrained".
-    /// Bucketing prevents the cache from blowing up when widths shift by 1px each frame.
+    font_family: Option<&str>,
     max_width_bucket: u32,
-    /// Extended typography folded into the key (weight, and the f32 tracking /
-    /// line-height as raw bits) so a typographic change re-measures.
-    weight: u16,
-    letter_spacing_bits: u32,
-    line_height_bits: Option<u32>,
-    /// Line cap folded into the key so the clamped and unclamped heights of the
-    /// same label don't collide (a `max_lines(1)` label must not reuse the full
-    /// wrapped measurement cached for the same string elsewhere).
     max_lines: Option<u32>,
+    typo: Typography,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut h);
+    ((font_size * 100.0) as u32).hash(&mut h);
+    bold.hash(&mut h);
+    monospace.hash(&mut h);
+    match font_family {
+        Some(f) => {
+            1u8.hash(&mut h);
+            f.hash(&mut h);
+        }
+        None => 0u8.hash(&mut h),
+    }
+    max_width_bucket.hash(&mut h);
+    typo.weight.unwrap_or(0).hash(&mut h);
+    typo.letter_spacing.to_bits().hash(&mut h);
+    typo.line_height.map(f32::to_bits).hash(&mut h);
+    typo.italic.hash(&mut h);
+    (typo.align as u8).hash(&mut h);
+    max_lines.hash(&mut h);
+    h.finish()
 }
 
 /// Persistent cache for text measurements. Lives across frames.
 pub struct MeasureCache {
-    entries: HashMap<MeasureKey, TextMetrics>,
+    entries: HashMap<u64, TextMetrics>,
 }
 
 impl MeasureCache {
@@ -93,18 +127,16 @@ impl TextMeasure for TextRendererMeasurer<'_> {
             Some(w) if w.is_finite() => ((w / 4.0).round() * 4.0) as u32,
             _ => u32::MAX,
         };
-        let key = MeasureKey {
-            content: content.to_string(),
-            font_size_x100: (font_size * 100.0) as u32,
+        let key = measure_key(
+            content,
+            font_size,
             bold,
             monospace,
-            font_family: font_family.map(str::to_string),
+            font_family,
             max_width_bucket,
-            weight: typo.weight.unwrap_or(0),
-            letter_spacing_bits: typo.letter_spacing.to_bits(),
-            line_height_bits: typo.line_height.map(f32::to_bits),
             max_lines,
-        };
+            typo,
+        );
         if let Some(&cached) = self.cache.borrow().entries.get(&key) {
             return cached;
         }
@@ -326,7 +358,10 @@ pub struct TextHitLayout {
     pub text_idx: usize,
     /// 元の表示テキスト (truncate 後の `…` 付きを含む可能性あり)。 clipboard
     /// extract で substring に使う。
-    pub content: String,
+    ///
+    /// `Arc<str>` なのは、描画結果から選択の突き合わせまで**同じ文字列を
+    /// 参照カウントで持ち回す**ため (#80)。
+    pub content: std::sync::Arc<str>,
     /// 各 glyph の hitbox。 行は `line_index` でグループ化されてる。
     pub hits: Vec<GlyphHit>,
     /// 描画時に効いていた scissor clip (overflow_scroll / overflow_hidden の交差)。
@@ -432,12 +467,23 @@ pub fn render_list_to_gpu_with_hits(
                 } else {
                     None
                 };
-                let (mut produced, hits) = tr.prepare_text_with_hits(
-                    &d.content, d.position.x, d.position.y,
-                    d.font_size, d.color, max_width,
-                    d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
-                    d.typo,
-                );
+                let (mut produced, hits) = if needs_hit_layout(d) {
+                    let (g, h) = tr.prepare_text_with_hits(
+                        &d.content, d.position.x, d.position.y,
+                        d.font_size, d.color, max_width,
+                        d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
+                        d.typo,
+                    );
+                    (g, Some(h))
+                } else {
+                    let g = tr.prepare_text_styled(
+                        &d.content, d.position.x, d.position.y,
+                        d.font_size, d.color, max_width,
+                        d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
+                        d.typo,
+                    );
+                    (g, None)
+                };
                 // Glyphs turn; `hits` deliberately do NOT. Selection, caret and
                 // link hit-testing all read the axis-aligned boxes, so on
                 // rotated text they describe where the run *would* sit unrotated.
@@ -455,15 +501,17 @@ pub fn render_list_to_gpu_with_hits(
                     }
                 }
                 glyphs.extend(produced);
-                text_layouts.push(TextHitLayout {
-                    text_idx: cur_idx,
-                    content: d.content.clone(),
-                    hits,
-                    clip_rect: clip,
-                    highlight: d.highlight.clone(),
-                    link_ranges: d.link_ranges.clone(),
-                    no_select: d.no_select,
-                });
+                if let Some(hits) = hits {
+                    text_layouts.push(TextHitLayout {
+                        text_idx: cur_idx,
+                        content: d.content.clone(),
+                        hits,
+                        clip_rect: clip,
+                        highlight: d.highlight.clone(),
+                        link_ranges: d.link_ranges.clone(),
+                        no_select: d.no_select,
+                    });
+                }
             }
             RenderCommand::Polyline(d) => {
                 let clip = clip_stack.last().copied();
@@ -971,7 +1019,7 @@ mod tests {
         let clip = Rect::new(0.0, 0.0, 300.0, 400.0); // viewport
         let make = |pos_y: f32, max_h: f32| TextDraw {
             element_index: 0,
-            content: "あ".repeat(400),
+            content: std::sync::Arc::from("あ".repeat(400).as_str()),
             position: sabitori_core::Point::new(0.0, pos_y),
             max_width: 280.0,
             max_height: max_h,
@@ -1201,5 +1249,157 @@ mod overlay_emptiness_tests {
         };
         assert!(!rings.is_empty(), "リングだけの層");
         assert!(!lines.is_empty(), "線だけの層");
+    }
+}
+
+#[cfg(test)]
+mod measure_key_tests {
+    //! **計測キャッシュの鍵が、区別すべきものを区別すること** ([#80])。
+    //!
+    //! 鍵から文字列を落として 64bit のハッシュにしたので、材料を 1 つ書き
+    //! 忘れると **違うものが同じ測定値を共有する** — 太字だけ違う 2 つの
+    //! ラベルが同じ幅になり、片方だけ字が枠からはみ出す。落ちるのは
+    //! 「幅がおかしい」という遠い症状なので、ここで直接押さえる。
+    //!
+    //! [#80]: https://github.com/Mutafika/sabitori/issues/80
+
+    use super::measure_key;
+    use sabitori_core::element::{TextAlign, Typography};
+
+    fn base() -> (String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography) {
+        ("予約".to_string(), 14.0, false, false, None, u32::MAX, None, Typography::default())
+    }
+
+    fn key_of(
+        (content, size, bold, mono, family, width, lines, typo): (
+            String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography,
+        ),
+    ) -> u64 {
+        measure_key(&content, size, bold, mono, family.as_deref(), width, lines, typo)
+    }
+
+    /// 同じ材料なら同じ鍵 (そうでないとキャッシュが 1 度も当たらない)。
+    #[test]
+    fn the_same_inputs_give_the_same_key() {
+        assert_eq!(key_of(base()), key_of(base()));
+    }
+
+    /// **測定値を変えうるものは、全部鍵に入っていること。**
+    #[test]
+    fn everything_that_changes_the_measurement_changes_the_key() {
+        let baseline = key_of(base());
+        let cases: [(&str, fn(&mut (String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography))); 10] = [
+            ("本文", |b| b.0 = "返却".into()),
+            ("文字の大きさ", |b| b.1 = 15.0),
+            ("太字", |b| b.2 = true),
+            ("等幅", |b| b.3 = true),
+            ("書体の指定", |b| b.4 = Some("Hiragino".into())),
+            ("折り返す幅", |b| b.5 = 240),
+            ("行数の上限", |b| b.6 = Some(1)),
+            ("字送り", |b| b.7.letter_spacing = 1.0),
+            ("行の高さ", |b| b.7.line_height = Some(2.0)),
+            ("斜体", |b| b.7.italic = true),
+        ];
+        for (what, change) in cases {
+            let mut b = base();
+            change(&mut b);
+            assert_ne!(key_of(b), baseline, "{what} を変えても同じ鍵になっている");
+        }
+    }
+
+    /// 行揃えとウェイトも (上の表に入れると型が合わないので別で)。
+    #[test]
+    fn alignment_and_weight_are_in_the_key() {
+        let baseline = key_of(base());
+
+        let mut b = base();
+        b.7.align = TextAlign::Center;
+        assert_ne!(key_of(b), baseline, "行揃えが鍵に入っていない");
+
+        let mut b = base();
+        b.7.weight = Some(700);
+        assert_ne!(key_of(b), baseline, "ウェイトが鍵に入っていない");
+    }
+}
+
+#[cfg(test)]
+mod hit_layout_tests {
+    //! **誰も読まない hitbox を作らない** ([#80]) の判定。
+    //!
+    //! 削りすぎると「選択やリンクが特定の文字でだけ効かない」になり、
+    //! 削らなすぎると端末のような画面で要素ごとに 1 確保が戻る。どちらも
+    //! 遠い症状で出るので、判定そのものをここで押さえる。
+    //!
+    //! [#80]: https://github.com/Mutafika/sabitori/issues/80
+
+    use super::needs_hit_layout;
+    use sabitori_core::render_list::TextDraw;
+    use sabitori_core::{Color, HighlightSpec, LinkRange, Point};
+
+    fn draw() -> TextDraw {
+        TextDraw {
+            element_index: 0,
+            content: std::sync::Arc::from("予約番号 R-0042"),
+            position: Point::new(0.0, 0.0),
+            max_width: 200.0,
+            max_height: 20.0,
+            font_size: 14.0,
+            color: Color::WHITE,
+            bold: false,
+            monospace: false,
+            font_family: None,
+            max_lines: None,
+            typo: Default::default(),
+            highlight: Vec::new(),
+            link_ranges: None,
+            rotation: 0.0,
+            no_select: false,
+        }
+    }
+
+    /// 選べる文字は作る (既定)。
+    #[test]
+    fn selectable_text_keeps_its_hitboxes() {
+        assert!(needs_hit_layout(&draw()));
+    }
+
+    /// 選べず、ハイライトもリンクも無い文字は作らない。
+    #[test]
+    fn plain_unselectable_text_needs_nothing() {
+        let d = TextDraw { no_select: true, ..draw() };
+        assert!(!needs_hit_layout(&d));
+    }
+
+    /// **選べなくても、敷くものがあるなら要る。** ⌘F の当たりを
+    /// `no_select` の見出しに敷く、のような形で効く。
+    #[test]
+    fn highlights_need_hitboxes_even_when_unselectable() {
+        let d = TextDraw {
+            no_select: true,
+            highlight: vec![HighlightSpec {
+                ranges: vec![(0, 4)],
+                color: Color::WHITE,
+                ..Default::default()
+            }],
+            ..draw()
+        };
+        assert!(needs_hit_layout(&d));
+    }
+
+    /// リンクも同じ (下線と当たり判定に要る)。
+    #[test]
+    fn links_need_hitboxes_even_when_unselectable() {
+        let d = TextDraw {
+            no_select: true,
+            link_ranges: Some(vec![LinkRange {
+                start: 0,
+                end: 4,
+                id: "r-0042".into(),
+                tooltip: None,
+                color: Color::WHITE,
+            }]),
+            ..draw()
+        };
+        assert!(needs_hit_layout(&d));
     }
 }

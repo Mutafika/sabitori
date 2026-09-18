@@ -147,7 +147,10 @@ pub struct TextDraw {
     /// 当たり領域と突き合わせるための番号が要る (#25)。
     pub element_index: usize,
     /// The text content.
-    pub content: String,
+    ///
+    /// `Arc<str>` なのは、**組んだツリーから描画結果まで同じ文字列を
+    /// 参照カウントで持ち回す**ため (#80)。`&*draw.content` で `&str` になる。
+    pub content: std::sync::Arc<str>,
     /// Top-left position in logical pixels.
     pub position: Point,
     /// Maximum width for line wrapping.

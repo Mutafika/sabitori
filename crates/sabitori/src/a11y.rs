@@ -157,11 +157,11 @@ pub(crate) fn tree_update(
         // 隣り合った領域のどちらに入るかが丸め次第になる)。
         let probe = sabitori_core::Point::new(t.position.x + 1.0, t.position.y + 1.0);
         match innermost_containing(&regions, probe) {
-            Some(i) => names[i].push(t.content.clone()),
+            Some(i) => names[i].push(t.content.to_string()),
             None => loose.push((
                 t.element_index,
                 Rect::new(t.position.x, t.position.y, t.max_width, t.font_size * 1.4),
-                t.content.clone(),
+                t.content.to_string(),
             )),
         }
     }
