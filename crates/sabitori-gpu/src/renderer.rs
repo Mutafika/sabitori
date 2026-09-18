@@ -93,6 +93,51 @@ pub(crate) struct UnmetLimit {
 ///
 /// Pure so it can be unit-tested without a GPU — see the tests at the bottom
 /// of this module.
+/// GPU を用意できなかった理由 ([#82])。
+///
+/// wasm では実際に起きる (WebGL2 も WebGPU も無い、上限が足りない)。panic に
+/// すると canvas が真っ白なまま console にしか出ないので、**画面に出せる形**で
+/// 返す。`Display` はそのまま利用者に見せられる日本語。
+///
+/// [#82]: https://github.com/Mutafika/sabitori/issues/82
+#[derive(Debug)]
+pub enum GpuInitError {
+    /// 描画面 (surface) を作れなかった。canvas が無い / WebGL2 も WebGPU も無い。
+    NoSurface(String),
+    /// アダプタが 1 つも見つからない。
+    NoAdapter,
+    /// デバイスを作れなかった。`unmet` があれば、足りなかった上限の名前と値。
+    DeviceRejected {
+        unmet: Option<UnmetLimit>,
+        source: String,
+    },
+}
+
+impl std::fmt::Display for GpuInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSurface(e) => write!(
+                f,
+                "描画面を作れませんでした。この環境では WebGL2 / WebGPU が使えない可能性があります ({e})"
+            ),
+            Self::NoAdapter => write!(
+                f,
+                "GPU が見つかりませんでした。ハードウェアアクセラレーションが切られているか、この環境では使えません"
+            ),
+            Self::DeviceRejected { unmet: Some(u), .. } => write!(
+                f,
+                "GPU の上限が足りません: {} は {} 必要ですが、この環境は {} です",
+                u.name, u.needed, u.have
+            ),
+            Self::DeviceRejected { unmet: None, source } => {
+                write!(f, "GPU デバイスを作れませんでした ({source})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GpuInitError {}
+
 pub(crate) fn first_unmet_minimum(available: &wgpu::Limits) -> Option<UnmetLimit> {
     MINIMUM_LIMITS.iter().find_map(|(name, needed, get)| {
         let have = get(available);
@@ -242,6 +287,23 @@ impl GpuRenderer {
         window: Arc<winit::window::Window>,
         transparent: bool,
     ) -> Self {
+        match Self::try_new_async_with_alpha(window, transparent).await {
+            Ok(r) => r,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// [`GpuRenderer::new_async_with_alpha`] の、**落ちずに理由を返す**版
+    /// ([#82](https://github.com/Mutafika/sabitori/issues/82))。
+    ///
+    /// wasm では「GPU が用意できない」が実際に起きる (WebGL2 も WebGPU も無い、
+    /// 上限が足りない)。panic だと canvas が真っ白なまま console にしか出ないので、
+    /// **画面にメッセージを出せる形**で返す。[`GpuInitError`] の `Display` は
+    /// そのまま利用者に見せられる。
+    pub async fn try_new_async_with_alpha(
+        window: Arc<winit::window::Window>,
+        transparent: bool,
+    ) -> Result<Self, GpuInitError> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
 
@@ -255,7 +317,9 @@ impl GpuRenderer {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window).expect("Failed to create surface");
+        let surface = instance
+            .create_surface(window)
+            .map_err(|e| GpuInitError::NoSurface(e.to_string()))?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -264,7 +328,7 @@ impl GpuRenderer {
                 force_fallback_adapter: false,
             })
             .await
-            .expect("Failed to find a suitable GPU adapter");
+            .ok_or(GpuInitError::NoAdapter)?;
 
         tracing::info!("GPU: {}", adapter.get_info().name);
 
@@ -296,7 +360,10 @@ impl GpuRenderer {
                 None,
             )
             .await
-            .expect("Failed to create device");
+            .map_err(|e| GpuInitError::DeviceRejected {
+                unmet: first_unmet_minimum(&adapter.limits()),
+                source: e.to_string(),
+            })?;
 
         let device = Arc::new(device);
         let queue = Arc::new(queue);
@@ -440,7 +507,7 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        Self {
+        Ok(Self {
             device,
             queue,
             surface,
@@ -457,7 +524,7 @@ impl GpuRenderer {
             depth_format: wgpu::TextureFormat::Depth32Float,
             capture_pending: false,
             captured: None,
-        }
+        })
     }
 
     /// プラグインウィンドウ等の外部ハンドルから GpuRenderer を生成。

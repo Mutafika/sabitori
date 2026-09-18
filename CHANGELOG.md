@@ -49,6 +49,22 @@
 
 ### Added
 
+- **wasm で起動に失敗したら、理由を画面に出すようになった**
+  ([#82](https://github.com/Mutafika/sabitori/issues/82)、[#72] の残り)。GPU を
+  用意できないときは `expect` で落ちるだけだったので、**canvas が真っ白なまま**
+  console を開かないと何が起きたのか分からなかった。WebGL2 も WebGPU も無い環境、
+  ハードウェアアクセラレーションが切られている環境で実際に起きる。
+
+  `GpuRenderer::try_new_async_with_alpha(..)` が `GpuInitError` を返すように
+  なり、wasm のランタイムはそれを canvas の上の `<div>` に出す。文言は
+  そのまま利用者に見せられる日本語で、**どの上限がいくつ足りないか**まで出す。
+
+  WebGL を切った Chrome で確認:
+  「画面を表示できませんでした。描画面を作れませんでした。この環境では
+  WebGL2 / WebGPU が使えない可能性があります (…)」
+
+  [#72]: https://github.com/Mutafika/sabitori/issues/72
+
 - **`SABITORI_SCREENSHOT=out.png` で、起動して落ち着いたら PNG を書いて終わる**
   ([#69](https://github.com/Mutafika/sabitori/issues/69))。`SABITORI_BACKGROUND=1`
   で窓を出さずに起こせるようになった後も、**撮るにはウィンドウ ID が要り**、

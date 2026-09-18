@@ -69,6 +69,9 @@ pub mod ios_keyboard;
 /// web の打鍵の仕分け (DOM を触らない部分)。wasm でしか動かない `web_ime` から
 /// 切り出してあるのは、**CI のテストが走る場所に置く**ため (#81)。
 mod web_keys;
+/// 起動に失敗したことを画面 (DOM) に出す (#82)。
+#[cfg(target_arch = "wasm32")]
+pub mod web_error;
 /// Web の文字入力の橋渡し (隠し textarea)。日本語 IME・ソフトキーボード・
 /// 貼り付けが canvas だけでは届かないため (issue #73)。
 #[cfg(target_arch = "wasm32")]

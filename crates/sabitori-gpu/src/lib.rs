@@ -18,7 +18,7 @@ pub use context::{GpuContext, SceneRenderContext};
 pub use image_renderer::{ImageInstance, ImageRenderer};
 pub use instance::{LineInstance, RectInstance, RingInstance};
 pub use line_renderer::LineRenderer;
-pub use renderer::{capture_wanted, CapturedFrame, GpuRenderer, RenderPhase};
+pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, RenderPhase};
 pub use ring_renderer::RingRenderer;
 pub use texture_budget::TextureBudget;
 pub use ui_overlay::UiOverlayRenderer;

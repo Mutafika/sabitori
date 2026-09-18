@@ -4490,7 +4490,23 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                 self.renderer_init_started = true;
                 let inner = Rc::clone(&self.inner);
                 wasm_bindgen_futures::spawn_local(async move {
-                    let mut gpu = GpuRenderer::new_async(window.clone()).await;
+                    // **落ちずに理由を画面へ** (#82)。canvas が真っ白なまま
+                    // console にしか出ない状態だと、利用者は何が起きたか
+                    // 分からない (GPU が無い環境では実際に起きる — #72)。
+                    let mut gpu = match GpuRenderer::try_new_async_with_alpha(
+                        window.clone(),
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(gpu) => gpu,
+                        Err(e) => {
+                            crate::web_error::show(&format!(
+                                "画面を表示できませんでした。\n{e}"
+                            ));
+                            return;
+                        }
+                    };
                     // Fix initial 1x1 canvas size
                     let size = window.inner_size();
                     if size.width > 1 && size.height > 1 {
