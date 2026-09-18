@@ -49,6 +49,26 @@
 
 ### Added
 
+- **`SABITORI_SCREENSHOT=out.png` で、起動して落ち着いたら PNG を書いて終わる**
+  ([#69](https://github.com/Mutafika/sabitori/issues/69))。`SABITORI_BACKGROUND=1`
+  で窓を出さずに起こせるようになった後も、**撮るにはウィンドウ ID が要り**、
+  それを得るのに外部ツール (CGWindowList を叩く自作バイナリ) が必要だった。
+  しかも「描き終わった」を外から知る手段が無く、`sleep` で待つしかなかった。
+
+  ```sh
+  SABITORI_BACKGROUND=1 SABITORI_SCREENSHOT=out.png ./app
+  ```
+
+  **描くものが無くなった最初のフレーム**を書いて終了する (非同期のロードも
+  含めて落ち着いた合図)。窓の枠は入らない — 描画面そのもの。動き続ける画面
+  (時計・粒子) で永久に撮れないことが無いよう、`SABITORI_SCREENSHOT_TIMEOUT_MS`
+  (既定 10 秒) で打ち切る。`SABITORI_SCREENSHOT_AFTER_IDLE=0` なら最初に描いた
+  フレームで撮る。
+
+  サーフェスを読み戻せるようにする `COPY_SRC` は、**この env があるときだけ**
+  足す (WebGL2 のサーフェスはコピー元になれないので、無条件に付けると wasm で
+  起動できない環境が出る)。native の両ランタイム (declarative / scene_app) に入る。
+
 - **文字ごとに前景色を変えられる `Element::color_spans(..)`**
   ([#78](https://github.com/Mutafika/sabitori/issues/78))。色をバイト範囲で
   指定できる口が**背景 (`HighlightSpec`) と下線 (`LinkRange`) にしか無かった**

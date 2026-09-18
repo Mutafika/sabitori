@@ -156,6 +156,35 @@ pub struct GpuRenderer {
     pub depth_texture: Option<wgpu::Texture>,
     pub depth_view: Option<wgpu::TextureView>,
     pub depth_format: wgpu::TextureFormat,
+    /// 次に描くフレームを読み戻す ([`GpuRenderer::request_capture`])。
+    capture_pending: bool,
+    /// 読み戻したフレーム ([`GpuRenderer::take_captured`] で取り出す)。
+    captured: Option<CapturedFrame>,
+}
+
+/// 読み戻した 1 フレーム (RGBA8、上から下)。
+///
+/// **窓の枠は入らない** — 描画面そのもの。`SABITORI_SCREENSHOT` で使う
+/// ([#69](https://github.com/Mutafika/sabitori/issues/69))。
+#[derive(Clone, Debug)]
+pub struct CapturedFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// このプロセスはフレームを読み戻す予定があるか (`SABITORI_SCREENSHOT`)。
+///
+/// サーフェスの usage は**設定時に決まる**ので、起動時に知る必要がある。
+pub fn capture_wanted() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os("SABITORI_SCREENSHOT").is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
 }
 
 /// サーフェスのフォーマットを選ぶ。sRGB を最優先する。
@@ -294,8 +323,15 @@ impl GpuRenderer {
             wgpu::PresentMode::AutoVsync
         };
         tracing::info!("present_mode: {:?}", present_mode);
+        // 読み戻す予定があるときだけ COPY_SRC を足す (#69)。常に足さないのは、
+        // WebGL2 のサーフェスがコピー元になれないため — wasm で無条件に付けると
+        // **起動できない環境が出る**。
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if capture_wanted() {
+            usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format: surface_format,
             width: size.width.max(1).min(max_dim),
             height: size.height.max(1).min(max_dim),
@@ -419,6 +455,8 @@ impl GpuRenderer {
             depth_texture: None,
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
+            capture_pending: false,
+            captured: None,
         }
     }
 
@@ -485,8 +523,12 @@ impl GpuRenderer {
         let surface_format = pick_surface_format(&surface_caps);
 
         let max_dim = device.limits().max_texture_dimension_2d;
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if capture_wanted() {
+            usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format: surface_format,
             width: width.max(1).min(max_dim),
             height: height.max(1).min(max_dim),
@@ -612,6 +654,8 @@ impl GpuRenderer {
             depth_texture: None,
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
+            capture_pending: false,
+            captured: None,
         }
     }
 
@@ -662,6 +706,97 @@ impl GpuRenderer {
     /// installed that takes the whole process down — i.e. the app crashes mid
     /// window-resize. Reconciling here keeps color + depth (and the globals
     /// uniform) in lockstep with the real drawable for every frame.
+    /// **次に描くフレームを読み戻す** ([#69])。
+    ///
+    /// 読み戻せるのは、起動時に `SABITORI_SCREENSHOT` が立っていたときだけ
+    /// (サーフェスの usage は設定時に決まるため)。立っていなければ何も起きない。
+    ///
+    /// [#69]: https://github.com/Mutafika/sabitori/issues/69
+    pub fn request_capture(&mut self) {
+        self.capture_pending = capture_wanted();
+    }
+
+    /// 読み戻したフレームを取り出す (1 回だけ返る)。
+    pub fn take_captured(&mut self) -> Option<CapturedFrame> {
+        self.captured.take()
+    }
+
+    /// 描き終わったサーフェスを読み戻す。`present()` の**前**に呼ぶこと。
+    ///
+    /// wgpu は行の先頭を 256 バイトに揃えることを要求するので、幅によっては
+    /// 余白が挟まる。揃えずに読むと画像が斜めにずれる。サーフェスは
+    /// BGRA のことがあるので、その場合は並べ替えて RGBA で返す。
+    fn capture_if_requested(&mut self, texture: &wgpu::Texture) {
+        if !self.capture_pending {
+            return;
+        }
+        self.capture_pending = false;
+
+        let (width, height) = (texture.width(), texture.height());
+        const ALIGN: u32 = 256;
+        let unpadded = width * 4;
+        let padded = unpadded.div_ceil(ALIGN) * ALIGN;
+
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sabitori_capture"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::Maintain::Wait);
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            tracing::warn!("フレームを読み戻せなかった");
+            return;
+        }
+
+        let bgra = matches!(
+            self.surface_config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let mapped = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height {
+            let start = (row * padded) as usize;
+            let line = &mapped[start..start + unpadded as usize];
+            if bgra {
+                for px in line.chunks_exact(4) {
+                    rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+                }
+            } else {
+                rgba.extend_from_slice(line);
+            }
+        }
+        drop(mapped);
+        buffer.unmap();
+
+        self.captured = Some(CapturedFrame { width, height, rgba });
+    }
+
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
         let output = match self.surface.get_current_texture() {
             Ok(tex) => tex,
@@ -772,6 +907,7 @@ impl GpuRenderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+        self.capture_if_requested(&output.texture);
         output.present();
 
         Ok(())
@@ -907,6 +1043,7 @@ impl GpuRenderer {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
 
+        self.capture_if_requested(&output.texture);
         output.present();
 
         Ok(())
@@ -1044,6 +1181,7 @@ impl GpuRenderer {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
 
+        self.capture_if_requested(&output.texture);
         output.present();
         Ok(())
     }
@@ -1193,6 +1331,7 @@ impl GpuRenderer {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
 
+        self.capture_if_requested(&output.texture);
         output.present();
         Ok(())
     }

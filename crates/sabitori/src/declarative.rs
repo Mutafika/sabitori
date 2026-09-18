@@ -1010,6 +1010,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 窓が見えていない (最小化 / 完全に覆われている)。`WindowEvent::Occluded`
     /// で立つ (#79)。
     occluded: bool,
+    /// `SABITORI_SCREENSHOT` で 1 枚撮って終わる (#69)。env が無ければ何もしない。
+    #[cfg(not(target_arch = "wasm32"))]
+    shooter: crate::screenshot::Shooter,
     /// 支援技術へのツリー送出 (#25)。窓を作るときに一緒に作る。
     /// **スクリーンリーダが起きていないあいだは何もしない** — 変換ごと
     /// 省かれるので、ふつうの起動で費用はほぼゼロ。
@@ -2102,6 +2105,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // Frame finished — invalidate the dirty flag so lazy mode
                 // can park the next about_to_wait until something changes.
                 self.dirty = false;
+                // 1 枚描いた (#69 のスクリーンショットは、描く前に撮ると
+                // 真っ白になるのでここを合図にする)。
+                #[cfg(not(target_arch = "wasm32"))]
+                self.shooter.note_drew();
             }
             _ => {}
         }
@@ -2197,6 +2204,28 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             occluded: self.occluded,
         }
         .must_draw();
+
+        // 落ち着いたら 1 枚撮って終わる (#69)。`must_draw` が下りたフレームが
+        // 「描くものが無くなった」= 非同期のロードも含めて落ち着いた合図。
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.shooter.armed() {
+            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured()) {
+                if self.shooter.write(frame) {
+                    event_loop.exit();
+                    return;
+                }
+            }
+            if self.shooter.should_request(!must_draw) {
+                self.shooter.mark_requested();
+                if let Some(r) = self.renderer.as_mut() {
+                    r.request_capture();
+                }
+                // 読み戻すにはもう 1 枚描く必要がある。
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+        }
 
         if must_draw {
             if let Some(w) = self.window.as_ref() {
@@ -2591,6 +2620,8 @@ impl<A: DeclarativeApp> AppState<A> {
             atlas_recover_pending: false,
             fonts_applied: 0,
             occluded: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            shooter: crate::screenshot::Shooter::from_env(),
             #[cfg(not(target_arch = "wasm32"))]
             a11y: None,
             extras: std::collections::HashMap::new(),

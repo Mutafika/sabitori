@@ -54,6 +54,9 @@ pub mod testing;
 mod a11y;
 /// 実行時にフォントを足す (#75 の 13)。
 pub mod fonts;
+/// 起動して落ち着いたら PNG を書いて終わる (#69)。native だけ。
+#[cfg(not(target_arch = "wasm32"))]
+mod screenshot;
 /// 画面外に描く (帳票・印刷・画像の書き出し) (#75 の 12)。native だけ。
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;

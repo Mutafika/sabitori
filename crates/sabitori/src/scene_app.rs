@@ -106,6 +106,9 @@ struct SceneAppState<A: SceneApp> {
     fonts_applied: usize,
     /// 窓が見えていない (最小化 / 完全に覆われている)。#79。
     occluded: bool,
+    /// `SABITORI_SCREENSHOT` で 1 枚撮って終わる (#69)。native だけ。
+    #[cfg(not(target_arch = "wasm32"))]
+    shooter: crate::screenshot::Shooter,
     /// 支援技術へのツリー送出 (#25)。declarative ランタイムと同じ 1 実装を使う。
     #[cfg(not(target_arch = "wasm32"))]
     a11y: Option<crate::a11y::Bridge>,
@@ -1367,6 +1370,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // フレームを描き終えた — 次の `about_to_wait` が park できるよう
                 // 無効化フラグを降ろす。
                 self.dirty = false;
+                // 1 枚描いた (#69)。
+                #[cfg(not(target_arch = "wasm32"))]
+                self.shooter.note_drew();
             }
 
             _ => {}
@@ -1428,6 +1434,26 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         }
         .must_draw();
 
+        // 落ち着いたら 1 枚撮って終わる (#69)。declarative 版と同じ規約。
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.shooter.armed() {
+            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured()) {
+                if self.shooter.write(frame) {
+                    event_loop.exit();
+                    return;
+                }
+            }
+            if self.shooter.should_request(!must_draw) {
+                self.shooter.mark_requested();
+                if let Some(r) = self.renderer.as_mut() {
+                    r.request_capture();
+                }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+        }
+
         if must_draw {
             if let Some(w) = self.window.as_ref() {
                 w.request_redraw();
@@ -1468,6 +1494,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_build: None,
         fonts_applied: 0,
         occluded: false,
+        #[cfg(not(target_arch = "wasm32"))]
+        shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,
@@ -1525,6 +1553,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_build: None,
         fonts_applied: 0,
         occluded: false,
+        #[cfg(not(target_arch = "wasm32"))]
+        shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
         a11y: None,
         mouse_x: 0.0,
