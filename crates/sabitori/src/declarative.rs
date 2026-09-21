@@ -1955,14 +1955,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // from, so there is exactly one place that stores it — see the
                 // `commit_build` call below.
                 let drawn_build = if has_overlay {
-                    // Merge external overlay draws into build_result.overlay_list
-                    // so the renderer has one overlay command stream.
-                    let external_hits = if let Some(ext) = overlay_build {
-                        build_result.overlay_list.commands.extend(ext.render_list.commands);
-                        ext.hit_regions
-                    } else {
-                        Vec::new()
-                    };
+                    // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
+                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
                     let (mut base_rects, mut base_lists, text_layouts) =
                         UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
                     let (overlay_rects, overlay_lists) =
@@ -1998,11 +1993,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     }
                     base_rects.extend(sel_rects);
 
-                    // External overlay hit regions (if any) go in front of
-                    // everything else — same precedence the old overlay_view
-                    // path had.
-                    let mut merged = build_result;
-                    merged.hit_regions.splice(0..0, external_hits);
+                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
+                    let merged = build_result;
 
                     let device = renderer.device.clone();
                     let queue = renderer.queue.clone();
@@ -4713,6 +4705,7 @@ mod frame_tests {
         let frame = state.build_frame(w, h, &StubMeasure);
         state.commit_build(frame.build_result);
     }
+
 
     /// #57: a declarative app must be handed the build it was rendered from.
     /// Before the fix `on_build` existed but nothing ever called it, so

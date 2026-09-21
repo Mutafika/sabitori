@@ -172,6 +172,7 @@ pub(crate) fn tree_update(
     // 「ボタン、テキスト欄、保存、保存した回数: 0」のように本文が最後へ回る。
     let mut ordered: Vec<(usize, NodeId)> = Vec::new();
     let mut ids = std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
     let mut focus = ROOT;
 
     for (i, region) in regions.iter().enumerate() {
@@ -180,6 +181,19 @@ pub(crate) fn tree_update(
             continue;
         }
         let node_id = NodeId(region.element_index as u64 + 1);
+        // ★**同じ番号を 2 度渡さない。**accesskit は同じ子を 2 つ持つ
+        // `TreeUpdate` を panic で断る (`TreeUpdate includes duplicate child`)
+        // ので、ここで 1 つ落とすのと窓ごと落ちるのとの二択になる。番号が
+        // ぶつからないようにするのは渡す側の仕事 (overlay は
+        // `runtime_shared::OVERLAY_INDEX_BASE` で別の帯に置いてある) で、
+        // これはその取りこぼしが**窓を殺さない**ための受け皿。
+        //
+        // **`ids` や `focus` を触る前に落とす。** 後ろに置くと、ツリーに残るのは
+        // 1 つ目のノードなのに `ids` は 2 つ目の要素 id を指したままになり、
+        // 読み上げからそれを押すと**別の要素が押される**。
+        if !seen.insert(node_id) {
+            continue;
+        }
         let role = region.role.map(ax_role).unwrap_or(AxRole::Group);
         let mut node = Node::new(role);
         node.set_bounds(ax_rect(region.rect));
@@ -583,5 +597,37 @@ mod order_tests {
             labels_in_order(&root),
             vec!["車両一覧", "3 件あります", "追加", "最終更新 10:30"]
         );
+    }
+
+    /// ★**同じ番号の領域を 2 つ渡されても窓を落とさない。**
+    ///
+    /// overlay は別のツリーとして組まれるので `element_index` が 0 から振り直され、
+    /// 地の領域と混ざると同じ番号が 2 つ並ぶ。番号から `NodeId` を作っているので、
+    /// そのまま渡すと accesskit が `TreeUpdate includes duplicate child` で
+    /// **panic し、窓ごと落ちる**（2026-09-21 に実機で踏んだ：menu を開いた状態で
+    /// 読み上げが起きていた）。置き場は `declarative::OVERLAY_INDEX_BASE` で分けたが、
+    /// ここは取りこぼしても窓が死なないための受け皿。
+    #[test]
+    fn two_regions_that_share_a_number_do_not_take_the_window_down() {
+        let root = div()
+            .w_full()
+            .h_full()
+            .flex_col()
+            .children([button("保存").id("save").w(Px(80.0)).h(Px(32.0))]);
+        let mut build = build_tree(&root, 800.0, 600.0);
+        // menu の行が混ざった形を作る ── 番号は overlay 側の振り直しでぶつかる。
+        // `HitRegion` は Clone ではないので、同じ木をもう一度組んで足す
+        // （overlay が別のツリーとして組まれるのと同じ形）。
+        let again = build_tree(&root, 800.0, 600.0);
+        build.hit_regions.extend(again.hit_regions);
+
+        let t = tree_update(&build, "テスト", None, 2.0);
+
+        let root_node = &t.update.nodes.last().expect("根が無い").1;
+        let kids: Vec<_> = root_node.children().to_vec();
+        let mut uniq = kids.clone();
+        uniq.sort_by_key(|n| n.0);
+        uniq.dedup();
+        assert_eq!(kids.len(), uniq.len(), "同じ子が 2 つ並んだ TreeUpdate を作った");
     }
 }

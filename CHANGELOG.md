@@ -15,6 +15,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **menu を開いたまま読み上げが動いていると窓が落ちる**のを直した。overlay は
+  地とは別のツリーとして組まれるので `element_index` が 0 から振り直されるが、
+  その当たり領域を地の `hit_regions` へ混ぜていた（`overlay_view` の分は
+  手前に差し込まれる）。`a11y` は番号から `NodeId(element_index + 1)` を作るので、
+  **同じ子を 2 つ並べた `TreeUpdate`** になり accesskit が panic する
+  （`TreeUpdate includes duplicate child`）。当たり判定も描画も矩形で動いていて
+  番号を見ないので、**支援技術が起きている時にしか出ない**。overlay の番号を
+  専用の帯（`1 << 24` 以上）へ移し、`a11y` 側も同じ番号を 2 度渡さないようにした
+  ── 取りこぼしが窓を殺さないため。実機で踏んだのは kasane の
+  フォルダ menu（2026-09-21）。
+
+  **2 ランタイム (declarative / scene_app) の両方が直る。** overlay の畳み込みは
+  両方に手書きされていて、番号をずらすのを片方にだけ入れると**どちらのテストも
+  緑のまま**もう片方が落ち続ける。`runtime_shared::absorb_overlay` の 1 本に
+  まとめ、ランタイム側に手書きが戻っていないことを
+  `tests/overlay_wiring.rs` が見張る。
+
 ## [0.14.1] - 2026-09-22
 
 ### Fixed

@@ -1271,21 +1271,15 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 let queue = renderer.queue.clone();
 
                 if has_overlay {
-                    // Merge the external overlay's draws into the overlay
-                    // command stream; keep its hit regions to splice in front.
-                    let external_hits = if let Some(ob) = overlay_build {
-                        build_result.overlay_list.commands.extend(ob.render_list.commands);
-                        ob.hit_regions
-                    } else {
-                        Vec::new()
-                    };
+                    // 外付け overlay の描画と当たり領域を畳み込む。**declarative と
+                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
                     let (base_rects, base_lists) =
                         UiDrawLists::extract(&build_result.render_list, &mut tr);
                     let (overlay_rects, overlay_lists) =
                         UiDrawLists::extract(&build_result.overlay_list, &mut tr);
-                    // External overlay hits go in front of everything else.
-                    let mut merged = build_result;
-                    merged.hit_regions.splice(0..0, external_hits);
+                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
+                    let merged = build_result;
                     self.last_build = Some(merged);
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
