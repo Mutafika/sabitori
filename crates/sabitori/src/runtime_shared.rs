@@ -238,6 +238,43 @@ pub(crate) fn animators_running(
         || tooltip_state.is_pending()
 }
 
+/// overlay の `element_index` を置く帯の下端。
+///
+/// 地のツリーが取り得る要素数 (数万) より十分上で、`a11y::TEXT_ID_BASE`
+/// (`1 << 32`) より十分下。
+pub(crate) const OVERLAY_INDEX_BASE: usize = 1 << 24;
+
+/// 外付け overlay (`DeclarativeApp::overlay_view`) の描画と当たり領域を、
+/// 地のビルドへ畳み込む。
+///
+/// **2 ランタイムが同じ手順を踏まなければならない所。** 2 つ在ると片方が
+/// 忘れられる — 実際 [#84] の最初の版は declarative だけを直していて、
+/// scene_app には同じ splice が残っていた。
+///
+/// # overlay の番号をずらす理由
+///
+/// overlay は**別のツリー**として組まれるので `element_index` が 0 から
+/// 振り直される。そのまま地の `hit_regions` へ混ぜると、地の n 番目と
+/// overlay の n 番目が同じ番号を名乗る。当たり判定も描画も矩形で動いていて
+/// 番号を見ないので普段は表に出ないが、[`crate::a11y`] は番号から
+/// `NodeId(element_index + 1)` を作るため、**menu を開いたまま支援技術が
+/// 起きていると同じ子が 2 つ並んだ `TreeUpdate` になり、accesskit が panic して
+/// 窓が落ちる** (`TreeUpdate includes duplicate child`)。
+///
+/// 当たり領域は**手前へ**差し込む (overlay は最前面なので、押下もホバーも
+/// 先に当たる)。
+///
+/// [#84]: https://github.com/Mutafika/sabitori/pull/84
+pub(crate) fn absorb_overlay(build: &mut BuildResult, overlay: Option<BuildResult>) {
+    let Some(ext) = overlay else { return };
+    build.overlay_list.commands.extend(ext.render_list.commands);
+    let mut hits = ext.hit_regions;
+    for hit in &mut hits {
+        hit.element_index += OVERLAY_INDEX_BASE;
+    }
+    build.hit_regions.splice(0..0, hits);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +282,64 @@ mod tests {
 
     fn build(root: &sabitori_core::Element) -> BuildResult {
         sabitori_core::build::build_tree(root, 400.0, 300.0)
+    }
+
+    /// ★**overlay の当たり領域は、地とぶつからない番号を持つ** ([#84])。
+    ///
+    /// overlay は別のツリーとして組まれるので `element_index` が 0 から振り直される。
+    /// 混ぜたまま番号から id を作ると、[`crate::a11y`] が同じ子を 2 つ並べた
+    /// `TreeUpdate` を作り、**accesskit が panic して窓が落ちる**
+    /// (2026-09-21 に実機で: menu を開いたまま読み上げが起きていた)。
+    /// 矩形で動く当たり判定と描画には出ないので、**読み上げが動いている時にしか
+    /// 出ない**。
+    ///
+    /// [#84]: https://github.com/Mutafika/sabitori/pull/84
+    #[test]
+    fn an_overlays_hit_regions_do_not_reuse_the_base_trees_numbers() {
+        let one = |id: &str| {
+            div().w(Px(400.0)).h(Px(300.0)).child(
+                sabitori_core::element::button("押す")
+                    .id(id)
+                    .w(Px(80.0))
+                    .h(Px(32.0)),
+            )
+        };
+        let mut base = build(&one("base"));
+        let over = build(&one("menu"));
+
+        let base_numbers: Vec<usize> =
+            base.hit_regions.iter().map(|r| r.element_index).collect();
+        assert!(
+            over.hit_regions.iter().any(|r| base_numbers.contains(&r.element_index)),
+            "前提: 組み直したツリーは同じ番号を振り直す"
+        );
+        let over_count = over.hit_regions.len();
+
+        absorb_overlay(&mut base, Some(over));
+
+        assert!(
+            base.hit_regions[..over_count]
+                .iter()
+                .all(|r| r.element_index >= OVERLAY_INDEX_BASE),
+            "overlay が手前の帯に居ない"
+        );
+        let mut all: Vec<usize> = base.hit_regions.iter().map(|r| r.element_index).collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "同じ番号が 2 つ残っている");
+    }
+
+    /// overlay が無ければ何も動かさない。
+    #[test]
+    fn no_overlay_leaves_the_build_alone() {
+        let mut b = build(&div().child(div().w(Px(10.0)).h(Px(10.0)).on_click(|| {})));
+        let before: Vec<usize> = b.hit_regions.iter().map(|r| r.element_index).collect();
+
+        absorb_overlay(&mut b, None);
+
+        let after: Vec<usize> = b.hit_regions.iter().map(|r| r.element_index).collect();
+        assert_eq!(before, after);
     }
 
     /// ホバーと cursor は独立に引く。 hoverable でない領域が cursor を主張して

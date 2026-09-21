@@ -181,6 +181,19 @@ pub(crate) fn tree_update(
             continue;
         }
         let node_id = NodeId(region.element_index as u64 + 1);
+        // ★**同じ番号を 2 度渡さない。**accesskit は同じ子を 2 つ持つ
+        // `TreeUpdate` を panic で断る (`TreeUpdate includes duplicate child`)
+        // ので、ここで 1 つ落とすのと窓ごと落ちるのとの二択になる。番号が
+        // ぶつからないようにするのは渡す側の仕事 (overlay は
+        // `runtime_shared::OVERLAY_INDEX_BASE` で別の帯に置いてある) で、
+        // これはその取りこぼしが**窓を殺さない**ための受け皿。
+        //
+        // **`ids` や `focus` を触る前に落とす。** 後ろに置くと、ツリーに残るのは
+        // 1 つ目のノードなのに `ids` は 2 つ目の要素 id を指したままになり、
+        // 読み上げからそれを押すと**別の要素が押される**。
+        if !seen.insert(node_id) {
+            continue;
+        }
         let role = region.role.map(ax_role).unwrap_or(AxRole::Group);
         let mut node = Node::new(role);
         node.set_bounds(ax_rect(region.rect));
@@ -212,15 +225,6 @@ pub(crate) fn tree_update(
             if focused == Some(id) {
                 focus = node_id;
             }
-        }
-        // ★**同じ番号を 2 度渡さない。**accesskit は同じ子を 2 つ持つ
-        // `TreeUpdate` を panic で断る (`TreeUpdate includes duplicate child`)
-        // ので、ここで 1 つ落とすのと窓ごと落ちるのとの二択になる。番号が
-        // ぶつからないようにするのは渡す側の仕事 (overlay は
-        // `declarative::OVERLAY_INDEX_BASE` で別の帯に置いてある) で、
-        // これはその取りこぼしが**窓を殺さない**ための受け皿。
-        if !seen.insert(node_id) {
-            continue;
         }
         ordered.push((region.element_index, node_id));
         nodes.push((node_id, node));

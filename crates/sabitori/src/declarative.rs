@@ -1955,14 +1955,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // from, so there is exactly one place that stores it — see the
                 // `commit_build` call below.
                 let drawn_build = if has_overlay {
-                    // Merge external overlay draws into build_result.overlay_list
-                    // so the renderer has one overlay command stream.
-                    let external_hits = if let Some(ext) = overlay_build {
-                        build_result.overlay_list.commands.extend(ext.render_list.commands);
-                        overlay_hits(ext.hit_regions)
-                    } else {
-                        Vec::new()
-                    };
+                    // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
+                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
                     let (mut base_rects, mut base_lists, text_layouts) =
                         UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
                     let (overlay_rects, overlay_lists) =
@@ -1998,11 +1993,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     }
                     base_rects.extend(sel_rects);
 
-                    // External overlay hit regions (if any) go in front of
-                    // everything else — same precedence the old overlay_view
-                    // path had.
-                    let mut merged = build_result;
-                    merged.hit_regions.splice(0..0, external_hits);
+                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
+                    let merged = build_result;
 
                     let device = renderer.device.clone();
                     let queue = renderer.queue.clone();
@@ -2265,29 +2257,6 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         ));
     }
 }
-
-/// overlay の当たり領域を、地のツリーとぶつからない添字へ移す。
-///
-/// **overlay は別のツリーとして組まれるので、`element_index` は 0 から振り直される。**
-/// 地の 5 番目と overlay の 5 番目が同じ番号を名乗ったまま `hit_regions` に混ざると、
-/// 番号から id を作る側がそれを見分けられない — [`crate::a11y`] は
-/// `NodeId(element_index + 1)` を渡すので、**支援技術が起きている時に menu を開くと
-/// 同じ子が 2 つ並んだ `TreeUpdate` になり、accesskit が panic して窓が落ちる**
-/// (`TreeUpdate includes duplicate child`)。当たり判定も描画も矩形で動いていて
-/// 番号を見ないので、この取り違えは**読み上げが動いている時にしか出ない**。
-///
-/// 1 << 24 は、地のツリーが取り得る要素数（数万）より十分上で、
-/// `a11y::TEXT_ID_BASE`(1 << 32) より十分下。
-fn overlay_hits(mut hits: Vec<sabitori_core::HitRegion>) -> Vec<sabitori_core::HitRegion> {
-    for hit in &mut hits {
-        hit.element_index += OVERLAY_INDEX_BASE;
-    }
-    hits
-}
-
-/// overlay の `element_index` を置く帯の下端。
-pub(crate) const OVERLAY_INDEX_BASE: usize = 1 << 24;
-
 
 /// One frame's built element trees, before any GPU work touches them.
 /// Produced by [`AppState::build_frame`].
@@ -4737,48 +4706,6 @@ mod frame_tests {
         state.commit_build(frame.build_result);
     }
 
-
-    /// ★**overlay の当たり領域は、地とぶつからない番号を持つ。**
-    ///
-    /// overlay は別のツリーとして組まれるので `element_index` が 0 から振り直される。
-    /// 混ぜたまま番号から id を作ると、[`crate::a11y`] が同じ子を 2 つ並べた
-    /// `TreeUpdate` を作り、**accesskit が panic して窓が落ちる**
-    /// （2026-09-21 に実機で：menu を開いたまま読み上げが起きていた）。
-    /// 矩形で動く当たり判定と描画には出ないので、**読み上げが動いている時にしか出ない**。
-    #[test]
-    fn an_overlays_hit_regions_do_not_reuse_the_base_trees_numbers() {
-        let one = |id: &str| {
-            sabitori_core::div()
-                .w(sabitori_core::Dimension::Px(400.0))
-                .h(sabitori_core::Dimension::Px(300.0))
-                .child(
-                    sabitori_core::button("押す")
-                        .id(id)
-                        .w(sabitori_core::Dimension::Px(80.0))
-                        .h(sabitori_core::Dimension::Px(32.0)),
-                )
-        };
-        let base = build_tree_measured(&one("base"), 800.0, 600.0, &StubMeasure);
-        let over = build_tree_measured(&one("menu"), 800.0, 600.0, &StubMeasure);
-
-        let shared: Vec<usize> =
-            base.hit_regions.iter().map(|r| r.element_index).collect();
-        assert!(
-            over.hit_regions.iter().any(|r| shared.contains(&r.element_index)),
-            "前提：組み直したツリーは同じ番号を振り直す"
-        );
-
-        let moved = overlay_hits(over.hit_regions);
-
-        assert!(
-            moved.iter().all(|r| !shared.contains(&r.element_index)),
-            "overlay の番号が地とぶつかったまま"
-        );
-        assert!(
-            moved.iter().all(|r| r.element_index >= OVERLAY_INDEX_BASE),
-            "別の帯に移っていない"
-        );
-    }
 
     /// #57: a declarative app must be handed the build it was rendered from.
     /// Before the fix `on_build` existed but nothing ever called it, so
