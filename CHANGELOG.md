@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-21
+
 ### Changed（破壊的）
 
 - **文字列を `Arc<str>` で持ち回すようにした**
@@ -122,6 +124,16 @@
   実測 (最小化 → 6 秒 → 復帰): `t=23.0 frames=2700` → `t=23.6 visibility=false`
   → **6.1 秒のあいだ 1 フレームも描かない** → `t=29.7 visibility=true` →
   `t=30.2 frames=2760`。
+
+### Documentation
+
+- **依存の書き方を実際の形 (git タグ) に直した。** README (英/日) は
+  `sabitori = { version = "0.6", .. }`、`templates/wasm/README.md` は `"0.5"` と
+  書いていたが、**どちらも嘘**だった — さびとりは crates.io に無く、利用側は
+  git タグを指す (README の冒頭に自分でそう書いている)。版も 7 つ前のまま。
+  写して貼った人は「そんなクレートは無い」から始めることになる。
+  [#67](https://github.com/Mutafika/sabitori/issues/67) と同じ種類の漏れなので、
+  タグが今の版と一致していることをテストで見張るようにした。
 
 ## [0.13.0] - 2026-09-17
 
@@ -3555,7 +3567,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/Mutafika/sabitori/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Mutafika/sabitori/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Mutafika/sabitori/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/Mutafika/sabitori/compare/v0.11.1...v0.11.2
