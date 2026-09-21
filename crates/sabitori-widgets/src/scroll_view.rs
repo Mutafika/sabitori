@@ -243,18 +243,38 @@ impl ScrollView {
     }
 
     /// Set content height (e.g., when items change).
+    ///
+    /// 範囲外に出た**目標**だけを引き戻す。 値ではない — 詳しくは
+    /// [`Self::set_content_width`]。
     pub fn set_content_height(&mut self, height: f32) {
         self.content_height = height;
         let max_y = self.max_scroll_y();
-        if self.scroll_y.value() > max_y {
+        if self.scroll_y.target() > max_y {
             self.scroll_y.set_target(max_y);
         }
     }
 
+    /// Set content width (e.g., when the time axis changes span).
+    ///
+    /// 中身が縮んで届かなくなった**目標**を、新しい範囲の端へ引き戻す。
+    ///
+    /// 見るのが**今の値ではなく目標**なのが肝 ([#83])。ランタイムの 1 フレームは
+    /// 「中身を測って入れる (ここ) → `scroll_intents()` を適用する」の順なので、
+    /// 値で判定すると**縮んだ直後の数フレーム**を巻き込む — ばねはまだ新しい
+    /// 最大値より外に居るから、毎フレームここが `set_target(max)` を撃ち、
+    /// アプリが頼んだ位置を上書きしてしまう。`scroll_intents` は 1 回しか出ない
+    /// ので、以後は誰も戻さず**最大値の位置で止まる**。「期間を変えたら時間軸を
+    /// 左端へ戻す」がまさにこの形で、`ScrollIntent` がいちばん要る場面で
+    /// 黙って捨てられていた。
+    ///
+    /// 目標で判定すれば「範囲外の目標は範囲内へ」は残り、範囲内へ**向かっている**
+    /// 途中の目標は潰れない。値そのものが範囲外なのは、ばねが追いつけば解消する。
+    ///
+    /// [#83]: https://github.com/Mutafika/sabitori/issues/83
     pub fn set_content_width(&mut self, width: f32) {
         self.content_width = width;
         let max_x = self.max_scroll_x();
-        if self.scroll_x.value() > max_x {
+        if self.scroll_x.target() > max_x {
             self.scroll_x.set_target(max_x);
         }
     }
@@ -455,5 +475,84 @@ mod wheel_room_tests {
         assert!(!sv.can_consume_wheel(0.0, -20.0));
         assert!(!sv.can_consume_wheel(0.0, 20.0));
         assert!(!sv.can_consume_wheel(-20.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+
+    /// 800px の窓に 3000px の時間軸 (横に 2200 動ける)。
+    fn gantt() -> ScrollView {
+        ScrollView::new_2d(800.0, 400.0, 3000.0, 400.0)
+    }
+
+    /// **範囲内へ向かっている目標を、縮みが潰さないこと** ([#83])。
+    ///
+    /// ランタイムの 1 フレームは「中身を測って入れる → `scroll_intents()` を
+    /// 適用する」の順。値で判定していた頃は、縮んだ直後の数フレームで
+    /// ばねがまだ新しい最大値の外に居るため、毎フレームここが
+    /// `set_target(max)` を撃ち、アプリが頼んだ位置を上書きしていた。
+    ///
+    /// [#83]: https://github.com/Mutafika/sabitori/issues/83
+    #[test]
+    fn shrinking_does_not_eat_a_target_that_is_already_in_range() {
+        let mut sv = gantt();
+        sv.scroll_x.set_immediate(2200.0);
+
+        // フレーム 1: 中身が 1800px に縮み (最大 1000)、同じフレームで左端を頼む。
+        sv.set_content_width(1800.0);
+        sv.smooth_scroll_to_xy(0.0, 0.0);
+        assert_eq!(sv.scroll_x.target(), 0.0);
+
+        // フレーム 2: ばねはまだ新しい最大値より右に居る。
+        sv.tick(1.0 / 60.0);
+        assert!(
+            sv.scroll_x.value() > 1000.0,
+            "前提が崩れている: ばねが 1 フレームで追いついてしまった ({})",
+            sv.scroll_x.value()
+        );
+        sv.set_content_width(1800.0);
+
+        assert_eq!(sv.scroll_x.target(), 0.0, "頼んだ目標が上書きされた");
+    }
+
+    /// 縦も同じ ([`ScrollView::set_content_height`])。横だけ直すと、
+    /// 行数が減る表 (絞り込み) で同じことが起きる。
+    #[test]
+    fn shrinking_does_not_eat_a_vertical_target_either() {
+        let mut sv = ScrollView::new_2d(400.0, 600.0, 400.0, 3000.0);
+        sv.scroll_y.set_immediate(2400.0);
+
+        sv.set_content_height(1800.0); // 最大 1200
+        sv.smooth_scroll_to(0.0);
+        sv.tick(1.0 / 60.0);
+        assert!(sv.scroll_y.value() > 1200.0, "前提: ばねはまだ追いついていない");
+        sv.set_content_height(1800.0);
+
+        assert_eq!(sv.scroll_y.target(), 0.0, "頼んだ目標が上書きされた");
+    }
+
+    /// **範囲の外に残った目標は、これまでどおり引き戻すこと。** ここが消えると、
+    /// 中身が縮んだあと誰も頼まなければ、空白を映したままになる。
+    #[test]
+    fn shrinking_still_pulls_an_out_of_range_target_in() {
+        let mut sv = gantt();
+        sv.scroll_x.set_immediate(2200.0);
+
+        sv.set_content_width(1000.0); // 最大 200
+
+        assert_eq!(sv.scroll_x.target(), 200.0);
+    }
+
+    /// 中身が**伸びた**ときは何も動かさない (目標は必ず範囲内なので)。
+    #[test]
+    fn growing_leaves_the_target_alone() {
+        let mut sv = gantt();
+        sv.smooth_scroll_to_xy(1500.0, 0.0);
+
+        sv.set_content_width(9000.0);
+
+        assert_eq!(sv.scroll_x.target(), 1500.0);
     }
 }

@@ -28,6 +28,47 @@
   ── 取りこぼしが窓を殺さないため。実機で踏んだのは kasane の
   フォルダ menu（2026-09-21）。
 
+  **2 ランタイム (declarative / scene_app) の両方が直る。** overlay の畳み込みは
+  両方に手書きされていて、番号をずらすのを片方にだけ入れると**どちらのテストも
+  緑のまま**もう片方が落ち続ける。`runtime_shared::absorb_overlay` の 1 本に
+  まとめ、ランタイム側に手書きが戻っていないことを
+  `tests/overlay_wiring.rs` が見張る。
+
+## [0.14.1] - 2026-09-22
+
+### Fixed
+
+- **中身が縮んだフレームの `ScrollIntent` が黙って捨てられていた**
+  ([#83](https://github.com/Mutafika/sabitori/issues/83))。「期間を変えたら
+  時間軸を左端へ戻す」= **中身の幅が変わるのと位置を戻すのが同じフレームに来る**
+  形が、そのまま踏む。v0.13.0 で入った `ScrollIntent` ([#74]) が、いちばん要る
+  場面で効いていなかった。
+
+  `ScrollView::set_content_width` / `set_content_height` の丸めが、**今の値**を
+  見てばねの目標を書き換えていた:
+
+  ```rust
+  if self.scroll_x.value() > max_x {   // ← 動いている途中の目標を潰す
+      self.scroll_x.set_target(max_x);
+  }
+  ```
+
+  ランタイムの 1 フレームは「中身を測って入れる → `scroll_intents()` を適用する」
+  の順なので、頼んだフレームでは目標 0 が入る。ところが**次のフレーム**、ばねの
+  値はまだ新しい最大値より外に居る (2200 → 0 へ動いている途中) ので丸めが再び
+  `set_target(max)` を撃ち、0 が消える。`scroll_intents` は 1 回しか出ないので、
+  以後は誰も戻さず**最大値の位置で止まる**。縮めずに頼めば効くので、**縮むときだけ**
+  落ちていた。
+
+  見る先を**目標**に変えた。「範囲外の目標は範囲内へ」は残り、範囲内へ向かって
+  いる途中の目標は潰れない。値そのものが範囲外なのは、ばねが追いつけば解消する。
+  `can_scroll_y` など他の判定はすでに目標を見ており、ここだけが値を見ていた。
+
+  縦 (`set_content_height`) も同じ形だったので一緒に直してある — 絞り込みで行数が
+  減る表が踏む。
+
+  [#74]: https://github.com/Mutafika/sabitori/issues/74
+
 ## [0.14.0] - 2026-09-21
 
 ### Changed（破壊的）
@@ -3580,7 +3621,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/Mutafika/sabitori/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Mutafika/sabitori/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Mutafika/sabitori/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Mutafika/sabitori/compare/v0.11.2...v0.12.0

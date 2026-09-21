@@ -583,16 +583,24 @@ fn a_focusable_non_text_element_is_not_reported() {
 // ---------------------------------------------------------------------------
 
 /// 横にも縦にも動く表 (配車表のガント相当)。
-#[derive(Default)]
 struct Gantt {
     reset_timeline: bool,
     jump_to_row: Option<f32>,
+    /// 時間軸の幅。期間・密度を変えると**縮む** (#83)。
+    span_px: f32,
+}
+
+impl Default for Gantt {
+    fn default() -> Self {
+        Self { reset_timeline: false, jump_to_row: None, span_px: 3000.0 }
+    }
 }
 
 impl DeclarativeApp for Gantt {
     fn view(&self, _ctx: &ViewContext) -> Element {
+        let span = self.span_px;
         let rows: Vec<Element> = (0..40)
-            .map(|_| div().w(Px(3000.0)).h(Px(40.0)))
+            .map(|_| div().w(Px(span)).h(Px(40.0)))
             .collect();
         div().w_full().h_full().child(
             div()
@@ -636,6 +644,64 @@ fn an_intent_can_move_the_horizontal_axis() {
     h.settle();
 
     assert_eq!(h.scroll_x_of("timeline"), Some(0.0), "左端へ戻っていない");
+}
+
+/// **中身が縮むのと同じフレームでも、頼んだ位置へ戻れること** ([#83])。
+///
+/// 「期間を変えたら時間軸を左端へ戻す」は、中身の幅が変わるのと位置を戻すのが
+/// **同じフレーム**に来る。`set_content_width` の丸めが *今の値* を見ていたため、
+/// 縮んだ直後の数フレームは値がまだ新しい最大値より右に居て、丸めが毎フレーム
+/// `set_target(max)` を撃ち、アプリが頼んだ 0 を上書きしていた。`scroll_intents`
+/// は 1 回しか出ないので、以後は誰も 0 に戻さず**最大値の位置で止まる**。
+///
+/// 縮めなければ通る ([`an_intent_can_move_the_horizontal_axis`]) ので、
+/// **縮むときだけ**落ちる。
+///
+/// [#83]: https://github.com/Mutafika/sabitori/issues/83
+#[test]
+fn an_intent_survives_the_content_shrinking_in_the_same_frame() {
+    let mut h = Harness::new(Gantt::default(), 800.0, 600.0);
+    h.frame();
+
+    // 3000px の時間軸を右端近くまで送る (viewport 600 → 最大 2400)。
+    h.scroll_x("timeline", 2200.0);
+    h.frame();
+    assert_eq!(h.scroll_x_of("timeline"), Some(2200.0), "まず横へ動かす");
+
+    // 期間を狭める = 中身が 1800px に縮む (最大 1200) のと同じフレームで左端へ。
+    h.app_mut().span_px = 1800.0;
+    h.app_mut().reset_timeline = true;
+    h.frame();
+    h.settle();
+
+    assert_eq!(
+        h.scroll_x_of("timeline"),
+        Some(0.0),
+        "縮んだフレームの ScrollIntent が捨てられている (#83)"
+    );
+}
+
+/// **範囲の外に出た位置は、頼まれていなくても範囲内へ戻ること。** #83 の修正で
+/// 丸めが見る先を「値」から「目標」へ移したので、こちらが巻き添えで消えていないか。
+/// 消えると、中身が縮んだあと**誰も頼まなければ**空白を映したままになる。
+#[test]
+fn shrinking_the_content_still_pulls_an_out_of_range_position_back() {
+    let mut h = Harness::new(Gantt::default(), 800.0, 600.0);
+    h.frame();
+
+    h.scroll_x("timeline", 2200.0);
+    h.frame();
+
+    // 縮めるだけ。ScrollIntent は出さない。
+    h.app_mut().span_px = 1000.0; // 最大は 400
+    h.frame();
+    h.settle();
+
+    assert_eq!(
+        h.scroll_x_of("timeline"),
+        Some(400.0),
+        "範囲外に取り残されている"
+    );
 }
 
 /// **書いた軸だけ動くこと。** 縦を指定しただけで横が左端へ飛ぶと、
