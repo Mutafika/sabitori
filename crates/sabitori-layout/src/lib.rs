@@ -6,6 +6,8 @@ use sabitori_style::{
 use taffy::{
     AvailableSpace, LengthPercentage, LengthPercentageAuto, Size, Style, TaffyTree,
 };
+// 0.14 から `AUTO` はトレイト越しの定数。
+use taffy::style_helpers::TaffyAuto;
 
 /// Opaque layout node ID.
 pub type LayoutNodeId = taffy::NodeId;
@@ -152,19 +154,19 @@ fn convert_style(props: &StyleProps) -> Style {
             FlexWrap::WrapReverse => taffy::FlexWrap::WrapReverse,
         },
         align_items: Some(match props.align_items {
-            AlignItems::Stretch => taffy::AlignItems::Stretch,
-            AlignItems::Start => taffy::AlignItems::FlexStart,
-            AlignItems::End => taffy::AlignItems::FlexEnd,
-            AlignItems::Center => taffy::AlignItems::Center,
-            AlignItems::Baseline => taffy::AlignItems::Baseline,
+            AlignItems::Stretch => taffy::AlignItems::STRETCH,
+            AlignItems::Start => taffy::AlignItems::FLEX_START,
+            AlignItems::End => taffy::AlignItems::FLEX_END,
+            AlignItems::Center => taffy::AlignItems::CENTER,
+            AlignItems::Baseline => taffy::AlignItems::BASELINE,
         }),
         justify_content: Some(match props.justify_content {
-            JustifyContent::Start => taffy::JustifyContent::FlexStart,
-            JustifyContent::End => taffy::JustifyContent::FlexEnd,
-            JustifyContent::Center => taffy::JustifyContent::Center,
-            JustifyContent::SpaceBetween => taffy::JustifyContent::SpaceBetween,
-            JustifyContent::SpaceAround => taffy::JustifyContent::SpaceAround,
-            JustifyContent::SpaceEvenly => taffy::JustifyContent::SpaceEvenly,
+            JustifyContent::Start => taffy::JustifyContent::FLEX_START,
+            JustifyContent::End => taffy::JustifyContent::FLEX_END,
+            JustifyContent::Center => taffy::JustifyContent::CENTER,
+            JustifyContent::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
+            JustifyContent::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
+            JustifyContent::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
         }),
         flex_grow: props.flex_grow,
         flex_shrink: props.flex_shrink,
@@ -176,13 +178,14 @@ fn convert_style(props: &StyleProps) -> Style {
             width: convert_dimension(props.width),
             height: convert_dimension(props.height),
         },
+        // taffy 0.14 から min/max は `LengthPercentageAuto` (内在サイズは書けない)。
         min_size: Size {
-            width: convert_dimension(props.min_width),
-            height: convert_dimension(props.min_height),
+            width: convert_length_percent_auto(props.min_width),
+            height: convert_length_percent_auto(props.min_height),
         },
         max_size: Size {
-            width: convert_dimension(props.max_width),
-            height: convert_dimension(props.max_height),
+            width: convert_length_percent_auto(props.max_width),
+            height: convert_length_percent_auto(props.max_height),
         },
         padding: taffy::Rect {
             top: convert_length_percent(props.padding.top),
@@ -214,28 +217,28 @@ fn convert_style(props: &StyleProps) -> Style {
 
 fn convert_dimension(d: Dimension) -> taffy::Dimension {
     match d {
-        Dimension::Auto => taffy::Dimension::Auto,
-        Dimension::Px(v) => taffy::Dimension::Length(v),
-        Dimension::Percent(v) => taffy::Dimension::Percent(v / 100.0),
+        Dimension::Auto => taffy::Dimension::AUTO,
+        Dimension::Px(v) => taffy::Dimension::length(v),
+        Dimension::Percent(v) => taffy::Dimension::percent(v / 100.0),
     }
 }
 
 fn convert_length_percent(d: Dimension) -> LengthPercentage {
     match d {
-        Dimension::Px(v) => LengthPercentage::Length(v),
-        Dimension::Percent(v) => LengthPercentage::Percent(v / 100.0),
-        Dimension::Auto => LengthPercentage::Length(0.0),
+        Dimension::Px(v) => LengthPercentage::length(v),
+        Dimension::Percent(v) => LengthPercentage::percent(v / 100.0),
+        Dimension::Auto => LengthPercentage::length(0.0),
     }
 }
 
 fn convert_length_percent_auto(d: Dimension) -> LengthPercentageAuto {
     match d {
-        Dimension::Auto => LengthPercentageAuto::Auto,
-        Dimension::Px(v) => LengthPercentageAuto::Length(v),
-        Dimension::Percent(v) => LengthPercentageAuto::Percent(v / 100.0),
+        Dimension::Auto => LengthPercentageAuto::AUTO,
+        Dimension::Px(v) => LengthPercentageAuto::length(v),
+        Dimension::Percent(v) => LengthPercentageAuto::percent(v / 100.0),
     }
 }
 
 fn length(v: f32) -> LengthPercentage {
-    LengthPercentage::Length(v)
+    LengthPercentage::length(v)
 }
