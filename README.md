@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**Status**: pre-release (`0.14.1`). The core feature set is in place and the WASM target builds via `templates/wasm/`. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate. See [CHANGELOG.md](CHANGELOG.md) for what landed in each version, and [ROADMAP.md](ROADMAP.md) for what is planned.
+**Status**: pre-release (`0.14.2`). The core feature set is in place and the WASM target builds via `templates/wasm/`. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate. See [CHANGELOG.md](CHANGELOG.md) for what landed in each version, and [ROADMAP.md](ROADMAP.md) for what is planned.
 
 ## Features
 
@@ -325,7 +325,7 @@ Turning it on is one feature flag — no code changes:
 
 ```toml
 [dependencies]
-sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.14.1", features = ["hot-reload"] }
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.14.2", features = ["hot-reload"] }
 ```
 
 ```bash

@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-09-22
+
 ### Fixed
 
 - **menu を開いたまま読み上げが動いていると窓が落ちる**のを直した。overlay は
@@ -3621,7 +3623,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/Mutafika/sabitori/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/Mutafika/sabitori/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Mutafika/sabitori/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Mutafika/sabitori/compare/v0.12.0...v0.13.0

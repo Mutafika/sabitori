@@ -4,7 +4,7 @@
 
 ## 現在地
 
-`0.14.1` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
+`0.14.2` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
 利用側は **git タグ依存**が前提（クレート間が path 依存で、シェーダーをクレート外から
 `include_str!` しているため）。
 
