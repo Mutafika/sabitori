@@ -642,3 +642,46 @@ fn the_docs_name_the_version_we_actually_are() {
         );
     }
 }
+
+/// **ドキュメントに書いてある依存のタグが、実際の版と一致していること。**
+///
+/// v0.13.0 の時点で README (英/日) は `sabitori = { version = "0.6", .. }`、
+/// `templates/wasm/README.md` は `"0.5"` と書いていた。**どちらも嘘**で、
+/// さびとりは crates.io に無く、利用側は git タグを指す (README の冒頭に
+/// そう書いてある)。版も 7 つ前のまま。写して貼った人は、まず
+/// 「そんなクレートは無い」から始めることになる。
+///
+/// [`the_docs_name_the_version_we_actually_are`] と同じ理由で、人が覚えている
+/// 形にはしない ([#67](https://github.com/Mutafika/sabitori/issues/67))。
+#[test]
+fn the_dependency_snippets_point_at_the_tag_we_actually_are() {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut found = 0usize;
+    for (name, src) in [
+        ("README.md", include_str!("../../../README.md")),
+        ("README.ja.md", include_str!("../../../README.ja.md")),
+        (
+            "templates/wasm/README.md",
+            include_str!("../../../templates/wasm/README.md"),
+        ),
+    ] {
+        for (i, line) in src.lines().enumerate() {
+            let Some(rest) = line.split_once("tag = \"").map(|(_, r)| r) else {
+                continue;
+            };
+            let tag = rest.split('"').next().unwrap_or_default();
+            found += 1;
+            assert_eq!(
+                tag,
+                format!("v{version}"),
+                "{name}:{} のタグが今の版と違う",
+                i + 1
+            );
+        }
+        assert!(
+            !src.contains("sabitori = { version = ") && !src.contains("sabitori = \"0."),
+            "{name} が crates.io にあるかのように書いている (さびとりはタグ依存)"
+        );
+    }
+    assert!(found >= 4, "依存スニペットを見つけられていない ({found} 個)");
+}

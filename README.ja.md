@@ -325,7 +325,7 @@ cargo run --example hot_reload    # ホットリロードのデモ（下記）
 
 ```toml
 [dependencies]
-sabitori = { version = "0.6", features = ["hot-reload"] }
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.13.0", features = ["hot-reload"] }
 ```
 
 ```bash

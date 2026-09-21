@@ -55,12 +55,14 @@ WASM 環境にはシステムフォントが無い。`0.6.0` から、sabitori �
 | `builtin-font-latin` | Hack | 302KB | **144KB** | 豆腐 |
 
 ```toml
-sabitori = "0.5"                                     # HackGen（日本語込み）
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.13.0" }   # HackGen（日本語込み）
 
-sabitori = { version = "0.5", default-features = false,
-             features = ["builtin-font-latin"] }     # Hack（軽い・日本語は豆腐）
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.13.0",
+             default-features = false,
+             features = ["builtin-font-latin"] }   # Hack（軽い・日本語は豆腐）
 
-sabitori = { version = "0.5", default-features = false }  # 組み込み無し
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.13.0",
+             default-features = false }            # 組み込み無し
 ```
 
 `-latin` から `-jp` へ切り替えると **英数字は約 12% 細くなる**。HackGen の字形は
