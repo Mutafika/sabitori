@@ -28,6 +28,9 @@ use taffy::{
     AvailableSpace, LengthPercentage, LengthPercentageAuto,
     Size as TaffySize, Style as TaffyStyle, TaffyTree,
 };
+// 0.14 から `AUTO` / `MIN_CONTENT` / `MAX_CONTENT` はトレイト越しの定数に
+// なったので、名前で書くには持ち込みが要る。
+use taffy::style_helpers::{TaffyAuto, TaffyMaxContent, TaffyMinContent};
 
 // ---------------------------------------------------------------------------
 // Hit region for event dispatch
@@ -743,7 +746,17 @@ fn compute_layout_for(
             .compute_layout_with_measure(
                 root_node,
                 viewport,
-                |known, avail, _id, ctx, _style| measure_text_leaf(m, known, avail, ctx),
+                // taffy 0.14 から、measure は `LayoutInput` を受けて
+                // `LayoutOutput` を返す形になった。padding / border / aspect-ratio
+                // の扱いは `compute_leaf_layout` に任せる — 0.7 のときに taffy が
+                // 内側でやっていたのと**同じ関数**なので、渡す measure が同じなら
+                // 出てくる数値も同じ。`resolve_calc_value` は calc() を使って
+                // いないので 0 を返すだけ (taffy 自身の既定と同じ)。
+                |inputs, _id, ctx, style| {
+                    taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known, avail| {
+                        measure_text_leaf(m, known, avail, ctx)
+                    })
+                },
             )
             .expect("Taffy layout computation failed");
     } else {
@@ -943,7 +956,7 @@ fn resolve_anchors(
         let Some(target) = rects.get(&anchor.to) else { continue };
         let Ok(style) = taffy.style(*node).cloned() else { continue };
         let mut style = style;
-        style.size.width = taffy::Dimension::Length(target.size.width);
+        style.size.width = taffy::Dimension::length(target.size.width);
         if taffy.set_style(*node, style).is_ok() {
             relaid = true;
         }
@@ -1628,21 +1641,21 @@ fn convert_to_taffy_style(
         ElementKind::Text { content } => {
             if measurer.is_some() {
                 (
-                    convert_dimension(style.min_width),
-                    convert_dimension(style.min_height),
+                    convert_dimension_lpa(style.min_width),
+                    convert_dimension_lpa(style.min_height),
                 )
             } else {
                 let (tw, th) = measure_or_estimate(content, style, measurer);
                 (
                     if style.width == Dimension::Auto && style.min_width == Dimension::Auto {
-                        taffy::Dimension::Length(tw)
+                        LengthPercentageAuto::length(tw)
                     } else {
-                        convert_dimension(style.min_width)
+                        convert_dimension_lpa(style.min_width)
                     },
                     if style.height == Dimension::Auto && style.min_height == Dimension::Auto {
-                        taffy::Dimension::Length(th)
+                        LengthPercentageAuto::length(th)
                     } else {
-                        convert_dimension(style.min_height)
+                        convert_dimension_lpa(style.min_height)
                     },
                 )
             }
@@ -1650,22 +1663,22 @@ fn convert_to_taffy_style(
         ElementKind::Button { label, .. } => {
             if measurer.is_some() {
                 (
-                    convert_dimension(style.min_width),
-                    convert_dimension(style.min_height),
+                    convert_dimension_lpa(style.min_width),
+                    convert_dimension_lpa(style.min_height),
                 )
             } else {
                 let (tw, th) = measure_or_estimate(label, style, measurer);
                 let pad = resolve_edges_px(&style.padding);
                 (
                     if style.width == Dimension::Auto && style.min_width == Dimension::Auto {
-                        taffy::Dimension::Length(tw + pad.0 + pad.2)
+                        LengthPercentageAuto::length(tw + pad.0 + pad.2)
                     } else {
-                        convert_dimension(style.min_width)
+                        convert_dimension_lpa(style.min_width)
                     },
                     if style.height == Dimension::Auto && style.min_height == Dimension::Auto {
-                        taffy::Dimension::Length(th + pad.1 + pad.3)
+                        LengthPercentageAuto::length(th + pad.1 + pad.3)
                     } else {
-                        convert_dimension(style.min_height)
+                        convert_dimension_lpa(style.min_height)
                     },
                 )
             }
@@ -1696,20 +1709,13 @@ fn convert_to_taffy_style(
         | ElementKind::Arc(_)
         | ElementKind::Polyline(_) => (
             convert_min_dimension(style.min_width),
-            // 縦だけは、必要な所にしか 0 を置かない。Taffy 0.7〜0.9 は、
-            // **子コンテナに定値の `min_height` があると**、padding を持つ親の
-            // 自動高さが `max(0, padding*2 - 子の高さ)` だけ膨らむ
-            // (`min_width` だけなら起きない)。padding 32 のログインカードの下に
-            // 49px の空白が出る、という形で表に出た (#60)。
+            // 縦も横と同じ 0。taffy 0.9 までは「子コンテナに定値の `min_height`
+            // があると padding のある親が膨らむ」ため縦だけ絞っていたが、
+            // **0.14 で上流が直った** ([#60])。絞りを外したことで、上のコメントに
+            // 書いたスクロールの穴と折り返しの穴が両方塞がる。
             //
-            // 上の理屈が要るのは「中身より小さくなれないと困る」文脈だけ:
-            // 伸び縮みする行 (`grow`) と、自分で切る入れ物 (`overflow`)。
-            // 素の `div()` は中身なりで良いので CSS どおり `auto` に戻す。
-            if needs_zero_min_height(style) {
-                convert_min_dimension(style.min_height)
-            } else {
-                convert_dimension(style.min_height)
-            },
+            // [#60]: https://github.com/Mutafika/sabitori/issues/60
+            convert_min_dimension(style.min_height),
         ),
     };
 
@@ -1742,12 +1748,18 @@ fn convert_to_taffy_style(
         grid_template_columns: style
             .grid_template_columns
             .iter()
-            .map(|t| taffy::TrackSizingFunction::Single(convert_track(*t)))
+            // 0.14 から、テンプレートは `repeat(..)` も表せる
+            // `GridTemplateComponent` の列になった。sabitori は repeat を
+            // 公開していないので、1 本ずつ `Single` で包む。
+            .map(|t| taffy::GridTemplateComponent::Single(convert_track(*t)))
             .collect(),
         grid_template_rows: style
             .grid_template_rows
             .iter()
-            .map(|t| taffy::TrackSizingFunction::Single(convert_track(*t)))
+            // 0.14 から、テンプレートは `repeat(..)` も表せる
+            // `GridTemplateComponent` の列になった。sabitori は repeat を
+            // 公開していないので、1 本ずつ `Single` で包む。
+            .map(|t| taffy::GridTemplateComponent::Single(convert_track(*t)))
             .collect(),
         grid_auto_flow: match style.grid_auto_flow {
             GridAutoFlow::Row => taffy::GridAutoFlow::Row,
@@ -1764,19 +1776,19 @@ fn convert_to_taffy_style(
             end: convert_placement(style.grid_row.1),
         },
         justify_content: Some(match style.justify_content {
-            JustifyContent::Start => taffy::JustifyContent::FlexStart,
-            JustifyContent::End => taffy::JustifyContent::FlexEnd,
-            JustifyContent::Center => taffy::JustifyContent::Center,
-            JustifyContent::SpaceBetween => taffy::JustifyContent::SpaceBetween,
-            JustifyContent::SpaceAround => taffy::JustifyContent::SpaceAround,
-            JustifyContent::SpaceEvenly => taffy::JustifyContent::SpaceEvenly,
+            JustifyContent::Start => taffy::JustifyContent::FLEX_START,
+            JustifyContent::End => taffy::JustifyContent::FLEX_END,
+            JustifyContent::Center => taffy::JustifyContent::CENTER,
+            JustifyContent::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
+            JustifyContent::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
+            JustifyContent::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
         }),
         flex_grow: style.flex_grow,
         flex_shrink: style.flex_shrink,
         flex_basis: convert_dimension(style.flex_basis),
         gap: TaffySize {
-            width: LengthPercentage::Length(style.gap),
-            height: LengthPercentage::Length(style.gap),
+            width: LengthPercentage::length(style.gap),
+            height: LengthPercentage::length(style.gap),
         },
         size: TaffySize {
             width: convert_dimension(style.width),
@@ -1787,8 +1799,8 @@ fn convert_to_taffy_style(
             height: min_h,
         },
         max_size: TaffySize {
-            width: convert_dimension(style.max_width),
-            height: convert_dimension(style.max_height),
+            width: convert_dimension_lpa(style.max_width),
+            height: convert_dimension_lpa(style.max_height),
         },
         padding: taffy::Rect {
             top: convert_lp(style.padding.top),
@@ -1830,11 +1842,11 @@ fn convert_to_taffy_style(
 
 fn convert_align_items(a: AlignItems) -> taffy::AlignItems {
     match a {
-        AlignItems::Stretch => taffy::AlignItems::Stretch,
-        AlignItems::Start => taffy::AlignItems::FlexStart,
-        AlignItems::End => taffy::AlignItems::FlexEnd,
-        AlignItems::Center => taffy::AlignItems::Center,
-        AlignItems::Baseline => taffy::AlignItems::Baseline,
+        AlignItems::Stretch => taffy::AlignItems::STRETCH,
+        AlignItems::Start => taffy::AlignItems::FLEX_START,
+        AlignItems::End => taffy::AlignItems::FLEX_END,
+        AlignItems::Center => taffy::AlignItems::CENTER,
+        AlignItems::Baseline => taffy::AlignItems::BASELINE,
     }
 }
 
@@ -1843,23 +1855,23 @@ fn convert_align_items(a: AlignItems) -> taffy::AlignItems {
 fn convert_align_self(a: AlignSelf) -> Option<taffy::AlignSelf> {
     match a {
         AlignSelf::Auto => None,
-        AlignSelf::Stretch => Some(taffy::AlignSelf::Stretch),
-        AlignSelf::Start => Some(taffy::AlignSelf::FlexStart),
-        AlignSelf::End => Some(taffy::AlignSelf::FlexEnd),
-        AlignSelf::Center => Some(taffy::AlignSelf::Center),
-        AlignSelf::Baseline => Some(taffy::AlignSelf::Baseline),
+        AlignSelf::Stretch => Some(taffy::AlignSelf::STRETCH),
+        AlignSelf::Start => Some(taffy::AlignSelf::FLEX_START),
+        AlignSelf::End => Some(taffy::AlignSelf::FLEX_END),
+        AlignSelf::Center => Some(taffy::AlignSelf::CENTER),
+        AlignSelf::Baseline => Some(taffy::AlignSelf::BASELINE),
     }
 }
 
 fn convert_align_content(a: AlignContent) -> taffy::AlignContent {
     match a {
-        AlignContent::Start => taffy::AlignContent::FlexStart,
-        AlignContent::End => taffy::AlignContent::FlexEnd,
-        AlignContent::Center => taffy::AlignContent::Center,
-        AlignContent::Stretch => taffy::AlignContent::Stretch,
-        AlignContent::SpaceBetween => taffy::AlignContent::SpaceBetween,
-        AlignContent::SpaceAround => taffy::AlignContent::SpaceAround,
-        AlignContent::SpaceEvenly => taffy::AlignContent::SpaceEvenly,
+        AlignContent::Start => taffy::AlignContent::FLEX_START,
+        AlignContent::End => taffy::AlignContent::FLEX_END,
+        AlignContent::Center => taffy::AlignContent::CENTER,
+        AlignContent::Stretch => taffy::AlignContent::STRETCH,
+        AlignContent::SpaceBetween => taffy::AlignContent::SPACE_BETWEEN,
+        AlignContent::SpaceAround => taffy::AlignContent::SPACE_AROUND,
+        AlignContent::SpaceEvenly => taffy::AlignContent::SPACE_EVENLY,
     }
 }
 
@@ -1869,26 +1881,26 @@ fn convert_align_content(a: AlignContent) -> taffy::AlignContent {
 /// `Fraction` が無いのは CSS の制約そのままで、 下限に `fr` は書けない。
 /// [`Track::fr`] は下限を `Auto` にするので素直に書けばここは通らないが、
 /// `TrackSize` を直に組めば通り得るので `Auto` に落として吸収する。
-fn convert_track(t: Track) -> taffy::NonRepeatedTrackSizingFunction {
+fn convert_track(t: Track) -> taffy::TrackSizingFunction {
     taffy::MinMax {
         min: match t.min {
-            TrackSize::Px(v) => taffy::MinTrackSizingFunction::Fixed(LengthPercentage::Length(v)),
+            TrackSize::Px(v) => taffy::MinTrackSizingFunction::length(v),
             TrackSize::Pct(v) => {
-                taffy::MinTrackSizingFunction::Fixed(LengthPercentage::Percent(v / 100.0))
+                taffy::MinTrackSizingFunction::percent(v / 100.0)
             }
-            TrackSize::Fr(_) | TrackSize::Auto => taffy::MinTrackSizingFunction::Auto,
-            TrackSize::MinContent => taffy::MinTrackSizingFunction::MinContent,
-            TrackSize::MaxContent => taffy::MinTrackSizingFunction::MaxContent,
+            TrackSize::Fr(_) | TrackSize::Auto => taffy::MinTrackSizingFunction::AUTO,
+            TrackSize::MinContent => taffy::MinTrackSizingFunction::MIN_CONTENT,
+            TrackSize::MaxContent => taffy::MinTrackSizingFunction::MAX_CONTENT,
         },
         max: match t.max {
-            TrackSize::Px(v) => taffy::MaxTrackSizingFunction::Fixed(LengthPercentage::Length(v)),
+            TrackSize::Px(v) => taffy::MaxTrackSizingFunction::length(v),
             TrackSize::Pct(v) => {
-                taffy::MaxTrackSizingFunction::Fixed(LengthPercentage::Percent(v / 100.0))
+                taffy::MaxTrackSizingFunction::percent(v / 100.0)
             }
-            TrackSize::Fr(v) => taffy::MaxTrackSizingFunction::Fraction(v),
-            TrackSize::Auto => taffy::MaxTrackSizingFunction::Auto,
-            TrackSize::MinContent => taffy::MaxTrackSizingFunction::MinContent,
-            TrackSize::MaxContent => taffy::MaxTrackSizingFunction::MaxContent,
+            TrackSize::Fr(v) => taffy::MaxTrackSizingFunction::fr(v),
+            TrackSize::Auto => taffy::MaxTrackSizingFunction::AUTO,
+            TrackSize::MinContent => taffy::MaxTrackSizingFunction::MIN_CONTENT,
+            TrackSize::MaxContent => taffy::MaxTrackSizingFunction::MAX_CONTENT,
         },
     }
 }
@@ -1903,58 +1915,43 @@ fn convert_placement(p: GridPlacement) -> taffy::GridPlacement {
 
 fn convert_dimension(d: Dimension) -> taffy::Dimension {
     match d {
-        Dimension::Auto => taffy::Dimension::Auto,
-        Dimension::Px(v) => taffy::Dimension::Length(v),
-        Dimension::Percent(v) => taffy::Dimension::Percent(v / 100.0),
+        Dimension::Auto => taffy::Dimension::AUTO,
+        Dimension::Px(v) => taffy::Dimension::length(v),
+        Dimension::Percent(v) => taffy::Dimension::percent(v / 100.0),
     }
 }
 
 /// Like [`convert_dimension`], but resolves an unset (`Auto`) minimum to `0`
 /// instead of CSS's automatic minimum size. Used for container min-sizes — see
 /// the comment at the `Div` arm of `convert_to_taffy_style` for why.
-/// この入れ物に `min-height: 0` を置くべきか。
-///
-/// 置くのは「中身より縦に小さくなれないと壊れる」文脈だけ:
-///
-/// - `grow` を書いた行 — 余りを取るために、中身の高さを下回れる必要がある。
-///   `min-height: auto` のままだと中身より小さくなれず、その中のスクロール枠の
-///   ビューポートが中身と同じ高さになって**スクロールが黙って効かなくなる**
-///   (レイアウトは正しく見えるのに、ホイールだけ何も起きない)。
-/// - 自分で切る入れ物 (`overflow: hidden/scroll`) — CSS も flex item の
-///   automatic minimum size が 0 になる条件に挙げている。
-/// - 上限を書いた入れ物 (`max_height`) — 上限より下に来られないと意味が無い。
-///
-/// `flex_shrink` は見ない — 既定が 1.0 なので、見ると全部の入れ物が該当して
-/// しまい、絞ったことにならない。
-///
-/// それ以外 (素の `div()`) は CSS どおり `auto`。Taffy の膨らみ (#60) を
-/// 踏まないためと、「中身なりに伸びる」が普通の期待だから。
-fn needs_zero_min_height(style: &ElementStyle) -> bool {
-    style.flex_grow > 0.0
-        || style.overflow != Overflow::Visible
-        || style.max_height != Dimension::Auto
+fn convert_dimension_lpa(d: Dimension) -> LengthPercentageAuto {
+    match d {
+        Dimension::Auto => LengthPercentageAuto::AUTO,
+        Dimension::Px(v) => LengthPercentageAuto::length(v),
+        Dimension::Percent(v) => LengthPercentageAuto::percent(v / 100.0),
+    }
 }
 
-fn convert_min_dimension(d: Dimension) -> taffy::Dimension {
+fn convert_min_dimension(d: Dimension) -> LengthPercentageAuto {
     match d {
-        Dimension::Auto => taffy::Dimension::Length(0.0),
-        other => convert_dimension(other),
+        Dimension::Auto => LengthPercentageAuto::length(0.0),
+        other => convert_dimension_lpa(other),
     }
 }
 
 fn convert_lp(d: Dimension) -> LengthPercentage {
     match d {
-        Dimension::Px(v) => LengthPercentage::Length(v),
-        Dimension::Percent(v) => LengthPercentage::Percent(v / 100.0),
-        Dimension::Auto => LengthPercentage::Length(0.0),
+        Dimension::Px(v) => LengthPercentage::length(v),
+        Dimension::Percent(v) => LengthPercentage::percent(v / 100.0),
+        Dimension::Auto => LengthPercentage::length(0.0),
     }
 }
 
 fn convert_lpa(d: Dimension) -> LengthPercentageAuto {
     match d {
-        Dimension::Auto => LengthPercentageAuto::Auto,
-        Dimension::Px(v) => LengthPercentageAuto::Length(v),
-        Dimension::Percent(v) => LengthPercentageAuto::Percent(v / 100.0),
+        Dimension::Auto => LengthPercentageAuto::AUTO,
+        Dimension::Px(v) => LengthPercentageAuto::length(v),
+        Dimension::Percent(v) => LengthPercentageAuto::percent(v / 100.0),
     }
 }
 
@@ -2911,8 +2908,8 @@ mod layout_debug {
 
         let child = taffy.new_leaf(TaffyStyle {
             size: TaffySize {
-                width: taffy::Dimension::Auto,
-                height: taffy::Dimension::Length(45.0),
+                width: taffy::Dimension::AUTO,
+                height: taffy::Dimension::length(45.0),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -2921,10 +2918,10 @@ mod layout_debug {
         let root = taffy.new_with_children(TaffyStyle {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            align_items: Some(taffy::AlignItems::Stretch),
+            align_items: Some(taffy::AlignItems::STRETCH),
             size: TaffySize {
-                width: taffy::Dimension::Length(1100.0),
-                height: taffy::Dimension::Length(700.0),
+                width: taffy::Dimension::length(1100.0),
+                height: taffy::Dimension::length(700.0),
             },
             ..Default::default()
         }, &[child]).unwrap();
@@ -3135,6 +3132,45 @@ mod container_min_size_tests {
         }
     }
 
+    /// **素の `div()` を 1 枚挟んでも、スクロール枠が余りの高さに収まること。**
+    ///
+    /// v0.14.2 まで、入れ物の縦の `min_height: 0` は「中身より小さくなれないと
+    /// 困る」文脈 (`grow` / `overflow` / `max_height`) だけに絞っていた。taffy 0.9
+    /// までの膨らみ ([#60]) を踏まないためだが、**絞りの外に居る素の `div()` が
+    /// 間に 1 枚あるだけ**で、そこが中身の高さまで伸び、中のスクロール枠も一緒に
+    /// 伸びて**スクロールが黙って効かなくなる**。見た目は正しいので気づけない。
+    ///
+    /// taffy 0.14 で上流が直ったので絞りを外した。ここはその穴が塞がったままで
+    /// あることの見張り。
+    ///
+    /// [#60]: https://github.com/Mutafika/sabitori/issues/60
+    #[test]
+    fn a_plain_wrapper_does_not_inflate_the_scroll_pane() {
+        let content: Vec<Element> = (0..200)
+            .map(|i| text(format!("row {i}")).font_size(13.0))
+            .collect();
+        let tree = div().flex_col().w_full().h_full().children(vec![
+            div().h(Px(56.0)).shrink(0.0).child(text("header")),
+            // ★ 素の div — grow も overflow も max_height も書いていない。
+            div()
+                .flex_col()
+                .children(vec![div().flex_col().h_full().scroll("body").children(content)]),
+        ]);
+
+        let m = build_tree(&tree, 1200.0, 900.0).scroll_measures["body"].clone();
+
+        assert_eq!(
+            m.viewport_height, 844.0,
+            "素の div が中身の高さまで膨らんでいる (900 - ヘッダ 56 に収まっていない)"
+        );
+        assert!(
+            m.content_height > m.viewport_height,
+            "中身 {} が枠 {} を超えていない = スクロールするものが無い",
+            m.content_height,
+            m.viewport_height,
+        );
+    }
+
     /// **padding のあるカードが、中身の合計どおりの高さになること (#60)。**
     ///
     /// 子がコンテナ (`div`) だと、親の箱だけが縦に伸びて下に空白が余っていた。
@@ -3230,17 +3266,19 @@ mod container_min_size_tests {
 
     /// **上流 (Taffy) の挙動そのものを置いておく。**
     ///
-    /// `needs_zero_min_height` で縦の 0 を絞ったのは、Taffy 0.7.7 / 0.8 / 0.9 に
-    /// 「子コンテナに定値の `min_height` があると、padding を持つ親の自動高さが
-    /// `max(0, padding*2 - 子の高さ)` だけ膨らむ」という挙動があるため
-    /// ([#60](https://github.com/Mutafika/sabitori/issues/60))。`min_width` だけ
-    /// なら起きない = 縦だけの話。
+    /// Taffy 0.7.7 / 0.8 / 0.9 には「子コンテナに定値の `min_height` があると、
+    /// padding を持つ親の自動高さが `max(0, padding*2 - 子の高さ)` だけ膨らむ」
+    /// という挙動があった ([#60])。`min_width` だけなら起きない = 縦だけの話。
+    /// そのため v0.14.2 まで、入れ物の縦の `min_height: 0` は「中身より小さく
+    /// なれないと困る」文脈 (`grow` / `overflow` / `max_height`) だけに絞って
+    /// いた。
     ///
-    /// Taffy を上げたら `cargo test -p sabitori-core -- --ignored` で叩く。
-    /// **通るようになったら上流が直った**ということなので、絞り込みを外して
-    /// 素の 0 に戻してよい (スクロールの穴が塞がるぶん、そちらの方が素直)。
+    /// **taffy 0.14 で上流が直った。** 絞り込みは外し、入れ物の縦も横と同じ
+    /// 素の 0 に戻してある。ここは**上流が戻らないこと**の見張り — 落ちたら、
+    /// taffy を下げたか、上流が再発させたかのどちらか。
+    ///
+    /// [#60]: https://github.com/Mutafika/sabitori/issues/60
     #[test]
-    #[ignore = "上流 Taffy の未修正バグ。直ったら通る"]
     fn upstream_taffy_does_not_inflate_a_padded_parent() {
         use taffy::prelude::*;
 

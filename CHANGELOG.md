@@ -15,6 +15,47 @@
 
 ## [Unreleased]
 
+### Changed（破壊的）
+
+- **Taffy を 0.7.7 から 0.14.0 へ上げた**
+  ([#60](https://github.com/Mutafika/sabitori/issues/60))。レイアウトエンジン
+  そのものなので、**画面に出るものは全部ここを通る**。
+
+  破壊的なのは 1 点だけ — `LayoutNodeId` は `taffy::NodeId` の別名なので、
+  **taffy を直接依存に持っている利用側**は 0.14 へ揃える必要がある。
+  さびとりの API (`Element` / `StyleProps` / `Dimension` …) は変わっていない。
+
+### Fixed
+
+- **`min_size: 0` の入れ物で縦の大きさが狂うのが直った**
+  ([#60](https://github.com/Mutafika/sabitori/issues/60))。padding のある親が
+  `max(0, padding*2 - 子の高さ)` だけ膨らむ (padding 32 のログインカードの下に
+  49px の空白)、grid の 2 段目の子が 1 段目の行の高さに引き伸ばされる、の 2 つ。
+  **上流 Taffy の挙動**だったので、さびとり側では縦の `min_height: 0` を
+  「中身より小さくなれないと困る」文脈 (`grow` / `overflow` / `max_height`) だけに
+  絞って避けていた。0.14 で上流が直ったので、絞りを外して**入れ物の縦も横と同じ
+  素の 0** に戻した。
+
+  絞りを外したことで、絞りの代償だった 2 つの穴が塞がる:
+
+  - **素の `div()` を 1 枚挟むとスクロールが黙って効かなくなる。** 絞りの外に
+    居る `div()` が中身の高さまで伸び、中のスクロール枠も一緒に伸びて、枠と中身が
+    同じ大きさになる = 切るものが無くなる。実測で枠が **844 → 3380** (窓の
+    3.7 倍) まで膨らんでいた。見た目は正しいので気づけない。
+  - **flex 行の中の文字が折り返さない。** 行が文字の自然幅より縮めないため。
+
+  回避策は「正しい祖先を見つけて `min_h(0)` を置く」で、発見可能でもローカルでも
+  なかった。
+
+  見張りは `container_min_size_tests` に置いてある —
+  `a_plain_wrapper_does_not_inflate_the_scroll_pane` (穴が塞がったまま) と、
+  `upstream_taffy_does_not_inflate_a_padded_parent` (上流が戻らない)。
+
+  **見た目の突き合わせ:** 例 5 つを上げる前後で撮り比べ、`declarative` /
+  `cad_widgets` / `tui_demo` は**1 バイトも変わらなかった**。差が出た
+  `landing_site` / `tui_gallery` は時間で動く例 (粒子・orb・タイプライター) で、
+  変わったのはその 3 つだけ — 文字・ボタン・枠は全部同じ位置にある。
+
 ## [0.14.2] - 2026-09-22
 
 ### Fixed
