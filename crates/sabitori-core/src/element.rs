@@ -696,6 +696,18 @@ pub struct ElementStyle {
     /// the same animated scroll offset the content renders with. Indicator
     /// only: it adds no hit region, so click/wheel routing is untouched.
     pub scrollbar_thumb: Option<Color>,
+    /// 帯を**掴める**ようにする（`.scrollbar_grab(幅)`）。`None`（既定）は
+    /// 印だけで、今までどおり当たり領域を持たない。
+    ///
+    /// 値は掴める幅（右端から内側へ px）。描かれる帯は 4px だが、そこを狙わせると
+    /// 掴み損ねて下の中身が選ばれるので、既定は
+    /// [`crate::scrollbar::DEFAULT_LANE`]。掴みはランタイムが受けるので、
+    /// アプリは位置も押しも持たなくていい。
+    pub scrollbar_grab: Option<f32>,
+    /// 指が帯に乗っている間の色。`None` なら変わらない。
+    pub scrollbar_hover: Option<Color>,
+    /// 掴んでいる間の色。`None` なら変わらない。
+    pub scrollbar_held: Option<Color>,
     /// Per-range background highlights for this element's text. Empty
     /// (default) draws nothing. Only text/button draws read it. Set via
     /// `.highlight(HighlightSpec { .. })`, which appends — see there for why
@@ -856,6 +868,9 @@ impl Default for ElementStyle {
             line_height: None,
             max_lines: None,
             scrollbar_thumb: None,
+            scrollbar_grab: None,
+            scrollbar_hover: None,
+            scrollbar_held: None,
             highlight: Vec::new(),
             link_ranges: None,
             color_spans: None,
@@ -2252,6 +2267,28 @@ impl Element {
     /// hidden while the content fits the viewport.
     pub fn scrollbar(mut self, thumb: Color) -> Self {
         self.style.scrollbar_thumb = Some(thumb);
+        self
+    }
+
+    /// 帯を**掴んで動かせる**ようにする。`.scrollbar(色)` と併せて使う。
+    ///
+    /// つまみを摘まめば指から逃げず、帯の空いた所を押せばそこへ飛ぶ。
+    /// 掴める幅は `lane` px（右端から内側へ）── 描かれる 4px を狙わせるのは
+    /// 細すぎるので、既定は [`crate::scrollbar::DEFAULT_LANE`]。
+    ///
+    /// **押しはランタイムが食う**ので、帯の上の押しは `on_click` へ渡らない
+    /// （一覧の帯を掴んだだけで絵が選ばれる、が起きない）。menu のような
+    /// overlay が手前にある時は overlay が勝つ。
+    pub fn scrollbar_grab(mut self, lane: f32) -> Self {
+        self.style.scrollbar_grab = Some(lane.max(crate::scrollbar::BAR_W));
+        self
+    }
+
+    /// 指が乗った時と掴んでいる時の色。**掴める物は掴める顔をしている**
+    /// ための物で、`.scrollbar_grab` と併せて使う。
+    pub fn scrollbar_lit(mut self, hover: Color, held: Color) -> Self {
+        self.style.scrollbar_hover = Some(hover);
+        self.style.scrollbar_held = Some(held);
         self
     }
 

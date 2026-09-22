@@ -233,7 +233,13 @@ impl<A: DeclarativeApp> Harness<A> {
     /// クリックやキー入力は**直前のフレームの hit_regions**を見るので、 操作の前に
     /// 最低 1 回呼ぶこと。
     pub fn frame(&mut self) -> &BuildResult {
-        let frame = self.state.build_frame(self.width, self.height, &StubMeasure);
+        let mut frame = self.state.build_frame(self.width, self.height, &StubMeasure);
+        // ★**overlay も畳んでからコミットする。**実機の描画路は
+        // `absorb_overlay` を通すのに、ここだけ `build_result` をそのまま
+        // 渡していたので、`overlay_view` が返した menu は Harness から
+        // **見えなかった** — 当たり領域も描画命令も落ちるので、消費側は
+        // 「menu の行が押せるか」を試しに書けず、木を自分で組み直していた。
+        crate::runtime_shared::absorb_overlay(&mut frame.build_result, frame.overlay_build);
         self.state.commit_build(frame.build_result);
         self.build()
     }

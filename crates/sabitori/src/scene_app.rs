@@ -153,6 +153,9 @@ struct SceneAppState<A: SceneApp> {
     /// 管理されたスクロールコンテナ(`.scroll(id)`)の状態。DeclarativeApp ランタイム
     /// と同様にホイールを該当領域へルーティングし、毎フレーム offset を patch する。
     scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
+    /// 掴めるスクロールバー（`.scrollbar_grab`）。判断は declarative と同じ
+    /// [`crate::runtime_shared::Bars`] ── 2 つ在ると片方が忘れられる。
+    bars: crate::runtime_shared::Bars,
     /// Animated style transitions (hover/active spring). Mirrors `AppState`
     /// so `.hover()/.active()` with `.transition(...)` animate in run_scene.
     style_animator: sabitori_widgets::StyleAnimator,
@@ -535,6 +538,19 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     self.mouse_x = position.x as f32 / s;
                     self.mouse_y = position.y as f32 / s;
                 }
+                // 帯を掴んでいる間は帯の話だけ（declarative と同じ）。
+                let (grabbed, repaint) = self.bars.moved(
+                    self.last_build.as_ref(),
+                    &mut self.scroll_states,
+                    self.mouse_x,
+                    self.mouse_y,
+                );
+                if repaint {
+                    self.dirty = true;
+                }
+                if grabbed {
+                    return;
+                }
                 self.update_hover();
                 self.app.on_pointer_move(self.mouse_x, self.mouse_y);
                 // マウスの移動も `PointerMoved` として配る (declarative と同じ)。
@@ -568,6 +584,30 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     return;
                 }
                 let pos = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
+
+                // ★帯が一番先。帯は中身の上に重なっているので、後ろへ渡すと
+                // 掴んだだけで下の物が押される（declarative と同じ）。
+                if button == winit::event::MouseButton::Left {
+                    match state {
+                        winit::event::ElementState::Pressed => {
+                            if self.bars.press(
+                                self.last_build.as_ref(),
+                                &mut self.scroll_states,
+                                pos.x,
+                                pos.y,
+                            ) {
+                                self.dirty = true;
+                                return;
+                            }
+                        }
+                        winit::event::ElementState::Released => {
+                            if self.bars.release() {
+                                self.dirty = true;
+                                return;
+                            }
+                        }
+                    }
+                }
 
                 // Claim / release modality ownership on the primary button.
                 if button == winit::event::MouseButton::Left {
@@ -1208,6 +1248,12 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // declarative と同じ関数を呼ぶ — 以前はこのファイルに逐語コピーが
                 // あり、片方だけ直す事故の温床になっていた (issue #14 / #17)。
                 crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
+                // 指が乗っている／掴んでいる帯の色（declarative と同じ手順）。
+                crate::scroll_sync::paint_bar_state(
+                    &mut root,
+                    self.bars.held(),
+                    self.bars.hover(),
+                );
                 let mut build_result = build_tree_measured(&root, w, h, &measurer);
                 // 測定したスクロール範囲(viewport/content)を管理状態へ反映 → 次フレームの
                 // ホイールが正しい上限でクランプされる（コンテンツ高がここで確定）。
@@ -1514,6 +1560,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         wheel_latch: crate::scroll_sync::WheelLatch::new(),
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
+        bars: crate::runtime_shared::Bars::default(),
         style_animator: sabitori_widgets::StyleAnimator::new(),
         presence_animator: sabitori_widgets::PresenceAnimator::new(),
         tooltip_state: sabitori_widgets::TooltipState::new(),

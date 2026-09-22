@@ -16,11 +16,13 @@
 //! **判断だけ**をここに集める。 引数が素の値なので、 winit のウィンドウ無しに
 //! テストから叩ける。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sabitori_core::build::BuildResult;
 use sabitori_core::{Cursor, Point};
 use sabitori_input::InputEvent;
+use sabitori_widgets::ScrollView;
 use winit::window::Window;
 
 use crate::declarative::{DeclarativeApp, UiCapture};
@@ -490,4 +492,98 @@ pub(crate) fn dispatch<A: DeclarativeApp>(
         None => false,
     };
     handled_by_focus || app.on_input(event)
+}
+
+/// 掴めるスクロールバー（`.scrollbar_grab`）の状態。
+///
+/// **2 ランタイムが同じ手順を踏まなければならない所**なので、状態も判断もここに
+/// 1 つだけ置く（[`absorb_overlay`] と同じ理由 ── 2 つ在ると片方が忘れられる）。
+/// 窓は押し・動き・離しをそのまま渡し、`true` が返った時だけ「帯が食った」と
+/// 思えばいい。
+#[derive(Default)]
+pub(crate) struct Bars {
+    grab: Option<crate::scroll_sync::BarGrab>,
+    hover: Option<String>,
+}
+
+impl Bars {
+    /// 掴んでいる面の id（色を塗るのに要る）。
+    pub(crate) fn held(&self) -> Option<&str> {
+        self.grab.as_ref().map(|g| g.id.as_str())
+    }
+
+    /// 指が乗っている面の id。
+    pub(crate) fn hover(&self) -> Option<&str> {
+        self.hover.as_deref()
+    }
+
+    /// 押し。掴んだら `true`（押しはそこで終わり、下へ渡さない）。
+    ///
+    /// **overlay が手前にあれば譲る** ── menu が開いている間は幕が下りていて、
+    /// 押しは menu を閉じる物であって帯を掴む物ではない。
+    pub(crate) fn press(
+        &mut self,
+        build: Option<&BuildResult>,
+        states: &mut HashMap<String, ScrollView>,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        let Some(build) = build else { return false };
+        let pt = sabitori_core::Point::new(x, y);
+        let under_overlay = build
+            .hit_regions
+            .iter()
+            .any(|r| r.element_index >= OVERLAY_INDEX_BASE && r.rect.contains(pt));
+        if under_overlay {
+            return false;
+        }
+        let Some(bar) = build.scroll_bars().into_iter().find(|b| b.lane_has(x, y)) else {
+            return false;
+        };
+        let scroll = states.get(&bar.id).map(|sv| sv.scroll_y.value()).unwrap_or(0.0);
+        let grab = crate::scroll_sync::grab_bar(&bar, y, scroll);
+        slide(states, &grab.id, grab.scroll_at(y));
+        self.grab = Some(grab);
+        true
+    }
+
+    /// 指の動き。掴んでいる間は `true`（hover もドラッグも選択も動かさない ──
+    /// 掴んだまま中身の上を横切るので、渡すと下の物が反応する）。
+    ///
+    /// 掴んでいない時は、帯に乗ったかどうかだけ見る。**変わった時だけ `true`**
+    /// を第2要素で返す ── 窓は `lazy_render` なので、頼まないと指が乗っても
+    /// 帯は暗いままになる。
+    pub(crate) fn moved(
+        &mut self,
+        build: Option<&BuildResult>,
+        states: &mut HashMap<String, ScrollView>,
+        x: f32,
+        y: f32,
+    ) -> (bool, bool) {
+        if let Some(grab) = self.grab.clone() {
+            slide(states, &grab.id, grab.scroll_at(y));
+            return (true, true);
+        }
+        let on = build.and_then(|b| {
+            b.scroll_bars().into_iter().find(|bar| bar.lane_has(x, y)).map(|bar| bar.id)
+        });
+        let changed = self.hover != on;
+        self.hover = on;
+        (false, changed)
+    }
+
+    /// 離し。掴んでいたなら `true`（**押しを食った以上、離しも食う**）。
+    pub(crate) fn release(&mut self) -> bool {
+        self.grab.take().is_some()
+    }
+}
+
+/// 掴んでいる帯を指の所へ。**ばねを待たずに置く** ── 摘まんだ物が指から遅れて
+/// 付いてくるのは「掴んでいる」ではない。
+fn slide(states: &mut HashMap<String, ScrollView>, id: &str, to: f32) {
+    if let Some(sv) = states.get_mut(id) {
+        // 端の外へは出さない。中身が縮んだ直後だけ外へ出る（#83 と同じ形）。
+        let max = (sv.content_height - sv.viewport_height).max(0.0);
+        sv.scroll_y.set_immediate(to.clamp(0.0, max));
+    }
 }

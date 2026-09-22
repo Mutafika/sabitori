@@ -580,3 +580,76 @@ mod chaining_tests {
         assert!(!latch.route(&build, &mut states, 200.0, 350.0, 0.0, 0.0, true, Started));
     }
 }
+
+// ---------------------------------------------------------------------------
+// 掴める帯（`.scrollbar_grab`）
+// ---------------------------------------------------------------------------
+
+/// 掴んでいる帯。
+///
+/// **掴んだ時の寸法を持ち続ける。**一覧は読み込みながら伸びる（絵が届くたびに
+/// 中身が高くなる）ので、毎フレーム引き直すと送っている最中につまみが指から
+/// 逃げる。
+#[derive(Debug, Clone)]
+pub struct BarGrab {
+    /// 掴んでいる面の id。
+    pub id: String,
+    track_top: f32,
+    track: f32,
+    content: f32,
+    /// つまみの中のどこを掴んだか（上端からの距離）。
+    grab: f32,
+}
+
+impl BarGrab {
+    /// 指がここに来た時の縦位置。
+    pub fn scroll_at(&self, y: f32) -> f32 {
+        sabitori_core::scrollbar::scroll_for(
+            y - self.track_top - self.grab,
+            self.track,
+            self.content,
+        )
+    }
+}
+
+/// 帯を掴み始める。
+///
+/// **つまみの上なら摘まんだ所を保つ**（指から逃げない）。外側なら、つまみの
+/// 真ん中が指の下へ来るように飛ぶ ── 長い並びで端へ行きたい時、掴み直さずに
+/// そのまま引き続けられる。
+pub fn grab_bar(bar: &sabitori_core::scrollbar::ScrollBar, y: f32, scroll: f32) -> BarGrab {
+    let (top, thumb_h) = bar.thumb(scroll);
+    let track_top = bar.rect.origin.y;
+    let into = y - track_top;
+    let grab = if into >= top && into <= top + thumb_h { into - top } else { thumb_h / 2.0 };
+    BarGrab {
+        id: bar.id.clone(),
+        track_top,
+        track: bar.rect.size.height,
+        content: bar.content,
+        grab,
+    }
+}
+
+/// 指が乗っている／掴んでいる帯の色を木へ塗る（組む直前に呼ぶ）。
+///
+/// 色を持っているのは `Element`、状態を持っているのはランタイム。組む前に
+/// 当てておけば、[`sabitori_core::build`] は今までどおり「書いてある色」を
+/// 塗るだけで済む ── 描画側に状態を配らない。
+pub fn paint_bar_state(root: &mut Element, held: Option<&str>, hover: Option<&str>) {
+    let mine = root.id.as_deref();
+    if let Some(id) = mine {
+        if held == Some(id) {
+            if let Some(colour) = root.style.scrollbar_held {
+                root.style.scrollbar_thumb = Some(colour);
+            }
+        } else if hover == Some(id) {
+            if let Some(colour) = root.style.scrollbar_hover {
+                root.style.scrollbar_thumb = Some(colour);
+            }
+        }
+    }
+    for child in root.children.iter_mut() {
+        paint_bar_state(child, held, hover);
+    }
+}

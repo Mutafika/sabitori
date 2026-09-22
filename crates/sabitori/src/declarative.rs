@@ -977,6 +977,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     wheel_latch: crate::scroll_sync::WheelLatch,
     /// Managed scroll states, keyed by the id given to `.scroll(id)`.
     pub(crate) scroll_states: std::collections::HashMap<String, sabitori_widgets::ScrollView>,
+    /// 掴めるスクロールバー（`.scrollbar_grab`）。判断は
+    /// [`crate::runtime_shared::Bars`] が持つ ── scene_app と同じ1つ。
+    pub(crate) bars: crate::runtime_shared::Bars,
     /// Managed tooltip hover-delay state.
     tooltip_state: sabitori_widgets::TooltipState,
     /// Managed drag & drop state.
@@ -2501,6 +2504,14 @@ impl<A: DeclarativeApp> AppState<A> {
     pub(crate) fn pointer_moved_to(&mut self, x: f32, y: f32) {
         self.mouse_x = x;
         self.mouse_y = y;
+        // 掴んでいる間は帯の話だけ。hover もドラッグも選択も動かさない
+        // （掴んだまま中身の上を横切るので、渡すと下の物が反応する）。
+        let (grabbed, repaint) =
+            self.bars.moved(self.last_build.as_ref(), &mut self.scroll_states, x, y);
+        self.dirty |= repaint;
+        if grabbed {
+            return;
+        }
         self.update_hover();
         self.app.on_pointer_move(self.mouse_x, self.mouse_y);
         // マウスの移動も `PointerMoved` として配る。 `InputEvent::PointerMoved`
@@ -2600,6 +2611,7 @@ impl<A: DeclarativeApp> AppState<A> {
             last_click_id: None,
             wheel_latch: crate::scroll_sync::WheelLatch::new(),
             scroll_states: std::collections::HashMap::new(),
+            bars: crate::runtime_shared::Bars::default(),
             modifiers: Modifiers::default(),
             tooltip_state: sabitori_widgets::TooltipState::new(),
             drag_manager: sabitori_widgets::DragManager::new(),
@@ -2767,6 +2779,9 @@ impl<A: DeclarativeApp> AppState<A> {
 
         // Patch scroll offsets from managed state + register new scroll containers
         crate::scroll_sync::patch_scroll_offsets(&mut root, &mut self.scroll_states);
+        // 指が乗っている／掴んでいる帯の色。状態はランタイムが持ち、色は
+        // 要素が持っているので、**組む前に**当てる。
+        crate::scroll_sync::paint_bar_state(&mut root, self.bars.held(), self.bars.hover());
         // Off-screen positions the app asked for (scroll-to-element). Empty set =
         // the probing branch is skipped entirely, so apps that never ask pay nothing.
         let probes: std::collections::HashSet<String> = self.app.build_probes().into_iter().collect();
@@ -3311,6 +3326,17 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     pub(crate) fn press_primary(&mut self) {
+        // ★帯が一番先。帯は中身の上に重なっているので、後ろへ渡すと**掴んだだけで
+        // 下の物が押される**（一覧なら絵が選ばれ、行の並びならその行が開く）。
+        if self.bars.press(
+            self.last_build.as_ref(),
+            &mut self.scroll_states,
+            self.mouse_x,
+            self.mouse_y,
+        ) {
+            self.dirty = true;
+            return;
+        }
         let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
         let click_count =
             self.clicks.press_now(position, Some(InputMouseButton::Left), PointerKind::Mouse);
@@ -3433,6 +3459,12 @@ impl<A: DeclarativeApp> AppState<A> {
 
     /// 主ボタン解放の処理本体。 [`Self::press_primary`] と同じ理由で切り出してある。
     pub(crate) fn release_primary(&mut self) {
+        // 掴んでいたなら、その離しは帯の物。**押しを食った以上、離しも食う**
+        // （渡すと、掴んだ所の下に居る物が「押して離した」を受け取る）。
+        if self.bars.release() {
+            self.dirty = true;
+            return;
+        }
         self.app.on_input(&InputEvent::PointerReleased {
             id: MOUSE_POINTER_ID,
             kind: PointerKind::Mouse,
@@ -6030,5 +6062,210 @@ mod draw_gate_tests {
         h.click("name");
         assert!(h.state.caret_blinking());
         assert!(h.settle() < 120, "キャレット点滅で settle が待ち切れなくなっている");
+    }
+}
+
+/// 掴めるスクロールバー（`.scrollbar_grab`）。
+///
+/// 帯はランタイムが描いているのに、掴みは長いあいだアプリ側の仕事だった
+/// （消費側が `build.rs` の寸法を写して、押しを自分で拾っていた）。**描く側と
+/// 掴む側が同じ1つの幾何を使う**のがここの主題なので、試しも
+/// 「押した所へ実際に送られたか」で測る。
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::*;
+    use crate::testing::Harness;
+    use sabitori_core::element::{div, text, Px};
+    use sabitori_core::Color;
+
+    const LANE: f32 = 14.0;
+    const IDLE: Color = Color::new(0.2, 0.2, 0.3, 1.0);
+    const HOVER: Color = Color::new(0.6, 0.6, 0.8, 1.0);
+    const HELD: Color = Color::new(0.4, 0.6, 1.0, 1.0);
+
+    #[derive(Default)]
+    struct Pane {
+        /// 帯の下に居る物が押されたら記録する ── 掴んだだけで押されては困る。
+        pressed: std::cell::RefCell<Vec<String>>,
+        /// menu を開いているか（`overlay_view` が幕を張る）。
+        menu: bool,
+        /// 掴めるようにするか。
+        grab: bool,
+    }
+
+    impl DeclarativeApp for Pane {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            let rows: Vec<Element> = (0..40)
+                .map(|i| {
+                    div()
+                        .id(format!("row-{i}"))
+                        .w_full()
+                        .h(Px(40.0))
+                        .child(text(format!("row {i}")))
+                })
+                .collect();
+            let mut pane = div()
+                .scroll("list")
+                .id("list")
+                .flex_col()
+                .w(Px(300.0))
+                .h(Px(200.0))
+                .scrollbar(IDLE);
+            if self.grab {
+                pane = pane.scrollbar_grab(LANE).scrollbar_lit(HOVER, HELD);
+            }
+            div().w(Px(400.0)).h(Px(300.0)).child(pane.children(rows))
+        }
+
+        fn overlay_view(&self, _ctx: &ViewContext) -> Option<Element> {
+            self.menu.then(|| {
+                div()
+                    .id("menu-backdrop")
+                    .w(Px(400.0))
+                    .h(Px(300.0))
+                    .child(div().id("menu-item").w(Px(100.0)).h(Px(30.0)))
+            })
+        }
+
+        fn on_click(&mut self, id: &str) {
+            self.pressed.borrow_mut().push(id.to_string());
+        }
+    }
+
+    fn pane(grab: bool) -> Harness<Pane> {
+        let mut h = Harness::new(Pane { grab, ..Default::default() }, 400.0, 300.0);
+        h.frame();
+        h
+    }
+
+    /// 帯の中の x（右端から 3px 内側）。
+    fn lane_x(h: &Harness<Pane>) -> f32 {
+        let r = h.rect_of("list").expect("面が無い");
+        r.origin.x + r.size.width - 3.0
+    }
+
+    /// ★**押した所へ送る。**帯の空いた所を押せばそこへ飛び、掴んだまま引けば付いてくる。
+    #[test]
+    fn pressing_the_lane_sends_the_pane_to_the_finger() {
+        let mut h = pane(true);
+        let x = lane_x(&h);
+
+        h.press_at(x, 160.0); // 帯の下の方
+        let far = h.scroll_y("list").expect("面が登録されていない");
+        assert!(far > 0.0, "押した所へ送っていない: {far}");
+
+        h.move_to(x, 40.0); // 上へ引く
+        let near = h.scroll_y("list").unwrap();
+        assert!(near < far, "引いた向きへ動いていない: {far} -> {near}");
+
+        // ★離したら終わり ── その後の指の動きは付いてこない。
+        h.release();
+        h.move_to(x, 190.0);
+        let after = h.scroll_y("list").unwrap();
+        assert!((after - near).abs() < 0.5, "離した後も付いてくる: {near} -> {after}");
+    }
+
+    /// ★つまみを摘まんだら**指から逃げない** ── 掴んだ所が動かない。
+    #[test]
+    fn grabbing_the_thumb_keeps_the_point_it_was_grabbed_by() {
+        let mut h = pane(true);
+        let x = lane_x(&h);
+        // 途中まで送っておく。
+        h.scroll("list", 400.0);
+        h.frame();
+        let was = h.scroll_y("list").unwrap();
+        assert!(was > 100.0, "先に送れていない: {was}");
+
+        let bar = h.build().scroll_bars().into_iter().find(|b| b.id == "list").expect("帯が無い");
+        let (top, thumb_h) = bar.thumb(was);
+        h.press_at(x, bar.rect.origin.y + top + thumb_h / 2.0);
+
+        let now = h.scroll_y("list").unwrap();
+        assert!((now - was).abs() < 1.0, "摘まんだだけで飛んだ: {was} -> {now}");
+    }
+
+    /// ★掴んだ押しは**下へ渡らない** ── 一覧なら絵が選ばれ、行なら開いてしまう。
+    #[test]
+    fn grabbing_the_bar_does_not_press_what_is_under_it() {
+        let mut h = pane(true);
+        let x = lane_x(&h);
+        h.press_at(x, 100.0);
+        h.release();
+
+        assert!(
+            h.app().pressed.borrow().is_empty(),
+            "帯を掴んだだけで押された: {:?}",
+            h.app().pressed.borrow()
+        );
+    }
+
+    /// ★`.scrollbar_grab` を書いていない帯は**印のまま** ── 今までの絵が変わらない。
+    #[test]
+    fn a_bar_without_grab_is_still_just_paint() {
+        let mut h = pane(false);
+        let x = lane_x(&h);
+        h.press_at(x, 160.0);
+
+        assert_eq!(h.scroll_y("list"), Some(0.0), "掴めないはずの帯で送られた");
+        assert!(!h.app().pressed.borrow().is_empty(), "押しが下へ渡っていない");
+    }
+
+    /// ★menu が開いている間は帯を掴まない。
+    ///
+    /// overlay は幕を張っていて、押しは menu を閉じる物。掴めてしまうと
+    /// **menu を開いたまま後ろの面が動く**。
+    #[test]
+    fn an_open_overlay_takes_the_press_back_from_the_lane() {
+        let mut h = pane(true);
+        h.app_mut().menu = true;
+        h.frame();
+        let x = lane_x(&h);
+
+        h.press_at(x, 160.0);
+
+        assert_eq!(h.scroll_y("list"), Some(0.0), "幕の下で面が動いた");
+    }
+
+    /// ★指が乗ったら色が変わり、掴むともう一段変わる。
+    ///
+    /// **掴める物は掴める顔をしている**ための物。描かれている帯は4pxしかないので、
+    /// 地の色のままだと面の縁と見分けが付かない。
+    #[test]
+    fn the_bar_lights_up_under_the_finger() {
+        let mut h = pane(true);
+        let x = lane_x(&h);
+        let paint = |h: &Harness<Pane>| {
+            let r = h.rect_of("list").expect("面が無い");
+            let bar_x = r.origin.x + r.size.width - sabitori_core::scrollbar::BAR_INSET;
+            h.build()
+                .render_list
+                .commands
+                .iter()
+                .find_map(|cmd| match cmd {
+                    sabitori_core::render_list::RenderCommand::Rect(d)
+                        if (d.rect.size.width - sabitori_core::scrollbar::BAR_W).abs() < 0.01
+                            && (d.rect.origin.x - bar_x).abs() < 0.01 =>
+                    {
+                        Some(d.fill_color)
+                    }
+                    _ => None,
+                })
+                .expect("帯が描かれていない")
+        };
+
+        assert_eq!(paint(&h).to_array(), IDLE.to_array(), "素の色が違う");
+
+        h.move_to(x, 100.0);
+        h.frame();
+        assert_eq!(paint(&h).to_array(), HOVER.to_array(), "指が乗っても変わらない");
+
+        h.press_at(x, 100.0);
+        h.frame();
+        assert_eq!(paint(&h).to_array(), HELD.to_array(), "掴んでも変わらない");
+
+        h.release();
+        h.move_to(10.0, 10.0);
+        h.frame();
+        assert_eq!(paint(&h).to_array(), IDLE.to_array(), "明かりが消えない");
     }
 }

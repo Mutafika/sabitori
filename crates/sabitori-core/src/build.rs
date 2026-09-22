@@ -117,6 +117,11 @@ pub struct ScrollMeasure {
     pub viewport_width: f32,
     /// Viewport height (the scroll container's own height).
     pub viewport_height: f32,
+    /// 画面座標の矩形。**掴める帯はここから組む** ── `hit_regions` を id で
+    /// 引き直すと、当たり領域を持たない面（意味だけの面）で取りこぼす。
+    pub rect: Rect,
+    /// `.scrollbar_grab(幅)` の幅。`None` なら印だけ（掴めない）。
+    pub grab: Option<f32>,
 }
 
 /// The result of [`build_tree`].
@@ -141,6 +146,32 @@ pub struct BuildResult {
 }
 
 impl BuildResult {
+    /// 掴める帯 ── `.scrollbar_grab(幅)` を書いた面のうち、**いま中身が
+    /// 溢れている**物だけ。
+    ///
+    /// 掴みはランタイムが受けるので、位置も寸法もここから読む。計り直さず
+    /// 走査の控え（`scroll_measures`）から組むのは、**描いた物と同じ数字**で
+    /// なければ掴んだ所と摘まんだ物が食い違うから（`crate::scrollbar`）。
+    pub fn scroll_bars(&self) -> Vec<crate::scrollbar::ScrollBar> {
+        let mut out: Vec<crate::scrollbar::ScrollBar> = self
+            .scroll_measures
+            .iter()
+            .filter(|(_, m)| m.content_height > m.viewport_height + 1.0)
+            .filter_map(|(id, m)| {
+                Some(crate::scrollbar::ScrollBar {
+                    id: id.clone(),
+                    rect: m.rect,
+                    content: m.content_height,
+                    lane: m.grab?,
+                })
+            })
+            .collect();
+        // 走査は HashMap なので順が決まらない。掴みは「手前の1本」を選ぶ話に
+        // なるので、並びを固定しておく。
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
     /// Topmost **interactive** hit region under `(x, y)`, if any. Regions are
     /// stored front-to-back, so the first match is the visually topmost one.
     ///
@@ -1424,6 +1455,11 @@ fn emit_commands(
                             .max(0.0),
                         viewport_height: (layout.size.height - padding_layout.1 - padding_layout.3)
                             .max(0.0),
+                        // padding に食われて中身が見えない面。帯も出ないので
+                        // 掴ませない（`scroll_bars` は溢れている物だけを返すが、
+                        // ここは矩形そのものが潰れている）。
+                        rect: clip_rect,
+                        grab: None,
                     });
                 }
             }
@@ -1530,6 +1566,8 @@ fn emit_commands(
                 content_height: max_child_bottom,
                 viewport_width: layout.size.width,
                 viewport_height: layout.size.height,
+                rect,
+                grab: element.style.scrollbar_grab,
             });
         }
 
@@ -1544,10 +1582,12 @@ fn emit_commands(
         // click/wheel routing is untouched.
         if let Some(thumb) = element.style.scrollbar_thumb {
             if max_child_bottom > h + 1.0 && h > 0.0 {
-                let thumb_h = (h / max_child_bottom * h).max(20.0).min(h);
-                let max_scroll = max_child_bottom - h;
-                let norm = (style.scroll_y / max_scroll).clamp(0.0, 1.0);
-                let ty = rect.origin.y + norm * (h - thumb_h);
+                // 寸法は `crate::scrollbar` に1つだけ置く。掴む側（ランタイム）が
+                // 同じ式を読むので、ここに書き下すと**掴んだ所と摘まんだ物が
+                // 食い違う**。
+                let (top, thumb_h) =
+                    crate::scrollbar::thumb(h, max_child_bottom, style.scroll_y);
+                let ty = rect.origin.y + top;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
                     rect: Rect::new(rect.origin.x + w - 6.0, ty, 4.0, thumb_h),
