@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-09-22
+
 ### Fixed
 
 - **padding のある `.scroll` に `.scrollbar(色)` を付けても帯が 1px も出なかった**
@@ -3735,7 +3737,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/Mutafika/sabitori/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/Mutafika/sabitori/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Mutafika/sabitori/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/Mutafika/sabitori/compare/v0.14.1...v0.14.2
