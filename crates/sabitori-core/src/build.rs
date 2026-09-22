@@ -1592,6 +1592,23 @@ fn emit_commands(
         }
     }
 
+    // ここで中身のクリップを閉じる。**帯は中身ではなく枠の装飾**なので、
+    // content box (padding を引いた内側) で切ってはいけない。
+    //
+    // 帯は border box の右端から `BAR_INSET`(6px) 内側に描くのに、クリップは
+    // content box だった。右 padding が 6px より大きいと帯の x 範囲が丸ごと
+    // クリップの外に落ちて、**コマンドは出ているのに 1px も見えない**
+    // ([#87](https://github.com/Mutafika/sabitori/issues/87))。業務画面の本文は
+    // `px_pad(Px(28.0))` のような枠なので、素直に書くとまず当たる。横の帯も
+    // 同じ形 (下 padding > 6px で消える)。
+    //
+    // 閉じたあとは**親のクリップ**が効く。CSS でも帯は枠の装飾で、祖先には
+    // 切られるが自分の padding には切られない。
+    if clips {
+        let target_list = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+        target_list.commands.push(RenderCommand::PopClip);
+    }
+
     // Record measured content extent for scroll containers
     if is_scroll {
         if let Some(ref id) = element.id {
@@ -1617,12 +1634,17 @@ fn emit_commands(
         // scroll spring. Indicator only: no hit region is registered, so
         // click/wheel routing is untouched.
         if let Some(thumb) = element.style.scrollbar_thumb {
-            if max_child_bottom > h + 1.0 && h > 0.0 {
+            // `h` / `w` は画面 px (scale 済み)、`max_child_*` と `scroll_*` は
+            // taffy の素の px。**揃えてから渡す** — 混ぜると `.scale()` を書いた
+            // 面で帯の長さも位置も狂う (scale > 1 なら「溢れていない」と見なして
+            // 丸ごと消える)。
+            let content_h = max_child_bottom * scale;
+            if content_h > h + 1.0 && h > 0.0 {
                 // 寸法は `crate::scrollbar` に1つだけ置く。掴む側（ランタイム）が
                 // 同じ式を読むので、ここに書き下すと**掴んだ所と摘まんだ物が
                 // 食い違う**。
                 let (top, thumb_h) =
-                    crate::scrollbar::thumb(h, max_child_bottom, style.scroll_y);
+                    crate::scrollbar::thumb(h, content_h, style.scroll_y * scale);
                 let ty = rect.origin.y + top;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
@@ -1649,11 +1671,12 @@ fn emit_commands(
             // Horizontal scrollbar — mirror of the vertical one, along the
             // bottom edge, shown while content overflows horizontally (carousels
             // / timelines). Same indicator-only semantics (no hit region).
-            if max_child_right > w + 1.0 && w > 0.0 {
+            let content_w = max_child_right * scale;
+            if content_w > w + 1.0 && w > 0.0 {
                 // 縦と同じ関数。軸に依らない式なので、横だけ書き下すと
                 // `MIN_THUMB` を直しても横が付いてこない。
                 let (left, thumb_w) =
-                    crate::scrollbar::thumb(w, max_child_right, style.scroll_x);
+                    crate::scrollbar::thumb(w, content_w, style.scroll_x * scale);
                 let tx = rect.origin.x + left;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
@@ -1680,10 +1703,6 @@ fn emit_commands(
         }
     }
 
-    if clips {
-        let target_list = if use_overlay { &mut *overlay_list } else { &mut *render_list };
-        target_list.commands.push(RenderCommand::PopClip);
-    }
 }
 
 // ---------------------------------------------------------------------------

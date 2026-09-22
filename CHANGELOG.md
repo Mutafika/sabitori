@@ -15,6 +15,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **padding のある `.scroll` に `.scrollbar(色)` を付けても帯が 1px も出なかった**
+  ([#87](https://github.com/Mutafika/sabitori/issues/87))。帯は border box の右端から
+  `BAR_INSET`(6px) 内側に描くのに、クリップは **content box** (padding を引いた内側)
+  だった。右 padding が 6px より大きいと帯の x 範囲 `[w-6, w-2]` が丸ごとクリップの
+  外に落ちる。**描画コマンドは出ているし `scroll_bars()` にも並ぶ**ので、
+  「出ない」以外の手掛かりが無い。
+
+  ```rust
+  div().grow(1.0).scroll("page").flex_col()
+      .px_pad(Px(28.0)).py(Px(24.0))   // ← 業務画面の本文はたいていこの形
+      .scrollbar(theme.border)          //    素直に書くと帯が出なかった
+  ```
+
+  中身のクリップを**帯を描く前に閉じる**ようにした。帯は中身ではなく枠の装飾
+  なので、自分の padding では切らない (CSS も同じ — 祖先には切られる)。横の帯も
+  同じ形で消えていたので一緒に直っている。
+
+- **`.scaled()` を書いた面で帯の長さと位置が狂っていた。** `w` / `h` は画面 px
+  (scale 済み)、`max_child_*` と `scroll_*` は taffy の素の px なのに混ぜて渡して
+  いた。`scale > 1` の面では「溢れていない」と見なされて**帯が丸ごと消え**、
+  `scale < 1` では長さがずれる。#87 を直す時に同じ 10 行で見つかったもの。
+
 ## [0.16.0] - 2026-09-22
 
 ### Added

@@ -188,3 +188,133 @@ fn the_horizontal_bar_comes_from_the_shared_geometry() {
         "帯の下端が BAR_INSET から出ていない"
     );
 }
+
+/// **padding のある枠でも帯が見えること** ([#87])。
+///
+/// 帯は border box の右端から `BAR_INSET`(6px) 内側に描くのに、クリップは
+/// content box (padding を引いた内側) だった。右 padding が 6px より大きいと
+/// 帯の x 範囲が丸ごとクリップの外に落ちて、**コマンドは出ているのに 1px も
+/// 見えない**。業務画面の本文は `px_pad(Px(28.0))` のような枠なので、素直に
+/// 書くとまず当たる。手掛かりは「出ない」以外に無い。
+///
+/// 見えるかどうかは、帯がその時点で効いているクリップに入っているかで判定する
+/// （描画コマンドが在るかだけでは、まさにこのバグを見逃す）。
+///
+/// [#87]: https://github.com/Mutafika/sabitori/issues/87
+#[test]
+fn a_padded_scroll_pane_still_shows_its_bar() {
+    use sabitori_core::RenderCommand;
+
+    struct Padded {
+        pad: f32,
+    }
+    impl DeclarativeApp for Padded {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            div()
+                .id("page")
+                .scroll("page")
+                .flex_col()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .px_pad(Px(self.pad))
+                .py(Px(self.pad))
+                .scrollbar(Color::new(1.0, 0.0, 0.0, 1.0))
+                .children(
+                    (0..200)
+                        .map(|i| text(format!("row {i}")).font_size(13.0))
+                        .collect::<Vec<_>>(),
+                )
+        }
+    }
+
+    // padding 28 は `BAR_INSET`(6) より大きい = 壊れていた側。
+    for pad in [0.0, 6.0, 28.0] {
+        let mut h = Harness::new(Padded { pad }, 800.0, 600.0);
+        h.frame();
+
+        // 効いているクリップを追いながら、帯（幅 BAR_W の赤い矩形）を探す。
+        let mut clips: Vec<sabitori_core::Rect> = Vec::new();
+        let mut visible = false;
+        for cmd in &h.build().render_list.commands {
+            match cmd {
+                RenderCommand::PushClip(r) => clips.push(*r),
+                RenderCommand::PopClip => {
+                    clips.pop();
+                }
+                RenderCommand::Rect(r)
+                    if (r.rect.size.width - sabitori_core::scrollbar::BAR_W).abs() < 0.01
+                        && r.fill_color.r > 0.9 =>
+                {
+                    let inside = clips.iter().all(|c| {
+                        r.rect.origin.x >= c.origin.x
+                            && r.rect.origin.x + r.rect.size.width
+                                <= c.origin.x + c.size.width
+                    });
+                    visible |= inside;
+                }
+                _ => {}
+            }
+        }
+        assert!(visible, "padding {pad}: 帯がクリップの外に落ちている (1px も見えない)");
+    }
+}
+
+/// **`.scale()` を書いた面でも帯の長さと位置が合うこと。**
+///
+/// `w` / `h` は画面 px (scale 済み)、`max_child_*` と `scroll_*` は taffy の
+/// 素の px。混ぜて渡していたので、`scale > 1` の面では「溢れていない」と
+/// 見なされて**帯が丸ごと消え**、`scale < 1` では逆に長さが狂っていた。
+/// (#87 を直す時に同じ 10 行で見つかったもの。)
+#[test]
+fn a_scaled_pane_still_gets_a_correctly_sized_bar() {
+    use sabitori_core::RenderCommand;
+
+    struct Scaled {
+        factor: f32,
+    }
+    impl DeclarativeApp for Scaled {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            div().w(Px(800.0)).h(Px(600.0)).child(
+                div()
+                    .id("pane")
+                    .scroll("pane")
+                    .flex_col()
+                    .w(Px(400.0))
+                    .h(Px(300.0))
+                    .scaled(self.factor)
+                    .scrollbar(Color::new(1.0, 0.0, 0.0, 1.0))
+                    .children(
+                        (0..100)
+                            .map(|i| div().id(format!("r{i}")).w(Px(200.0)).h(Px(30.0)))
+                            .collect::<Vec<_>>(),
+                    ),
+            )
+        }
+    }
+
+    for factor in [1.0f32, 2.0, 0.5] {
+        let mut h = Harness::new(Scaled { factor }, 800.0, 600.0);
+        h.frame();
+        let bar = h
+            .build()
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Rect(r) => Some(r),
+                _ => None,
+            })
+            .find(|r| (r.rect.size.width - sabitori_core::scrollbar::BAR_W).abs() < 0.01
+                && r.fill_color.r > 0.9)
+            .unwrap_or_else(|| panic!("scale {factor}: 帯が描かれていない"));
+
+        // 枠 300 * factor に対し、中身は 3000 * factor。つまみは 10 分の 1。
+        let track = 300.0 * factor;
+        let want = (track / (3000.0 * factor) * track).max(sabitori_core::scrollbar::MIN_THUMB);
+        assert!(
+            (bar.rect.size.height - want).abs() < 0.5,
+            "scale {factor}: つまみの高さが {} (期待 {want})",
+            bar.rect.size.height
+        );
+    }
+}
