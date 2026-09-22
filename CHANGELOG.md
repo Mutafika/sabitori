@@ -29,7 +29,12 @@
   - **menu が開いている間は掴まない** ── overlay が手前にあれば譲る
   - 掴んでいる間は**ばねを待たずに置く**（摘まんだ物が遅れて付いてくるのは「掴んでいる」ではない）
   - 寸法は `sabitori_core::scrollbar` に1つだけ置き、**描く側（`build`）と掴む側が同じ式**を読む
+    （縦・横とも。`BAR_W` / `BAR_INSET` / `MIN_THUMB` を直せば両方が付いてくる）
   - declarative と scene_app の**両方**に同じ `runtime_shared::Bars` を配線した
+  - **掴んだまま窓の外で離しても掴んだままにならない** ── 離しは別ウィンドウで
+    起きて戻ってこないので、`CursorLeft` で放す
+  - 指が乗ったかを見るのは `BuildResult::scroll_bar_id_at()` で、**何も確保しない**
+    （毎ポインタ移動で `Vec` と `String` を組まない）
 
 ### Fixed
 
@@ -38,10 +43,20 @@
   menu もツールチップも**当たり領域ごと落ちて**いた ── 消費側は「menu の行が押せるか」を
   試しに書けず、木を自分で組み直していた。
 
-### Changed
+### Changed（破壊的）
 
 - `build::ScrollMeasure` に `rect` と `grab` が増えた（掴める帯を組むのに要る）。
   `BuildResult::scroll_bars()` がそこから**いま溢れている帯**を返す。
+- **`build::HitRegion` に `overlay: bool` が増えた。** `.overlay()` の子孫か、
+  `overlay_view` が返した木なら `true`。リテラルで `HitRegion` を組んでいる所だけ
+  直せば済む。
+
+  「幕が下りている間は下に触らせない」の判定に要る。それまでは
+  `element_index >= OVERLAY_INDEX_BASE` で代用していたが、あの帯が付くのは
+  **`overlay_view`（外付け）だけ**で、`.overlay()`（内側）は普通の連番のまま
+  素通りしていた。組み込みの `select` / `modal` / `context_menu` / `menu_bar` /
+  `toast` は**全部内側**なので、代用では 1 つも止まらなかった
+  （menu を開いたまま帯を掴めて、幕の下で面が動いた）。
 
 ## [0.15.0] - 2026-09-22
 

@@ -273,6 +273,10 @@ pub(crate) fn absorb_overlay(build: &mut BuildResult, overlay: Option<BuildResul
     let mut hits = ext.hit_regions;
     for hit in &mut hits {
         hit.element_index += OVERLAY_INDEX_BASE;
+        // 外付けの木は自分では手前だと知らない (別のツリーとして組まれるので
+        // `use_overlay` が立たない)。畳む側で立てる — これが立っていないと
+        // 「幕の下に触らせない」の判定が外付け overlay を素通りする。
+        hit.overlay = true;
     }
     build.hit_regions.splice(0..0, hits);
 }
@@ -530,10 +534,16 @@ impl Bars {
     ) -> bool {
         let Some(build) = build else { return false };
         let pt = sabitori_core::Point::new(x, y);
+        // 手前に幕があるなら譲る。**`overlay` の旗で見る** — 以前は
+        // `element_index >= OVERLAY_INDEX_BASE` で代用していたが、あの帯が付くのは
+        // `overlay_view` (外付け) だけで、`.overlay()` (内側) は普通の連番のまま
+        // 素通りしていた。組み込みの menu / modal / dropdown / context menu /
+        // toast は**全部内側**なので、代用ではどれ 1 つ止まらず、menu を開いた
+        // まま帯を掴めた (幕の下で面が動く)。
         let under_overlay = build
             .hit_regions
             .iter()
-            .any(|r| r.element_index >= OVERLAY_INDEX_BASE && r.rect.contains(pt));
+            .any(|r| r.overlay && r.rect.contains(pt));
         if under_overlay {
             return false;
         }
@@ -564,11 +574,14 @@ impl Bars {
             slide(states, &grab.id, grab.scroll_at(y));
             return (true, true);
         }
-        let on = build.and_then(|b| {
-            b.scroll_bars().into_iter().find(|bar| bar.lane_has(x, y)).map(|bar| bar.id)
-        });
-        let changed = self.hover != on;
-        self.hover = on;
+        // **確保しない引き方**を使う ── ここは指が動くたびに通る。`scroll_bars()`
+        // で Vec を組むと 1 移動につき面の数だけ `String` を作ることになる。
+        let on = build.and_then(|b| b.scroll_bar_id_at(x, y));
+        let changed = self.hover.as_deref() != on;
+        if changed {
+            // 変わった時だけ文字列を起こす。
+            self.hover = on.map(str::to_owned);
+        }
         (false, changed)
     }
 

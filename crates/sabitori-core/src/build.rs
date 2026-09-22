@@ -77,6 +77,14 @@ pub struct HitRegion {
     pub label: Option<String>,
     /// 見出しの階層 (`.heading(n)`)。 `role` が `Heading` のときだけ意味がある。
     pub heading_level: Option<u8>,
+    /// **手前の層に居るか** — `.overlay()` の子孫か、`overlay_view` が返した木。
+    ///
+    /// 「幕が下りている間は下に触らせない」を判定するのに要る。かつては
+    /// `element_index >= OVERLAY_INDEX_BASE` で代用していたが、あの帯が付くのは
+    /// **`overlay_view` (外付け) だけ**で、`.overlay()` (内側) は普通の連番のまま
+    /// 素通りしていた。組み込みの menu / modal / dropdown / toast は全部内側なので、
+    /// 代用では**どれ 1 つ止まらなかった**。
+    pub overlay: bool,
 }
 
 impl HitRegion {
@@ -170,6 +178,33 @@ impl BuildResult {
         // なるので、並びを固定しておく。
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
+    }
+
+    /// 掴める帯のうち、点が乗っている物の id。**何も確保しない。**
+    ///
+    /// [`Self::scroll_bars`] で Vec を組んで `find` しても同じ答えになるが、
+    /// これは**指が動くたびに**呼ばれる。1 移動につき面の数だけ `String` を
+    /// 作ることになるので、乗ったかどうかだけ知りたい側はこちらを使う
+    /// ([#80](https://github.com/Mutafika/sabitori/issues/80) で毎フレームの
+    /// 確保を落としたのと同じ話)。
+    ///
+    /// 重なった時にどれを選ぶかは [`Self::scroll_bars`] と同じ（id の小さい方)
+    /// ── 押しと hover で別の帯を選ぶと、光っていない帯を掴むことになる。
+    pub fn scroll_bar_id_at(&self, x: f32, y: f32) -> Option<&str> {
+        let mut best: Option<&str> = None;
+        for (id, m) in &self.scroll_measures {
+            let Some(lane) = m.grab else { continue };
+            if m.content_height <= m.viewport_height + 1.0 {
+                continue;
+            }
+            if !crate::scrollbar::lane_has(m.rect, lane, x, y) {
+                continue;
+            }
+            if best.is_none_or(|b| id.as_str() < b) {
+                best = Some(id.as_str());
+            }
+        }
+        best
     }
 
     /// Topmost **interactive** hit region under `(x, y)`, if any. Regions are
@@ -1401,6 +1436,7 @@ fn emit_commands(
                 role: element.role,
                 label: element.label.clone(),
                 heading_level: element.heading_level,
+                overlay: use_overlay,
             };
             if use_overlay {
                 overlay_hit_regions.push(region);
@@ -1590,7 +1626,12 @@ fn emit_commands(
                 let ty = rect.origin.y + top;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
-                    rect: Rect::new(rect.origin.x + w - 6.0, ty, 4.0, thumb_h),
+                    rect: Rect::new(
+                        rect.origin.x + w - crate::scrollbar::BAR_INSET,
+                        ty,
+                        crate::scrollbar::BAR_W,
+                        thumb_h,
+                    ),
                     corner_radii: Corners::all(2.0),
                     fill_color: apply_opacity(thumb, effective_opacity),
                     border_color: Color::TRANSPARENT,
@@ -1609,13 +1650,19 @@ fn emit_commands(
             // bottom edge, shown while content overflows horizontally (carousels
             // / timelines). Same indicator-only semantics (no hit region).
             if max_child_right > w + 1.0 && w > 0.0 {
-                let thumb_w = (w / max_child_right * w).max(20.0).min(w);
-                let max_scroll = max_child_right - w;
-                let norm = (style.scroll_x / max_scroll).clamp(0.0, 1.0);
-                let tx = rect.origin.x + norm * (w - thumb_w);
+                // 縦と同じ関数。軸に依らない式なので、横だけ書き下すと
+                // `MIN_THUMB` を直しても横が付いてこない。
+                let (left, thumb_w) =
+                    crate::scrollbar::thumb(w, max_child_right, style.scroll_x);
+                let tx = rect.origin.x + left;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
-                    rect: Rect::new(tx, rect.origin.y + h - 6.0, thumb_w, 4.0),
+                    rect: Rect::new(
+                        tx,
+                        rect.origin.y + h - crate::scrollbar::BAR_INSET,
+                        thumb_w,
+                        crate::scrollbar::BAR_W,
+                    ),
                     corner_radii: Corners::all(2.0),
                     fill_color: apply_opacity(thumb, effective_opacity),
                     border_color: Color::TRANSPARENT,

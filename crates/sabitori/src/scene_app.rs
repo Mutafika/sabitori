@@ -571,6 +571,12 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
                 self.hovered_id = None;
                 self.pressed_id = None;
+                // 掴んだまま外へ出た。**離しは別ウィンドウで起きて戻ってこない**ので、
+                // ここで放さないと、カーソルを戻した瞬間にボタンを押していないのに
+                // 面が指に付いてくる (すぐ上の `pressed_id` と同じ理由)。
+                if self.bars.release() {
+                    self.dirty = true;
+                }
                 // Pointer left the window mid-drag → notify + cancel.
                 if let Some((data, _source_id)) = self.drag_manager.drag_info() {
                     self.app.on_drag_out(&data);
@@ -1620,6 +1626,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         wheel_latch: crate::scroll_sync::WheelLatch::new(),
         last_capture: UiCapture::default(),
         scroll_states: std::collections::HashMap::new(),
+        bars: crate::runtime_shared::Bars::default(),
         style_animator: sabitori_widgets::StyleAnimator::new(),
         presence_animator: sabitori_widgets::PresenceAnimator::new(),
         tooltip_state: sabitori_widgets::TooltipState::new(),

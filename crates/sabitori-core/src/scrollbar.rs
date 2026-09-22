@@ -76,10 +76,18 @@ impl ScrollBar {
     /// 掴める帯の中か。**縦だけ** ── 横の帯を掴む話は、横に流れる面
     /// （コマの帯など）が自分でコマを掴むので取り合いになる。
     pub fn lane_has(&self, x: f32, y: f32) -> bool {
-        let (rx, ry) = (self.rect.origin.x, self.rect.origin.y);
-        let (rw, rh) = (self.rect.size.width, self.rect.size.height);
-        x >= rx + rw - self.lane && x <= rx + rw && y >= ry && y <= ry + rh
+        lane_has(self.rect, self.lane, x, y)
     }
+}
+
+/// [`ScrollBar::lane_has`] の、組み立て前に呼べる版。
+///
+/// [`crate::build::BuildResult::scroll_bar_id_at`] が使う ── 指が動くたびに
+/// `ScrollBar` を組むと、1 移動につき面の数だけ `String` を作ることになる。
+pub fn lane_has(rect: Rect, lane: f32, x: f32, y: f32) -> bool {
+    let (rx, ry) = (rect.origin.x, rect.origin.y);
+    let (rw, rh) = (rect.size.width, rect.size.height);
+    x >= rx + rw - lane && x <= rx + rw && y >= ry && y <= ry + rh
 }
 
 #[cfg(test)]

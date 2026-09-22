@@ -1268,6 +1268,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // ウィンドウの外へ出たら押下も解除する。 解放イベントが別ウィンドウで
                 // 起きると戻ってこないので、ここで消さないと押しっぱなしの見た目が残る。
                 self.pressed_id = None;
+                // 掴んだまま外へ出た。**離しは別ウィンドウで起きて戻ってこない**ので、
+                // ここで放さないと、カーソルを戻した瞬間にボタンを押していないのに
+                // 面が指に付いてくる (すぐ上の `pressed_id` と同じ理由)。
+                if self.bars.release() {
+                    self.dirty = true;
+                }
                 // If a drag is active, notify the app it left the window
                 if let Some((data, _source_id)) = self.drag_manager.drag_info() {
                     self.app.on_drag_out(&data);
