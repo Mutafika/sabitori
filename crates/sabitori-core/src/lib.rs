@@ -4,6 +4,7 @@ mod theme;
 pub mod element;
 pub mod render_list;
 pub mod build;
+pub mod scrollbar;
 pub mod tui;
 pub mod forms;
 pub mod image_cache;

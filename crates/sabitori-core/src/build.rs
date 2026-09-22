@@ -77,6 +77,14 @@ pub struct HitRegion {
     pub label: Option<String>,
     /// 見出しの階層 (`.heading(n)`)。 `role` が `Heading` のときだけ意味がある。
     pub heading_level: Option<u8>,
+    /// **手前の層に居るか** — `.overlay()` の子孫か、`overlay_view` が返した木。
+    ///
+    /// 「幕が下りている間は下に触らせない」を判定するのに要る。かつては
+    /// `element_index >= OVERLAY_INDEX_BASE` で代用していたが、あの帯が付くのは
+    /// **`overlay_view` (外付け) だけ**で、`.overlay()` (内側) は普通の連番のまま
+    /// 素通りしていた。組み込みの menu / modal / dropdown / toast は全部内側なので、
+    /// 代用では**どれ 1 つ止まらなかった**。
+    pub overlay: bool,
 }
 
 impl HitRegion {
@@ -117,6 +125,11 @@ pub struct ScrollMeasure {
     pub viewport_width: f32,
     /// Viewport height (the scroll container's own height).
     pub viewport_height: f32,
+    /// 画面座標の矩形。**掴める帯はここから組む** ── `hit_regions` を id で
+    /// 引き直すと、当たり領域を持たない面（意味だけの面）で取りこぼす。
+    pub rect: Rect,
+    /// `.scrollbar_grab(幅)` の幅。`None` なら印だけ（掴めない）。
+    pub grab: Option<f32>,
 }
 
 /// The result of [`build_tree`].
@@ -141,6 +154,59 @@ pub struct BuildResult {
 }
 
 impl BuildResult {
+    /// 掴める帯 ── `.scrollbar_grab(幅)` を書いた面のうち、**いま中身が
+    /// 溢れている**物だけ。
+    ///
+    /// 掴みはランタイムが受けるので、位置も寸法もここから読む。計り直さず
+    /// 走査の控え（`scroll_measures`）から組むのは、**描いた物と同じ数字**で
+    /// なければ掴んだ所と摘まんだ物が食い違うから（`crate::scrollbar`）。
+    pub fn scroll_bars(&self) -> Vec<crate::scrollbar::ScrollBar> {
+        let mut out: Vec<crate::scrollbar::ScrollBar> = self
+            .scroll_measures
+            .iter()
+            .filter(|(_, m)| m.content_height > m.viewport_height + 1.0)
+            .filter_map(|(id, m)| {
+                Some(crate::scrollbar::ScrollBar {
+                    id: id.clone(),
+                    rect: m.rect,
+                    content: m.content_height,
+                    lane: m.grab?,
+                })
+            })
+            .collect();
+        // 走査は HashMap なので順が決まらない。掴みは「手前の1本」を選ぶ話に
+        // なるので、並びを固定しておく。
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    /// 掴める帯のうち、点が乗っている物の id。**何も確保しない。**
+    ///
+    /// [`Self::scroll_bars`] で Vec を組んで `find` しても同じ答えになるが、
+    /// これは**指が動くたびに**呼ばれる。1 移動につき面の数だけ `String` を
+    /// 作ることになるので、乗ったかどうかだけ知りたい側はこちらを使う
+    /// ([#80](https://github.com/Mutafika/sabitori/issues/80) で毎フレームの
+    /// 確保を落としたのと同じ話)。
+    ///
+    /// 重なった時にどれを選ぶかは [`Self::scroll_bars`] と同じ（id の小さい方)
+    /// ── 押しと hover で別の帯を選ぶと、光っていない帯を掴むことになる。
+    pub fn scroll_bar_id_at(&self, x: f32, y: f32) -> Option<&str> {
+        let mut best: Option<&str> = None;
+        for (id, m) in &self.scroll_measures {
+            let Some(lane) = m.grab else { continue };
+            if m.content_height <= m.viewport_height + 1.0 {
+                continue;
+            }
+            if !crate::scrollbar::lane_has(m.rect, lane, x, y) {
+                continue;
+            }
+            if best.is_none_or(|b| id.as_str() < b) {
+                best = Some(id.as_str());
+            }
+        }
+        best
+    }
+
     /// Topmost **interactive** hit region under `(x, y)`, if any. Regions are
     /// stored front-to-back, so the first match is the visually topmost one.
     ///
@@ -1370,6 +1436,7 @@ fn emit_commands(
                 role: element.role,
                 label: element.label.clone(),
                 heading_level: element.heading_level,
+                overlay: use_overlay,
             };
             if use_overlay {
                 overlay_hit_regions.push(region);
@@ -1424,6 +1491,11 @@ fn emit_commands(
                             .max(0.0),
                         viewport_height: (layout.size.height - padding_layout.1 - padding_layout.3)
                             .max(0.0),
+                        // padding に食われて中身が見えない面。帯も出ないので
+                        // 掴ませない（`scroll_bars` は溢れている物だけを返すが、
+                        // ここは矩形そのものが潰れている）。
+                        rect: clip_rect,
+                        grab: None,
                     });
                 }
             }
@@ -1530,6 +1602,8 @@ fn emit_commands(
                 content_height: max_child_bottom,
                 viewport_width: layout.size.width,
                 viewport_height: layout.size.height,
+                rect,
+                grab: element.style.scrollbar_grab,
             });
         }
 
@@ -1544,13 +1618,20 @@ fn emit_commands(
         // click/wheel routing is untouched.
         if let Some(thumb) = element.style.scrollbar_thumb {
             if max_child_bottom > h + 1.0 && h > 0.0 {
-                let thumb_h = (h / max_child_bottom * h).max(20.0).min(h);
-                let max_scroll = max_child_bottom - h;
-                let norm = (style.scroll_y / max_scroll).clamp(0.0, 1.0);
-                let ty = rect.origin.y + norm * (h - thumb_h);
+                // 寸法は `crate::scrollbar` に1つだけ置く。掴む側（ランタイム）が
+                // 同じ式を読むので、ここに書き下すと**掴んだ所と摘まんだ物が
+                // 食い違う**。
+                let (top, thumb_h) =
+                    crate::scrollbar::thumb(h, max_child_bottom, style.scroll_y);
+                let ty = rect.origin.y + top;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
-                    rect: Rect::new(rect.origin.x + w - 6.0, ty, 4.0, thumb_h),
+                    rect: Rect::new(
+                        rect.origin.x + w - crate::scrollbar::BAR_INSET,
+                        ty,
+                        crate::scrollbar::BAR_W,
+                        thumb_h,
+                    ),
                     corner_radii: Corners::all(2.0),
                     fill_color: apply_opacity(thumb, effective_opacity),
                     border_color: Color::TRANSPARENT,
@@ -1569,13 +1650,19 @@ fn emit_commands(
             // bottom edge, shown while content overflows horizontally (carousels
             // / timelines). Same indicator-only semantics (no hit region).
             if max_child_right > w + 1.0 && w > 0.0 {
-                let thumb_w = (w / max_child_right * w).max(20.0).min(w);
-                let max_scroll = max_child_right - w;
-                let norm = (style.scroll_x / max_scroll).clamp(0.0, 1.0);
-                let tx = rect.origin.x + norm * (w - thumb_w);
+                // 縦と同じ関数。軸に依らない式なので、横だけ書き下すと
+                // `MIN_THUMB` を直しても横が付いてこない。
+                let (left, thumb_w) =
+                    crate::scrollbar::thumb(w, max_child_right, style.scroll_x);
+                let tx = rect.origin.x + left;
                 let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
                 target.commands.push(RenderCommand::Rect(RectDraw {
-                    rect: Rect::new(tx, rect.origin.y + h - 6.0, thumb_w, 4.0),
+                    rect: Rect::new(
+                        tx,
+                        rect.origin.y + h - crate::scrollbar::BAR_INSET,
+                        thumb_w,
+                        crate::scrollbar::BAR_W,
+                    ),
                     corner_radii: Corners::all(2.0),
                     fill_color: apply_opacity(thumb, effective_opacity),
                     border_color: Color::TRANSPARENT,

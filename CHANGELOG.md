@@ -15,6 +15,49 @@
 
 ## [Unreleased]
 
+### Added
+
+- **スクロールバーを掴んで動かせるようにした**（`.scrollbar_grab(幅)` ＋
+  `.scrollbar_lit(hover, held)`）。今まで帯は**印だけ**で、押しても何も起きなかった
+  （`build.rs` の "Indicator only: no hit region is registered"）ので、長い並びを端まで
+  送るのにホイールを何十回も回すことになる。消費側（kasane）は**窓の側で掴みを実装して
+  いた** ── その寸法は `build.rs` の写しで、ずれていないかを「描かれた矩形と突き合わせる」
+  試しで留めるしかなかった。**掴めるのはランタイムの仕事**なので引き取った。
+  - つまみを摘まめば**指から逃げず**（掴んだ点を保つ）、帯の空いた所を押せばそこへ飛ぶ
+  - 掴める幅は描かれる 4px より広い（既定 14px）── 4px を狙わせると掴み損ねて下の中身が選ばれる
+  - 帯を掴んだ押し・離しは**下へ渡らない**（一覧なら絵が選ばれ、行の並びなら開いてしまう）
+  - **menu が開いている間は掴まない** ── overlay が手前にあれば譲る
+  - 掴んでいる間は**ばねを待たずに置く**（摘まんだ物が遅れて付いてくるのは「掴んでいる」ではない）
+  - 寸法は `sabitori_core::scrollbar` に1つだけ置き、**描く側（`build`）と掴む側が同じ式**を読む
+    （縦・横とも。`BAR_W` / `BAR_INSET` / `MIN_THUMB` を直せば両方が付いてくる）
+  - declarative と scene_app の**両方**に同じ `runtime_shared::Bars` を配線した
+  - **掴んだまま窓の外で離しても掴んだままにならない** ── 離しは別ウィンドウで
+    起きて戻ってこないので、`CursorLeft` で放す
+  - 指が乗ったかを見るのは `BuildResult::scroll_bar_id_at()` で、**何も確保しない**
+    （毎ポインタ移動で `Vec` と `String` を組まない）
+
+### Fixed
+
+- **`testing::Harness` が `overlay_view` を畳まずにコミットしていた。**実機の描画路は
+  `absorb_overlay` を通すのに Harness だけ素の `build_result` を渡していたので、
+  menu もツールチップも**当たり領域ごと落ちて**いた ── 消費側は「menu の行が押せるか」を
+  試しに書けず、木を自分で組み直していた。
+
+### Changed（破壊的）
+
+- `build::ScrollMeasure` に `rect` と `grab` が増えた（掴める帯を組むのに要る）。
+  `BuildResult::scroll_bars()` がそこから**いま溢れている帯**を返す。
+- **`build::HitRegion` に `overlay: bool` が増えた。** `.overlay()` の子孫か、
+  `overlay_view` が返した木なら `true`。リテラルで `HitRegion` を組んでいる所だけ
+  直せば済む。
+
+  「幕が下りている間は下に触らせない」の判定に要る。それまでは
+  `element_index >= OVERLAY_INDEX_BASE` で代用していたが、あの帯が付くのは
+  **`overlay_view`（外付け）だけ**で、`.overlay()`（内側）は普通の連番のまま
+  素通りしていた。組み込みの `select` / `modal` / `context_menu` / `menu_bar` /
+  `toast` は**全部内側**なので、代用では 1 つも止まらなかった
+  （menu を開いたまま帯を掴めて、幕の下で面が動いた）。
+
 ## [0.15.0] - 2026-09-22
 
 ### Changed（破壊的）
