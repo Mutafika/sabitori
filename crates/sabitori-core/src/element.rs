@@ -1021,6 +1021,13 @@ pub struct StateStyle {
     pub color: Option<Color>,
     /// Font size override.
     pub font_size: Option<f32>,
+    /// `background` を書いていなければ、テーマから塗りを決める。
+    ///
+    /// ランタイムが [`resolve_theme_tints`] で `AppTheme` と要素の地の色から
+    /// 埋める。地が透明なら `hover_bg` / `select_bg`、色があればそれを
+    /// `text_primary` の方へ少し寄せる (暗いテーマなら明るく、明るいテーマなら
+    /// 暗くなる)。`button()` の hover / active はこれを立てて出荷している。
+    pub theme_tint: bool,
 }
 
 impl StateStyle {
@@ -1244,6 +1251,46 @@ pub fn apply_state_styles(
     pressed_id: &Option<String>,
 ) {
     apply_state_styles_inner(element, hovered_id, pressed_id, false);
+}
+
+/// hover で地の色を `text_primary` へ寄せる割合。
+const HOVER_TINT: f32 = 0.08;
+/// 押下で寄せる割合。hover より一段深い。
+const ACTIVE_TINT: f32 = 0.14;
+
+/// [`StateStyle::theme_tint`] が立っていて `background` が空の hover / active に、
+/// テーマから塗りを入れる。
+///
+/// `view()` の直後、`StyleAnimator` と [`apply_state_styles`] より**前に**呼ぶ
+/// (どちらも `background` を読むので)。地の色はこの時点の `style.background`。
+///
+/// - 地が透明 → `hover_bg` / `select_bg`
+/// - 地に色がある (`.accent()` / `.bg()`) → その色を `text_primary` へ
+///   [`HOVER_TINT`] / [`ACTIVE_TINT`] だけ寄せる。文字色の方へ寄せるので、
+///   暗いテーマでは明るく、明るいテーマでは暗くなる。
+pub fn resolve_theme_tints(element: &mut Element, theme: &crate::AppTheme) {
+    let base = element.style.background;
+    if let Some(h) = element.hover_style.as_deref_mut() {
+        if h.theme_tint && h.background.is_none() {
+            h.background = Some(if base.a <= 0.0 {
+                theme.hover_bg
+            } else {
+                base.lerp(theme.text_primary.with_alpha(base.a), HOVER_TINT)
+            });
+        }
+    }
+    if let Some(a) = element.active_style.as_deref_mut() {
+        if a.theme_tint && a.background.is_none() {
+            a.background = Some(if base.a <= 0.0 {
+                theme.select_bg
+            } else {
+                base.lerp(theme.text_primary.with_alpha(base.a), ACTIVE_TINT)
+            });
+        }
+    }
+    for child in &mut element.children {
+        resolve_theme_tints(child, theme);
+    }
 }
 
 /// `inherited_disabled` = 祖先のどれかが `.disabled(true)` だった。無効な入れ物の
@@ -1601,15 +1648,24 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         label: None,
         heading_level: None,
         // A button ships with the affordance built in: it lifts a little under
-        // the pointer and sinks under the press. Colors are deliberately not
-        // touched — the right hover tint depends on the app's palette, and an
-        // `.accent()` button would fight a hardcoded one. Scale is palette-free,
-        // so it reads correctly on any theme.
+        // the pointer and sinks under the press, and its fill shifts toward
+        // the theme. The color can't be fixed here — `button()` doesn't know
+        // the palette, and an `.accent()` button would fight a hardcoded tint —
+        // so it is left to `theme_tint`, which the runtime resolves against
+        // `AppTheme` and this button's own fill (`resolve_theme_tints`).
         //
         // Callers who want something else just override with `.hover()` /
-        // `.active()`; those replace these outright.
-        hover_style: Some(Box::new(StateStyle { scale: Some(1.02), ..StateStyle::default() })),
-        active_style: Some(Box::new(StateStyle { scale: Some(0.96), ..StateStyle::default() })),
+        // `.active()`; those replace these outright (tint included).
+        hover_style: Some(Box::new(StateStyle {
+            scale: Some(1.02),
+            theme_tint: true,
+            ..StateStyle::default()
+        })),
+        active_style: Some(Box::new(StateStyle {
+            scale: Some(0.96),
+            theme_tint: true,
+            ..StateStyle::default()
+        })),
         transitions: vec![Transition {
             property: TransitionProperty::All,
             kind: TransitionKind::default(),
@@ -3058,6 +3114,16 @@ impl Element {
 impl StateStyle {
     pub fn bg(mut self, color: Color) -> Self {
         self.background = Some(color);
+        self
+    }
+
+    /// 塗りをテーマに任せる ([`StateStyle::theme_tint`])。
+    ///
+    /// ```ignore
+    /// div().bg(t.surface).hover(|s| s.theme_tint())
+    /// ```
+    pub fn theme_tint(mut self) -> Self {
+        self.theme_tint = true;
         self
     }
 

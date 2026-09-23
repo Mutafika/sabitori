@@ -1242,6 +1242,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // the declarative `AppState` redraw path.
                 self.presence_animator.update_presence(&root);
                 self.presence_animator.apply(&mut root);
+                sabitori_core::element::resolve_theme_tints(&mut root, &ctx.theme);
                 self.style_animator.update(&root, &self.hovered_id, &self.pressed_id);
                 self.style_animator.apply(&mut root);
                 sabitori_core::element::apply_state_styles(
