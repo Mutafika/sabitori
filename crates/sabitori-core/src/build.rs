@@ -1231,11 +1231,11 @@ fn emit_commands(
 
     let rect = Rect::new(abs_x, abs_y, w, h);
 
-    // Determine effective background color
-    let bg = match &element.kind {
-        ElementKind::Button { accent, .. } => accent.unwrap_or(style.background),
-        _ => style.background,
-    };
+    // 塗りは `style.background` だけを見る。`.accent()` は background にも同じ
+    // 色を入れているので、ここで accent を優先する必要は無い — 優先していた
+    // 頃は hover / active が background を書き換えても accent に上書きされ、
+    // `.accent()` 付きのボタンだけホバー色が出なかった。
+    let bg = style.background;
 
     // Emit rect draw if the element has any visual content
     let has_visual = bg.a > 0.0

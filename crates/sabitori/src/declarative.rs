@@ -2776,6 +2776,10 @@ impl<A: DeclarativeApp> AppState<A> {
         self.presence_animator.update_presence(&root);
         self.presence_animator.apply(&mut root);
 
+        // `theme_tint` の hover / active にテーマの塗りを入れる。animator と
+        // 畳み込みがどちらも `background` を読むので、その前。
+        sabitori_core::element::resolve_theme_tints(&mut root, &ctx.theme);
+
         // Apply hover/active styles and spring transitions:
         // 1. Elements WITH transitions → use StyleAnimator (smooth spring)
         // 2. それ以外、および animator が扱わないフィールド → 即時に畳む
