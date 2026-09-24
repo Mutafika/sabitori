@@ -801,6 +801,7 @@ fn the_table_bar_does_not_cover_the_rows_and_columns_stay_aligned() {
 /// issue の顧客一覧 (固定列の合計 750px) を、幅 734px の表に置く。
 struct Customers {
     state: TableState,
+    header: Option<usize>,
 }
 
 impl Customers {
@@ -822,7 +823,7 @@ impl Customers {
                 })
                 .collect(),
         );
-        Self { state }
+        Self { state, header: None }
     }
 
     fn issue_columns() -> Vec<TableColumn> {
@@ -846,6 +847,15 @@ impl DeclarativeApp for Customers {
                 .w_full()
                 .flex_1(),
         )
+    }
+
+    fn on_click(&mut self, id: &str) {
+        if let Some(row) = table_clicked_row("customers", id) {
+            self.state.selected = Some(row);
+        }
+        if let Some(col) = sabitori_widgets::table_clicked_header("customers", id) {
+            self.header = Some(col);
+        }
     }
 }
 
@@ -950,4 +960,44 @@ fn a_wide_enough_table_shows_every_column() {
     assert!(h.text_rect("ランク").is_some());
     let info = h.build().scroll_measures.get("customers::body").cloned().unwrap();
     assert!(info.content_width <= info.viewport_width + 1.0);
+}
+
+/// **縦しか回らないマウスでも横に動かせる** (Shift + ホイール)。横の帯は
+/// 掴めないので、トラックパッドの無い Windows / web ではこれが唯一の手段。
+#[test]
+fn shift_wheel_scrolls_a_wide_table_sideways() {
+    let mut h = settled(Customers::new(Customers::issue_columns()));
+    let body = h.rect_of("customers::body").expect("本体が無い");
+    let (x, y) = (body.origin.x + 100.0, body.origin.y + 100.0);
+
+    h.set_modifiers(sabitori::Modifiers { shift: true, ..Default::default() });
+    h.wheel_lines_at(x, y, 0.0, -3.0);
+    h.settle();
+    assert!(h.scroll_x_of("customers::body").unwrap() > 0.0, "Shift+ホイールで横に動かない");
+    assert_eq!(h.scroll_y("customers::body"), Some(0.0), "縦に動いてしまった");
+
+    // Shift が無ければ今までどおり縦。
+    h.set_modifiers(sabitori::Modifiers::default());
+    h.wheel_lines_at(x, y, 0.0, -3.0);
+    h.settle();
+    assert!(h.scroll_y("customers::body").unwrap() > 0.0);
+}
+
+/// **横に流したあとも、見出しと行は押した所のものが取れる。**
+#[test]
+fn headers_and_rows_stay_clickable_after_scrolling_sideways() {
+    let mut h = settled(Customers::new(Customers::issue_columns()));
+    h.scroll_x("customers::body", 10_000.0);
+    h.frame();
+
+    h.click(&sabitori_widgets::table_header_id("customers", 7));
+    assert_eq!(h.app().header, Some(7), "流した後の見出しが押せない");
+    let head = h.text_rect("累計額").unwrap();
+    // 見出しの文字の上を押しても同じ列 (当たり領域も絵と一緒にずれている)。
+    h.click_at(head.origin.x + 5.0, head.origin.y + 5.0);
+    assert_eq!(h.app().header, Some(7));
+
+    let cell = h.text_rect("¥56,800").unwrap();
+    h.click_at(cell.origin.x + 5.0, cell.origin.y + 5.0);
+    assert_eq!(h.app().state.selected, Some(0), "流した後の行が押せない");
 }

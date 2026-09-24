@@ -784,14 +784,21 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 if consumed {
                     return;
                 }
+                // Shift + 刻みホイールは横へ (#96)。アプリへの生の値は上で渡し済み。
+                let (route_x, route_y) = crate::input_router::shift_wheel_sideways(
+                    delta_x,
+                    delta_y,
+                    precise,
+                    self.modifiers.shift,
+                );
                 let handled = match self.last_build.as_ref() {
                     Some(build) => self.wheel_latch.route(
                         build,
                         &mut self.scroll_states,
                         self.mouse_x,
                         self.mouse_y,
-                        delta_x,
-                        delta_y,
+                        route_x,
+                        route_y,
                         precise,
                         phase,
                     ),

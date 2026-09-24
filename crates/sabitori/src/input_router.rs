@@ -43,6 +43,30 @@ pub(crate) fn wheel_delta_px(delta: winit::event::MouseScrollDelta) -> (f32, f32
     }
 }
 
+/// Shift + 刻みホイールを横スクロールに読み替える (ブラウザや OS と同じ)。
+///
+/// 縦しか回らないマウスで、横にあふれた表などを動かす手段がこれしか無い
+/// ([#96](https://github.com/Mutafika/sabitori/issues/96))。横の帯は掴めない。
+///
+/// - **トラックパッド (`precise`) は読み替えない** — 最初から横の値が来る。
+/// - **横の値が既にあれば読み替えない** — macOS は OS が Shift+ホイールを横に
+///   直して届けるので、ここで重ねて回すと向きが入れ替わる。
+///
+/// 読み替えるのは管理スクロールへ配る値だけ。`on_input(Wheel)` には生の値と
+/// 修飾キーをそのまま渡す (Shift+ホイールを自前で使うアプリのため)。
+pub(crate) fn shift_wheel_sideways(
+    delta_x: f32,
+    delta_y: f32,
+    precise: bool,
+    shift: bool,
+) -> (f32, f32) {
+    if shift && !precise && delta_x == 0.0 {
+        (delta_y, 0.0)
+    } else {
+        (delta_x, delta_y)
+    }
+}
+
 /// winit の `TouchPhase` (ホイールにも付いてくる) を [`sabitori_input::WheelPhase`] へ。
 pub(crate) fn wheel_phase(phase: winit::event::TouchPhase) -> sabitori_input::WheelPhase {
     use sabitori_input::WheelPhase;
@@ -187,5 +211,26 @@ mod trackpad_pinch_tests {
         }
         // 床を張ったあとも、 拡大方向へ復帰できること。
         assert!(p.apply(1.0).unwrap() > p.scale / 2.0);
+    }
+}
+
+#[cfg(test)]
+mod shift_wheel_tests {
+    use super::shift_wheel_sideways as f;
+
+    #[test]
+    fn shift_turns_a_notched_wheel_sideways() {
+        assert_eq!(f(0.0, -60.0, false, true), (-60.0, 0.0));
+    }
+
+    #[test]
+    fn without_shift_nothing_changes() {
+        assert_eq!(f(0.0, -60.0, false, false), (0.0, -60.0));
+    }
+
+    #[test]
+    fn trackpads_and_already_sideways_wheels_are_left_alone() {
+        assert_eq!(f(0.0, -60.0, true, true), (0.0, -60.0), "トラックパッド");
+        assert_eq!(f(-60.0, 0.0, false, true), (-60.0, 0.0), "macOS が直した後");
     }
 }
