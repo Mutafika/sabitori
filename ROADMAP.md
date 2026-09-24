@@ -4,7 +4,7 @@
 
 ## Current Status
 
-`0.18.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate.
+`0.19.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate.
 
 The current focus is closing the gaps that showed up writing a real line-of-business app (a rental/reservation system) on sabitori; "What line-of-business apps and the web still need" below is that list, and every entry has an issue. Releases ship from a single line — now `0.12.x`. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
 
