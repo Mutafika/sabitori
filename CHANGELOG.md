@@ -15,6 +15,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`DeclarativeApp::scroll_shifts` — スクロール位置をその場で差分ずらす**
+  ([#93](https://github.com/Mutafika/sabitori/issues/93))。高さの揃わない行を
+  仮想化すると、画面より上の行が見積りと違う高さだったぶん読んでいる所が動く
+  (上へ戻るスクロールで本文が跳ねる)。`ScrollIntent` は目標を置き直すので、
+  ばねで数フレームかけて動き、慣性も止めてしまい、この打ち消しには使えなかった。
+  `scroll_shifts` が返した `ScrollShift` は**次の `view()` の前に**当たり
+  (`ctx.scroll_info` にもう出ている)、値と目標を同時に平行移動する
+  (ばねも慣性もそのまま続く)。既定は空なので既存のアプリには影響しない。
+- **`ScrollView::shift_y`** / **`Animated::offset_by`**。上の平行移動の本体。
+
+### Fixed
+
+- **高さ 0 の要素が probe に答えなかった**
+  ([#92](https://github.com/Mutafika/sabitori/issues/92))。大きさ 0 の要素を
+  飛ばす早期 return が probe の記録より前にあり、`probe_positions` から黙って
+  欠けていた。高さ 0 の目印 (アンカー・塊の終わりの印) は probe の典型的な
+  使い道なので、仮想化の実測で 1 本も高さが取れなかった。
+
 ## [0.18.0] - 2026-09-24
 
 ### Added

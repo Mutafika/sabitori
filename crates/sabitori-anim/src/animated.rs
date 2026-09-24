@@ -200,6 +200,24 @@ impl<T: Lerp> Animated<T> {
         self.target
     }
 
+    /// 値・出発点・目標を**同じだけ**平行移動する。進行中のアニメはそのまま続く。
+    ///
+    /// ばねは「目標までの距離と速度」だけで進み、イージングは出発点と目標の
+    /// 補間なので、3 つを揃えてずらせば途中経過は 1 フレームも変わらない。
+    /// `set_target` だとアニメが最初からやり直しになり、速度も 0 に戻る。
+    ///
+    /// 用途はスクロールアンカリング: 見えている所より上の中身が伸び縮みしたとき、
+    /// 慣性やばねを止めずに位置だけ差分ずらす ([`crate`] の外では
+    /// `ScrollView::shift_y` 経由で使う)。
+    pub fn offset_by(&mut self, delta: T)
+    where
+        T: std::ops::Add<Output = T>,
+    {
+        self.current = self.current + delta;
+        self.start = self.start + delta;
+        self.target = self.target + delta;
+    }
+
     /// Set a new target. Starts animating (resets chain).
     pub fn set_target(&mut self, target: T) {
         if self.target.distance(target) > 0.001 {
