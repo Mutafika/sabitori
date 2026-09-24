@@ -522,6 +522,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 }
             }
             // web では DPR が変わっても `Resized` が来ないことがある (#89)。
+            // native は winit が続けて `Resized` を送るので、ここでは張り直さない。
+            #[cfg(target_arch = "wasm32")]
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
                     let size = sabitori_window::surface_size(w, w.inner_size());

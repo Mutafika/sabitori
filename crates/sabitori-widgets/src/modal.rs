@@ -1,6 +1,6 @@
 use sabitori_anim::{Animated, Spring};
 use sabitori_core::{Color, Element, Rect, ScrollbarStyle};
-use sabitori_core::element::{div, text, Percent, Px, Role};
+use sabitori_core::element::{div, text, Auto, Percent, Px, Role};
 use sabitori_core::{Managed, ViewContext};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -448,7 +448,14 @@ pub fn modal(
         .gap(12.0)
         .children(content);
     if let Some(bar) = &style.scrollbar {
-        body = body.scrollbar_style(bar);
+        // 帯はダイアログの右の余白に置く。枠の右端に置くと、掴める幅 (14px) が
+        // `w_full` の欄の右端に被り、欄を押したつもりが帯を掴む。枠だけを余白の
+        // ぶん右へ広げ、同じだけ内側に詰めるので、中身の幅は変わらない。
+        body = body
+            .w(Auto)
+            .mr(Px(-style.padding))
+            .pr(Px(style.padding))
+            .scrollbar_style(bar);
     }
     dialog = dialog.child(body);
 

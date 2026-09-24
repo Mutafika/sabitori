@@ -286,7 +286,7 @@ pub fn table_with(
         .flex_col()
         .children(body_children);
     if let Some(bar) = &style.scrollbar {
-        body = body.scrollbar_style(bar);
+        body = body.pr(Px(bar_gutter(bar))).scrollbar_style(bar);
     }
 
     // 見出しの下の区切り線。 `border()` は 4 辺に付いてしまうので 1px の div。
@@ -297,6 +297,15 @@ pub fn table_with(
         .role(Role::Table)
         .flex_col()
         .children([header(id, state, style), rule, body])
+}
+
+/// 帯のために本体の右へ空ける溝。見出しにも同じだけ空けて列を揃える。
+///
+/// 掴める帯は右端 `lane` px の押しを食うので、行をそこまで伸ばすと行末の
+/// セル (`table_with` のボタンなど) の右側が押せなくなる。掴めない帯なら
+/// 描かれる所 (右端から `BAR_INSET`) だけ空ける。
+fn bar_gutter(bar: &ScrollbarStyle) -> f32 {
+    bar.grab.unwrap_or(sabitori_core::scrollbar::BAR_INSET)
 }
 
 fn header(id: &str, state: &TableState, style: &TableStyle) -> Element {
@@ -321,11 +330,13 @@ fn header(id: &str, state: &TableState, style: &TableStyle) -> Element {
         })
         .collect();
 
+    let gutter = style.scrollbar.as_ref().map_or(0.0, bar_gutter);
     div()
         .role(Role::Row)
         .w_full()
         .h(Px(style.row_height))
         .shrink(0.0)
+        .pr(Px(gutter))
         .bg(style.header_bg)
         .flex_row()
         .children(cells)

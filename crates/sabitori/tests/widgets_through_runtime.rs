@@ -764,3 +764,32 @@ fn a_table_without_a_scrollbar_style_draws_none() {
     let mut h = Harness::new(Plain(TableApp::new(215).state), 500.0, 400.0);
     assert!(h.frame().scroll_bars().is_empty());
 }
+
+/// **帯を付けても、行の右端は行のもの** (#90 のレビューで見つけた)。
+///
+/// 掴める帯は右端 14px の押しを食う。行の右端に帯を重ねると、`table_with` で
+/// 行末に置いたボタン (「編集」など) の右側を押しても帯が掴まれる。
+/// 見出しと本体の列もずれないこと。
+#[test]
+fn the_table_bar_does_not_cover_the_rows_and_columns_stay_aligned() {
+    let mut h = Harness::new(TableApp::new(215), 500.0, 400.0);
+    let bars = h.frame().scroll_bars();
+    let bar = bars.iter().find(|b| b.id == "files::body").expect("帯が無い");
+    let bar_left = bar.rect.origin.x + bar.rect.size.width - bar.lane;
+
+    let row = h.rect_of("files::row:0").expect("行が無い");
+    assert!(
+        bar_left >= row.origin.x + row.size.width - 0.5,
+        "帯の掴める所 (x >= {bar_left}) が行 (右端 {}) に被っている",
+        row.origin.x + row.size.width
+    );
+
+    let head = h.rect_of("files::col:1").expect("見出しが無い");
+    let right = |r: sabitori::Rect| r.origin.x + r.size.width;
+    assert!(
+        (right(head) - right(row)).abs() <= 0.5,
+        "見出しと行の右端がずれている: {} / {}",
+        right(head),
+        right(row)
+    );
+}

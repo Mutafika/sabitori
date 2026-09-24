@@ -23,6 +23,9 @@
   何百行あふれても帯どころか印も出なかった。`TableStyle` / `ModalStyle` に
   `scrollbar: Option<ScrollbarStyle>` を足し、`from_theme` / `default_dark` で
   掴める帯を入れる (消費側は何も書かずに付く)。出したくなければ `None`。
+  掴める帯は右端 14px の押しを食うので、**行や欄をその下に置かない**:
+  `table` は見出しと本体の右に帯の幅ぶんの溝を空け (列は揃ったまま、中身が
+  14px 狭くなる)、`modal` は帯をダイアログの右の余白に置く (中身の幅は同じ)。
 - **`ScrollbarStyle`** と **`Element::scrollbar_style`**。`.scrollbar` /
   `.scrollbar_grab` / `.scrollbar_lit` の 3 つを 1 つにまとめたもので、
   `ScrollbarStyle::from_theme(&ctx.theme)` でテーマから組める。

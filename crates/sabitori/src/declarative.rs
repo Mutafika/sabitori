@@ -1238,6 +1238,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             // web では DPR が変わっても (ズーム / 画面の移動) `Resized` が来ないことが
             // ある (#89)。scale を張り直さないとレイアウト幅がずれたままになる。
+            // native は winit が続けて `Resized` を送るので、ここでは張り直さない。
+            #[cfg(target_arch = "wasm32")]
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
                     let size = sabitori_window::surface_size(w, w.inner_size());

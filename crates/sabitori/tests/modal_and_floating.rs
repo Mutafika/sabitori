@@ -266,3 +266,34 @@ fn a_long_form_in_a_modal_has_a_grabbable_bar() {
         bars
     );
 }
+
+/// **帯を付けても、欄の右端は欄のもの** (#90 のレビューで見つけた)。
+///
+/// 掴める帯は右端 14px の押しを食う。中身の右端にそのまま帯を置くと、
+/// `w_full` の欄の右端を押した時に欄ではなく帯が掴まれる。
+#[test]
+fn the_bar_does_not_steal_presses_from_the_right_edge_of_a_field() {
+    let mut h = Harness::new(Screen::with_rows(40), 800.0, 600.0);
+    h.frame();
+    h.click("open");
+    h.settle();
+    h.frame();
+
+    let f = h.rect_of("field-0").expect("欄が無い");
+    let bar = h.frame().scroll_bars().into_iter().find(|b| b.id == "edit::body").expect("帯が無い");
+    let bar_left = bar.rect.origin.x + bar.rect.size.width - bar.lane;
+    assert!(
+        bar_left >= f.origin.x + f.size.width,
+        "帯の掴める所 (x >= {bar_left}) が欄 (右端 {}) に被っている",
+        f.origin.x + f.size.width
+    );
+
+    // 中身の幅は変わらない: 欄の右端はダイアログの余白 (24px + 枠線) の内側のまま。
+    let d = h.rect_of("edit::dialog").unwrap();
+    let inner_right = d.origin.x + d.size.width - 24.0;
+    assert!(
+        (f.origin.x + f.size.width - inner_right).abs() <= 1.5,
+        "欄の幅が変わった: 右端 {} / 余白の内側 {inner_right}",
+        f.origin.x + f.size.width
+    );
+}
