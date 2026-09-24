@@ -249,3 +249,20 @@ fn an_item_in_the_floating_menu_can_be_picked() {
     assert_eq!(h.app().plan.selected, 2, "選べていない");
     assert!(!h.app().plan.open, "選んだのに閉じていない");
 }
+
+/// **長いフォームのダイアログにも掴める帯が出る** ([#90](https://github.com/Mutafika/sabitori/issues/90))。
+/// 中身の `.scroll` はダイアログの内側にあり、アプリからは付けられない。
+#[test]
+fn a_long_form_in_a_modal_has_a_grabbable_bar() {
+    let mut h = Harness::new(Screen::with_rows(40), 800.0, 600.0);
+    h.frame();
+    h.click("open");
+    h.settle();
+
+    let bars = h.frame().scroll_bars();
+    assert!(
+        bars.iter().any(|b| b.id == "edit::body"),
+        "ダイアログの中身に帯が無い: {:?}",
+        bars
+    );
+}

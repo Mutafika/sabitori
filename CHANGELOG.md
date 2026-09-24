@@ -15,6 +15,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`table` の本体と `modal` の中身に掴める帯が付く**
+  ([#90](https://github.com/Mutafika/sabitori/issues/90))。どちらもスクロール枠が
+  ウィジェットの内側にあり、アプリから `.scrollbar(..)` を繋げなかったので、
+  何百行あふれても帯どころか印も出なかった。`TableStyle` / `ModalStyle` に
+  `scrollbar: Option<ScrollbarStyle>` を足し、`from_theme` / `default_dark` で
+  掴める帯を入れる (消費側は何も書かずに付く)。出したくなければ `None`。
+- **`ScrollbarStyle`** と **`Element::scrollbar_style`**。`.scrollbar` /
+  `.scrollbar_grab` / `.scrollbar_lit` の 3 つを 1 つにまとめたもので、
+  `ScrollbarStyle::from_theme(&ctx.theme)` でテーマから組める。
+
+  > `TableStyle` / `ModalStyle` を構造体リテラルで**全項目**書いていた場合は
+  > `scrollbar` を足す必要がある (`..TableStyle::from_theme(..)` で埋めていれば不要)。
+
 ### Fixed
 
 - **web で devicePixelRatio 2 の画面 (Retina / iPad) だとレイアウトが半分の幅で

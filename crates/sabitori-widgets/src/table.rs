@@ -21,7 +21,7 @@
 //! Element を作らない。
 
 use sabitori_core::element::{div, text, Element, Px, Role};
-use sabitori_core::{Color, ViewContext};
+use sabitori_core::{Color, ScrollbarStyle, ViewContext};
 
 /// 1 列の定義。 `width` が `None` の列は残り幅を等分する。
 #[derive(Clone, Debug)]
@@ -128,6 +128,13 @@ pub struct TableStyle {
     pub row_height: f32,
     pub font_size: f32,
     pub cell_padding_x: f32,
+    /// 本体のスクロール帯 ([#90])。`None` なら出さない。
+    ///
+    /// 本体の `.scroll` は表の内側にあってアプリから `.scrollbar(..)` を
+    /// 繋げないので、ここで渡す。`from_theme` / `default_dark` は掴める帯を入れる。
+    ///
+    /// [#90]: https://github.com/Mutafika/sabitori/issues/90
+    pub scrollbar: Option<ScrollbarStyle>,
 }
 
 impl TableStyle {
@@ -154,6 +161,7 @@ impl TableStyle {
             fg: theme.text_primary,
             fg_selected: theme.text_primary,
             border: theme.border,
+            scrollbar: Some(ScrollbarStyle::from_theme(theme)),
             ..Self::default_dark()
         }
     }
@@ -172,6 +180,7 @@ impl TableStyle {
             row_height: 28.0,
             font_size: 13.0,
             cell_padding_x: 10.0,
+            scrollbar: Some(ScrollbarStyle::default_dark()),
         }
     }
 }
@@ -270,12 +279,15 @@ pub fn table_with(
         body_children.push(div().h(Px(spacer_bottom)).shrink(0.0));
     }
 
-    let body = div()
+    let mut body = div()
         .id(&body_id)
         .scroll(&body_id)
         .flex_1()
         .flex_col()
         .children(body_children);
+    if let Some(bar) = &style.scrollbar {
+        body = body.scrollbar_style(bar);
+    }
 
     // 見出しの下の区切り線。 `border()` は 4 辺に付いてしまうので 1px の div。
     let rule = div().w_full().h(Px(1.0)).shrink(0.0).bg(style.border);

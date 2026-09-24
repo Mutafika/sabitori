@@ -9,7 +9,9 @@
 //! 実装していた。写しがずれていないかを「描かれた矩形と突き合わせる」試しで
 //! 留めるしかなかった）。**掴めるのはランタイムの仕事**なので引き取った。
 
+use crate::color::Color;
 use crate::geometry::Rect;
+use crate::theme::AppTheme;
 
 /// 描かれる帯の幅。
 pub const BAR_W: f32 = 4.0;
@@ -49,6 +51,45 @@ pub fn scroll_for(top: f32, track: f32, content: f32) -> f32 {
         return 0.0;
     }
     ((top / travel).clamp(0.0, 1.0) * (content - track)).max(0.0)
+}
+
+/// 帯の見た目 1 式 ── `.scrollbar` / `.scrollbar_grab` / `.scrollbar_lit` を
+/// まとめて持つ ([#90](https://github.com/Mutafika/sabitori/issues/90))。
+///
+/// **ウィジェットが内側に持つスクロール枠**のための物。`table` の本体や
+/// `modal` の中身は枠が入れ子の内側にあり、アプリからは `.scrollbar(..)` を
+/// 繋げない。そこで各ウィジェットの Style に `Option<ScrollbarStyle>` を持たせ、
+/// `from_theme` でテーマから既定を入れる (消費側は何も書かずに帯が付く)。
+///
+/// 自分で書いた `.scroll(id)` の枠には [`crate::Element::scrollbar_style`] で渡せる。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarStyle {
+    /// 帯の色。
+    pub thumb: Color,
+    /// 掴める幅。`None` なら印だけ (掴めない)。
+    pub grab: Option<f32>,
+    /// 指が乗った時・掴んでいる時の色。`None` なら `thumb` のまま。
+    pub lit: Option<(Color, Color)>,
+}
+
+impl ScrollbarStyle {
+    /// [`AppTheme`] から組む。帯は `border`、指が乗ると `text_secondary` の方へ
+    /// 寄り、掴むと `text_secondary` になる。掴める幅は [`DEFAULT_LANE`]。
+    pub fn from_theme(theme: &AppTheme) -> Self {
+        Self {
+            thumb: theme.border,
+            grab: Some(DEFAULT_LANE),
+            lit: Some((
+                theme.border.lerp(theme.text_secondary, 0.5),
+                theme.text_secondary,
+            )),
+        }
+    }
+
+    /// 既定のテーマ ([`AppTheme::midnight`]) から組んだもの。
+    pub fn default_dark() -> Self {
+        Self::from_theme(&AppTheme::midnight())
+    }
 }
 
 /// 掴める帯1本。[`crate::build::BuildResult::scroll_bars`] に並ぶ。
@@ -109,6 +150,18 @@ mod tests {
     fn a_pane_that_fits_has_nowhere_to_slide() {
         assert_eq!(thumb(200.0, 100.0, 0.0), (0.0, 200.0));
         assert_eq!(scroll_for(50.0, 200.0, 100.0), 0.0);
+    }
+
+    /// テーマの既定は掴めて、指が乗ると色が変わる (#90)。
+    #[test]
+    fn the_theme_default_is_grabbable_and_lights_up() {
+        let theme = AppTheme::midnight();
+        let s = ScrollbarStyle::from_theme(&theme);
+        assert_eq!(s.thumb, theme.border);
+        assert_eq!(s.grab, Some(DEFAULT_LANE));
+        let (hover, held) = s.lit.expect("lit");
+        assert_ne!(hover, s.thumb);
+        assert_eq!(held, theme.text_secondary);
     }
 
     /// **20px を割らない** ── 長い並びでも摘まめる大きさが要る。

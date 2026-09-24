@@ -1,5 +1,5 @@
 use sabitori_anim::{Animated, Spring};
-use sabitori_core::{Color, Element, Rect};
+use sabitori_core::{Color, Element, Rect, ScrollbarStyle};
 use sabitori_core::element::{div, text, Percent, Px, Role};
 use sabitori_core::{Managed, ViewContext};
 use std::cell::RefCell;
@@ -16,6 +16,11 @@ pub struct ModalStyle {
     pub max_width: f32,
     pub max_height: f32,
     pub padding: f32,
+    /// 中身が `max_height` に当たってスクロールするときの帯 ([#90])。
+    /// `None` なら出さない。
+    ///
+    /// [#90]: https://github.com/Mutafika/sabitori/issues/90
+    pub scrollbar: Option<ScrollbarStyle>,
 }
 
 impl ModalStyle {
@@ -35,6 +40,7 @@ impl ModalStyle {
         Self {
             bg: theme.elevated,
             border_color: theme.border,
+            scrollbar: Some(ScrollbarStyle::from_theme(theme)),
             ..Self::default_dark()
         }
     }
@@ -49,6 +55,7 @@ impl ModalStyle {
             max_width: 500.0,
             max_height: 400.0,
             padding: 24.0,
+            scrollbar: Some(ScrollbarStyle::default_dark()),
         }
     }
 }
@@ -433,13 +440,16 @@ pub fn modal(
     // `.scroll()` を書くと flex item の automatic minimum size が 0 になるので、
     // ここが上限より小さくなれる (書かないと中身の高さのまま押し広げて、
     // ダイアログが `max_height` を超える)。
-    let body = div()
+    let mut body = div()
         .id(format!("{id}::body"))
         .scroll(format!("{id}::body"))
         .w_full()
         .flex_col()
         .gap(12.0)
         .children(content);
+    if let Some(bar) = &style.scrollbar {
+        body = body.scrollbar_style(bar);
+    }
     dialog = dialog.child(body);
 
     Some(

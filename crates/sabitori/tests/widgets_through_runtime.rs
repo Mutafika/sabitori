@@ -726,3 +726,41 @@ fn an_intent_leaves_the_other_axis_alone() {
         "縦の指定で横が動いた"
     );
 }
+
+/// **表の本体に掴める帯が出る** ([#90](https://github.com/Mutafika/sabitori/issues/90))。
+///
+/// 本体の `.scroll` は表の内側にあり、アプリから `.scrollbar(..)` を繋げない。
+/// 215 行 (issue の顧客一覧と同じ) で 12 倍あふれていても `grab` が `None` で、
+/// ホイールを回し続けるしかなかった。
+#[test]
+fn a_long_table_body_has_a_grabbable_bar() {
+    let mut h = Harness::new(TableApp::new(215), 500.0, 400.0);
+    let bars = h.frame().scroll_bars();
+    let bar = bars
+        .iter()
+        .find(|b| b.id == "files::body")
+        .unwrap_or_else(|| panic!("表の本体に帯が無い: {:?}", bars));
+    assert_eq!(bar.lane, sabitori::scrollbar::DEFAULT_LANE);
+
+    // 帯の下の方を押すと、そこまで飛ぶ (掴めている)。
+    let r = bar.rect;
+    h.press_at(r.origin.x + r.size.width - 4.0, r.origin.y + r.size.height - 10.0);
+    h.frame();
+    h.release();
+    assert!(h.scroll_y("files::body").unwrap() > 1000.0, "帯を押しても動かない");
+    assert_eq!(h.app().state.selected, None, "帯を押したら行が選ばれた");
+}
+
+/// `scrollbar: None` なら今までどおり出さない。
+#[test]
+fn a_table_without_a_scrollbar_style_draws_none() {
+    struct Plain(TableState);
+    impl DeclarativeApp for Plain {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            let style = TableStyle { scrollbar: None, ..TableStyle::default_dark() };
+            table(ctx, "files", &self.0, &style).w_full().h_full()
+        }
+    }
+    let mut h = Harness::new(Plain(TableApp::new(215).state), 500.0, 400.0);
+    assert!(h.frame().scroll_bars().is_empty());
+}

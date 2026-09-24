@@ -2348,6 +2348,23 @@ impl Element {
         self
     }
 
+    /// [`ScrollbarStyle`](crate::scrollbar::ScrollbarStyle) の 3 つ (帯の色 /
+    /// 掴める幅 / 光る色) をまとめて付ける。
+    ///
+    /// ```ignore
+    /// div().scroll("list").scrollbar_style(&ScrollbarStyle::from_theme(&ctx.theme))
+    /// ```
+    pub fn scrollbar_style(mut self, s: &crate::scrollbar::ScrollbarStyle) -> Self {
+        self = self.scrollbar(s.thumb);
+        if let Some(lane) = s.grab {
+            self = self.scrollbar_grab(lane);
+        }
+        if let Some((hover, held)) = s.lit {
+            self = self.scrollbar_lit(hover, held);
+        }
+        self
+    }
+
     /// Set position type.
     pub fn position(mut self, p: Position) -> Self {
         self.style.position = p;

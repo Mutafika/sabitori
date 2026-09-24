@@ -12,6 +12,7 @@ pub mod image_cache;
 pub use color::Color;
 pub use geometry::{Corners, Edges, Point, Rect, Size, TextMetrics};
 pub use theme::AppTheme;
+pub use scrollbar::ScrollbarStyle;
 
 // Re-export key element API items at crate root for convenience.
 pub use element::{
