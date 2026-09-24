@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-25
+
 ### Fixed
 
 - **`table` の列の出し方が、開いた直後と窓の幅を変えた直後に 1 つ前のまま
@@ -3873,7 +3875,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/Mutafika/sabitori/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/Mutafika/sabitori/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Mutafika/sabitori/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Mutafika/sabitori/compare/v0.17.0...v0.18.0
