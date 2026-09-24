@@ -793,3 +793,161 @@ fn the_table_bar_does_not_cover_the_rows_and_columns_stay_aligned() {
         right(row)
     );
 }
+
+// ---------------------------------------------------------------------------
+// #96: 幅が足りないとき、列を黙って潰さない
+// ---------------------------------------------------------------------------
+
+/// issue の顧客一覧 (固定列の合計 750px) を、幅 734px の表に置く。
+struct Customers {
+    state: TableState,
+}
+
+impl Customers {
+    fn new(columns: Vec<TableColumn>) -> Self {
+        let mut state = TableState::new(columns);
+        state.set_rows(
+            (0..50)
+                .map(|i| {
+                    vec![
+                        Cell::text(format!("C{i:05}")),
+                        Cell::text("テスト 太郎"),
+                        Cell::text("個人"),
+                        Cell::text("090-0000-0000"),
+                        Cell::text("taro@example.com"),
+                        Cell::text("ゴールド"),
+                        Cell::text("12"),
+                        Cell::text("¥56,800"),
+                    ]
+                })
+                .collect(),
+        );
+        Self { state }
+    }
+
+    fn issue_columns() -> Vec<TableColumn> {
+        vec![
+            TableColumn::fixed("会員番号", 130.0),
+            TableColumn::flex("氏名"),
+            TableColumn::fixed("区分", 150.0),
+            TableColumn::fixed("電話番号", 150.0),
+            TableColumn::flex("メール"),
+            TableColumn::fixed("ランク", 110.0),
+            TableColumn::fixed("利用回数", 90.0),
+            TableColumn::fixed("累計額", 120.0),
+        ]
+    }
+}
+
+impl DeclarativeApp for Customers {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        div().w(Px(734.0)).h(Px(400.0)).flex_col().child(
+            table(ctx, "customers", &self.state, &TableStyle::default_dark())
+                .w_full()
+                .flex_1(),
+        )
+    }
+}
+
+fn right(r: sabitori::Rect) -> f32 {
+    r.origin.x + r.size.width
+}
+
+/// 1 フレーム目は本体の幅がまだ測れていない。2 枚回して落ち着かせる。
+fn settled(app: Customers) -> Harness<Customers> {
+    let mut h = Harness::new(app, 1000.0, 600.0);
+    h.frame();
+    h.frame();
+    h
+}
+
+/// **伸縮列が 0 幅まで潰れない。** 以前は「氏名」「メール」が列ごと消えていた。
+#[test]
+fn flexible_columns_keep_at_least_their_heading() {
+    let h = settled(Customers::new(Customers::issue_columns()));
+    for col in [1, 4] {
+        let r = h
+            .rect_of(&sabitori_widgets::table_header_id("customers", col))
+            .unwrap_or_else(|| panic!("列 {col} の見出しが無い"));
+        assert!(r.size.width >= 30.0, "列 {col} が潰れている: {}", r.size.width);
+    }
+    // 下限を書けばそれが効く。
+    let mut cols = Customers::issue_columns();
+    cols[1] = TableColumn::flex("氏名").min(120.0);
+    let h = settled(Customers::new(cols));
+    let r = h.rect_of(&sabitori_widgets::table_header_id("customers", 1)).unwrap();
+    assert!(r.size.width >= 119.5, "min(120) が効いていない: {}", r.size.width);
+}
+
+/// **足りなければ横に流れ、見出しと本体が一緒に動く。**
+/// 以前は右端の「累計額」が 30px 切れて「¥56,8」になっていた。
+#[test]
+fn a_table_too_wide_scrolls_sideways_with_its_heading() {
+    let mut h = settled(Customers::new(Customers::issue_columns()));
+    let info = h.build().scroll_measures.get("customers::body").cloned().expect("本体が無い");
+    assert!(
+        info.content_width > info.viewport_width + 1.0,
+        "横にあふれていない: content {} viewport {}",
+        info.content_width,
+        info.viewport_width
+    );
+
+    h.scroll_x("customers::body", 10_000.0);
+    h.frame();
+    assert!(h.scroll_x_of("customers::body").unwrap() > 0.0, "横に動かない");
+
+    // 右端まで送れば、最後の列が帯の溝の手前に収まって見える。
+    let table = h.rect_of("customers").unwrap();
+    let head = h.text_rect("累計額").expect("見出しが無い");
+    let cell = h.text_rect("¥56,800").expect("セルが無い");
+    assert!(right(cell) <= right(table) - 13.5, "最後の列が溝に食い込む: {cell:?} {table:?}");
+    // 見出しは本体と同じだけずれている (同じ列の文字の左端が揃う)。
+    assert!(
+        (head.origin.x - cell.origin.x).abs() < 0.5,
+        "見出しと本体がずれた: 見出し {} / セル {}",
+        head.origin.x,
+        cell.origin.x
+    );
+}
+
+/// **priority の大きい列から隠れる。** 隠して足りれば横には流れない。
+#[test]
+fn low_priority_columns_hide_first_and_the_rest_fit() {
+    let mut cols = Customers::issue_columns();
+    cols[5] = TableColumn::fixed("ランク", 110.0).priority(2);
+    cols[6] = TableColumn::fixed("利用回数", 90.0).priority(1);
+    let h = settled(Customers::new(cols));
+
+    assert!(h.text_rect("ランク").is_none(), "priority 2 が先に隠れていない");
+    assert!(h.text_rect("ゴールド").is_none(), "隠した列のセルが残っている");
+    assert!(h.text_rect("利用回数").is_some(), "1 列隠せば足りるのに priority 1 まで隠れた");
+
+    let info = h.build().scroll_measures.get("customers::body").cloned().unwrap();
+    assert!(
+        info.content_width <= info.viewport_width + 1.0,
+        "隠して足りたのに横に流れている: content {} viewport {}",
+        info.content_width,
+        info.viewport_width
+    );
+    // 隠しても列の番号は元のまま (on_click の突き合わせが変わらない)。
+    assert!(h.rect_of(&sabitori_widgets::table_header_id("customers", 7)).is_some());
+}
+
+/// 幅が十分なら何も隠さず、横にも流れない (今までどおり)。
+#[test]
+fn a_wide_enough_table_shows_every_column() {
+    struct Wide(Customers);
+    impl DeclarativeApp for Wide {
+        fn view(&self, ctx: &ViewContext) -> Element {
+            table(ctx, "customers", &self.0.state, &TableStyle::default_dark()).w_full().h_full()
+        }
+    }
+    let mut cols = Customers::issue_columns();
+    cols[5] = TableColumn::fixed("ランク", 110.0).priority(2);
+    let mut h = Harness::new(Wide(Customers::new(cols)), 1400.0, 600.0);
+    h.frame();
+    h.frame();
+    assert!(h.text_rect("ランク").is_some());
+    let info = h.build().scroll_measures.get("customers::body").cloned().unwrap();
+    assert!(info.content_width <= info.viewport_width + 1.0);
+}

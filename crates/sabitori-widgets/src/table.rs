@@ -24,23 +24,103 @@ use sabitori_core::element::{div, text, Element, Px, Role};
 use sabitori_core::{Color, ScrollbarStyle, ViewContext};
 
 /// 1 列の定義。 `width` が `None` の列は残り幅を等分する。
+///
+/// ## 幅が足りないとき ([#96])
+///
+/// 表は列を**黙って潰さない**。足りなければ次の順で逃がす。
+///
+/// 1. [`priority`](Self::priority) が 1 以上の列を、数字の大きい方から隠す。
+/// 2. それでも足りなければ、見出しと本体を一緒に**横へスクロール**させる。
+///
+/// 「足りない」は固定列の幅と伸縮列の下限 ([`min`](Self::min)) の合計で
+/// 決める。伸縮列の下限は、書かなければ見出しの文字幅 (+ 左右の余白)。
+///
+/// [#96]: https://github.com/Mutafika/sabitori/issues/96
 #[derive(Clone, Debug)]
 pub struct TableColumn {
     pub label: String,
     /// 固定幅 (px)。 `None` なら伸縮 (`flex_1`)。
     pub width: Option<f32>,
+    /// 伸縮列の下限 (px)。 `None` なら見出しの文字幅 + 左右の余白。
+    /// 固定列では使わない (幅がそのまま下限)。
+    pub min: Option<f32>,
+    /// 幅が足りないときに隠す順。 **0 (既定) は隠さない。** 1 以上は隠してよい
+    /// 列で、**数字が大きいほど先に隠れる** (1 がいちばん最後まで残る)。
+    pub priority: u8,
 }
 
 impl TableColumn {
     /// 伸縮する列。
     pub fn flex(label: impl Into<String>) -> Self {
-        Self { label: label.into(), width: None }
+        Self { label: label.into(), width: None, min: None, priority: 0 }
     }
 
     /// 固定幅の列。
     pub fn fixed(label: impl Into<String>, width: f32) -> Self {
-        Self { label: label.into(), width: Some(width) }
+        Self { label: label.into(), width: Some(width), min: None, priority: 0 }
     }
+
+    /// 伸縮列の下限。 これより狭くなるくらいなら表が横にスクロールする。
+    ///
+    /// ```ignore
+    /// TableColumn::flex("氏名").min(120.0)
+    /// ```
+    pub fn min(mut self, px: f32) -> Self {
+        self.min = Some(px.max(0.0));
+        self
+    }
+
+    /// 幅が足りないときに隠してよい列にする。 **数字が大きいほど先に隠れる。**
+    ///
+    /// 業務の一覧は「狭い窓では番号・名前・状態だけ見えればいい」ことが多い。
+    /// 残したい列は 0 (既定) のまま、補足の列に 1, 2, .. を付ける。
+    ///
+    /// ```ignore
+    /// TableColumn::fixed("ランク", 110.0).priority(2),   // 最初に隠れる
+    /// TableColumn::fixed("累計額", 120.0).priority(1),   // 次に隠れる
+    /// ```
+    pub fn priority(mut self, n: u8) -> Self {
+        self.priority = n;
+        self
+    }
+}
+
+/// 列の並べ方 — どの列を出し、行の最小幅をいくつにするか。
+#[derive(Clone, Debug, PartialEq)]
+struct ColumnPlan {
+    /// 出す列 (元の添字、左から順)。
+    visible: Vec<usize>,
+    /// 列ごとの下限 (元の添字で引く)。
+    mins: Vec<f32>,
+    /// 出す列の下限の合計。 行はこれより狭くならない (超えたら横スクロール)。
+    need: f32,
+}
+
+/// 列ごとの下限 `mins` と、使える幅 `avail` から [`ColumnPlan`] を決める。
+///
+/// `avail` が `None` (初回フレームでまだ測れていない) なら全部出す。
+fn plan_columns(columns: &[TableColumn], mins: &[f32], avail: Option<f32>) -> ColumnPlan {
+    let mut visible: Vec<usize> = (0..columns.len()).collect();
+    let need_of = |v: &[usize]| v.iter().map(|&i| mins[i]).sum::<f32>();
+    if let Some(avail) = avail {
+        while need_of(&visible) > avail + 0.5 {
+            // 数字の大きい列から。 同じなら右の列から。
+            let drop = visible
+                .iter()
+                .enumerate()
+                .filter(|&(_, &i)| columns[i].priority > 0)
+                .max_by_key(|&(pos, &i)| (columns[i].priority, pos))
+                .map(|(pos, _)| pos);
+            match drop {
+                Some(pos) => {
+                    visible.remove(pos);
+                }
+                None => break,
+            }
+        }
+    }
+    let need = need_of(&visible);
+    ColumnPlan { visible, mins: mins.to_vec(), need }
 }
 
 /// セル 1 つ。 色を上書きしたいときだけ `colored` を使う。
@@ -257,6 +337,27 @@ pub fn table_with(
     render_cell: impl Fn(usize, usize, &Cell) -> Option<Element>,
 ) -> Element {
     let body_id = format!("{id}::body");
+    let gutter = style.scrollbar.as_ref().map_or(0.0, bar_gutter);
+
+    // どの列を出し、行を何 px より狭くしないか (#96)。使える幅は前のフレームで
+    // 測った本体の幅から帯の溝を引いたもの。表の幅は親が決め、列の出し方には
+    // 依らないので、隠したり流したりしても次のフレームで揺れ戻らない。
+    let mins: Vec<f32> = state
+        .columns
+        .iter()
+        .map(|c| match c.width {
+            Some(w) => w,
+            None => c.min.unwrap_or_else(|| {
+                (ctx.text_width(&c.label, style.font_size, false) + 2.0 * style.cell_padding_x)
+                    .ceil()
+            }),
+        })
+        .collect();
+    let avail = ctx
+        .scroll_info(&body_id)
+        .map(|i| (i.viewport_width - gutter).max(0.0));
+    let plan = plan_columns(&state.columns, &mins, avail);
+    let scroll_x = ctx.scroll_info(&body_id).map_or(0.0, |i| i.scroll_x);
 
     // 見えている行だけ作る。 ランタイムが持つスクロール位置から範囲を貰う。
     // 初回フレームはまだ測れていないので、 `visible_range` は広めの既定を返す。
@@ -273,7 +374,7 @@ pub fn table_with(
         body_children.push(div().h(Px(spacer_top)).shrink(0.0));
     }
     for row in first..end {
-        body_children.push(table_row(ctx, id, state, style, row, &render_cell));
+        body_children.push(table_row(ctx, id, state, style, &plan, row, &render_cell));
     }
     if spacer_bottom > 0.0 {
         body_children.push(div().h(Px(spacer_bottom)).shrink(0.0));
@@ -286,7 +387,7 @@ pub fn table_with(
         .flex_col()
         .children(body_children);
     if let Some(bar) = &style.scrollbar {
-        body = body.pr(Px(bar_gutter(bar))).scrollbar_style(bar);
+        body = body.pr(Px(gutter)).scrollbar_style(bar);
     }
 
     // 見出しの下の区切り線。 `border()` は 4 辺に付いてしまうので 1px の div。
@@ -296,7 +397,7 @@ pub fn table_with(
         .id(id)
         .role(Role::Table)
         .flex_col()
-        .children([header(id, state, style), rule, body])
+        .children([header(id, state, style, &plan, gutter, scroll_x), rule, body])
 }
 
 /// 帯のために本体の右へ空ける溝。見出しにも同じだけ空けて列を揃える。
@@ -308,16 +409,29 @@ fn bar_gutter(bar: &ScrollbarStyle) -> f32 {
     bar.grab.unwrap_or(sabitori_core::scrollbar::BAR_INSET)
 }
 
-fn header(id: &str, state: &TableState, style: &TableStyle) -> Element {
-    let cells: Vec<Element> = state
-        .columns
+/// 見出し。 本体が横に流れたら**同じだけ**ずらす (#96)。
+///
+/// 見出しは縦には流れないので本体の中には置けない。本体と同じ幅・同じ溝の
+/// 枠を `scroll_manual` で作り、本体の `scroll_x` をそのまま渡す。本体の位置は
+/// `view()` の直前にランタイムから貰った値で、同じフレームの本体にも同じ値が
+/// 当たるので、1 フレームも遅れない。
+fn header(
+    id: &str,
+    state: &TableState,
+    style: &TableStyle,
+    plan: &ColumnPlan,
+    gutter: f32,
+    scroll_x: f32,
+) -> Element {
+    let cells: Vec<Element> = plan
+        .visible
         .iter()
-        .enumerate()
-        .map(|(col, c)| {
+        .map(|&col| {
+            let c = &state.columns[col];
             let label = text(c.label.clone())
                 .font_size(style.font_size)
                 .color(style.header_fg);
-            sized(div(), c.width)
+            sized(div(), c, plan.mins[col])
                 .id(&table_header_id(id, col))
                 .role(Role::ColumnHeader)
                 .label(&c.label)
@@ -330,16 +444,23 @@ fn header(id: &str, state: &TableState, style: &TableStyle) -> Element {
         })
         .collect();
 
-    let gutter = style.scrollbar.as_ref().map_or(0.0, bar_gutter);
-    div()
+    let row = div()
         .role(Role::Row)
+        .w_full()
+        .min_w(Px(plan.need))
+        .h(Px(style.row_height))
+        .shrink(0.0)
+        .flex_row()
+        .children(cells);
+    div()
         .w_full()
         .h(Px(style.row_height))
         .shrink(0.0)
         .pr(Px(gutter))
         .bg(style.header_bg)
-        .flex_row()
-        .children(cells)
+        .scroll_manual(scroll_x, 0.0)
+        .flex_col()
+        .child(row)
 }
 
 fn table_row(
@@ -347,6 +468,7 @@ fn table_row(
     id: &str,
     state: &TableState,
     style: &TableStyle,
+    plan: &ColumnPlan,
     row: usize,
     render_cell: &impl Fn(usize, usize, &Cell) -> Option<Element>,
 ) -> Element {
@@ -365,10 +487,11 @@ fn table_row(
     };
     let fg = if selected { style.fg_selected } else { style.fg };
 
-    let cells: Vec<Element> = state.columns
+    let cells: Vec<Element> = plan
+        .visible
         .iter()
-        .enumerate()
-        .map(|(col, c)| {
+        .map(|&col| {
+            let c = &state.columns[col];
             let cell = state.rows.get(row).and_then(|r| r.get(col));
             // アプリが組んだ中身が先。無ければ今までどおり文字を描く。
             let custom = cell.and_then(|cell| render_cell(row, col, cell));
@@ -380,7 +503,7 @@ fn table_row(
                 label = label.bold();
             }
             let inner = custom.unwrap_or(label);
-            sized(div(), c.width)
+            sized(div(), c, plan.mins[col])
                 .role(Role::Cell)
                 .h_full()
                 .px_pad(Px(style.cell_padding_x))
@@ -403,6 +526,7 @@ fn table_row(
         .role(Role::Row)
         .label(&spoken)
         .w_full()
+        .min_w(Px(plan.need))
         .h(Px(style.row_height))
         .shrink(0.0)
         .bg(bg)
@@ -410,11 +534,17 @@ fn table_row(
         .children(cells)
 }
 
-/// 固定幅なら `.w()`、 伸縮なら `.flex_1()`。 列定義の唯一の分岐。
-fn sized(el: Element, width: Option<f32>) -> Element {
-    match width {
+/// 固定幅なら `.w()`、 伸縮なら `.flex_1()` と下限。 列定義の唯一の分岐。
+///
+/// 伸縮列に下限を付けないと、固定列の合計が表より広いときに 0 幅まで潰れて
+/// **列ごと消える** (セルは `overflow_hidden` なので文字も黙って切れる) — #96。
+/// `min` は [`plan_columns`] に渡したのと同じ値 ([`TableColumn::min`]、無ければ
+/// 見出しの文字幅)。行の最小幅だけで押さえると伸縮列同士で等分され、下限の
+/// 大きい列がそれを割るので、セルごとにも付ける。
+fn sized(el: Element, c: &TableColumn, min: f32) -> Element {
+    match c.width {
         Some(w) => el.w(Px(w)).shrink(0.0),
-        None => el.flex_1(),
+        None => el.flex_1().min_w(Px(min)),
     }
 }
 
@@ -433,6 +563,42 @@ mod tests {
                 .collect(),
         );
         s
+    }
+
+    fn cols(spec: &[(f32, u8)]) -> (Vec<TableColumn>, Vec<f32>) {
+        let cols = spec
+            .iter()
+            .map(|&(w, p)| TableColumn::fixed("c", w).priority(p))
+            .collect();
+        (cols, spec.iter().map(|&(w, _)| w).collect())
+    }
+
+    /// 測れていない (初回) なら全部出す。
+    #[test]
+    fn an_unmeasured_table_shows_everything() {
+        let (c, m) = cols(&[(100.0, 0), (100.0, 1)]);
+        let p = plan_columns(&c, &m, None);
+        assert_eq!(p.visible, vec![0, 1]);
+        assert_eq!(p.need, 200.0);
+    }
+
+    /// 数字の大きい列から隠し、足りたら止める。0 は隠さない。
+    #[test]
+    fn columns_hide_in_priority_order_and_stop_when_they_fit() {
+        let (c, m) = cols(&[(100.0, 0), (100.0, 1), (100.0, 3), (100.0, 2)]);
+        assert_eq!(plan_columns(&c, &m, Some(400.0)).visible, vec![0, 1, 2, 3]);
+        assert_eq!(plan_columns(&c, &m, Some(350.0)).visible, vec![0, 1, 3], "3 が先");
+        assert_eq!(plan_columns(&c, &m, Some(250.0)).visible, vec![0, 1], "次に 2");
+        let p = plan_columns(&c, &m, Some(50.0));
+        assert_eq!(p.visible, vec![0], "0 は幅が足りなくても残る");
+        assert_eq!(p.need, 100.0, "残りは横スクロールで逃がす");
+    }
+
+    /// 同じ優先度なら右の列から隠す。
+    #[test]
+    fn ties_hide_from_the_right() {
+        let (c, m) = cols(&[(100.0, 1), (100.0, 1), (100.0, 1)]);
+        assert_eq!(plan_columns(&c, &m, Some(250.0)).visible, vec![0, 1]);
     }
 
     /// id の往復。 これが壊れると `on_click` が行を特定できなくなる。
