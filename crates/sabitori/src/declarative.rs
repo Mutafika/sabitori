@@ -186,6 +186,27 @@ impl ScrollIntent {
     }
 }
 
+/// スクロール位置を**その場で差分ずらす**要求。[`DeclarativeApp::scroll_shifts`] が返す。
+///
+/// [`ScrollIntent`] が「そこへスクロールする」（ばねで動く・目標を置き直す）のに対し、
+/// こちらは「見えている中身を動かさないために位置を足す」。仮想化したリストで、
+/// 画面より上の行の高さが実測で変わったぶんを打ち消すのに使う（ブラウザの
+/// scroll anchoring を、アプリが差分を知っている形で明示的にやる）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollShift {
+    /// `.scroll(id)` を書いたコンテナの id。
+    pub id: String,
+    /// 縦にずらす量 (px)。正で下（中身が上へ動く）。
+    pub dy: f32,
+}
+
+impl ScrollShift {
+    /// 縦に `dy` ずらす。
+    pub fn y(id: impl Into<String>, dy: f32) -> Self {
+        Self { id: id.into(), dy }
+    }
+}
+
 /// 旧い `(id, y)` の組をそのまま渡せる。`.into()` を足すだけで移行できる。
 impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
     fn from((id, y): (S, f32)) -> Self {
@@ -483,6 +504,22 @@ pub trait DeclarativeApp: 'static {
     /// Drained once per frame after layout. `(id, y)` — pass `f32::MAX` for "bottom".
     /// Return empty to leave scroll untouched (user controls it via wheel).
     fn scroll_intents(&mut self) -> Vec<ScrollIntent> { Vec::new() }
+
+    /// スクロール位置を**次の `view()` の前に**その場で差分ずらす（[`ScrollShift`]）。
+    ///
+    /// [`Self::scroll_intents`] との違いは 2 つ。
+    ///
+    /// * **いつ効くか**: intents はレイアウトの後に流れるので、`on_build` で出した
+    ///   要求は次のフレームを組み終えるまで効かない。shifts は次のフレームの
+    ///   `view()` より前に当たるので、`ctx.scroll_info` にもう反映されている。
+    ///   「実測したら上の行が 30px 伸びていた」を `on_build` で知って、次の 1 枚で
+    ///   打ち消せる — ずれが画面に出ない。
+    /// * **どう動くか**: intents は目標を置き直す（ばねで動き、慣性を止める）。
+    ///   shifts は値と目標を同時に平行移動する（ばねも慣性もそのまま続く）。
+    ///   ユーザーが上へ弾いている最中に呼んでも、指の勢いを殺さない。
+    ///
+    /// 毎フレーム 1 回、`view()` の前に汲まれる。既定は空。
+    fn scroll_shifts(&mut self) -> Vec<ScrollShift> { Vec::new() }
 
     /// 今の画面を表す URL の断片 (web のみ)。
     ///
@@ -2698,6 +2735,15 @@ impl<A: DeclarativeApp> AppState<A> {
         // こうしておくと、 掴んだその同じフレームの `ctx.focused` にもう出て
         // いる — ポップアップが開いた最初の描画からフォーカス枠が光る。
         self.apply_desired_focus();
+
+        // 差分ずらし（scroll anchoring）は `view()` の**前**に当てる。`on_build` で
+        // 知った高さの変化を、次の 1 枚で打ち消すため（`scroll_shifts` の doc）。
+        for shift in self.app.scroll_shifts() {
+            if let Some(sv) = self.scroll_states.get_mut(&shift.id) {
+                sv.shift_y(shift.dy);
+                self.dirty = true;
+            }
+        }
 
         // Build scroll info for ViewContext
         let scroll_info: std::collections::HashMap<String, sabitori_core::ScrollInfo> =

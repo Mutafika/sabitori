@@ -200,6 +200,33 @@ impl<T: Lerp> Animated<T> {
         self.target
     }
 
+    /// アニメ全体を**同じだけ**平行移動する。進行中のアニメはそのまま続く。
+    ///
+    /// ずらすのは値・出発点・目標に加えて、キーフレームの各値とチェーンの
+    /// 行き先も。ばねは「目標までの距離と速度」だけで進み、イージングは
+    /// 出発点と目標の、キーフレームは各値の補間なので、全部を揃えてずらせば
+    /// 途中経過は 1 フレームも変わらない。どれか 1 つでも残すと、次の tick で
+    /// 元の軌道へ跳ね戻る（キーフレーム）か、チェーンの次の段で元の位置へ
+    /// 向かう。`set_target` だとアニメが最初からやり直しになり、速度も 0 に戻る。
+    ///
+    /// 用途はスクロールアンカリング: 見えている所より上の中身が伸び縮みしたとき、
+    /// 慣性やばねを止めずに位置だけ差分ずらす ([`crate`] の外では
+    /// `ScrollView::shift_y` 経由で使う)。
+    pub fn offset_by(&mut self, delta: T)
+    where
+        T: std::ops::Add<Output = T>,
+    {
+        self.current = self.current + delta;
+        self.start = self.start + delta;
+        self.target = self.target + delta;
+        for k in &mut self.keyframes {
+            k.value = k.value + delta;
+        }
+        for c in &mut self.chain {
+            c.target = c.target + delta;
+        }
+    }
+
     /// Set a new target. Starts animating (resets chain).
     pub fn set_target(&mut self, target: T) {
         if self.target.distance(target) > 0.001 {
@@ -562,4 +589,41 @@ mod tests {
         a.tick(0.5);
         assert!((a.value() - 50.0).abs() < 5.0);
     }
+
+    /// キーフレームの途中でずらしても、元の軌道へ跳ね戻らない（各値ごとずれる）。
+    #[test]
+    fn offset_by_carries_keyframes_along() {
+        let mut a = Animated::new(0.0f32)
+            .with_mode(AnimationMode::Easing { duration: 1.0, function: EasingFunction::Linear })
+            .with_keyframes(vec![
+                Keyframe { progress: 0.0, value: 0.0, easing: EasingFunction::Linear },
+                Keyframe { progress: 0.5, value: 100.0, easing: EasingFunction::Linear },
+                Keyframe { progress: 1.0, value: 50.0, easing: EasingFunction::Linear },
+            ]);
+        a.set_target(50.0);
+        a.tick(0.25);
+        let before = a.value();
+        a.offset_by(30.0);
+        assert!((a.value() - (before + 30.0)).abs() < 0.01);
+        a.tick(0.25);
+        assert!((a.value() - 130.0).abs() < 1.0, "キーフレーム 100 が 130 へずれている: {}", a.value());
+        a.tick(0.5);
+        assert!((a.value() - 80.0).abs() < 1.0, "終点 50 が 80 へずれている: {}", a.value());
+    }
+
+    /// チェーンの途中でずらすと、次の段の行き先も同じだけずれる。
+    #[test]
+    fn offset_by_carries_the_chain_along() {
+        let linear = AnimationMode::Easing { duration: 0.5, function: EasingFunction::Linear };
+        let mut a = Animated::new(0.0f32).with_mode(linear).then(200.0, linear);
+        a.set_target(100.0);
+        a.tick(0.25);
+        a.offset_by(30.0);
+        a.tick(0.25);
+        assert!((a.value() - 130.0).abs() < 1.0, "1 段目の行き先: {}", a.value());
+        a.tick(0.5);
+        assert!((a.value() - 230.0).abs() < 1.0, "2 段目の行き先もずれている: {}", a.value());
+        assert!(!a.running);
+    }
+
 }

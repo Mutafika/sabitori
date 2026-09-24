@@ -242,6 +242,25 @@ impl ScrollView {
         self.scroll_y.set_target(y.clamp(0.0, self.max_scroll_y()));
     }
 
+    /// 見えている所を動かさずに、縦位置を `dy` だけその場でずらす（スクロールアンカリング）。
+    ///
+    /// 仮想化したリストで、画面より上の行が見積りと違う高さで入ってきたとき、
+    /// 読んでいる行が `dy` だけ下へ押し出される。位置を同じだけ足せば相殺できる。
+    ///
+    /// [`Self::smooth_scroll_to`] では代わりにならない — あれは目標を置き直すので、
+    /// ばねで数フレームかけて動き（その間ずれが見える）、慣性スクロールの行き先も
+    /// 上書きしてしまう。ここは値・目標を同時に平行移動するだけで、ばねも慣性も
+    /// そのまま続く。
+    ///
+    /// 上端より上へは行かない（負の位置はゴム引き領域なので、ずらしで入れない）。
+    /// 下端側はクランプしない — 呼ばれるのは中身の高さが変わった直後で、
+    /// `content_height` はまだ前フレームの値だから。新しい高さが入った時点で
+    /// [`Self::set_content_height`] が範囲外の目標を引き戻す。
+    pub fn shift_y(&mut self, dy: f32) {
+        let floor = -self.scroll_y.value().min(self.scroll_y.target()).max(0.0);
+        self.scroll_y.offset_by(dy.max(floor));
+    }
+
     /// Set content height (e.g., when items change).
     ///
     /// 範囲外に出た**目標**だけを引き戻す。 値ではない — 詳しくは
