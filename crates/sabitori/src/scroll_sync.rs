@@ -109,6 +109,41 @@ pub fn apply_scroll_measures(build: &BuildResult, states: &mut HashMap<String, S
     }
 }
 
+/// `view()` が見たスクロール枠の寸法 (`seen`) と、いま測れた寸法 (`states`) が
+/// 食い違っているか ([#99](https://github.com/Mutafika/sabitori/issues/99))。
+///
+/// `table` の列の出し方や `visible_range` は、`view()` の時点で手元にある
+/// **前のフレームの**寸法から決まる。測れた寸法が違えば、正しい出し方は
+/// 次の `view()` でしか出ない。`lazy_render` は入力が無いと次を描かないので、
+/// 食い違ったらランタイムがもう 1 枚描く — 無いと、開いた直後や窓の幅を
+/// 変えた直後の「1 つ前の出し方」が最後の 1 枚として残る。
+///
+/// 見る値は大きさだけ (位置は入れない — ばねで動く最中は毎フレーム変わるが、
+/// そちらは `runtime_animating` が描かせている)。`view()` がまだ見ていない
+/// 枠 (このフレームで初めて測れた) も食い違いに数える。
+pub fn measures_moved(
+    seen: &HashMap<String, sabitori_core::ScrollInfo>,
+    states: &HashMap<String, ScrollView>,
+) -> bool {
+    const EPS: f32 = 0.5;
+    states.iter().any(|(id, sv)| match seen.get(id) {
+        None => true,
+        Some(info) => {
+            (info.viewport_width - sv.viewport_width).abs() > EPS
+                || (info.viewport_height - sv.viewport_height).abs() > EPS
+                || (info.content_width - sv.content_width).abs() > EPS
+                || (info.content_height - sv.content_height).abs() > EPS
+        }
+    })
+}
+
+/// 寸法の食い違いで続けてもう 1 枚描くのは、ここまで。
+///
+/// レイアウトが自分の寸法を見て揺れ続ける木 (測った幅で列を出し入れすると
+/// その幅自体が変わる、など) で、入力も無いのに描き続けないため。
+/// 普通の木は 1〜2 枚で落ち着く。
+pub const MAX_RELAYOUT_STREAK: u8 = 3;
+
 /// Route a wheel/trackpad scroll to the managed scroll container under
 /// the pointer that **can still move in that direction**. Returns `true`
 /// when a container consumed the delta. Hit regions are stored
@@ -284,6 +319,54 @@ pub fn tick_all(states: &mut HashMap<String, ScrollView>, dt: f32) {
 
 #[cfg(test)]
 mod tests {
+    fn info(vw: f32, vh: f32, cw: f32, ch: f32) -> sabitori_core::ScrollInfo {
+        sabitori_core::ScrollInfo {
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+            viewport_width: vw,
+            viewport_height: vh,
+            content_width: cw,
+            content_height: ch,
+        }
+    }
+
+    fn view_of(vw: f32, vh: f32, cw: f32, ch: f32) -> ScrollView {
+        let mut sv = ScrollView::new(vw, vh);
+        sv.viewport_width = vw;
+        sv.viewport_height = vh;
+        sv.set_content_size(cw, ch);
+        sv
+    }
+
+    /// #99: 測れた大きさが `view()` の見た値と同じなら描き直さない。
+    #[test]
+    fn unchanged_measures_do_not_ask_for_another_frame() {
+        let seen = HashMap::from([("t".to_string(), info(700.0, 300.0, 700.0, 900.0))]);
+        let states = HashMap::from([("t".to_string(), view_of(700.0, 300.0, 700.0, 900.0))]);
+        assert!(!measures_moved(&seen, &states));
+    }
+
+    /// 幅が変わった (窓を広げた) / 初めて測れた (開いた直後) なら描き直す。
+    #[test]
+    fn a_resized_or_newly_measured_pane_asks_for_another_frame() {
+        let seen = HashMap::from([("t".to_string(), info(700.0, 300.0, 700.0, 900.0))]);
+        let wider = HashMap::from([("t".to_string(), view_of(1020.0, 300.0, 1020.0, 900.0))]);
+        assert!(measures_moved(&seen, &wider));
+
+        let first = HashMap::from([("t".to_string(), view_of(700.0, 300.0, 700.0, 900.0))]);
+        assert!(measures_moved(&HashMap::new(), &first));
+    }
+
+    /// 位置は見ない (ばねで動く最中は毎フレーム変わる。描かせるのは別の理由)。
+    #[test]
+    fn scrolling_alone_is_not_a_measure_change() {
+        let mut i = info(700.0, 300.0, 700.0, 900.0);
+        i.scroll_y = 120.0;
+        let seen = HashMap::from([("t".to_string(), i)]);
+        let states = HashMap::from([("t".to_string(), view_of(700.0, 300.0, 700.0, 900.0))]);
+        assert!(!measures_moved(&seen, &states));
+    }
+
     use super::*;
     use sabitori_core::build::build_tree;
     use sabitori_core::element::{div, Px};

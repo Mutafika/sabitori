@@ -1045,6 +1045,12 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// missing glyphs persist until the user interacts. Cleared each render by
     /// re-reading the atlas state.
     atlas_recover_pending: bool,
+    /// このフレームで測れたスクロール枠の大きさが、`view()` の見た値と食い
+    /// 違った (#99)。次の tick で `must_draw` を立て、正しい大きさで組み直す。
+    /// `dirty` と違い描き終わっても下ろさない (組むたびに測り直して決める)。
+    pub(crate) relayout_pending: bool,
+    /// 食い違いで続けて描き直した回数。[`crate::scroll_sync::MAX_RELAYOUT_STREAK`] で止める。
+    relayout_streak: u8,
     /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
     fonts_applied: usize,
     /// 窓が見えていない (最小化 / 完全に覆われている)。`WindowEvent::Occluded`
@@ -2251,6 +2257,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             runtime_animating: self.runtime_animating(),
             caret_blinking: self.caret_blinking(),
             atlas_recover_pending: self.atlas_recover_pending,
+            relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         }
         .must_draw();
@@ -2350,6 +2357,10 @@ pub(crate) struct DrawGate {
     pub(crate) caret_blinking: bool,
     /// グリフアトラスが溢れた直後。 次のフレームで flush + 再シェイプが要る。
     pub(crate) atlas_recover_pending: bool,
+    /// 測れたスクロール枠の大きさが `view()` の見た値と違った (#99)。
+    /// 前のフレームの寸法で決まる物 (`table` の列、`visible_range`) を正しい
+    /// 寸法で組み直すために、もう 1 枚要る。
+    pub(crate) relayout_pending: bool,
     /// 窓が**見えていない** (最小化、または別の窓に完全に覆われている)。
     ///
     /// 他のどの理由よりも強い — 見えない窓のために描いても、誰も見ないまま
@@ -2375,6 +2386,7 @@ impl DrawGate {
             || self.runtime_animating
             || self.caret_blinking
             || self.atlas_recover_pending
+            || self.relayout_pending
     }
 }
 
@@ -2677,6 +2689,8 @@ impl<A: DeclarativeApp> AppState<A> {
             image_ctx,
             pending_redraw: true,
             atlas_recover_pending: false,
+            relayout_pending: false,
+            relayout_streak: 0,
             fonts_applied: 0,
             occluded: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2804,7 +2818,7 @@ impl<A: DeclarativeApp> AppState<A> {
             mouse_y: self.mouse_y,
             shift_held: self.modifiers.shift,
             cmd_held: self.modifiers.meta,
-            scroll_states: scroll_info,
+            scroll_states: scroll_info.clone(),
             tooltip: tooltip_info,
             drag: drag_info,
             // 抱えているテクスチャの量。長時間起動の調べ物に要る (#47)。
@@ -2935,6 +2949,19 @@ impl<A: DeclarativeApp> AppState<A> {
             crate::scroll_sync::apply_scroll_measures(&built, &mut self.scroll_states);
             built
         });
+
+        // `view()` が見た大きさと測れた大きさが違えば、もう 1 枚組む (#99)。
+        // 揺れ続ける木で描き続けないよう、続けては MAX_RELAYOUT_STREAK 回まで。
+        let moved = crate::scroll_sync::measures_moved(&scroll_info, &self.scroll_states);
+        if moved && self.relayout_streak < crate::scroll_sync::MAX_RELAYOUT_STREAK {
+            self.relayout_streak += 1;
+            self.relayout_pending = true;
+        } else {
+            if !moved {
+                self.relayout_streak = 0;
+            }
+            self.relayout_pending = false;
+        }
 
         FrameBuild { build_result, overlay_build }
     }
@@ -5985,6 +6012,112 @@ mod draw_gate_tests {
     use crate::testing::Harness;
     use sabitori_widgets::{text_input, TextInputState, TextInputStyle};
 
+    /// #99 の予約一覧。priority の付いた列を、幅に応じて出し入れする表。
+    struct Reservations(sabitori_widgets::TableState);
+
+    impl Reservations {
+        fn new() -> Self {
+            use sabitori_widgets::{Cell, TableColumn, TableState};
+            let mut t = TableState::new(vec![
+                TableColumn::fixed("予約番号", 140.0),
+                TableColumn::flex("顧客").min(110.0),
+                TableColumn::flex("車両").min(110.0).priority(1),
+                TableColumn::fixed("開始", 140.0),
+                TableColumn::fixed("終了", 140.0).priority(2),
+                TableColumn::fixed("見積額", 100.0).priority(3),
+                TableColumn::fixed("状態", 90.0),
+            ]);
+            t.set_rows((0..20).map(|_| (0..7).map(|c| Cell::text(format!("c{c}"))).collect()).collect());
+            Self(t)
+        }
+    }
+
+    impl DeclarativeApp for Reservations {
+        fn view(&self, ctx: &sabitori_core::ViewContext) -> Element {
+            let style = sabitori_widgets::TableStyle::default_dark();
+            sabitori_widgets::table(ctx, "r", &self.0, &style).w_full().h_full()
+        }
+    }
+
+    fn shows(h: &Harness<Reservations>, label: &str) -> bool {
+        h.text_rect(label).is_some()
+    }
+
+    /// **測れた大きさで出し方が変わるなら、入力が無くてももう 1 枚描く** (#99)。
+    ///
+    /// lazy_render は入力が無いと次を描かない。表は前のフレームの幅で列を
+    /// 決めるので、開いた直後と窓の幅を変えた直後の「1 つ前の出し方」が
+    /// 最後の 1 枚として残っていた。Harness の `settle` は回し切ってしまうので
+    /// 1 枚ずつ回して、各フレームの後で「次を描くか」を見る。
+    #[test]
+    fn a_table_that_measured_a_new_width_draws_once_more() {
+        // 表 700px: 固定 610 + 下限 220 = 830 は入らない。見積額 (3)・終了 (2) を
+        // 隠して 590 で収まる。issue の画面 (サイドバーの横の表) と同じ出し方。
+        let mut h = Harness::new(Reservations::new(), 700.0, 600.0);
+
+        // 開いた直後: まだ測れていないので全部出す。ここで止まると横スクロールのまま。
+        h.frame();
+        assert!(shows(&h, "見積額"), "前提: 1 枚目は全部の列");
+        assert!(h.state.relayout_pending, "開いた直後、測れた幅で組み直す 1 枚が要る");
+
+        // 組み直した 1 枚: 測れた幅で終了・見積額が隠れ、状態が見える。
+        h.frame();
+        assert!(!shows(&h, "見積額") && !shows(&h, "終了") && shows(&h, "状態"));
+        // 列を隠したので中身の幅が変わった — それを見るためにもう 1 枚だけ組み、
+        // そこで止まる (出し方は変わらない)。
+        settle_relayout(&mut h);
+        assert!(!shows(&h, "見積額") && shows(&h, "状態"), "組み直しで出し方が揺れた");
+
+        // 窓を広げた直後: 古い幅で決めた出し方のまま組まれる。もう 1 枚要る。
+        h.resize(1320.0, 600.0);
+        h.frame();
+        assert!(h.state.relayout_pending, "幅が変わった直後、組み直す 1 枚が要る");
+        h.frame();
+        assert!(shows(&h, "見積額") && shows(&h, "終了"), "広げたのに列が戻らない");
+        settle_relayout(&mut h);
+        assert!(shows(&h, "見積額"));
+    }
+
+    /// 入力無しで、ランタイムが自分で求める分だけ回す。止まらなければ落とす。
+    fn settle_relayout(h: &mut Harness<Reservations>) {
+        for _ in 0..crate::scroll_sync::MAX_RELAYOUT_STREAK {
+            if !h.state.relayout_pending {
+                return;
+            }
+            h.frame();
+        }
+        assert!(!h.state.relayout_pending, "落ち着かずに描き直しを求め続けている");
+    }
+
+    /// 揺れ続ける木でも、入力無しに描き続けない (続けては MAX_RELAYOUT_STREAK 回まで)。
+    #[test]
+    fn a_layout_that_never_settles_stops_asking_for_frames() {
+        use std::cell::Cell;
+        // 見た幅で自分の幅を変える (毎回 1px 狭くする) = 絶対に落ち着かない枠。
+        struct Shrinking(Cell<f32>);
+        impl DeclarativeApp for Shrinking {
+            fn view(&self, ctx: &sabitori_core::ViewContext) -> Element {
+                let w = ctx.scroll_info("p").map_or(300.0, |i| i.viewport_width - 1.0);
+                self.0.set(w);
+                sabitori_core::div().child(
+                    sabitori_core::div().scroll("p").w(sabitori_core::Dimension::Px(w)).h(sabitori_core::Dimension::Px(100.0)),
+                )
+            }
+        }
+        let mut h = Harness::new(Shrinking(Cell::new(0.0)), 800.0, 600.0);
+        let mut asked = 0;
+        for _ in 0..10 {
+            h.frame();
+            if h.state.relayout_pending {
+                asked += 1;
+            }
+        }
+        assert!(
+            asked <= crate::scroll_sync::MAX_RELAYOUT_STREAK as usize,
+            "落ち着かない木で {asked} 回も描き直しを求めた"
+        );
+    }
+
     /// 何も起きていない lazy フレーム。 ここから 1 つずつ立てて見る。
     fn idle() -> DrawGate {
         DrawGate { lazy: true, ..DrawGate::default() }
@@ -6002,17 +6135,18 @@ mod draw_gate_tests {
         assert!(DrawGate { lazy: false, ..DrawGate::default() }.must_draw());
     }
 
-    /// 描く理由は 6 つあり、 **どれ 1 つでも欠けると画面が止まる**。
+    /// 描く理由は 7 つあり、 **どれ 1 つでも欠けると画面が止まる**。
     /// 表にして 1 本ずつ立て、 全部が単独で効くことを見る。
     #[test]
     fn every_reason_draws_on_its_own() {
-        let reasons: [(&str, fn(&mut DrawGate)); 6] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 7] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
             ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+            ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {
             let mut g = idle();
@@ -6027,13 +6161,14 @@ mod draw_gate_tests {
     /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     #[test]
     fn an_occluded_window_draws_for_no_reason_at_all() {
-        let reasons: [(&str, fn(&mut DrawGate)); 6] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 7] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
             ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+            ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {
             let mut g = idle();

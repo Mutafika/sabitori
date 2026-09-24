@@ -106,6 +106,10 @@ struct SceneAppState<A: SceneApp> {
     fonts_applied: usize,
     /// 窓が見えていない (最小化 / 完全に覆われている)。#79。
     occluded: bool,
+    /// 測れたスクロール枠の大きさが `view()` の見た値と違った (#99)。
+    /// declarative の同名の欄と同じ。
+    relayout_pending: bool,
+    relayout_streak: u8,
     /// `SABITORI_SCREENSHOT` で 1 枚撮って終わる (#69)。native だけ。
     #[cfg(not(target_arch = "wasm32"))]
     shooter: crate::screenshot::Shooter,
@@ -1222,7 +1226,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     mouse_y: self.mouse_y,
                     shift_held: self.modifiers.shift,
                     cmd_held: self.modifiers.meta,
-                    scroll_states: scroll_info,
+                    scroll_states: scroll_info.clone(),
                     tooltip: self.tooltip_state.info().map(|(text, x, y)| {
                         sabitori_core::TooltipInfo { text, x, y }
                     }),
@@ -1284,6 +1288,17 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // 測定したスクロール範囲(viewport/content)を管理状態へ反映 → 次フレームの
                 // ホイールが正しい上限でクランプされる（コンテンツ高がここで確定）。
                 crate::scroll_sync::apply_scroll_measures(&build_result, &mut self.scroll_states);
+                // `view()` が見た大きさと違えば、もう 1 枚組む (#99)。declarative と同じ。
+                let moved = crate::scroll_sync::measures_moved(&scroll_info, &self.scroll_states);
+                if moved && self.relayout_streak < crate::scroll_sync::MAX_RELAYOUT_STREAK {
+                    self.relayout_streak += 1;
+                    self.relayout_pending = true;
+                } else {
+                    if !moved {
+                        self.relayout_streak = 0;
+                    }
+                    self.relayout_pending = false;
+                }
                 // Apply programmatic scroll requests now that content extents
                 // are known, so `smooth_scroll_to` clamps to the real range.
                 for intent in self.app.scroll_intents() {
@@ -1496,6 +1511,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             // グリフアトラスの復旧も declarative 側にしか無い。 溢れたときの
             // 振る舞いは lazy の前後で変わらない (どちらも復旧しない)。
             atlas_recover_pending: false,
+            relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         }
         .must_draw();
@@ -1560,6 +1576,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_build: None,
         fonts_applied: 0,
         occluded: false,
+        relayout_pending: false,
+        relayout_streak: 0,
         #[cfg(not(target_arch = "wasm32"))]
         shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -1620,6 +1638,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         last_build: None,
         fonts_applied: 0,
         occluded: false,
+        relayout_pending: false,
+        relayout_streak: 0,
         #[cfg(not(target_arch = "wasm32"))]
         shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
