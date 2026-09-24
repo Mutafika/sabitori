@@ -1207,6 +1207,17 @@ fn emit_commands(
         }
         // overflow: visible — children may legitimately stick out of a
         // zero-sized wrapper; still need to recurse for counter consistency.
+        //
+        // 大きさ 0 の要素そのものも probe には答える。高さ 0 の目印（「ここへ飛ぶ」
+        // アンカー、塊の終わりの印）は probe の典型的な使い道で、描くものが無い
+        // からといって位置まで消すと、`probe_positions` から**黙って欠ける**。
+        if !probes.is_empty() {
+            if let Some(id) = element.id.as_deref() {
+                if probes.contains(id) {
+                    probe_positions.insert(id.to_string(), abs_y);
+                }
+            }
+        }
         let taffy_children = taffy.children(taffy_node).unwrap_or_default();
         let z_order = paint_order(&element.children);
         for k in 0..element.children.len() {
@@ -4508,5 +4519,32 @@ mod color_span_tests {
         // 日本語は 1 文字 3 バイト — バイト位置で持っていること。
         assert_eq!(spans[1].start, 3);
         assert_eq!(spans[1].end, 6);
+    }
+}
+
+#[cfg(test)]
+mod zero_size_probe_tests {
+    use super::*;
+    use crate::element::{div, Px};
+
+    /// 高さ 0 の目印も probe に答える。塊の終わりの印・「ここへ飛ぶ」アンカーは
+    /// 高さ 0 で置くのが普通で、以前は描くものが無いという理由で位置まで欠けていた。
+    #[test]
+    fn a_zero_height_marker_reports_its_position() {
+        let root = div().w(Px(200.0)).h(Px(400.0)).flex_col().children([
+            div().id("a").w(Px(200.0)).h(Px(120.0)).shrink(0.0),
+            div().id("mark").w(Px(200.0)).h(Px(0.0)).shrink(0.0),
+            div().id("b").w(Px(200.0)).h(Px(50.0)).shrink(0.0),
+            // 画面の外（切られる側）の 0 高の印も同じく答える。
+            div().h(Px(1000.0)).shrink(0.0),
+            div().id("far").w(Px(200.0)).h(Px(0.0)).shrink(0.0),
+        ]);
+        let probes: std::collections::HashSet<String> =
+            ["a", "mark", "b", "far"].iter().map(|s| s.to_string()).collect();
+        let r = build_tree_probed(&root, 200.0, 400.0, &probes);
+        assert_eq!(r.probe_positions.get("a"), Some(&0.0));
+        assert_eq!(r.probe_positions.get("mark"), Some(&120.0));
+        assert_eq!(r.probe_positions.get("b"), Some(&120.0));
+        assert_eq!(r.probe_positions.get("far"), Some(&1170.0));
     }
 }
