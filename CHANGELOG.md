@@ -29,6 +29,13 @@
 
   > `TableStyle` / `ModalStyle` を構造体リテラルで**全項目**書いていた場合は
   > `scrollbar` を足す必要がある (`..TableStyle::from_theme(..)` で埋めていれば不要)。
+- **`Harness::with_real_text` — 実物の cosmic-text で文字を測る Harness**
+  ([#91](https://github.com/Mutafika/sabitori/issues/91))。既定のスタブは折り返さない
+  ので、`min_w(Px(0.0))` の付け忘れで文字が枠からはみ出す崩れが、直す前も後も
+  同じ寸法になってテストで止められなかった。こちらは画面と同じ所で折り返し、
+  行数ぶん箱も伸びる。寸法は入っている書体で変わるので、px ではなく関係を見ること。
+  あわせて **`Harness::text_rect(文字)`** (id の無い文字の描かれる箱) と、
+  GPU 無しで実物を測る **`testing::ShaperMeasure`** を足した。
 
 ### Fixed
 

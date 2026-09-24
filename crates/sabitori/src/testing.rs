@@ -27,18 +27,39 @@
 //!
 //! # 精度について
 //!
-//! テキストの計測は実フォントではなく決め打ちのスタブ（1 文字 = `font_size * 0.5`
-//! 幅、 1 行 = `font_size` 高）。 環境にインストールされた書体に依存しないので
-//! 期待値を手で書けるが、 **実物の折り返し位置とは一致しない**。 レイアウトの
-//! ピクセル値そのものを assert する用途には向かない。 「どの要素が居るか」
-//! 「どの id がクリックされたか」「state がどう変わったか」を見ること。
+//! [`Harness::new`] のテキストの計測は実フォントではなく決め打ちのスタブ（1 文字 =
+//! `font_size * 0.5` 幅、 1 行 = `font_size` 高、 **折り返さない**）。 環境に
+//! インストールされた書体に依存しないので期待値を手で書けるが、 **実物の折り返し
+//! とは一致しない**。 「どの要素が居るか」「どの id がクリックされたか」
+//! 「state がどう変わったか」を見る用途向け。
+//!
+//! **文字の折り返しに依る崩れ** (長い文字が枠からはみ出す、 行数が増えて箱が
+//! 伸びる) を止めたいときは [`Harness::with_real_text`] を使う。 画面と同じ
+//! cosmic-text で測るので、 実機と同じ所で折り返す ([#91])。 寸法は入っている
+//! 書体で変わるので、 px の値ではなく「枠に収まっている」「2 行以上ある」の
+//! ような関係を assert すること。 文字の箱は [`Harness::text_rect`] で引ける。
+//!
+//! ```ignore
+//! let mut h = Harness::with_real_text(App::offline(), 800.0, 600.0);
+//! h.frame();
+//! let card = h.rect_of("login-card").unwrap();
+//! let msg = h.text_rect("接続できません").unwrap();
+//! let right = |r: Rect| r.origin.x + r.size.width;
+//! assert!(right(msg) <= right(card), "エラーの文字がカードからはみ出している");
+//! ```
+//!
+//! [#91]: https://github.com/Mutafika/sabitori/issues/91
 //!
 //! ヘッドレスなので GPU 描画・IME・実際の winit イベントは通らない。 IME 合成の
 //! ような OS 依存の経路はここでは再現できない。
 
+use std::cell::RefCell;
+
 use sabitori_core::build::{BuildResult, CaretPos, TextMeasure, TextShape};
-use sabitori_core::{Element, Size, TextMetrics, Typography};
+use sabitori_core::render_list::RenderCommand;
+use sabitori_core::{Element, Rect, Size, TextMetrics, Typography};
 use sabitori_input::{InputEvent, Key, Modifiers};
+use sabitori_text::TextShaper;
 
 use crate::declarative::{AppState, DeclarativeApp, UiCapture};
 
@@ -136,6 +157,74 @@ impl TextMeasure for StubMeasure {
     }
 }
 
+/// 実物の cosmic-text で測る [`TextMeasure`] ([#91])。
+///
+/// 画面の描画が測るのと同じ [`TextShaper::measure_text`] を通すので、 折り返す
+/// 位置も行数も実機と揃う。 GPU は要らない。 [`Harness::with_real_text`] が
+/// 使うほか、 [`layout`] の代わりに `build_tree_measured` へ直接渡してもよい。
+///
+/// [#91]: https://github.com/Mutafika/sabitori/issues/91
+pub struct ShaperMeasure {
+    shaper: RefCell<TextShaper>,
+}
+
+impl ShaperMeasure {
+    /// システムの書体 (と、 有効なら同梱の書体) で測る。 画面と同じ既定。
+    pub fn new() -> Self {
+        Self { shaper: RefCell::new(TextShaper::new()) }
+    }
+
+    /// アプリの書体の指定 ([`DeclarativeApp::fonts`] /
+    /// `preferred_font_family` / `preferred_monospace_family`) を画面と同じく
+    /// 当てたもの。
+    pub fn for_app<A: DeclarativeApp>(app: &A) -> Self {
+        let mut shaper = TextShaper::new();
+        let fonts = app.fonts();
+        if !fonts.is_empty() {
+            shaper.prefer_user_fonts(&fonts);
+        }
+        shaper.set_preferred_family(app.preferred_font_family());
+        shaper.set_preferred_monospace_family(app.preferred_monospace_family());
+        Self { shaper: RefCell::new(shaper) }
+    }
+}
+
+impl Default for ShaperMeasure {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TextMeasure for ShaperMeasure {
+    fn measure(
+        &self,
+        content: &str,
+        font_size: f32,
+        bold: bool,
+        monospace: bool,
+        font_family: Option<&str>,
+        max_width: Option<f32>,
+        max_lines: Option<u32>,
+        typo: Typography,
+    ) -> TextMetrics {
+        self.shaper.borrow_mut().measure_text(
+            content, font_size, bold, monospace, font_family, max_width, max_lines, typo,
+        )
+    }
+
+    fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+        self.shaper.borrow_mut().caret_pos(content, byte_offset, shape)
+    }
+
+    fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+        self.shaper.borrow_mut().offset_at(content, point, shape)
+    }
+
+    fn range_rects(&self, content: &str, range: (usize, usize), shape: TextShape<'_>) -> Vec<Rect> {
+        self.shaper.borrow_mut().range_rects(content, range, shape)
+    }
+}
+
 /// `byte_offset` が何番目の論理行の、 行頭から何文字目かを返す。
 ///
 /// **スタブは折り返しを模さない。** `measure` が `max_width` を見ていないので、
@@ -168,6 +257,8 @@ pub struct Harness<A: DeclarativeApp> {
     pub(crate) state: AppState<A>,
     width: f32,
     height: f32,
+    /// `None` ならスタブ。 [`Self::with_real_text`] で実物の計測になる。
+    real_text: Option<ShaperMeasure>,
 }
 
 impl<A: DeclarativeApp> Harness<A> {
@@ -177,6 +268,23 @@ impl<A: DeclarativeApp> Harness<A> {
             state: AppState::new(app),
             width,
             height,
+            real_text: None,
+        }
+    }
+
+    /// [`Self::new`] と同じだが、 文字を**実物の cosmic-text で測る** ([#91])。
+    ///
+    /// スタブは折り返さないので、 `min_w(Px(0.0))` の付け忘れで文字が枠から
+    /// はみ出す、 のような崩れを止められない。 こちらは画面と同じ所で折り返し、
+    /// 行数に応じて箱の高さも変わる。 寸法は入っている書体で変わるので、 px の
+    /// 値ではなく関係を assert すること (モジュールの doc を参照)。
+    ///
+    /// [#91]: https://github.com/Mutafika/sabitori/issues/91
+    pub fn with_real_text(app: A, width: f32, height: f32) -> Self {
+        let measure = ShaperMeasure::for_app(&app);
+        Self {
+            real_text: Some(measure),
+            ..Self::new(app, width, height)
         }
     }
 
@@ -233,7 +341,11 @@ impl<A: DeclarativeApp> Harness<A> {
     /// クリックやキー入力は**直前のフレームの hit_regions**を見るので、 操作の前に
     /// 最低 1 回呼ぶこと。
     pub fn frame(&mut self) -> &BuildResult {
-        let mut frame = self.state.build_frame(self.width, self.height, &StubMeasure);
+        let measure: &dyn TextMeasure = match &self.real_text {
+            Some(real) => real,
+            None => &StubMeasure,
+        };
+        let mut frame = self.state.build_frame(self.width, self.height, measure);
         // ★**overlay も畳んでからコミットする。**実機の描画路は
         // `absorb_overlay` を通すのに、ここだけ `build_result` をそのまま
         // 渡していたので、`overlay_view` が返した menu は Harness から
@@ -422,6 +534,29 @@ impl<A: DeclarativeApp> Harness<A> {
             .iter()
             .find(|r| r.id.as_deref() == Some(id))
             .map(|r| r.rect)
+    }
+
+    /// `needle` を含む文字の**描かれる箱** (最初に見つかったもの)。
+    ///
+    /// 文字には id を付けないことが多く、 [`Self::rect_of`] では引けない。
+    /// 箱は文字の要素のレイアウト結果 (padding の内側) で、 折り返した行数ぶんの
+    /// 高さがある。 枠からのはみ出しを見るのに使う。 overlay の文字も探す。
+    pub fn text_rect(&self, needle: &str) -> Option<Rect> {
+        let build = self.build();
+        build
+            .render_list
+            .commands
+            .iter()
+            .chain(build.overlay_list.commands.iter())
+            .find_map(|c| match c {
+                RenderCommand::Text(t) if t.content.contains(needle) => Some(Rect::new(
+                    t.position.x,
+                    t.position.y,
+                    t.max_width,
+                    t.max_height,
+                )),
+                _ => None,
+            })
     }
 
     fn center_of(&self, id: &str) -> (f32, f32) {
