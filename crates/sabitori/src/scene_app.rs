@@ -1499,7 +1499,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         self.push_ui_capture();
 
         // 判定は declarative と同じ [`DrawGate`] を通す (#55)。
-        let must_draw = crate::declarative::DrawGate {
+        let gate = crate::declarative::DrawGate {
             lazy: self.app.lazy_render(),
             dirty: self.dirty,
             // `poll_dirty` は「問うと下りる」ので 1 フレームに 1 回だけ呼ぶ。
@@ -1513,8 +1513,12 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             atlas_recover_pending: false,
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
+        };
+        // ほかの理由で描いているなら、食い違いの回数を数え直す (#99。declarative と同じ)。
+        if gate.has_other_reason() {
+            self.relayout_streak = 0;
         }
-        .must_draw();
+        let must_draw = gate.must_draw();
 
         // 落ち着いたら 1 枚撮って終わる (#69)。declarative 版と同じ規約。
         #[cfg(not(target_arch = "wasm32"))]

@@ -2248,7 +2248,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         self.push_ui_capture();
         // 判定そのものは [`DrawGate`] が持つ — 材料を集めるのがここ、
         // 決めるのは向こう。 ヘッドレスに試せる形にしてある (#53)。
-        let must_draw = DrawGate {
+        let gate = DrawGate {
             lazy: self.app.lazy_render(),
             dirty: self.dirty,
             // `poll_dirty` は「問うと下りる」ので 1 フレームに 1 回だけ呼ぶ。
@@ -2259,8 +2259,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             atlas_recover_pending: self.atlas_recover_pending,
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
-        }
-        .must_draw();
+        };
+        self.note_draw_gate(&gate);
+        let must_draw = gate.must_draw();
 
         // 落ち着いたら 1 枚撮って終わる (#69)。`must_draw` が下りたフレームが
         // 「描くものが無くなった」= 非同期のロードも含めて落ち着いた合図。
@@ -2371,6 +2372,22 @@ pub(crate) struct DrawGate {
 }
 
 impl DrawGate {
+    /// 食い違い (`relayout_pending`) **以外に**描く理由があるか。
+    ///
+    /// 食い違いで続けて描き直す回数の上限 ([`crate::scroll_sync::MAX_RELAYOUT_STREAK`])
+    /// は「食い違いだけで描き続ける」のを止めるためのもの。入力やアニメで
+    /// 描いているあいだに回数を積むと、アニメが止まった最後の 1 枚を組み直せ
+    /// なくなるので、そのときは数え直す ([`AppState::note_draw_gate`])。
+    pub(crate) fn has_other_reason(self) -> bool {
+        !self.lazy
+            || self.dirty
+            || self.app_dirty
+            || self.app_animating
+            || self.runtime_animating
+            || self.caret_blinking
+            || self.atlas_recover_pending
+    }
+
     /// このフレームで redraw を出すべきか。
     pub(crate) fn must_draw(self) -> bool {
         // 見えていないなら描かない。`lazy_render` を切っていても同じ —
@@ -2379,14 +2396,7 @@ impl DrawGate {
         if self.occluded {
             return false;
         }
-        !self.lazy
-            || self.dirty
-            || self.app_dirty
-            || self.app_animating
-            || self.runtime_animating
-            || self.caret_blinking
-            || self.atlas_recover_pending
-            || self.relayout_pending
+        self.has_other_reason() || self.relayout_pending
     }
 }
 
@@ -3276,6 +3286,17 @@ impl<A: DeclarativeApp> AppState<A> {
     /// **落ち着く (収束する) ものだけ**をここに入れる — `settle` がこれを見て
     /// 打ち切りを決めるので、 永久に動き続けるもの (キャレット点滅) を混ぜると
     /// 待ち切れなくなる。 そちらは [`Self::caret_blinking`]。
+    /// 描くかどうかを決めた材料を見て、食い違いの回数を数え直す (#99)。
+    ///
+    /// ほかの理由で描いているなら、それは「食い違いだけで描き続けている」の
+    /// ではないので 0 に戻す。戻さないと、アニメで幅が変わり続けた後の最後の
+    /// 1 枚を組み直せない ([`DrawGate::has_other_reason`])。
+    pub(crate) fn note_draw_gate(&mut self, gate: &DrawGate) {
+        if gate.has_other_reason() {
+            self.relayout_streak = 0;
+        }
+    }
+
     pub(crate) fn runtime_animating(&self) -> bool {
         // 判定は scene_app と同じ 1 実装 (#55)。 進める側 (`advance_animators`)
         // と並びが揃っていないと、 進めているのに名乗らないものが出る。
@@ -6087,6 +6108,39 @@ mod draw_gate_tests {
             h.frame();
         }
         assert!(!h.state.relayout_pending, "落ち着かずに描き直しを求め続けている");
+    }
+
+    /// **アニメで幅が変わり続けた後も、最後の 1 枚を組み直す** (#99 のレビュー)。
+    ///
+    /// 仕切りのドラッグやサイドバーの開閉では、表の幅が毎フレーム変わる。その間
+    /// 食い違いの回数を積むと上限に張り付き、アニメが止まった最後の 1 枚で
+    /// 食い違っても次を求めない — #99 と同じ「古い出し方で止まる」がアニメの後に
+    /// 残る。ほかの理由 (入力・アニメ) で描いているフレームでは数え直す。
+    #[test]
+    fn after_an_animated_resize_the_last_frame_is_still_relaid_out() {
+        let mut h = Harness::new(Reservations::new(), 700.0, 600.0);
+        // アニメの最中: 幅が毎フレーム変わり、描く理由はアニメ。
+        let animating = DrawGate { lazy: true, runtime_animating: true, ..DrawGate::default() };
+        for i in 0..10 {
+            h.resize(700.0 + 40.0 * i as f32, 600.0);
+            h.frame();
+            h.state.note_draw_gate(&animating);
+        }
+        // アニメが止まった最後の 1 枚。これも古い幅で組まれているので、次が要る。
+        h.resize(1320.0, 600.0);
+        h.frame();
+        assert!(h.state.relayout_pending, "アニメの後の最後の 1 枚を組み直さない");
+        settle_relayout(&mut h);
+        assert!(shows(&h, "見積額") && shows(&h, "終了"), "広げたのに列が戻らない");
+    }
+
+    /// ほかの理由があるかどうか。食い違いだけ (と、見えていないこと) は数えない。
+    #[test]
+    fn relayout_alone_is_not_another_reason() {
+        assert!(!DrawGate { lazy: true, relayout_pending: true, ..DrawGate::default() }.has_other_reason());
+        assert!(DrawGate { lazy: true, dirty: true, ..DrawGate::default() }.has_other_reason());
+        assert!(DrawGate { lazy: true, runtime_animating: true, ..DrawGate::default() }.has_other_reason());
+        assert!(DrawGate { lazy: false, ..DrawGate::default() }.has_other_reason(), "毎フレーム描く設定");
     }
 
     /// 揺れ続ける木でも、入力無しに描き続けない (続けては MAX_RELAYOUT_STREAK 回まで)。
