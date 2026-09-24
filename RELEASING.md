@@ -85,7 +85,8 @@ API が安定したら `1.0.0` を切る。
    cargo update --workspace
    ```
 
-   > **README / ROADMAP の版表記も一緒に直す** (4 ファイルの冒頭)。忘れると
+   > **README / ROADMAP の版表記も一緒に直す** (4 ファイルの冒頭と、
+   > `templates/wasm/README.md` の依存の例)。忘れると
    > `cargo test -p sabitori --test readme_examples` が落ちる — 過去に README が
    > `0.6.0`、ROADMAP が `0.4.0` と名乗ったまま `0.11.2` まで来て、利用側が
    > 「どの版の説明か」を判断できなくなった
