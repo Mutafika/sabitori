@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-25
+
 ### Added
 
 - **`table` が幅の足りないときに列を黙って潰さない**
@@ -3858,7 +3860,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/Mutafika/sabitori/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Mutafika/sabitori/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Mutafika/sabitori/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Mutafika/sabitori/compare/v0.16.1...v0.17.0
