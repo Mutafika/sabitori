@@ -19,6 +19,10 @@ struct AnimatedStyle {
     font_size: Animated<f32>,
 }
 
+/// 色のばね。**前乗算した成分**で動かす (`Color::lerp` と同じ理由)。
+///
+/// straight のまま r/g/b/a を別々に動かすと、透明な地 (`TRANSPARENT` = 透明な
+/// 黒) からホバー色へ向かう途中で rgb が黒寄りになり、フェードの途中が暗く沈む。
 struct AnimatedColor {
     r: Animated<f32>,
     g: Animated<f32>,
@@ -29,27 +33,25 @@ struct AnimatedColor {
 impl AnimatedColor {
     fn new(color: Color, spring: Spring) -> Self {
         Self {
-            r: Animated::new(color.r).with_spring(spring),
-            g: Animated::new(color.g).with_spring(spring),
-            b: Animated::new(color.b).with_spring(spring),
+            r: Animated::new(color.r * color.a).with_spring(spring),
+            g: Animated::new(color.g * color.a).with_spring(spring),
+            b: Animated::new(color.b * color.a).with_spring(spring),
             a: Animated::new(color.a).with_spring(spring),
         }
     }
 
     fn set_target(&mut self, color: Color) {
-        self.r.set_target(color.r);
-        self.g.set_target(color.g);
-        self.b.set_target(color.b);
+        self.r.set_target(color.r * color.a);
+        self.g.set_target(color.g * color.a);
+        self.b.set_target(color.b * color.a);
         self.a.set_target(color.a);
     }
 
     fn value(&self) -> Color {
-        Color::new(
-            self.r.value(),
-            self.g.value(),
-            self.b.value(),
-            self.a.value(),
-        )
+        // ばねの行き過ぎで alpha が [0, 1] を出ることがある。見た目は切り詰める。
+        let a = self.a.value().clamp(0.0, 1.0);
+        let c = Color::unpremultiply(self.r.value(), self.g.value(), self.b.value(), a);
+        Color::new(c.r.max(0.0), c.g.max(0.0), c.b.max(0.0), c.a)
     }
 
     fn tick(&mut self, dt: f32) {

@@ -199,8 +199,8 @@ impl TextMeasure for TextRendererMeasurer<'_> {
 /// ring renderer expects the inner radius separately, derived in
 /// `build.rs` from the element's layout box + arc thickness.
 pub fn ring_to_instance(d: &RingDraw) -> RingInstance {
-    // Colors stay un-premultiplied; the shader applies alpha during
-    // SDF coverage, matching the rect pipeline's convention.
+    // Colors stay un-premultiplied (straight); the shader multiplies rgb by
+    // alpha × SDF coverage, matching every other UI pipeline.
     RingInstance {
         center_radii: [d.center.x, d.center.y, d.outer_radius, d.inner_radius],
         arc_params: [d.start_angle, d.sweep_angle, d.value, 0.0],
@@ -245,8 +245,10 @@ fn polyline_clipped(clip: &sabitori_core::Rect, points: &[sabitori_core::Point])
 
 /// Convert a RectDraw to a RectInstance for GPU rendering.
 pub fn rect_to_instance(d: &RectDraw) -> RectInstance {
-    let mut fill = d.fill_color;
-    fill.a *= d.opacity;
+    // `d.opacity` はここで掛けない。`build.rs` が色ごとに (`apply_opacity`)
+    // 掛け終えている — ここで fill だけにもう一度掛けると、塗りは op² で、
+    // 枠と影は op で薄くなり、フェード中の箱の中身と縁がずれる。
+    let fill = d.fill_color;
 
     RectInstance {
         rect: [d.rect.origin.x, d.rect.origin.y, d.rect.size.width, d.rect.size.height],

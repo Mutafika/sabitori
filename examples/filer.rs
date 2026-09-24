@@ -173,10 +173,10 @@ fn file_icon(file: &FileEntry, primary: Color) -> Element {
             .flex_col()
             .children([
                 div().w(Px(10.0)).h(Px(4.0)).shrink(0.0)
-                    .bg(primary.with_alpha(0.6))
+                    .bg(primary)
                     .corner_radius(Corners { top_left: 2.0, top_right: 2.0, bottom_left: 0.0, bottom_right: 0.0 }),
                 div().w(Px(22.0)).h(Px(14.0)).shrink(0.0)
-                    .bg(primary.with_alpha(0.3))
+                    .bg(primary.with_alpha(0.85))
                     .corner_radius(Corners { top_left: 0.0, top_right: 2.0, bottom_left: 2.0, bottom_right: 2.0 }),
             ]);
     }
@@ -1451,7 +1451,7 @@ impl DeclarativeApp for FilerApp {
             let id = format!("sb-{i}");
             let is_active = *path == tab.path;
             let is_hovered = ctx.hovered.as_deref() == Some(id.as_str());
-            let row_bg = if is_active { primary.with_alpha(0.12) } else if is_hovered { c(t.hover_bg) } else { Color::TRANSPARENT };
+            let row_bg = if is_active { primary.with_alpha(0.9) } else if is_hovered { c(t.hover_bg) } else { Color::TRANSPARENT };
             let label_color = if is_active { text_pri } else if is_hovered { text_pri.with_alpha(0.9) } else { text_sec };
 
             sidebar_items.push(
@@ -1462,10 +1462,10 @@ impl DeclarativeApp for FilerApp {
                         // Folder icon for sidebar
                         div().w(Px(16.0)).h(Px(12.0)).shrink(0.0).flex_col().children([
                             div().w(Px(7.0)).h(Px(3.0)).shrink(0.0)
-                                .bg(if is_active { primary.with_alpha(0.7) } else { text_sec.with_alpha(0.3) })
+                                .bg(if is_active { text_pri } else { text_sec.with_alpha(0.75) })
                                 .corner_radius(Corners { top_left: 1.5, top_right: 1.5, bottom_left: 0.0, bottom_right: 0.0 }),
                             div().w(Px(16.0)).h(Px(9.0)).shrink(0.0)
-                                .bg(if is_active { primary.with_alpha(0.4) } else { text_sec.with_alpha(0.15) })
+                                .bg(if is_active { text_pri.with_alpha(0.85) } else { text_sec.with_alpha(0.55) })
                                 .corner_radius(Corners { top_left: 0.0, top_right: 1.5, bottom_left: 1.5, bottom_right: 1.5 }),
                         ]),
                         text(label).font_size(11.0).color(label_color),
@@ -1546,7 +1546,7 @@ impl DeclarativeApp for FilerApp {
                 let is_being_dragged = is_drag_active && is_selected;
 
                 let is_odd = fi % 2 == 1;
-                let stripe_bg = if is_odd { c(t.surface).with_alpha(0.15) } else { Color::TRANSPARENT };
+                let stripe_bg = if is_odd { c(t.surface) } else { Color::TRANSPARENT };
                 let row_bg = if is_drop_target { primary.with_alpha(0.3) }
                     else if is_being_dragged { c(t.select_bg).with_alpha(0.15) }
                     else if is_selected { c(t.select_bg) }

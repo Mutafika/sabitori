@@ -2102,21 +2102,15 @@ fn apply_opacity(color: Color, opacity: f32) -> Color {
     if opacity >= 1.0 {
         color
     } else {
-        // Premultiply RGB by opacity, not just alpha. The GPU
-        // pipeline composites with `PREMULTIPLIED_ALPHA_BLENDING`
-        // and the rect/ring/image shaders all output `color *
-        // sdf_coverage` — i.e. they treat the incoming color as
-        // un-premultiplied with respect to its OWN alpha but
-        // expect the caller to pre-bake any opacity-style fade.
-        // Without this, mid-fade frames composite as
-        // `bright_rgb + bg * (1 - small_alpha)` → overbright
-        // "white flash" while a popup fades in or out.
-        Color::new(
-            color.r * opacity,
-            color.g * opacity,
-            color.b * opacity,
-            color.a * opacity,
-        )
+        // 掛けるのは alpha だけ。CPU 側の色は**前乗算しない** (straight) と
+        // 決めてあり、rgb に alpha を掛けるのはシェーダの 1 か所だけ
+        // (rect / arc / line / glyph / image すべて)。
+        //
+        // 以前はシェーダが自分の alpha を rgb に掛けていなかったので、ここで
+        // rgb にも opacity を掛けて「白く光る」のを抑えていた。その結果
+        // `with_alpha(0.15)` の色は加算合成のように白飛びし、opacity は
+        // rect で a に二重 (op²)、text で rgb に二重に効いていた。
+        color.with_alpha(color.a * opacity)
     }
 }
 

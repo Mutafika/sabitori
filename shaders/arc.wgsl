@@ -179,8 +179,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Match the rect pipeline's convention: input colors are
     // un-premultiplied; multiply by SDF coverage to get the source
     // contribution, then premultiplied-alpha composite layer-by-layer.
-    let fill = in.fill_color * fill_a;
-    let track = in.track_color * track_a;
+    // 色は straight で届くので、rgb に自分の alpha を掛けてから被覆率を掛ける
+    // (rect.wgsl の `premul` と同じ規約)。
+    let fill = vec4<f32>(in.fill_color.rgb * in.fill_color.a, in.fill_color.a) * fill_a;
+    let track = vec4<f32>(in.track_color.rgb * in.track_color.a, in.track_color.a) * track_a;
     // Fill paints over track wherever both regions overlap — should
     // be near-zero overlap given the angles are disjoint, but the
     // AA halo can produce a 1-pixel seam without explicit ordering.

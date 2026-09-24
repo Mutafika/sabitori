@@ -173,6 +173,13 @@ fn clip_discard(screen_pos: vec2<f32>, clip_rect: vec4<f32>) -> bool {
         || screen_pos.y < cmin.y || screen_pos.y > cmax.y;
 }
 
+// 色は straight (前乗算していない) で届く。合成は PREMULTIPLIED_ALPHA_BLENDING
+// なので、rgb に自分の alpha を掛けるのはここ。掛け忘れると半透明の色が
+// `rgb + dst * (1 - a)` で合成され、加算のように白く光る。
+fn premul(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let screen_pos = in.position.xy / globals.scale_factor;
@@ -188,7 +195,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shadow_half = in.half_size + in.shadow_spread;
         let shadow_dist = sdf_rounded_rect(shadow_pos, shadow_half, in.corner_radii);
         let alpha = shadow_alpha(shadow_dist, in.shadow_blur);
-        shadow = in.shadow_color * alpha;
+        shadow = premul(in.shadow_color) * alpha;
     }
 
     // -- Fill color: solid or gradient --
@@ -200,9 +207,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let dir = vec2<f32>(cos(angle), sin(angle));
         let centered = uv - 0.5;
         let t = clamp(dot(centered, dir) + 0.5, 0.0, 1.0);
-        base_color = mix(in.fill_color, in.gradient_end_color, t);
+        // 前乗算してから混ぜる。straight のまま混ぜると、透明な端へ向かう
+        // グラデーションが途中で黒ずむ。
+        base_color = mix(premul(in.fill_color), premul(in.gradient_end_color), t);
     } else {
-        base_color = in.fill_color;
+        base_color = premul(in.fill_color);
     }
 
     // -- Main Rectangle --
@@ -214,7 +223,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.border_width > 0.0 {
         let inner_dist = dist + in.border_width;
         let border_mask = fill_alpha * (1.0 - (1.0 - smoothstep(-aa_radius, aa_radius, inner_dist)));
-        fill = mix(fill, in.border_color * fill_alpha, border_mask);
+        fill = mix(fill, premul(in.border_color) * fill_alpha, border_mask);
     }
 
     // Composite

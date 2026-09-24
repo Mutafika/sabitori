@@ -116,5 +116,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Premultiplied-alpha output: input color is un-premultiplied, so
     // multiply by SDF coverage (matches the rect/arc pipelines, which
     // use PREMULTIPLIED_ALPHA_BLENDING).
-    return in.color * alpha;
+    // 色は straight で届く (rect.wgsl の `premul` と同じ規約)。
+    let a = in.color.a * alpha;
+    return vec4<f32>(in.color.rgb * a, a);
 }

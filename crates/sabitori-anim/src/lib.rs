@@ -65,12 +65,16 @@ impl Lerp for [f32; 4] {
 }
 
 impl Lerp for sabitori_core::Color {
+    // 前乗算した空間で混ぜる (`Color::lerp` を参照)。ばねの行き過ぎで t が
+    // [0, 1] を出ても混ぜられるよう、clamp する `Color::lerp` ではなく自前で書く。
     fn lerp(self, target: Self, t: f32) -> Self {
-        sabitori_core::Color::new(
-            self.r + (target.r - self.r) * t,
-            self.g + (target.g - self.g) * t,
-            self.b + (target.b - self.b) * t,
-            self.a + (target.a - self.a) * t,
+        let a = self.a + (target.a - self.a) * t;
+        let mix = |x: f32, y: f32| x * self.a + (y * target.a - x * self.a) * t;
+        sabitori_core::Color::unpremultiply(
+            mix(self.r, target.r),
+            mix(self.g, target.g),
+            mix(self.b, target.b),
+            a,
         )
     }
     fn distance(self, other: Self) -> f32 {

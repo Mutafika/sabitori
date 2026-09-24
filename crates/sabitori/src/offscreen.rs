@@ -510,4 +510,68 @@ mod tests {
         let png = out.to_png().expect("符号化できない");
         assert_eq!(&png[1..4], b"PNG", "PNG の識別子が無い");
     }
+
+    // -----------------------------------------------------------------
+    // 半透明の合成。色は straight で渡し、rgb に alpha を掛けるのは
+    // シェーダの 1 か所だけ。linear 0.5 は sRGB の 8bit で 188。
+    // -----------------------------------------------------------------
+
+    fn is_half(px: [u8; 4]) -> bool {
+        px[..3].iter().all(|&c| (180..=196).contains(&c))
+    }
+
+    /// 回帰: 白 α0.5 を黒の上に置くと半分の明るさ。シェーダが自分の alpha を
+    /// rgb に掛けていなかった頃は `1 + 0 × 0.5` で**真っ白** (255) になった。
+    #[test]
+    fn a_half_transparent_color_blends_to_half() {
+        gpu_or_skip!();
+        let view = div()
+            .w(Px(64.0))
+            .h(Px(64.0))
+            .bg(Color::BLACK)
+            .child(div().w(Px(64.0)).h(Px(64.0)).bg(Color::WHITE.with_alpha(0.5)));
+        let out = render(&view, Sheet::px(64.0, 64.0)).unwrap();
+        let px = out.pixel(32, 32).unwrap();
+        assert!(is_half(px), "白 α0.5 on 黒が半分になっていない: {px:?}");
+    }
+
+    /// 回帰: `.opacity(0.5)` の黒い箱を白の上に置くと半分の明るさ。rgb と a の
+    /// 両方に掛けたうえで a にもう一度掛けていた頃は a が 0.25 になり、白が
+    /// 0.75 残って (225) 薄すぎた。
+    #[test]
+    fn opacity_fades_a_box_by_exactly_that_much() {
+        gpu_or_skip!();
+        let view = div()
+            .w(Px(64.0))
+            .h(Px(64.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(64.0)).h(Px(64.0)).bg(Color::BLACK).opacity(0.5));
+        let out = render(&view, Sheet::px(64.0, 64.0)).unwrap();
+        let px = out.pixel(32, 32).unwrap();
+        assert!(is_half(px), "opacity 0.5 の黒 on 白が半分になっていない: {px:?}");
+    }
+
+    /// 半透明の色に opacity を重ねると、alpha が掛け算で効く (0.5 × 0.5)。
+    #[test]
+    fn opacity_multiplies_into_a_translucent_color() {
+        gpu_or_skip!();
+        let view = div()
+            .w(Px(64.0))
+            .h(Px(64.0))
+            .bg(Color::BLACK)
+            .child(
+                div()
+                    .w(Px(64.0))
+                    .h(Px(64.0))
+                    .bg(Color::WHITE.with_alpha(0.5))
+                    .opacity(0.5),
+            );
+        let out = render(&view, Sheet::px(64.0, 64.0)).unwrap();
+        let px = out.pixel(32, 32).unwrap();
+        // linear 0.25 → sRGB 137
+        assert!(
+            px[..3].iter().all(|&c| (129..=145).contains(&c)),
+            "0.5 × 0.5 になっていない: {px:?}"
+        );
+    }
 }

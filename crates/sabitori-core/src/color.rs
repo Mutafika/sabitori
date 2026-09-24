@@ -130,14 +130,24 @@ impl Color {
     }
 
     /// Linearly interpolate between two colors.
+    ///
+    /// 前乗算した空間で混ぜる (CSS と同じ)。straight のまま混ぜると、
+    /// `TRANSPARENT` (= 透明な**黒**) から色へのフェードが途中で黒ずむ —
+    /// 透明の側の rgb は見えないのに、混ぜた結果には効いてしまう。
+    /// alpha が同じ 2 色なら straight に混ぜた結果と一致する。
     pub fn lerp(self, other: Self, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
-        Self {
-            r: self.r + (other.r - self.r) * t,
-            g: self.g + (other.g - self.g) * t,
-            b: self.b + (other.b - self.b) * t,
-            a: self.a + (other.a - self.a) * t,
+        let a = self.a + (other.a - self.a) * t;
+        let mix = |x: f32, y: f32| x * self.a + (y * other.a - x * self.a) * t;
+        Self::unpremultiply(mix(self.r, other.r), mix(self.g, other.g), mix(self.b, other.b), a)
+    }
+
+    /// 前乗算された成分から straight の色に戻す。alpha が 0 なら黒 (見えない)。
+    pub fn unpremultiply(r: f32, g: f32, b: f32, a: f32) -> Self {
+        if a <= 1e-6 {
+            return Self::new(0.0, 0.0, 0.0, 0.0);
         }
+        Self::new(r / a, g / a, b / a, a)
     }
 
     pub fn lighten(self, amount: f32) -> Self {
@@ -291,6 +301,26 @@ fn linear_to_srgb(c: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 透明 (= 透明な黒) から色へ混ぜても、途中で黒ずまない。straight のまま
+    /// 混ぜると t=0.5 で rgb が半分 (暗い色の半透明) になっていた。
+    #[test]
+    fn lerp_from_transparent_keeps_the_hue() {
+        let c = Color::new(0.8, 0.6, 0.4, 1.0);
+        let mid = Color::TRANSPARENT.lerp(c, 0.5);
+        assert!((mid.a - 0.5).abs() < 1e-6);
+        assert!((mid.r - 0.8).abs() < 1e-5 && (mid.g - 0.6).abs() < 1e-5, "{mid:?}");
+    }
+
+    /// alpha が同じなら、straight に混ぜた結果と一致する。
+    #[test]
+    fn lerp_with_equal_alpha_is_plain_linear() {
+        let a = Color::new(0.0, 0.2, 1.0, 0.7);
+        let b = Color::new(1.0, 0.4, 0.0, 0.7);
+        let m = a.lerp(b, 0.25);
+        assert!((m.r - 0.25).abs() < 1e-5 && (m.g - 0.25).abs() < 1e-5 && (m.b - 0.75).abs() < 1e-5);
+        assert!((m.a - 0.7).abs() < 1e-6);
+    }
 
     #[test]
     fn srgb8_round_trip() {
