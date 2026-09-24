@@ -1231,6 +1231,16 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
+                    let size = sabitori_window::surface_size(w, size);
+                    r.resize(size.width, size.height, w.scale_factor());
+                    w.request_redraw();
+                }
+            }
+            // web では DPR が変わっても (ズーム / 画面の移動) `Resized` が来ないことが
+            // ある (#89)。scale を張り直さないとレイアウト幅がずれたままになる。
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
+                    let size = sabitori_window::surface_size(w, w.inner_size());
                     r.resize(size.width, size.height, w.scale_factor());
                     w.request_redraw();
                 }
@@ -4541,8 +4551,9 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                             return;
                         }
                     };
-                    // Fix initial 1x1 canvas size
-                    let size = window.inner_size();
+                    // Fix initial 1x1 canvas size. 大きさは winit の値ではなく
+                    // CSS × DPR から取る (#89)。
+                    let size = sabitori_window::surface_size(&window, window.inner_size());
                     if size.width > 1 && size.height > 1 {
                         gpu.resize(size.width, size.height, window.scale_factor());
                     }

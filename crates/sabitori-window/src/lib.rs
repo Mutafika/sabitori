@@ -20,6 +20,9 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 pub mod background;
 pub mod keymap;
+pub mod surface_size;
+
+pub use surface_size::surface_size;
 
 /// Trait for building interactive UIs with Sabitori.
 pub trait SabitoriApp {
@@ -157,6 +160,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                 if let (Some(window), Some(renderer)) =
                     (self.window.as_ref(), self.renderer.as_mut())
                 {
+                    let size = surface_size(window, size);
                     renderer.resize(size.width, size.height, window.scale_factor());
                     self.needs_rebuild = true;
                 }
@@ -165,7 +169,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                 if let (Some(window), Some(renderer)) =
                     (self.window.as_ref(), self.renderer.as_mut())
                 {
-                    let size = window.inner_size();
+                    let size = surface_size(window, window.inner_size());
                     renderer.resize(size.width, size.height, window.scale_factor());
                     self.needs_rebuild = true;
                 }
@@ -739,7 +743,13 @@ pub fn run<A: SabitoriApp + 'static>(app: A) {
                 self.renderer_init_started = true;
                 let inner = Rc::clone(&self.inner);
                 wasm_bindgen_futures::spawn_local(async move {
-                    let renderer = GpuRenderer::new_async(window).await;
+                    let mut renderer = GpuRenderer::new_async(window.clone()).await;
+                    // 生成時の `inner_size` は canvas が組まれる前の 0 のことがある。
+                    // web の大きさは winit の値ではなく CSS × DPR から取る (#89)。
+                    let size = surface_size(&window, window.inner_size());
+                    if size.width > 1 && size.height > 1 {
+                        renderer.resize(size.width, size.height, window.scale_factor());
+                    }
                     let mut state = inner.borrow_mut();
                     state.set_renderer(renderer);
                 });

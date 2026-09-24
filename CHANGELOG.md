@@ -15,6 +15,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **web で devicePixelRatio 2 の画面 (Retina / iPad) だとレイアウトが半分の幅で
+  組まれていた** ([#89](https://github.com/Mutafika/sabitori/issues/89))。winit が
+  canvas の大きさを取る `devicePixelContentBoxSize` が CSS px のまま返る環境
+  (Chrome のデバイスエミュレーションなど) で、`scale_factor` だけが 2 になり
+  `1024 / 2 = 512` の幅で組まれていた。canvas の backing store も CSS サイズのまま
+  だったのでぼやけていた。web では surface の大きさを **CSS の大きさ ×
+  `devicePixelRatio`** から自分で出す (`sabitori_window::surface_size`)。
+  ズームなどで DPR だけが変わったときも張り直す。
+
 ## [0.17.0] - 2026-09-24
 
 ### Added

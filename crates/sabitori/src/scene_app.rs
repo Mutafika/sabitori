@@ -515,6 +515,16 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
 
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
+                    let size = sabitori_window::surface_size(w, size);
+                    r.resize(size.width, size.height, w.scale_factor());
+                    self.app.on_resize(&r.gpu_context());
+                    w.request_redraw();
+                }
+            }
+            // web では DPR が変わっても `Resized` が来ないことがある (#89)。
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
+                    let size = sabitori_window::surface_size(w, w.inner_size());
                     r.resize(size.width, size.height, w.scale_factor());
                     self.app.on_resize(&r.gpu_context());
                     w.request_redraw();
@@ -1677,7 +1687,8 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
                 let inner = Rc::clone(&self.inner);
                 wasm_bindgen_futures::spawn_local(async move {
                     let mut gpu = GpuRenderer::new_async(window.clone()).await;
-                    let size = window.inner_size();
+                    // 大きさは winit の値ではなく CSS × DPR から取る (#89)。
+                    let size = sabitori_window::surface_size(&window, window.inner_size());
                     if size.width > 1 && size.height > 1 {
                         gpu.resize(size.width, size.height, window.scale_factor());
                     }
