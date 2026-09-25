@@ -1001,3 +1001,32 @@ fn headers_and_rows_stay_clickable_after_scrolling_sideways() {
     h.click_at(cell.origin.x + 5.0, cell.origin.y + 5.0);
     assert_eq!(h.app().state.selected, Some(0), "流した後の行が押せない");
 }
+
+// ---------------------------------------------------------------------------
+// safe_area (#100)
+// ---------------------------------------------------------------------------
+
+/// view が見たセーフエリアを控えるだけのアプリ。
+struct SafeAreaProbe {
+    seen: std::cell::Cell<sabitori::Edges<f32>>,
+}
+
+impl sabitori::DeclarativeApp for SafeAreaProbe {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        self.seen.set(ctx.safe_area);
+        div().w_full().h_full()
+    }
+}
+
+/// `Harness::set_safe_area` の値が `view` の `ctx.safe_area` まで届く。ヘッドレスには窓が
+/// 無いので既定は 0。ここが外れると、アプリ側の「機種ごとに余白を空ける」テストが
+/// 全部 0 で素通りする。
+#[test]
+fn set_safe_area_reaches_the_view() {
+    let mut h = Harness::new(SafeAreaProbe { seen: std::cell::Cell::new(Default::default()) }, 440.0, 956.0);
+    h.frame();
+    assert_eq!(h.app().seen.get(), sabitori::Edges::default(), "既定は 0");
+    h.set_safe_area(62.0, 0.0, 34.0, 0.0);
+    h.frame();
+    assert_eq!(h.app().seen.get(), sabitori::Edges::new(62.0, 0.0, 34.0, 0.0));
+}

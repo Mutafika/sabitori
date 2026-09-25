@@ -617,6 +617,8 @@ pub trait DeclarativeApp: 'static {
     fn position(&self) -> Option<(f32, f32)> { None }
 
     /// Minimum window size (logical pixels). Default 400x300.
+    ///
+    /// **iOS では使わない** — [`Self::size`] と同じく、窓は常に画面全体。
     fn min_size(&self) -> (f32, f32) { (400.0, 300.0) }
 
     /// Whether the window background should be transparent.

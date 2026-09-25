@@ -407,11 +407,17 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
-        let (w, h) = self.app.size();
-        let mut attrs = WindowAttributes::default()
-            .with_title(self.app.title())
-            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
-            .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 300.0));
+        let mut attrs = WindowAttributes::default().with_title(self.app.title());
+        // iOS は大きさを渡さない（declarative の `resumed` と同じ・#100）。winit は iOS で
+        // `inner_size` をそのまま画面の枠に使うので、渡すと機種に関係なく固定される。
+        // 窓 = 画面全体にして、システム UI の下は `ctx.safe_area` で避ける。
+        #[cfg(not(target_os = "ios"))]
+        {
+            let (w, h) = self.app.size();
+            attrs = attrs
+                .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+                .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 300.0));
+        }
         if self.app.transparent() {
             attrs = attrs.with_transparent(true);
         }
