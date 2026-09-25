@@ -41,6 +41,24 @@
   アプリはナビの中身 (`NavGroup` / `NavItem`) と選択中の項目、`on_select` を渡す。
   引き出しは選ばれている項目が変わったら閉じる (本文の中のリンクで移ったときも)。
   幕を押しても、窓を広げても閉じる。ナビの側は `ctx.safe_area` の内側に置く。
+- **`Element::at` / `at_least` / `at_most` — 窓の幅の区分ごとの上書き**
+  ([#97](https://github.com/Mutafika/sabitori/issues/97))。幅で変わるところを、
+  `match ctx.size_class()` で木を 2 通り組まずに、**その要素の上に**書ける。
+  中身はふつうの builder なので、書けるものに制限は無い:
+
+  ```rust
+  // grid-cols-1 md:grid-cols-2
+  div()
+      .grid_cols([Track::fr(1.0)])
+      .at_least(SizeClass::Medium, |e| e.grid_cols([Track::fr(1.0), Track::fr(1.0)]))
+  ```
+
+  区分は `SizeClass` (窓の幅)。窓を縮めたり広げたりすると、その場で切り替わる。
+  ランタイムが `view()` / `overlay_view()` / `view_for()` の直後に畳むので、
+  `ctx` を部品の奥まで渡さなくてよい。`build_tree` を直接使うときは
+  `element::apply_size_rules` を先に呼ぶ。`SizeClass` は大小を比べられる
+  (`Compact < Medium < Expanded`)。親の幅で切り替える版 (container query) は
+  まだ無い。
 
 ## [0.21.0] - 2026-09-25
 

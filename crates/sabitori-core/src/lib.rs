@@ -133,7 +133,7 @@ pub struct ImageCtx {
 /// call sites. The buckets follow the common phone / tablet / desktop split;
 /// the exact cut points live in [`SizeClass::COMPACT_MAX`] and
 /// [`SizeClass::MEDIUM_MAX`] so an app can reason about them explicitly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SizeClass {
     /// Phone portrait / narrow window — show one pane at a time. `width < 640`.
     Compact,

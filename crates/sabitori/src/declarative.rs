@@ -2875,6 +2875,8 @@ impl<A: DeclarativeApp> AppState<A> {
         // `view` 以下で差し替わったコードは次のフレームから効き、`self` に載っている
         // 状態はそのまま残る。
         let mut root = crate::hot_reload::call(|| self.app.view(&ctx));
+        // 幅の区分ごとの上書き (`.at(..)`) を先に畳む。以下はすべて畳んだ後の木を見る (#97)。
+        sabitori_core::element::apply_size_rules(&mut root, w);
 
         // Apply presence (mount/unmount) animations
         self.presence_animator.update_presence(&root);
@@ -2933,7 +2935,10 @@ impl<A: DeclarativeApp> AppState<A> {
 
         // Build overlay tree separately (if any)
         // Merge tooltip and drag ghost into the overlay if active
-        let app_overlay = crate::hot_reload::call(|| self.app.overlay_view(&ctx));
+        let app_overlay = crate::hot_reload::call(|| self.app.overlay_view(&ctx)).map(|mut el| {
+            sabitori_core::element::apply_size_rules(&mut el, w);
+            el
+        });
 
         // `view()` / `overlay_view()` の中でウィジェットが登録したものを引き取る。
         // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
@@ -4514,7 +4519,9 @@ impl<A: DeclarativeApp> AppState<A> {
                 managed: Default::default(),
             actions: Default::default(),
             };
-            let root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
+            let mut root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
+            // 区分はその窓の幅で決める (#97)。
+            sabitori_core::element::apply_size_rules(&mut root, w);
             let built = build_tree_measured(&root, w, h, &measurer);
             (root, built)
         };

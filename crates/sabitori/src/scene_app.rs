@@ -1268,6 +1268,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 };
 
                 let mut root = self.app.view(&ctx);
+                // 幅の区分ごとの上書き (`.at(..)`) を先に畳む (#97)。
+                sabitori_core::element::apply_size_rules(&mut root, w);
 
                 // Presence (mount/unmount) animations, then hover/active spring
                 // transitions + instant hover styles — same order and calls as
@@ -1323,7 +1325,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // popup + drag ghost, merged with any internal `.overlay()`
                 // subtrees already captured in `build_result.overlay_list`
                 // (which the old run_scene path silently dropped).
-                let app_overlay = self.app.overlay_view(&ctx);
+                let app_overlay = self.app.overlay_view(&ctx).map(|mut el| {
+                    sabitori_core::element::apply_size_rules(&mut el, w);
+                    el
+                });
                 let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
                     sabitori_core::tooltip_popup(
                         &text, tx, ty, w, h,

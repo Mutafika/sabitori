@@ -1124,6 +1124,55 @@ pub struct Element {
     /// Button labels are non-selectable regardless of this flag: a control
     /// label is not content.
     pub no_select: bool,
+    /// 窓の幅の区分ごとの上書き ([`Element::at`])。ランタイムが `view()` の直後に
+    /// [`apply_size_rules`] で畳む。
+    pub size_rules: Vec<SizeRule>,
+}
+
+/// 窓の幅の区分ごとの上書き 1 つ ([`Element::at`] / [`Element::at_least`] /
+/// [`Element::at_most`])。
+#[derive(Clone)]
+pub struct SizeRule {
+    /// 当てる区分の下限 (含む)。
+    pub from: crate::SizeClass,
+    /// 当てる区分の上限 (含む)。
+    pub to: crate::SizeClass,
+    /// 要素を受け取って上書きした要素を返す。ふつうの builder をそのまま書ける。
+    pub apply: std::rc::Rc<dyn Fn(Element) -> Element>,
+}
+
+impl std::fmt::Debug for SizeRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SizeRule({:?}..={:?})", self.from, self.to)
+    }
+}
+
+/// 木ぜんたいの [`Element::at`] などを、窓の幅 `width` で畳む
+/// ([#97](https://github.com/Mutafika/sabitori/issues/97))。
+///
+/// ランタイムは `view()` / `overlay_view()` の直後に呼ぶので、アプリが呼ぶ必要は
+/// 無い。`build_tree` を直接使うときだけ、その前に呼ぶ。
+///
+/// 書いた順に当てる (後に書いた方が勝つ)。上書きの中で付けた `.at(..)` は
+/// 当てない (畳み終わった木に規則が残らないように)。子は親の上書きの**後**に
+/// 畳むので、上書きで差し替えた子の規則も効く。
+pub fn apply_size_rules(element: &mut Element, width: f32) {
+    let class = crate::SizeClass::from_width(width);
+    fold_size_rules(element, class);
+}
+
+fn fold_size_rules(element: &mut Element, class: crate::SizeClass) {
+    if !element.size_rules.is_empty() {
+        let rules = std::mem::take(&mut element.size_rules);
+        for rule in rules.iter().filter(|r| r.from <= class && class <= r.to) {
+            let el = std::mem::replace(element, div());
+            *element = (rule.apply)(el);
+            element.size_rules.clear();
+        }
+    }
+    for child in &mut element.children {
+        fold_size_rules(child, class);
+    }
 }
 
 /// Mouse-cursor preference for an [`Element`]. Mirrors the platform
@@ -1414,6 +1463,7 @@ pub fn div() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -1509,6 +1559,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -1547,6 +1598,7 @@ pub fn polyline() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -1591,6 +1643,7 @@ pub fn arc() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -1619,6 +1672,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -1680,6 +1734,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        size_rules: Vec::new(),
     }
 }
 
@@ -2181,6 +2236,64 @@ impl Element {
     pub fn grid_cols(mut self, tracks: impl IntoIterator<Item = Track>) -> Self {
         self.style.display = Display::Grid;
         self.style.grid_template_columns = tracks.into_iter().collect();
+        self
+    }
+
+    /// **窓の幅がこの区分のときだけ**上書きする
+    /// ([#97](https://github.com/Mutafika/sabitori/issues/97))。
+    ///
+    /// 幅で変わるところを、分岐ではなく**その要素の上に**書ける。`ctx` を部品の
+    /// 奥まで渡して `match ctx.size_class()` で木を 2 通り組まなくてよい。
+    /// 中身はふつうの builder なので、書けるものに制限は無い。
+    ///
+    /// ```ignore
+    /// div()
+    ///     .grid_cols([Track::fr(1.0), Track::fr(1.0)])
+    ///     .at(SizeClass::Compact, |e| e.grid_cols([Track::fr(1.0)]))
+    ///     .gap(16.0)
+    ///     .at(SizeClass::Compact, |e| e.gap(8.0))
+    /// ```
+    ///
+    /// 区分は窓の幅から決まる [`SizeClass`](crate::SizeClass) (< 640 / < 1040 / それ以上)。
+    /// 窓を縮めたり広げたりすると、その場で切り替わる。書いた順に当てるので、
+    /// 後に書いた方が勝つ。Tailwind の `md:` のように「この幅**以上**」なら
+    /// [`Element::at_least`]、「以下」なら [`Element::at_most`]。
+    pub fn at(self, class: crate::SizeClass, apply: impl Fn(Element) -> Element + 'static) -> Self {
+        self.size_rule(class, class, apply)
+    }
+
+    /// 窓の幅が `class` **以上**のときだけ上書きする。Tailwind の `md:` にあたる:
+    ///
+    /// ```ignore
+    /// // grid-cols-1 md:grid-cols-2
+    /// div()
+    ///     .grid_cols([Track::fr(1.0)])
+    ///     .at_least(SizeClass::Medium, |e| e.grid_cols([Track::fr(1.0), Track::fr(1.0)]))
+    /// ```
+    pub fn at_least(
+        self,
+        class: crate::SizeClass,
+        apply: impl Fn(Element) -> Element + 'static,
+    ) -> Self {
+        self.size_rule(class, crate::SizeClass::Expanded, apply)
+    }
+
+    /// 窓の幅が `class` **以下**のときだけ上書きする。
+    pub fn at_most(
+        self,
+        class: crate::SizeClass,
+        apply: impl Fn(Element) -> Element + 'static,
+    ) -> Self {
+        self.size_rule(crate::SizeClass::Compact, class, apply)
+    }
+
+    fn size_rule(
+        mut self,
+        from: crate::SizeClass,
+        to: crate::SizeClass,
+        apply: impl Fn(Element) -> Element + 'static,
+    ) -> Self {
+        self.size_rules.push(SizeRule { from, to, apply: std::rc::Rc::new(apply) });
         self
     }
 
@@ -3252,5 +3365,91 @@ impl StateStyle {
     pub fn font_size(mut self, size: f32) -> Self {
         self.font_size = Some(size);
         self
+    }
+}
+
+/// 幅の区分ごとの上書き ([#97](https://github.com/Mutafika/sabitori/issues/97))。
+#[cfg(test)]
+mod size_rule_tests {
+    use super::*;
+    use crate::SizeClass;
+
+    fn form() -> Element {
+        div()
+            .grid_cols([Track::fr(1.0), Track::fr(1.0)])
+            .gap(16.0)
+            .at(SizeClass::Compact, |e| e.grid_cols([Track::fr(1.0)]))
+            .at(SizeClass::Compact, |e| e.gap(8.0))
+    }
+
+    fn folded(mut el: Element, width: f32) -> Element {
+        apply_size_rules(&mut el, width);
+        el
+    }
+
+    #[test]
+    fn only_the_matching_class_is_applied() {
+        let wide = folded(form(), 1200.0);
+        assert_eq!(wide.style.grid_template_columns.len(), 2);
+        assert_eq!(wide.style.gap, 16.0);
+        let narrow = folded(form(), 500.0);
+        assert_eq!(narrow.style.grid_template_columns.len(), 1);
+        assert_eq!(narrow.style.gap, 8.0);
+    }
+
+    #[test]
+    fn the_boundaries_follow_size_class() {
+        let cols = |w: f32| folded(form(), w).style.grid_template_columns.len();
+        assert_eq!(cols(639.0), 1);
+        assert_eq!(cols(640.0), 2);
+    }
+
+    /// Tailwind の `md:` = その幅**以上**。
+    #[test]
+    fn at_least_and_at_most_cover_a_range() {
+        let el = || {
+            div()
+                .p_px(8.0)
+                .at_least(SizeClass::Medium, |e| e.p_px(16.0))
+                .at_most(SizeClass::Medium, |e| e.flex_col())
+        };
+        let s = |w: f32| {
+            let e = folded(el(), w);
+            (e.style.padding.left, e.style.flex_direction)
+        };
+        assert_eq!(s(500.0), (Dimension::Px(8.0), FlexDirection::Column));
+        assert_eq!(s(800.0), (Dimension::Px(16.0), FlexDirection::Column));
+        assert_eq!(s(1200.0).0, Dimension::Px(16.0));
+        assert_ne!(s(1200.0).1, FlexDirection::Column);
+    }
+
+    /// 後に書いた方が勝つ。
+    #[test]
+    fn later_rules_win() {
+        let el = div()
+            .at(SizeClass::Compact, |e| e.gap(4.0))
+            .at_most(SizeClass::Medium, |e| e.gap(6.0));
+        assert_eq!(folded(el, 500.0).style.gap, 6.0);
+    }
+
+    /// 子の規則も畳む。親の上書きで足した子の規則も効く。
+    #[test]
+    fn children_are_folded_after_their_parent() {
+        let el = div()
+            .child(div().id("a").at(SizeClass::Compact, |e| e.gap(3.0)))
+            .at(SizeClass::Compact, |e| {
+                e.child(div().id("b").at(SizeClass::Compact, |e| e.gap(5.0)))
+            });
+        let f = folded(el, 500.0);
+        assert_eq!(f.children[0].style.gap, 3.0);
+        assert_eq!(f.children[1].style.gap, 5.0);
+    }
+
+    /// 畳んだ木には規則が残らない (次のフレームは `view()` が組み直す)。
+    #[test]
+    fn folded_trees_carry_no_rules() {
+        let f = folded(form().child(form()), 500.0);
+        assert!(f.size_rules.is_empty());
+        assert!(f.children[0].size_rules.is_empty());
     }
 }
