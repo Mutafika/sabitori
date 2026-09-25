@@ -798,12 +798,22 @@ fn collect_overflows<'a>(
         || element.overlay
         || style.allow_overflow;
     if let (Some(pb), false) = (parent_box, floats) {
-        let over = |v: f32| if v > OVERFLOW_EPSILON { v } else { 0.0 };
+        let over = |v: f32, slack: f32| if v > OVERFLOW_EPSILON + slack { v } else { 0.0 };
+        // 文字の箱は行の高さ (字の大きさ × 行の高さの倍率) で、上下に行間の半分ずつ
+        // 墨の無い余白を持つ。小さな四角に 1 字置いたアイコンやバッジでは、この
+        // 余白だけが箱の外に出る — 見た目は崩れていないので、縦はそこまで数えない。
+        let leading = match element.kind {
+            ElementKind::Text { .. } => {
+                let line = style.typography().line_height.unwrap_or(1.4);
+                ((line - 1.0) * 0.5).max(0.0) * style.font_size
+            }
+            _ => 0.0,
+        };
         let by = crate::Edges::new(
-            over(pb.origin.y - rect.origin.y),
-            over(rect.origin.x + rect.size.width - (pb.origin.x + pb.size.width)),
-            over(rect.origin.y + rect.size.height - (pb.origin.y + pb.size.height)),
-            over(pb.origin.x - rect.origin.x),
+            over(pb.origin.y - rect.origin.y, leading),
+            over(rect.origin.x + rect.size.width - (pb.origin.x + pb.size.width), 0.0),
+            over(rect.origin.y + rect.size.height - (pb.origin.y + pb.size.height), leading),
+            over(pb.origin.x - rect.origin.x, 0.0),
         );
         if by != crate::Edges::default() {
             out.push(LayoutOverflow {
@@ -4923,6 +4933,26 @@ mod overflow_tests {
         ]);
         let b = build_tree(&root, 400.0, 300.0);
         assert!(b.overflows.is_empty(), "{:?}", b.overflows);
+    }
+
+    /// 小さな四角に 1 字置いたアイコン: 文字の箱 (行の高さ) は上下に行間の半分ずつ
+    /// 出るが、墨は収まっている。縦はそこまで数えない。横は数える。
+    #[test]
+    fn a_glyph_in_a_small_square_is_not_reported_for_its_leading() {
+        let icon = |w: f32| {
+            div().w(Px(100.0)).h(Px(100.0)).child(
+                div().w(Px(w)).h(Px(14.0)).items_center().justify_center().child(
+                    text("✓").font_size(14.0).shrink(0.0),
+                ),
+            )
+        };
+        // 字の箱は高さ 14 の四角より上下に出るが、行間の半分 (2.8px) 以内。
+        // (測り手なしの概算は 1 字でも幅 24 なので、横は余裕を持たせる。)
+        assert!(build_tree(&icon(30.0), 400.0, 300.0).overflows.is_empty());
+        // 行間を越えて出たら数える (横に切れている)。
+        let b = build_tree(&icon(4.0), 400.0, 300.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        assert!(b.overflows[0].by.right > 0.0 && b.overflows[0].by.top == 0.0);
     }
 
     /// 丸めの誤差 (0.5px 以下) は数えない。
