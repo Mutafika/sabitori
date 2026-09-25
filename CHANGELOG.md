@@ -15,6 +15,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- **親からはみ出した子を知らせる**
+  ([#95](https://github.com/Mutafika/sabitori/issues/95))。窓を縮めたときの崩れ
+  (横一列の子が縮まずに重なる、列が切れる) は、描画もレイアウトも正常に終わるので
+  何も出なかった。レイアウトの後、子の箱が親の箱 (padding を含む) を越えた所を拾う。
+  - **`Harness::overflows()`** — 直近のフレームのはみ出し。幅を変えて空であることを
+    見れば、「この幅で崩れない」を全画面の回帰テストにできる。文字のはみ出しまで
+    見るなら `Harness::with_real_text` と組む。
+  - **debug ビルドの画面**に目印を描く (はみ出した部分の網掛け + 親の辺の黄と黒の縞)。
+    同じ所は 1 回だけ `log::warn!` に出す。release では何もしない。
+    `SABITORI_OVERFLOW=0` で消せる。
+  - **`BuildResult::overflows`** / **`LayoutOverflow`** — id・根からの経路
+    (`#main > #filters > #status` のように)・箱・各辺ではみ出した px。
+  - **`Element::allow_overflow()`** — わざとはみ出させる要素を黙らせる。
+    `.scroll(..)` / `.overflow_hidden()` の中身と、`.absolute()` / `anchor_to` /
+    `.overlay()` で浮かせた要素は、付けなくても対象外。
+
 ## [0.21.0] - 2026-09-25
 
 ### Changed

@@ -110,6 +110,8 @@ struct SceneAppState<A: SceneApp> {
     /// declarative の同名の欄と同じ。
     relayout_pending: bool,
     relayout_streak: u8,
+    /// 親からはみ出した子を debug ビルドで知らせる (#95)。
+    overflow_debug: crate::overflow_debug::OverflowDebug,
     /// `SABITORI_SCREENSHOT` で 1 枚撮って終わる (#69)。native だけ。
     #[cfg(not(target_arch = "wasm32"))]
     shooter: crate::screenshot::Shooter,
@@ -1357,6 +1359,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // Layered path when there's either an external overlay or an
                 // internal `.overlay()` command stream — otherwise the flat
                 // single-pass path (cheaper, no extra encoder).
+                // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
+                self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
                 let has_external = overlay_build.is_some();
                 let has_internal = !build_result.overlay_list.commands.is_empty();
                 let has_overlay = has_external || has_internal;
@@ -1589,6 +1593,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         occluded: false,
         relayout_pending: false,
         relayout_streak: 0,
+        overflow_debug: crate::overflow_debug::OverflowDebug::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
         shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -1651,6 +1656,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         occluded: false,
         relayout_pending: false,
         relayout_streak: 0,
+        overflow_debug: crate::overflow_debug::OverflowDebug::from_env(),
         #[cfg(not(target_arch = "wasm32"))]
         shooter: crate::screenshot::Shooter::from_env(),
         #[cfg(not(target_arch = "wasm32"))]

@@ -1058,6 +1058,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) relayout_pending: bool,
     /// 食い違いで続けて描き直した回数。[`crate::scroll_sync::MAX_RELAYOUT_STREAK`] で止める。
     relayout_streak: u8,
+    /// 親からはみ出した子を debug ビルドで知らせる (#95)。
+    overflow_debug: crate::overflow_debug::OverflowDebug,
     /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
     fonts_applied: usize,
     /// 窓が見えていない (最小化 / 完全に覆われている)。`WindowEvent::Occluded`
@@ -2023,6 +2025,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // overlays, so context menus placed in `view()` with `.overlay()`
                 // had their commands emitted to overlay_list and then silently
                 // dropped (never drawn). This fixes auto-hoist rendering.
+                // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
+                self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
                 let has_external_overlay = overlay_build.is_some();
                 let has_internal_overlay = !build_result.overlay_list.commands.is_empty();
                 let has_overlay = has_external_overlay || has_internal_overlay;
@@ -2714,6 +2718,7 @@ impl<A: DeclarativeApp> AppState<A> {
             atlas_recover_pending: false,
             relayout_pending: false,
             relayout_streak: 0,
+            overflow_debug: crate::overflow_debug::OverflowDebug::from_env(),
             fonts_applied: 0,
             occluded: false,
             #[cfg(not(target_arch = "wasm32"))]

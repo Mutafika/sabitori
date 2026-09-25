@@ -132,6 +132,34 @@ pub struct ScrollMeasure {
     pub grab: Option<f32>,
 }
 
+/// **親の箱からはみ出した子** ([#95](https://github.com/Mutafika/sabitori/issues/95))。
+///
+/// 窓を縮めたときの崩れ (横一列の子が縮まずに重なる、表の列が切れる) は、
+/// 描画もレイアウトも正常に終わるので何も出ない。レイアウトの結果から
+/// 「子の箱が親の箱 (padding の内側まで) を越えた」所を拾って知らせる。
+///
+/// 対象外 (わざとはみ出させる所):
+/// - `.scroll(..)` / `.overflow_hidden()` の直接の子 (切り取る・流すのが仕事)
+/// - `.absolute()` / [`Element::anchor_to`](crate::element::Element::anchor_to) /
+///   `.overlay()` で浮かせた要素
+/// - [`Element::allow_overflow`](crate::element::Element::allow_overflow) を付けた要素
+///
+/// 根の要素は**窓**を親として見る (窓より広い画面は右端が切れる)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutOverflow {
+    /// はみ出した要素の id。
+    pub id: Option<String>,
+    /// 根からの経路。id があれば `#id`、無ければ `種類[兄弟の中の番号]`。
+    /// 例: `#app > div[1] > #toolbar > text[3]("期間")`。
+    pub path: String,
+    /// はみ出した要素の箱 (画面座標)。
+    pub rect: Rect,
+    /// 親の箱 (padding を含む・画面座標)。根なら窓。
+    pub parent: Rect,
+    /// 各辺で親を越えた量 (px)。越えていない辺は 0。
+    pub by: crate::Edges<f32>,
+}
+
 /// The result of [`build_tree`].
 pub struct BuildResult {
     /// Flat list of draw commands (rects + text) in painter order (back to front).
@@ -151,6 +179,8 @@ pub struct BuildResult {
     /// Layout knows the position regardless; this map just surfaces it.
     /// Empty unless [`build_tree_probed`] / [`build_tree_measured_probed`] was used.
     pub probe_positions: std::collections::HashMap<String, f32>,
+    /// 親からはみ出した子。見つけた順 (根に近い方から)。[`LayoutOverflow`] を参照。
+    pub overflows: Vec<LayoutOverflow>,
 }
 
 impl BuildResult {
@@ -598,13 +628,168 @@ fn build_tree_impl(
     combined.extend(hit_regions);
     let hit_regions = combined;
 
+    let mut overflows = Vec::new();
+    let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
+    let mut path = Vec::new();
+    collect_overflows(
+        &taffy,
+        root,
+        root_node,
+        0,
+        Some(viewport),
+        (0.0, 0.0),
+        1.0,
+        (0.0, 0.0),
+        &anchor_positions,
+        &mut path,
+        &mut overflows,
+    );
+
     BuildResult {
         render_list,
         overlay_list,
         hit_regions,
         scroll_measures,
         probe_positions,
+        overflows,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: はみ出しの検出 (#95)
+// ---------------------------------------------------------------------------
+
+/// これより小さいはみ出しは丸めの誤差として数えない。
+const OVERFLOW_EPSILON: f32 = 0.5;
+
+/// 経路の 1 段。`#id` か `種類[番号]` (文字なら先頭の数文字も添える)。
+fn path_segment(element: &Element, index: usize) -> String {
+    if let Some(id) = element.id.as_deref() {
+        return format!("#{id}");
+    }
+    let snippet = |s: &str| {
+        let head: String = s.chars().take(12).collect();
+        if head.len() < s.len() { format!("{head}…") } else { head }
+    };
+    match &element.kind {
+        ElementKind::Div => format!("div[{index}]"),
+        ElementKind::Text { content } => format!("text[{index}](\"{}\")", snippet(content)),
+        ElementKind::Button { label, .. } => format!("button[{index}](\"{}\")", snippet(label)),
+        ElementKind::Image { .. } => format!("image[{index}]"),
+        ElementKind::Arc(_) => format!("arc[{index}]"),
+        ElementKind::Polyline(_) => format!("polyline[{index}]"),
+    }
+}
+
+/// 木を下りながら、子の箱が親の箱 (padding を含む) を越えた所を拾う。
+///
+/// 位置の出し方は `emit_commands` / `collect_anchor_boxes` と同じ (scale・
+/// translate・sticky・スクロール・アンカー)。はみ出した量 `by` はレイアウトの
+/// 素の px で、見た目の拡大縮小には依らない。
+///
+/// 親の padding の中へ出るのは数えない — 本文を padding の溝まで広げて
+/// スクロールの帯をそこへ置く、のような意図した使い方がある (modal の本文)。
+#[allow(clippy::too_many_arguments)]
+fn collect_overflows<'a>(
+    taffy: &TaffyTree<TextNodeContext>,
+    element: &'a Element,
+    taffy_node: taffy::NodeId,
+    index: usize,
+    // 親の箱 (画面座標)。`None` = 親が切る入れ物なので見ない。
+    parent_box: Option<Rect>,
+    parent_origin: (f32, f32),
+    parent_scale: f32,
+    parent_scroll: (f32, f32),
+    anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
+    // 根からの (要素, 兄弟の中の番号)。文字列にするのは見つけた時だけ —
+    // 要素ごとに作ると毎フレームの確保が木の大きさに比例する (#80)。
+    path: &mut Vec<(&'a Element, usize)>,
+    out: &mut Vec<LayoutOverflow>,
+) {
+    let Ok(layout) = taffy.layout(taffy_node) else { return };
+    let style = &element.style;
+    let scale = parent_scale * style.scale;
+    let mut slot_x = parent_origin.0 + (layout.location.x + style.translate_x) * parent_scale;
+    let mut slot_y = parent_origin.1 + (layout.location.y + style.translate_y) * parent_scale;
+    if style.sticky_x {
+        slot_x += parent_scroll.0 * parent_scale;
+    }
+    if style.sticky_y {
+        slot_y += parent_scroll.1 * parent_scale;
+    }
+    let anchored = anchor_positions.get(&taffy_node);
+    if let Some(&(ax, ay)) = anchored {
+        slot_x = ax;
+        slot_y = ay;
+    }
+    let w = layout.size.width * scale;
+    let h = layout.size.height * scale;
+    let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
+    let abs_y = slot_y + (layout.size.height * parent_scale - h) * 0.5;
+    let rect = Rect::new(abs_x, abs_y, w, h);
+
+    path.push((element, index));
+
+    // 浮かせた要素・印を付けた要素は、親に対しては見ない (中身は見る)。
+    let floats = style.position == Position::Absolute
+        || anchored.is_some()
+        || style.anchor.is_some()
+        || element.overlay
+        || style.allow_overflow;
+    if let (Some(pb), false) = (parent_box, floats) {
+        let over = |v: f32| if v > OVERFLOW_EPSILON { v } else { 0.0 };
+        let by = crate::Edges::new(
+            over(pb.origin.y - rect.origin.y),
+            over(rect.origin.x + rect.size.width - (pb.origin.x + pb.size.width)),
+            over(rect.origin.y + rect.size.height - (pb.origin.y + pb.size.height)),
+            over(pb.origin.x - rect.origin.x),
+        );
+        if by != crate::Edges::default() {
+            // 画面 px → レイアウトの素の px。祖先の scale で割り戻す。
+            let unscale = |v: f32| if parent_scale > 0.0 { v / parent_scale } else { v };
+            out.push(LayoutOverflow {
+                id: element.id.clone(),
+                path: path
+                    .iter()
+                    .map(|&(e, i)| path_segment(e, i))
+                    .collect::<Vec<_>>()
+                    .join(" > "),
+                rect,
+                parent: pb,
+                by: crate::Edges::new(unscale(by.top), unscale(by.right), unscale(by.bottom), unscale(by.left)),
+            });
+        }
+    }
+
+    // 子から見た親の箱 = この要素の padding の内側。切る入れ物なら見ない。
+    let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
+    let inner = if clips {
+        None
+    } else {
+        let b = &layout.border;
+        let x0 = abs_x + b.left * scale;
+        let y0 = abs_y + b.top * scale;
+        let iw = (layout.size.width - b.left - b.right).max(0.0) * scale;
+        let ih = (layout.size.height - b.top - b.bottom).max(0.0) * scale;
+        Some(Rect::new(x0, y0, iw, ih))
+    };
+    let child_origin = if clips {
+        (abs_x - style.scroll_x * scale, abs_y - style.scroll_y * scale)
+    } else {
+        (abs_x, abs_y)
+    };
+    let child_scroll = if clips { (style.scroll_x, style.scroll_y) } else { parent_scroll };
+
+    let children = taffy.children(taffy_node).unwrap_or_default();
+    for (i, child) in element.children.iter().enumerate() {
+        if let Some(&node) = children.get(i) {
+            collect_overflows(
+                taffy, child, node, i, inner, child_origin, scale, child_scroll,
+                anchor_positions, path, out,
+            );
+        }
+    }
+    path.pop();
 }
 
 // ---------------------------------------------------------------------------
@@ -4546,5 +4731,145 @@ mod zero_size_probe_tests {
         assert_eq!(r.probe_positions.get("mark"), Some(&120.0));
         assert_eq!(r.probe_positions.get("b"), Some(&120.0));
         assert_eq!(r.probe_positions.get("far"), Some(&1170.0));
+    }
+}
+
+/// はみ出しの検出 ([#95](https://github.com/Mutafika/sabitori/issues/95))。
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+    use crate::element::{div, text, Dimension::Px};
+
+    /// 幅 460 の子 2 つを、幅 600 の横一列に `.wrap()` 無しで並べる
+    /// (sabitori-renta の車両一覧の絞り込み)。
+    fn toolbar(wrap: bool) -> Element {
+        let mut row = div().id("toolbar").w(Px(600.0)).h(Px(40.0)).flex_row();
+        if wrap {
+            row = row.wrap().h(Px(80.0));
+        }
+        div().w(Px(800.0)).h(Px(600.0)).child(row.children([
+            div().id("search").w(Px(300.0)).h(Px(40.0)).shrink(0.0),
+            div().w(Px(460.0)).h(Px(40.0)).shrink(0.0),
+        ]))
+    }
+
+    #[test]
+    fn a_row_that_does_not_wrap_reports_the_child_sticking_out() {
+        let b = build_tree(&toolbar(false), 800.0, 600.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        let o = &b.overflows[0];
+        assert_eq!(o.path, "div[0] > #toolbar > div[1]");
+        assert_eq!(o.id, None);
+        assert_eq!(o.by, crate::Edges::new(0.0, 160.0, 0.0, 0.0));
+        assert_eq!(o.rect, Rect::new(300.0, 0.0, 460.0, 40.0));
+        assert_eq!(o.parent, Rect::new(0.0, 0.0, 600.0, 40.0));
+    }
+
+    #[test]
+    fn the_same_row_with_wrap_reports_nothing() {
+        let b = build_tree(&toolbar(true), 800.0, 600.0);
+        assert!(b.overflows.is_empty(), "{:?}", b.overflows);
+    }
+
+    #[test]
+    fn a_root_wider_than_the_window_is_reported_against_the_window() {
+        let root = div().id("app").w(Px(1000.0)).h(Px(600.0));
+        let b = build_tree(&root, 820.0, 600.0);
+        assert_eq!(b.overflows.len(), 1);
+        assert_eq!(b.overflows[0].path, "#app");
+        assert_eq!(b.overflows[0].by, crate::Edges::new(0.0, 180.0, 0.0, 0.0));
+    }
+
+    /// 流す・切る入れ物の中身は、はみ出すのが仕事なので見ない。
+    #[test]
+    fn scroll_and_clip_containers_are_allowed_to_overflow() {
+        let tall = || div().w(Px(100.0)).h(Px(900.0)).shrink(0.0);
+        let root = div().w(Px(400.0)).h(Px(300.0)).flex_row().children([
+            div().id("list").w(Px(200.0)).h(Px(300.0)).scroll("list").child(tall()),
+            div().w(Px(200.0)).h(Px(300.0)).overflow_hidden().child(tall()),
+        ]);
+        let b = build_tree(&root, 400.0, 300.0);
+        assert!(b.overflows.is_empty(), "{:?}", b.overflows);
+    }
+
+    /// 流れる中身の**さらに内側**で崩れたものは拾う。位置は流した分ずれる。
+    #[test]
+    fn a_break_inside_scrolled_content_is_still_found() {
+        let row = div()
+            .id("row")
+            .w(Px(200.0))
+            .h(Px(40.0))
+            .flex_row()
+            .shrink(0.0)
+            .child(div().id("wide").w(Px(260.0)).h(Px(40.0)).shrink(0.0));
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div()
+                .w(Px(200.0))
+                .h(Px(100.0))
+                .flex_col()
+                .scroll_manual(0.0, 30.0)
+                .child(div().h(Px(60.0)).shrink(0.0))
+                .child(row),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        let o = &b.overflows[0];
+        assert_eq!(o.id.as_deref(), Some("wide"));
+        assert_eq!(o.by.right, 60.0);
+        assert_eq!(o.rect.origin.y, 60.0 - 30.0, "流した分だけ上に出る");
+    }
+
+    #[test]
+    fn floating_and_marked_elements_are_not_reported() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().w(Px(100.0)).h(Px(100.0)).children([
+                div().absolute().w(Px(300.0)).h(Px(20.0)),
+                div().w(Px(300.0)).h(Px(20.0)).shrink(0.0).allow_overflow(),
+            ]),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        assert!(b.overflows.is_empty(), "{:?}", b.overflows);
+    }
+
+    /// 本文を padding の溝まで広げる (modal の本文の形) のは数えない。
+    /// 親の箱の外に出たら数える。`.border(..)` は見た目だけで箱を変えない。
+    #[test]
+    fn reaching_into_the_parents_padding_is_fine_but_not_past_its_edge() {
+        let card = |w: f32| {
+            div().w(Px(400.0)).h(Px(300.0)).child(
+                div()
+                    .w(Px(200.0))
+                    .h(Px(100.0))
+                    .p_px(16.0)
+                    .border(2.0, crate::Color::WHITE)
+                    .child(div().id("body").w(Px(w)).h(Px(20.0)).shrink(0.0)),
+            )
+        };
+        // padding 16 から始まる。幅 184 なら右端 200 = 親の右端。
+        assert!(build_tree(&card(184.0), 400.0, 300.0).overflows.is_empty());
+        let b = build_tree(&card(190.0), 400.0, 300.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        assert_eq!(b.overflows[0].by.right, 6.0);
+    }
+
+    /// 文字は、中身の先頭で見分けられるようにする。
+    #[test]
+    fn a_text_segment_shows_the_start_of_its_content() {
+        let root = div().w(Px(100.0)).h(Px(40.0)).flex_row().child(
+            text("サーバーに接続できません。ネットワークの設定を確認してください").shrink(0.0),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        assert_eq!(b.overflows[0].path, "div[0] > text[0](\"サーバーに接続できません…\")");
+    }
+
+    /// 丸めの誤差 (0.5px 以下) は数えない。
+    #[test]
+    fn sub_pixel_differences_are_ignored() {
+        let root = div()
+            .w(Px(100.0))
+            .h(Px(40.0))
+            .child(div().w(Px(100.4)).h(Px(40.0)).shrink(0.0));
+        assert!(build_tree(&root, 400.0, 300.0).overflows.is_empty());
     }
 }

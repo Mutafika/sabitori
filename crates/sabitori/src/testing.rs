@@ -372,6 +372,16 @@ impl<A: DeclarativeApp> Harness<A> {
             .expect("frame() を先に呼ぶこと — ヒット領域が無いと操作を流せない")
     }
 
+    /// 直近のフレームで**親からはみ出した子** ([#95](https://github.com/Mutafika/sabitori/issues/95))。
+    ///
+    /// 「この幅で崩れない」を全画面の回帰テストにする口。幅を変えて
+    /// [`Self::resize`] → [`Self::settle`] し、空であることを確かめる。文字のはみ出しまで
+    /// 見るなら [`Self::with_real_text`] で組む (スタブの計測は折り返さない)。
+    /// 何が対象外かは [`sabitori_core::build::LayoutOverflow`] を参照。
+    pub fn overflows(&self) -> &[sabitori_core::build::LayoutOverflow] {
+        &self.build().overflows
+    }
+
     /// アプリへの不変参照。 assert はここから。
     pub fn app(&self) -> &A {
         &self.state.app

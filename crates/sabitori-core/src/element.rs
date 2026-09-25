@@ -724,6 +724,8 @@ pub struct ElementStyle {
     pub sticky_x: bool,
     /// 縦スクロールしても置いていかれない ([`Element::sticky_y`])。
     pub sticky_y: bool,
+    /// 親からはみ出していても知らせない ([`Element::allow_overflow`])。
+    pub allow_overflow: bool,
     /// **別の要素の箱に貼り付けて浮かせる指定** ([`Element::anchor_to`])。
     ///
     /// レイアウトが終わってから相手の箱を見て位置を決めるので、`view()` の中で
@@ -876,6 +878,7 @@ impl Default for ElementStyle {
             color_spans: None,
             sticky_x: false,
             sticky_y: false,
+            allow_overflow: false,
             anchor: None,
         }
     }
@@ -2448,6 +2451,18 @@ impl Element {
         if self.style.z_index == 0 {
             self.style.z_index = 1;
         }
+        self
+    }
+
+    /// **親からはみ出していても知らせない。** わざとはみ出させている要素に付ける。
+    ///
+    /// レイアウトの後、親の箱 (padding を含む) からはみ出した子は
+    /// [`BuildResult::overflows`](crate::build::BuildResult::overflows) に載り、
+    /// debug ビルドの画面では目印が描かれる ([#95](https://github.com/Mutafika/sabitori/issues/95))。
+    /// `.scroll(..)` / `.overflow_hidden()` の中身、`.absolute()` や
+    /// [`Element::anchor_to`] で浮かせた要素は、付けなくても対象外。
+    pub fn allow_overflow(mut self) -> Self {
+        self.style.allow_overflow = true;
         self
     }
 

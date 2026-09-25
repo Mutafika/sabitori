@@ -279,6 +279,7 @@ pub(crate) fn absorb_overlay(build: &mut BuildResult, overlay: Option<BuildResul
         hit.overlay = true;
     }
     build.hit_regions.splice(0..0, hits);
+    build.overflows.extend(ext.overflows);
 }
 
 #[cfg(test)]

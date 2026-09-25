@@ -85,3 +85,21 @@ fn the_stub_does_not_wrap() {
         after.rect_of("banner").unwrap().size.height
     );
 }
+
+/// **`overflows()` で同じ崩れを拾える** (#95)。上の 2 本は矩形を比べて書いたが、
+/// 画面ごとに「どこを比べるか」を考えなくても、空であることを見れば足りる。
+#[test]
+fn overflows_names_the_banner_before_the_fix_and_nothing_after() {
+    let mut before = Harness::with_real_text(Login { fixed: false }, 800.0, 600.0);
+    before.frame();
+    let paths: Vec<_> = before.overflows().iter().map(|o| o.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["div[0] > #card > #banner > text[0](\"サーバーに接続できません…\")"],
+        "帯からはみ出した文字が出ていない"
+    );
+
+    let mut after = Harness::with_real_text(Login { fixed: true }, 800.0, 600.0);
+    after.frame();
+    assert!(after.overflows().is_empty(), "{:?}", after.overflows());
+}

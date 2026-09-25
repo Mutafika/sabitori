@@ -36,6 +36,7 @@ pub mod declarative;
 pub mod scroll_sync;
 // 2 ランタイム (declarative / scene) が共有するポインタ解決。 crate 内部専用。
 mod runtime_shared;
+mod overflow_debug;
 pub mod slider_sync;
 pub mod image_runtime;
 pub mod hot_reload;
