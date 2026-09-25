@@ -50,6 +50,7 @@ mod drag;
 mod focus;
 mod menu_bar;
 mod modal;
+mod nav_frame;
 mod time_picker;
 mod numeric_input;
 mod panel;
@@ -77,6 +78,9 @@ pub use drag::DragManager;
 pub use focus::{FocusChange, FocusKeyResult, FocusManager};
 pub use menu_bar::{MenuBarState, MenuBarStyle, MenuDef};
 pub use modal::{modal, Modal, ModalState, ModalStyle};
+pub use nav_frame::{
+    nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavMode, NavState,
+};
 pub use time_picker::{
     parse_hhmm, DateTimePickerState, DateTimePickerStyle, TimePickerState, TimePickerStyle,
 };

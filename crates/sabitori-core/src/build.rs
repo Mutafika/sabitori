@@ -143,6 +143,7 @@ pub struct ScrollMeasure {
 /// - `.absolute()` / [`Element::anchor_to`](crate::element::Element::anchor_to) /
 ///   `.overlay()` で浮かせた要素
 /// - [`Element::allow_overflow`](crate::element::Element::allow_overflow) を付けた要素
+/// - 見た目だけの移動 (`translate` / `scale`)。比べるのはレイアウトが置いた位置
 ///
 /// 根の要素は**窓**を親として見る (窓より広い画面は右端が切れる)。
 #[derive(Debug, Clone, PartialEq)]
@@ -152,7 +153,7 @@ pub struct LayoutOverflow {
     /// 根からの経路。id があれば `#id`、無ければ `種類[兄弟の中の番号]`。
     /// 例: `#app > div[1] > #toolbar > text[3]("期間")`。
     pub path: String,
-    /// はみ出した要素の箱 (画面座標)。
+    /// はみ出した要素の箱 (画面座標。見た目だけの `translate` / `scale` は含まない)。
     pub rect: Rect,
     /// 親の箱 (padding を含む・画面座標)。根なら窓。
     pub parent: Rect,
@@ -638,7 +639,6 @@ fn build_tree_impl(
         0,
         Some(viewport),
         (0.0, 0.0),
-        1.0,
         (0.0, 0.0),
         &anchor_positions,
         &mut path,
@@ -683,9 +683,11 @@ fn path_segment(element: &Element, index: usize) -> String {
 
 /// 木を下りながら、子の箱が親の箱 (padding を含む) を越えた所を拾う。
 ///
-/// 位置の出し方は `emit_commands` / `collect_anchor_boxes` と同じ (scale・
-/// translate・sticky・スクロール・アンカー)。はみ出した量 `by` はレイアウトの
-/// 素の px で、見た目の拡大縮小には依らない。
+/// **レイアウトが置いた位置で比べる** — 見た目だけの移動 (`translate` / `scale`)
+/// は数えない。ばねで滑り込む引き出しや、ホバーで少し大きくなるボタンは崩れでは
+/// ない (数えると、開きかけの引き出しが「左に 280px はみ出している」と出る)。
+/// スクロール・sticky・アンカーは位置そのものを決めるので、`emit_commands` と
+/// 同じく効かせる。
 ///
 /// 親の padding の中へ出るのは数えない — 本文を padding の溝まで広げて
 /// スクロールの帯をそこへ置く、のような意図した使い方がある (modal の本文)。
@@ -698,7 +700,6 @@ fn collect_overflows<'a>(
     // 親の箱 (画面座標)。`None` = 親が切る入れ物なので見ない。
     parent_box: Option<Rect>,
     parent_origin: (f32, f32),
-    parent_scale: f32,
     parent_scroll: (f32, f32),
     anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
     // 根からの (要素, 兄弟の中の番号)。文字列にするのは見つけた時だけ —
@@ -708,25 +709,20 @@ fn collect_overflows<'a>(
 ) {
     let Ok(layout) = taffy.layout(taffy_node) else { return };
     let style = &element.style;
-    let scale = parent_scale * style.scale;
-    let mut slot_x = parent_origin.0 + (layout.location.x + style.translate_x) * parent_scale;
-    let mut slot_y = parent_origin.1 + (layout.location.y + style.translate_y) * parent_scale;
+    let mut x = parent_origin.0 + layout.location.x;
+    let mut y = parent_origin.1 + layout.location.y;
     if style.sticky_x {
-        slot_x += parent_scroll.0 * parent_scale;
+        x += parent_scroll.0;
     }
     if style.sticky_y {
-        slot_y += parent_scroll.1 * parent_scale;
+        y += parent_scroll.1;
     }
     let anchored = anchor_positions.get(&taffy_node);
     if let Some(&(ax, ay)) = anchored {
-        slot_x = ax;
-        slot_y = ay;
+        x = ax;
+        y = ay;
     }
-    let w = layout.size.width * scale;
-    let h = layout.size.height * scale;
-    let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
-    let abs_y = slot_y + (layout.size.height * parent_scale - h) * 0.5;
-    let rect = Rect::new(abs_x, abs_y, w, h);
+    let rect = Rect::new(x, y, layout.size.width, layout.size.height);
 
     path.push((element, index));
 
@@ -745,8 +741,6 @@ fn collect_overflows<'a>(
             over(pb.origin.x - rect.origin.x),
         );
         if by != crate::Edges::default() {
-            // 画面 px → レイアウトの素の px。祖先の scale で割り戻す。
-            let unscale = |v: f32| if parent_scale > 0.0 { v / parent_scale } else { v };
             out.push(LayoutOverflow {
                 id: element.id.clone(),
                 path: path
@@ -756,36 +750,23 @@ fn collect_overflows<'a>(
                     .join(" > "),
                 rect,
                 parent: pb,
-                by: crate::Edges::new(unscale(by.top), unscale(by.right), unscale(by.bottom), unscale(by.left)),
+                by,
             });
         }
     }
 
-    // 子から見た親の箱 = この要素の padding の内側。切る入れ物なら見ない。
+    // 子から見た親の箱 = この要素の箱。切る入れ物なら見ない。
     let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
-    let inner = if clips {
-        None
-    } else {
-        let b = &layout.border;
-        let x0 = abs_x + b.left * scale;
-        let y0 = abs_y + b.top * scale;
-        let iw = (layout.size.width - b.left - b.right).max(0.0) * scale;
-        let ih = (layout.size.height - b.top - b.bottom).max(0.0) * scale;
-        Some(Rect::new(x0, y0, iw, ih))
-    };
-    let child_origin = if clips {
-        (abs_x - style.scroll_x * scale, abs_y - style.scroll_y * scale)
-    } else {
-        (abs_x, abs_y)
-    };
+    let inner = if clips { None } else { Some(rect) };
+    let child_origin = if clips { (x - style.scroll_x, y - style.scroll_y) } else { (x, y) };
     let child_scroll = if clips { (style.scroll_x, style.scroll_y) } else { parent_scroll };
 
     let children = taffy.children(taffy_node).unwrap_or_default();
     for (i, child) in element.children.iter().enumerate() {
         if let Some(&node) = children.get(i) {
             collect_overflows(
-                taffy, child, node, i, inner, child_origin, scale, child_scroll,
-                anchor_positions, path, out,
+                taffy, child, node, i, inner, child_origin, child_scroll, anchor_positions, path,
+                out,
             );
         }
     }
@@ -4861,6 +4842,18 @@ mod overflow_tests {
         let b = build_tree(&root, 400.0, 300.0);
         assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
         assert_eq!(b.overflows[0].path, "div[0] > text[0](\"サーバーに接続できません…\")");
+    }
+
+    /// 見た目だけの移動は崩れではない: 滑り込む途中の引き出し、ホバーで
+    /// 大きくなるボタン。
+    #[test]
+    fn visual_only_moves_are_not_overflow() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).flex_row().children([
+            div().id("drawer").w(Px(280.0)).h(Px(300.0)).shrink(0.0).tx(-280.0),
+            div().id("big").w(Px(120.0)).h(Px(300.0)).shrink(0.0).scaled(1.1),
+        ]);
+        let b = build_tree(&root, 400.0, 300.0);
+        assert!(b.overflows.is_empty(), "{:?}", b.overflows);
     }
 
     /// 丸めの誤差 (0.5px 以下) は数えない。
