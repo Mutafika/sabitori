@@ -283,6 +283,9 @@ impl NavState {
     }
 }
 
+/// 項目を押したときにアプリへ渡す口。
+type OnSelect<A> = Rc<dyn Fn(&mut A, &str)>;
+
 /// 項目の要素 id。`on_select` を使わずに `DeclarativeApp::on_click` で受ける
 /// 場合や、テストで押す場合に。
 pub fn nav_item_id(id: &str, item: &str) -> String {
@@ -301,6 +304,7 @@ pub fn nav_menu_button_id(id: &str) -> String {
 /// * 引き出しは、選ばれている項目が変わったら閉じる。幕を押しても閉じる
 /// * ナビの側は `ctx.safe_area` の内側に置く (iOS のステータスバー等)。
 ///   本文の側はアプリが持つ
+#[allow(clippy::too_many_arguments)]
 pub fn nav_frame<A: 'static>(
     ctx: &ViewContext,
     id: &str,
@@ -320,7 +324,7 @@ pub fn nav_frame<A: 'static>(
         state.close_drawer();
     }
 
-    let on_select: Rc<dyn Fn(&mut A, &str)> = Rc::new(on_select);
+    let on_select: OnSelect<A> = Rc::new(on_select);
     let safe = ctx.safe_area;
     let body = div()
         .id(format!("{id}::content"))
@@ -429,7 +433,7 @@ fn drawer<A: 'static>(
     style: &NavFrameStyle,
     groups: &[NavGroup],
     selected: &str,
-    on_select: &Rc<dyn Fn(&mut A, &str)>,
+    on_select: &OnSelect<A>,
     progress: f32,
 ) -> Element {
     let scrim_id = format!("{id}::scrim");
@@ -478,7 +482,7 @@ fn list<A: 'static>(
     style: &NavFrameStyle,
     groups: &[NavGroup],
     selected: &str,
-    on_select: &Rc<dyn Fn(&mut A, &str)>,
+    on_select: &OnSelect<A>,
     closes: Option<&NavState>,
 ) -> Element {
     let mut col = div()
@@ -539,7 +543,7 @@ fn rail<A: 'static>(
     style: &NavFrameStyle,
     groups: &[NavGroup],
     selected: &str,
-    on_select: &Rc<dyn Fn(&mut A, &str)>,
+    on_select: &OnSelect<A>,
 ) -> Element {
     let mut col = div()
         .id(format!("{id}::rail"))
@@ -592,7 +596,7 @@ fn item_click<A: 'static>(
     ctx: &ViewContext,
     id: &str,
     item: &NavItem,
-    on_select: &Rc<dyn Fn(&mut A, &str)>,
+    on_select: &OnSelect<A>,
     closes: Option<&NavState>,
     el: Element,
 ) -> Element {

@@ -405,6 +405,33 @@ pub struct TextHitLayout {
     pub no_select: bool,
 }
 
+/// 格子の字形 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
+/// 2 つの取り出し口 (当たり判定あり・なし) が同じものを出すよう、ここに 1 つだけ置く。
+fn cell_grid_to_glyphs(
+    d: &sabitori_core::render_list::CellGridDraw,
+    tr: &mut TextRenderer,
+    clip: Option<sabitori_core::Rect>,
+) -> Vec<GlyphInstance> {
+    let mut produced = tr.prepare_cell_grid(
+        &d.grid,
+        d.origin.x,
+        d.origin.y,
+        d.cell_w,
+        d.cell_h,
+        d.font_size,
+        d.opacity,
+        d.font_family.as_deref(),
+        d.cache_key,
+    );
+    if let Some(c) = clip {
+        let arr = clip_to_array(&c);
+        for g in produced.iter_mut() {
+            g.clip_rect = arr;
+        }
+    }
+    produced
+}
+
 /// Convert an entire RenderList into GPU-ready data, applying clip rects.
 pub fn render_list_to_gpu(
     list: &RenderList,
@@ -550,6 +577,13 @@ pub fn render_list_to_gpu_with_hits(
                 }
                 lines.extend(insts);
             }
+            RenderCommand::CellGrid(d) => {
+                let clip = clip_stack.last().copied();
+                if let Some(c) = clip {
+                    if is_clipped(&c, &d.rect()) { continue; }
+                }
+                glyphs.extend(cell_grid_to_glyphs(d, tr, clip));
+            }
             RenderCommand::Image(_) => {}
         }
     }
@@ -639,6 +673,13 @@ pub fn render_list_to_gpu_with_rings(
                     }
                 }
                 lines.extend(insts);
+            }
+            RenderCommand::CellGrid(d) => {
+                let clip = clip_stack.last().copied();
+                if let Some(c) = clip {
+                    if is_clipped(&c, &d.rect()) { continue; }
+                }
+                glyphs.extend(cell_grid_to_glyphs(d, tr, clip));
             }
             RenderCommand::Image(_) => {
                 // Image rendering handled separately by the image pipeline

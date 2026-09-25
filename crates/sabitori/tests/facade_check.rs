@@ -40,6 +40,16 @@ fn everything_an_app_writes_is_reachable_from_the_facade() {
     // 表 (#75 の 3)
     let _cell = Cell::text("R-0042");
 
+    // 等幅の文字の格子 (#102)。表の `Cell` とぶつからないこと。
+    let mut grid = CellGrid::new(4, 1, Color::WHITE);
+    grid.set(0, 0, GridCell { ch: 'a', flags: CellFlags::BOLD, ..GridCell::default() });
+    let _grid = cell_grid(std::sync::Arc::new(grid), 8.0, 16.0).font_size(13.0);
+    // 幅の区分ごとの上書き (#97)
+    let _responsive = div().at(SizeClass::Compact, |e| e.gap(4.0)).at_least(SizeClass::Medium, |e| e);
+    // はみ出しの印 (#95)、ナビの枠組み (#98)
+    let _quiet = div().allow_overflow();
+    let _nav = (NavState::new(), NavItem::new("a", "A").icon("◎"), NavGroup::new("g"), NavMode::for_width(800.0));
+
     // 非同期と HTTP (#64 / #63)
     let _tasks: Tasks<()> = Tasks::new();
 

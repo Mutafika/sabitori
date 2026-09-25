@@ -655,6 +655,70 @@ fn build_tree_impl(
     }
 }
 
+/// 格子 ([#102](https://github.com/Mutafika/sabitori/issues/102)): 背景は行ごとに
+/// 同じ色の続きを矩形 1 つにまとめ、下線・取り消し線も矩形で出す。字形は
+/// [`RenderCommand::CellGrid`] 1 つにまとめて描画側へ渡す (文字単位でキャッシュ
+/// して `col * cell_w` に置くのは描画側の仕事)。
+#[allow(clippy::too_many_arguments)]
+fn emit_cell_grid(
+    target: &mut RenderList,
+    cg: &crate::element::CellGridKind,
+    style: &ElementStyle,
+    element: &Element,
+    index: usize,
+    abs_x: f32,
+    abs_y: f32,
+    scale: f32,
+    opacity: f32,
+) {
+    use crate::cell_grid::CellFlags;
+    let grid = &cg.grid;
+    let (cw, ch) = (cg.cell_w * scale, cg.cell_h * scale);
+    let rect = |col: usize, row: usize, cols: usize, y: f32, h: f32, color: Color| {
+        RenderCommand::Rect(RectDraw {
+            rect: Rect::new(abs_x + col as f32 * cw, abs_y + row as f32 * ch + y, cols as f32 * cw, h),
+            fill_color: apply_opacity(color, opacity),
+            ..Default::default()
+        })
+    };
+    for row in 0..grid.rows {
+        for (col, len, color) in grid.bg_runs(row) {
+            target.commands.push(rect(col, row, len, 0.0, ch, color));
+        }
+    }
+    // 線の太さは字の大きさに合わせる (最低 1px)。下線はセルの下から 1 本ぶん上、
+    // 取り消し線はセルの真ん中。
+    let line = (style.font_size * scale / 14.0).max(1.0);
+    for row in 0..grid.rows {
+        for (col, cell) in grid.row(row).iter().enumerate() {
+            let fg = if cell.flags.contains(CellFlags::DIM) { cell.fg.with_alpha(cell.fg.a * 0.5) } else { cell.fg };
+            if cell.flags.contains(CellFlags::UNDERLINE) {
+                target.commands.push(rect(col, row, 1, ch - line * 2.0, line, fg));
+            }
+            if cell.flags.contains(CellFlags::STRIKE) {
+                target.commands.push(rect(col, row, 1, (ch - line) * 0.5, line, fg));
+            }
+        }
+    }
+    let cache_key = element.id.as_deref().map(|id| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut h);
+        h.finish()
+    });
+    target.commands.push(RenderCommand::CellGrid(crate::render_list::CellGridDraw {
+        element_index: index,
+        origin: Point::new(abs_x, abs_y),
+        cell_w: cw,
+        cell_h: ch,
+        font_size: style.font_size * scale,
+        grid: grid.clone(),
+        opacity,
+        font_family: style.font_family.clone(),
+        cache_key,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 4: はみ出しの検出 (#95)
 // ---------------------------------------------------------------------------
@@ -678,6 +742,7 @@ fn path_segment(element: &Element, index: usize) -> String {
         ElementKind::Image { .. } => format!("image[{index}]"),
         ElementKind::Arc(_) => format!("arc[{index}]"),
         ElementKind::Polyline(_) => format!("polyline[{index}]"),
+        ElementKind::CellGrid(_) => format!("cell_grid[{index}]"),
     }
 }
 
@@ -1541,6 +1606,9 @@ fn emit_commands(
                 }));
             }
         }
+        ElementKind::CellGrid(cg) => {
+            emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity);
+        }
         ElementKind::Image { key, data } => {
             target.commands.push(RenderCommand::Image(ImageDraw {
                 key: key.clone(),
@@ -1990,6 +2058,7 @@ fn convert_to_taffy_style(
         ElementKind::Div
         | ElementKind::Image { .. }
         | ElementKind::Arc(_)
+        | ElementKind::CellGrid(_)
         | ElementKind::Polyline(_) => (
             convert_min_dimension(style.min_width),
             // 縦も横と同じ 0。taffy 0.9 までは「子コンテナに定値の `min_height`
@@ -4864,5 +4933,83 @@ mod overflow_tests {
             .h(Px(40.0))
             .child(div().w(Px(100.4)).h(Px(40.0)).shrink(0.0));
         assert!(build_tree(&root, 400.0, 300.0).overflows.is_empty());
+    }
+}
+
+/// 等幅の文字の格子 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
+#[cfg(test)]
+mod cell_grid_tests {
+    use super::*;
+    use crate::cell_grid::{CellFlags, CellGrid, GridCell};
+    use crate::element::{cell_grid, div};
+    use std::sync::Arc;
+
+    const FG: Color = Color::WHITE;
+    const RED: Color = Color::new(1.0, 0.0, 0.0, 1.0);
+
+    fn term() -> Arc<CellGrid> {
+        let mut g = CellGrid::new(80, 24, FG);
+        g.put_str(0, 0, "$ ls", FG, None, CellFlags::NONE);
+        g.put_str(0, 1, "error", RED, Some(Color::BLACK), CellFlags::BOLD);
+        g.put_str(10, 1, "x", FG, Some(Color::BLACK), CellFlags::UNDERLINE);
+        Arc::new(g)
+    }
+
+    fn commands(b: &BuildResult) -> (Vec<&RectDraw>, Vec<&crate::render_list::CellGridDraw>) {
+        let mut rects = Vec::new();
+        let mut grids = Vec::new();
+        for c in &b.render_list.commands {
+            match c {
+                RenderCommand::Rect(r) => rects.push(r),
+                RenderCommand::CellGrid(g) => grids.push(g),
+                _ => {}
+            }
+        }
+        (rects, grids)
+    }
+
+    /// レイアウト上は箱 1 つ。大きさは `cols * cell_w` × `rows * cell_h`。
+    #[test]
+    fn the_grid_is_one_box_sized_by_its_cells() {
+        let root = div().child(cell_grid(term(), 8.0, 17.0).id("term"));
+        let b = build_tree(&root, 1000.0, 600.0);
+        let (_, grids) = commands(&b);
+        assert_eq!(grids.len(), 1, "字形は命令 1 つにまとまる");
+        assert_eq!(grids[0].rect(), Rect::new(0.0, 0.0, 640.0, 408.0));
+        assert!(b.render_list.commands.iter().all(|c| !matches!(c, RenderCommand::Text(_))));
+    }
+
+    /// 背景は行ごとに同じ色の続きを 1 つにまとめる。下線は字の色で。
+    #[test]
+    fn backgrounds_merge_per_row_and_underlines_are_drawn() {
+        let b = build_tree(&cell_grid(term(), 8.0, 17.0), 1000.0, 600.0);
+        let (rects, _) = commands(&b);
+        let bg: Vec<_> = rects.iter().filter(|r| r.rect.size.height == 17.0).map(|r| r.rect).collect();
+        // "error" (0..5) と "x" (10) — 間が空いているので 2 つ。
+        assert_eq!(bg, vec![Rect::new(0.0, 17.0, 40.0, 17.0), Rect::new(80.0, 17.0, 8.0, 17.0)]);
+        let underline: Vec<_> = rects.iter().filter(|r| r.rect.size.height < 17.0).collect();
+        assert_eq!(underline.len(), 1);
+        assert_eq!(underline[0].rect.origin.x, 80.0);
+        assert_eq!(underline[0].fill_color, FG);
+    }
+
+    /// id があれば、行の字形を使い回すための鍵が付く。
+    #[test]
+    fn an_id_gives_the_draw_a_row_cache_key() {
+        let with_id = build_tree(&cell_grid(term(), 8.0, 17.0).id("term"), 1000.0, 600.0);
+        let without = build_tree(&cell_grid(term(), 8.0, 17.0), 1000.0, 600.0);
+        assert!(commands(&with_id).1[0].cache_key.is_some());
+        assert!(commands(&without).1[0].cache_key.is_none());
+    }
+
+    /// 2 セル幅の字の右半分は、背景だけ描いて字形は描かない (描画側の約束)。
+    #[test]
+    fn a_wide_character_keeps_its_spacer_background() {
+        let mut g = CellGrid::new(4, 1, FG);
+        g.set(0, 0, GridCell { ch: '漢', fg: FG, bg: Some(RED), flags: CellFlags::WIDE });
+        g.set(1, 0, GridCell { ch: ' ', fg: FG, bg: Some(RED), flags: CellFlags::WIDE_SPACER });
+        let b = build_tree(&cell_grid(Arc::new(g), 8.0, 17.0), 100.0, 100.0);
+        let (rects, _) = commands(&b);
+        assert_eq!(rects[0].rect, Rect::new(0.0, 0.0, 16.0, 17.0));
     }
 }

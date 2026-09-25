@@ -6,7 +6,7 @@
 
 use sabitori::testing::Harness;
 use sabitori::*;
-use sabitori_core::element::{div, text, Px};
+use sabitori_core::element::{div, text};
 use sabitori_widgets::{
     nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavState,
 };

@@ -1216,6 +1216,28 @@ pub enum ElementKind {
     /// the element's layout box origin. Use for charts, sparklines,
     /// connectors.
     Polyline(PolylineKind),
+    /// 等幅の文字の格子 ([`cell_grid`])。レイアウト上は箱 1 つ。
+    CellGrid(CellGridKind),
+}
+
+/// [`ElementKind::CellGrid`] の中身。
+#[derive(Clone)]
+pub struct CellGridKind {
+    pub grid: std::sync::Arc<crate::cell_grid::CellGrid>,
+    /// 1 セルの幅 (論理 px)。字形は `col * cell_w` に置く。
+    pub cell_w: f32,
+    /// 1 セルの高さ (論理 px)。字形は行の中で上下の中央に置く。
+    pub cell_h: f32,
+}
+
+impl std::fmt::Debug for CellGridKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CellGridKind({}x{}, cell {}x{})",
+            self.grid.cols, self.grid.rows, self.cell_w, self.cell_h
+        )
+    }
 }
 
 /// Layout-relative polyline parameters. Wrapped inside
@@ -1535,6 +1557,30 @@ impl From<&std::sync::Arc<str>> for TextContent {
 }
 
 /// Create a text element.
+/// **等幅の文字の格子を、要素 1 つで描く**
+/// ([#102](https://github.com/Mutafika/sabitori/issues/102))。端末・ログビューア・
+/// 16 進ダンプ・等幅の表に。詳しくは [`crate::cell_grid`]。
+///
+/// 大きさは既定で `cols * cell_w` × `rows * cell_h`。`cell_w` は呼ぶ側が
+/// ポインタ座標 → セルの変換にも使う値を渡す (`ctx.mono_advance * font_size`
+/// など)。字は `.font_size(..)` の大きさで、`.font_family(..)` が無ければ
+/// 等幅の書体で描く。選択はできない (呼ぶ側が持つ)。
+///
+/// ```ignore
+/// let cell_w = ctx.mono_advance * 14.0;
+/// cell_grid(self.term.grid.clone(), cell_w, 18.0).font_size(14.0)
+/// ```
+pub fn cell_grid(grid: std::sync::Arc<crate::cell_grid::CellGrid>, cell_w: f32, cell_h: f32) -> Element {
+    let (cols, rows) = (grid.cols as f32, grid.rows as f32);
+    let mut el = div();
+    el.kind = ElementKind::CellGrid(CellGridKind { grid, cell_w, cell_h });
+    el.style.width = Dimension::Px(cols * cell_w);
+    el.style.height = Dimension::Px(rows * cell_h);
+    el.style.monospace = true;
+    el.no_select = true;
+    el
+}
+
 pub fn text(content: impl Into<TextContent>) -> Element {
     Element {
         kind: ElementKind::Text { content: content.into().0 },

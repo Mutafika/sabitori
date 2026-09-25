@@ -20,10 +20,43 @@ pub enum RenderCommand {
     Ring(RingDraw),
     /// Draw a polyline — an open sequence of connected line segments.
     Polyline(PolylineDraw),
+    /// 等幅の文字の格子の字形 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
+    /// 背景と下線・取り消し線は `Rect` として別に出ている。
+    CellGrid(CellGridDraw),
     /// Push a scissor clip rectangle. All subsequent draws are clipped to this rect.
     PushClip(Rect),
     /// Pop the most recent clip rectangle.
     PopClip,
+}
+
+/// 格子の字形を描く。字形は `origin + (col * cell_w, row * cell_h)` に置く。
+#[derive(Clone, Debug)]
+pub struct CellGridDraw {
+    pub element_index: usize,
+    /// 格子の左上 (画面座標)。
+    pub origin: Point,
+    pub cell_w: f32,
+    pub cell_h: f32,
+    pub font_size: f32,
+    pub grid: std::sync::Arc<crate::cell_grid::CellGrid>,
+    /// 祖先から畳んだ不透明度。前景色に掛ける。
+    pub opacity: f32,
+    pub font_family: Option<String>,
+    /// 行ごとの字形を前のフレームから使い回すための鍵 (要素の id から作る)。
+    /// `None` = 使い回さない (字形そのものは文字単位でキャッシュされる)。
+    pub cache_key: Option<u64>,
+}
+
+impl CellGridDraw {
+    /// 格子の外形。
+    pub fn rect(&self) -> Rect {
+        Rect::new(
+            self.origin.x,
+            self.origin.y,
+            self.grid.cols as f32 * self.cell_w,
+            self.grid.rows as f32 * self.cell_h,
+        )
+    }
 }
 
 /// Draw a polyline: an open sequence of connected line segments,

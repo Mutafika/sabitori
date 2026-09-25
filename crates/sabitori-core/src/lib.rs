@@ -8,10 +8,12 @@ pub mod scrollbar;
 pub mod tui;
 pub mod forms;
 pub mod image_cache;
+pub mod cell_grid;
 
 pub use color::Color;
 pub use geometry::{Corners, Edges, Point, Rect, Size, TextMetrics};
 pub use theme::AppTheme;
+pub use cell_grid::{CellFlags, CellGrid, GridCell};
 pub use scrollbar::ScrollbarStyle;
 
 // Re-export key element API items at crate root for convenience.
@@ -31,6 +33,8 @@ pub use element::{
 pub use element::{Anchor, Placement};
 // 文字ごとの前景色 (`Element::color_spans`)。
 pub use element::ColorSpan;
+// 等幅の文字の格子 (#102)。
+pub use element::{cell_grid, CellGridKind};
 // grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
 // `sabitori-style` にも同名の型があり、 ファサードの glob 同士がぶつかって
 // `sabitori::Display` がどちらとも決まらなくなる。 `.grid()` / `.grid_cols()` が

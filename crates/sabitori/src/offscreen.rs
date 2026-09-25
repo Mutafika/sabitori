@@ -574,4 +574,96 @@ mod tests {
             "0.5 × 0.5 になっていない: {px:?}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // 等幅の文字の格子 (#102)
+    // -----------------------------------------------------------------
+
+    fn grid_of(cols: usize, marks: &[usize]) -> sabitori_core::CellGrid {
+        use sabitori_core::{CellFlags, CellGrid, GridCell};
+        let red = Color::from_hex("#ff0000");
+        let mut g = CellGrid::new(cols, 1, Color::BLACK);
+        for &c in marks {
+            g.set(c, 0, GridCell { ch: 'X', fg: Color::BLACK, bg: Some(red), flags: CellFlags::NONE });
+        }
+        g
+    }
+
+    /// **字は行末まで格子に乗る。** `text()` の run はシェープした字送りで並ぶので
+    /// セル幅と少しずつずれ、行末ほど背景から離れていた (mearie は 8 セルごとに
+    /// 切って置き直していた)。格子は `col * cell_w` に置く。
+    #[test]
+    fn cell_grid_glyphs_stay_inside_their_cells_to_the_end_of_the_line() {
+        gpu_or_skip!();
+        // 字の既定の字送りと合わない幅 (8.4) にして、ずれが出る条件にする。
+        let (cw, ch) = (8.4_f32, 18.0_f32);
+        let marks = [0, 40, 79];
+        let view = div().w(Px(700.0)).h(Px(40.0)).child(
+            sabitori_core::cell_grid(std::sync::Arc::new(grid_of(80, &marks)), cw, ch).font_size(14.0),
+        );
+        let out = render(&view, Sheet::px(700.0, 40.0)).expect("描けなかった");
+        let mut inked = std::collections::BTreeSet::new();
+        for y in 0..18u32 {
+            for x in 0..700u32 {
+                let p = out.pixel(x, y).unwrap();
+                if p[0] < 120 && p[1] < 120 {
+                    // 字の墨。どのセルに落ちたか。
+                    inked.insert((x as f32 / cw).floor() as usize);
+                }
+            }
+        }
+        assert_eq!(inked.into_iter().collect::<Vec<_>>(), marks.to_vec(), "字がセルの外に出ている");
+        // 背景もその場所に。
+        let red = out.pixel((79.5 * cw) as u32, 2).unwrap();
+        assert!(red[0] > 200 && red[1] < 60, "行末の背景が無い: {red:?}");
+    }
+
+    fn text_renderer() -> Option<sabitori_text::TextRenderer> {
+        let (device, _queue) = headless_device()?;
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let ui = sabitori_gpu::UiOverlayRenderer::new(&device, format);
+        Some(sabitori_text::TextRenderer::new(&device, format, ui.globals_bind_group_layout()))
+    }
+
+    /// **版番号が同じ行は組み直さない** — 前の字形をそのまま使う。
+    /// 変えたら版を上げる、が約束 (`CellGrid::set` は自動で上げる)。
+    #[test]
+    fn rows_with_the_same_version_reuse_last_frames_glyphs() {
+        gpu_or_skip!();
+        let mut tr = text_renderer().unwrap();
+        let mut g = grid_of(10, &[1, 2]);
+        let draw = |tr: &mut sabitori_text::TextRenderer, g: &sabitori_core::CellGrid, x: f32| {
+            tr.prepare_cell_grid(g, x, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(7))
+        };
+        let first = draw(&mut tr, &g, 0.0);
+        assert_eq!(first.len(), 2);
+
+        // 版を上げずに消す → 前の字形のまま (使い回している証拠)。
+        g.cells[2].ch = ' ';
+        assert_eq!(draw(&mut tr, &g, 0.0).len(), 2);
+        // 位置だけ変わっても使い回す (格子ごと動かす)。
+        let moved = draw(&mut tr, &g, 100.0);
+        assert_eq!(moved[0].position[0], first[0].position[0] + 100.0);
+
+        // 版を上げれば組み直す。
+        g.row_versions[0] += 1;
+        assert_eq!(draw(&mut tr, &g, 0.0).len(), 1);
+
+        // 鍵が無ければ毎回組む。
+        g.cells[1].ch = ' ';
+        assert_eq!(tr.prepare_cell_grid(&g, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, None).len(), 0);
+    }
+
+    /// 字の大きさ・セルの寸法・不透明度が変われば、版が同じでも組み直す。
+    #[test]
+    fn changing_the_metrics_rebuilds_the_row() {
+        gpu_or_skip!();
+        let mut tr = text_renderer().unwrap();
+        let g = grid_of(10, &[3]);
+        let a = tr.prepare_cell_grid(&g, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(1));
+        let b = tr.prepare_cell_grid(&g, 0.0, 0.0, 10.0, 18.0, 14.0, 1.0, None, Some(1));
+        assert!((b[0].position[0] - a[0].position[0] - 6.0).abs() < 0.01, "3 列目 × 2px");
+        let c = tr.prepare_cell_grid(&g, 0.0, 0.0, 10.0, 18.0, 14.0, 0.5, None, Some(1));
+        assert!((c[0].color[3] - 0.5).abs() < 0.01);
+    }
 }

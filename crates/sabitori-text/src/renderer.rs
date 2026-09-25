@@ -178,7 +178,37 @@ pub struct TextRenderer {
     /// text selection re-shaped its whole UI at frame rate — about half of
     /// draw time (#49). Both now go through [`TextRenderer::ensure_shaped`].
     glyph_cache: std::collections::HashMap<u64, ShapedRun>,
+    /// 格子のセル 1 つ分の字形 ([#102])。鍵は文字と太さ・斜体・大きさだけ —
+    /// 格子は文字列をシェーピングしないので、端末の行が 1 字変わってもここに当たる。
+    ///
+    /// [#102]: https://github.com/Mutafika/sabitori/issues/102
+    cell_glyphs: std::collections::HashMap<CellGlyphKey, Vec<GlyphInstance>>,
+    /// 格子の行ごとの字形 (格子の左上からの相対位置・色込み)。版番号が同じ行は
+    /// 組み直さずにこれを使う。
+    grid_rows: std::collections::HashMap<(u64, usize), GridRow>,
 }
+
+/// [`TextRenderer::cell_glyphs`] の鍵。
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct CellGlyphKey {
+    ch: char,
+    bold: bool,
+    italic: bool,
+    font_bits: u32,
+    line_bits: u32,
+    family: u64,
+}
+
+/// [`TextRenderer::grid_rows`] の 1 行。
+struct GridRow {
+    version: u64,
+    /// 字の大きさ・セルの寸法・不透明度・書体。どれか変われば組み直す。
+    metrics: [u32; 5],
+    glyphs: Vec<GlyphInstance>,
+}
+
+/// 行の使い回しを捨てる目安。格子が消えても鍵が残るので、溜まりすぎたら空ける。
+const GRID_ROWS_MAX: usize = 4096;
 
 /// One shaped text run, stored **relative to the text origin** so it can be
 /// replayed at any `(x, y)`.
@@ -691,7 +721,154 @@ impl TextRenderer {
             instance_capacity,
             scale_factor: 1.0,
             glyph_cache: std::collections::HashMap::new(),
+            cell_glyphs: std::collections::HashMap::new(),
+            grid_rows: std::collections::HashMap::new(),
         }
+    }
+
+    /// シェーピングの結果を全部捨てる。字形の位置・アトラスの座標を焼き込んで
+    /// いるので、書体・倍率・アトラスが変わったら 3 つとも一緒に捨てる。
+    fn clear_shaped(&mut self) {
+        self.glyph_cache.clear();
+        self.cell_glyphs.clear();
+        self.grid_rows.clear();
+    }
+
+    /// **等幅の文字の格子の字形** ([#102](https://github.com/Mutafika/sabitori/issues/102))。
+    ///
+    /// 文字列をシェーピングしない。セルごとに文字単位のキャッシュから字形を引き、
+    /// `(x + col * cell_w, y + row * cell_h)` に置く (字送りのズレは起きない)。
+    /// 行の中では上下の中央。`cache_key` があれば、版番号 (`row_versions`) が
+    /// 前と同じ行は組み直さずに前の字形を使う。
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_cell_grid(
+        &mut self,
+        grid: &sabitori_core::CellGrid,
+        x: f32,
+        y: f32,
+        cell_w: f32,
+        cell_h: f32,
+        font_size: f32,
+        opacity: f32,
+        family: Option<&str>,
+        cache_key: Option<u64>,
+    ) -> Vec<GlyphInstance> {
+        use sabitori_core::CellFlags;
+        let font_size = quantize_font_size(font_size);
+        let family_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            family.hash(&mut h);
+            h.finish()
+        };
+        let metrics = [
+            font_size.to_bits(),
+            cell_w.to_bits(),
+            cell_h.to_bits(),
+            opacity.to_bits(),
+            family_hash as u32 ^ (family_hash >> 32) as u32,
+        ];
+        if self.grid_rows.len() > GRID_ROWS_MAX {
+            self.grid_rows.clear();
+        }
+        let mut out = Vec::new();
+        for row in 0..grid.rows {
+            let version = grid.row_version(row);
+            let cached = cache_key
+                .and_then(|key| self.grid_rows.get(&(key, row)))
+                .filter(|c| c.version == version && c.metrics == metrics);
+            if let Some(cached) = cached {
+                out.extend(cached.glyphs.iter().map(|g| {
+                    let mut g = *g;
+                    g.position = [g.position[0] + x, g.position[1] + y];
+                    g
+                }));
+                continue;
+            }
+            let mut line = Vec::new();
+            for (col, cell) in grid.row(row).iter().enumerate() {
+                if cell.ch == ' ' || cell.ch == '\0' || cell.flags.contains(CellFlags::WIDE_SPACER) {
+                    continue;
+                }
+                let bold = cell.flags.contains(CellFlags::BOLD);
+                let italic = cell.flags.contains(CellFlags::ITALIC);
+                let mut color = cell.fg;
+                if cell.flags.contains(CellFlags::DIM) {
+                    color.a *= 0.5;
+                }
+                color.a *= opacity;
+                let color = color.to_array();
+                let (cx, cy) = (col as f32 * cell_w, row as f32 * cell_h);
+                for g in self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash) {
+                    let mut g = *g;
+                    g.position = [g.position[0] + cx, g.position[1] + cy];
+                    g.color = color;
+                    line.push(g);
+                }
+            }
+            out.extend(line.iter().map(|g| {
+                let mut g = *g;
+                g.position = [g.position[0] + x, g.position[1] + y];
+                g
+            }));
+            if let Some(key) = cache_key {
+                self.grid_rows.insert((key, row), GridRow { version, metrics, glyphs: line });
+            }
+        }
+        out
+    }
+
+    /// 1 字ぶんの字形 (セルの左上からの相対位置)。無ければ 1 字だけシェーピングして
+    /// 覚える。行の高さを `cell_h` にするので、字は行の中で上下の中央に来る。
+    #[allow(clippy::too_many_arguments)]
+    fn cell_glyph(
+        &mut self,
+        ch: char,
+        bold: bool,
+        italic: bool,
+        font_size: f32,
+        cell_h: f32,
+        family: Option<&str>,
+        family_hash: u64,
+    ) -> &[GlyphInstance] {
+        let key = CellGlyphKey {
+            ch,
+            bold,
+            italic,
+            font_bits: font_size.to_bits(),
+            line_bits: cell_h.to_bits(),
+            family: family_hash,
+        };
+        if !self.cell_glyphs.contains_key(&key) {
+            let mut buf = [0u8; 4];
+            let text = ch.encode_utf8(&mut buf);
+            let typo = Typography {
+                italic,
+                line_height: Some(if font_size > 0.0 { cell_h / font_size } else { 1.0 }),
+                ..Typography::default()
+            };
+            let run_key = run_cache_key(text, font_size, None, bold, true, family, Some(1), typo);
+            let mut ctx = ShapeCtx {
+                font_system: &mut self.shaper.font_system,
+                swash_cache: &mut self.swash_cache,
+                atlas: &mut self.atlas,
+                scale_factor: self.scale_factor,
+                preferred_family: &self.shaper.preferred_family,
+                preferred_monospace_family: &self.shaper.preferred_monospace_family,
+            };
+            ensure_shaped(
+                &mut self.glyph_cache, &mut ctx, run_key, text, 0.0, 0.0, font_size, None, bold,
+                true, family, Some(1), typo,
+            );
+            let glyphs = self.glyph_cache[&run_key].glyphs.clone();
+            // アトラスが溢れて字形が落ちた結果は覚えない (次のフレームで復旧してから取り直す)。
+            if !self.atlas.exhausted {
+                self.cell_glyphs.insert(key, glyphs);
+            } else {
+                return &[];
+            }
+        }
+        &self.cell_glyphs[&key]
     }
 
     /// Override the generic sans-serif family. When set, proportional text
@@ -706,7 +883,7 @@ impl TextRenderer {
         // The shaper owns the value and reports whether it moved; dropping the
         // shaped-glyph cache stays here because the shaper has no caches.
         if self.shaper.set_preferred_family(family) {
-            self.glyph_cache.clear(); // resolved face changed → reshape
+            self.clear_shaped(); // resolved face changed → reshape
             true
         } else {
             false
@@ -720,7 +897,7 @@ impl TextRenderer {
     /// on the old face (the measure cache doesn't include the family).
     pub fn set_preferred_monospace_family(&mut self, family: Option<String>) -> bool {
         if self.shaper.set_preferred_monospace_family(family) {
-            self.glyph_cache.clear(); // resolved monospace face changed → reshape
+            self.clear_shaped(); // resolved monospace face changed → reshape
             true
         } else {
             false
@@ -736,7 +913,7 @@ impl TextRenderer {
     /// ```
     pub fn load_font(&mut self, data: Vec<u8>) {
         self.shaper.load_font(data);
-        self.glyph_cache.clear(); // new face may change fallback/shaping
+        self.clear_shaped(); // new face may change fallback/shaping
     }
 
     /// 渡した user fonts を system fonts より先に DB に入れ直す。
@@ -746,7 +923,7 @@ impl TextRenderer {
     /// のシステム JP フォントよりバンドル済みの Noto などが優先される。
     pub fn prefer_user_fonts(&mut self, user_fonts: &[Vec<u8>]) {
         self.shaper.prefer_user_fonts(user_fonts);
-        self.glyph_cache.clear(); // font_system rebuilt → reshape everything
+        self.clear_shaped(); // font_system rebuilt → reshape everything
     }
 
     /// Update the rasterization scale factor, flushing the glyph atlas when it
@@ -760,7 +937,7 @@ impl TextRenderer {
         if scale != self.scale_factor {
             self.scale_factor = scale;
             self.atlas.clear();
-            self.glyph_cache.clear(); // glyph size/pos baked at the old scale
+            self.clear_shaped(); // glyph size/pos baked at the old scale
         }
     }
 
@@ -777,7 +954,7 @@ impl TextRenderer {
     pub fn maybe_recover_atlas(&mut self) -> bool {
         if self.atlas.exhausted {
             self.atlas.clear();
-            self.glyph_cache.clear();
+            self.clear_shaped();
             true
         } else {
             false
