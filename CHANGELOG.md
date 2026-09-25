@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-25
+
 ### Added
 
 - **親からはみ出した子を知らせる**
@@ -75,7 +77,7 @@
   - 描くのは見えている行だけ (スクロールの中の長いログでも重くならない)
 
   120×40 で 1 行ずつ書き換えると、組んでから描く準備までが 1 フレーム
-  0.34ms → 0.03ms、全行が流れる場合で 0.37ms → 0.13ms (手元の release、
+  0.32ms → 0.04ms、全行が流れる場合で 0.33ms → 0.13ms (手元の release、
   8 字ずつの `text()` + セルごとの背景 `div` と比べて)。
   型は `CellGrid` / `GridCell` / `CellFlags` (表の `Cell` とぶつからない名前)。
   選択・カーソル・IME の変換中の文字は持たない — 格子の上に普通の要素として重ねる。
@@ -3964,7 +3966,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/Mutafika/sabitori/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Mutafika/sabitori/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/Mutafika/sabitori/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/Mutafika/sabitori/compare/v0.19.0...v0.20.0
