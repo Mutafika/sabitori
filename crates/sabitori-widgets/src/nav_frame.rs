@@ -394,10 +394,16 @@ pub fn nav_frame<A: 'static>(
                         .label("メニュー")
                         .w(Px(style.bar_height))
                         .h(Px(style.bar_height))
+                        .flex_col()
                         .items_center()
                         .justify_center()
+                        .gap(4.0)
                         .hover(|s| s.bg(style.hover_bg))
-                        .child(text("☰").font_size(20.0).color(style.text)),
+                        // 3 本線は字 (☰) ではなく矩形で描く。web に同梱の書体には
+                        // この字が無く、豆腐になっていた。
+                        .children((0..3).map(|_| {
+                            div().w(Px(18.0)).h(Px(2.0)).shrink(0.0).rounded_px(1.0).bg(style.text)
+                        })),
                 )
                 .child(
                     text(&title)

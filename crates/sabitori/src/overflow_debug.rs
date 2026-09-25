@@ -49,17 +49,24 @@ impl OverflowDebug {
         if !self.enabled {
             return;
         }
-        let found: Vec<LayoutOverflow> = build
-            .overflows
-            .iter()
-            .chain(overlay.into_iter().flat_map(|o| o.overflows.iter()))
-            .cloned()
-            .collect();
-        for o in &found {
-            if self.seen.insert(o.path.clone()) {
-                log::warn!("{}", describe(o));
-            }
+        // 地の木の目印は overlay の中身 (引き出し・modal・menu) より**下**に描く。
+        // 最後に積むと、開いた引き出しの上に地の目印が透けて出る。外付けの木
+        // (`overlay_view`) の目印は、その中身より上 = 最後に積む。
+        let mut base_marks = Vec::new();
+        for o in &build.overflows {
+            self.log_once(o);
+            base_marks.extend(markers(o));
+        }
+        build.overlay_list.commands.splice(0..0, base_marks);
+        for o in overlay.into_iter().flat_map(|o| o.overflows.iter()) {
+            self.log_once(o);
             build.overlay_list.commands.extend(markers(o));
+        }
+    }
+
+    fn log_once(&mut self, o: &LayoutOverflow) {
+        if self.seen.insert(o.path.clone()) {
+            log::warn!("{}", describe(o));
         }
     }
 }
@@ -181,6 +188,22 @@ mod tests {
         dbg.flag(&mut build, None);
         assert_eq!(build.overlay_list.commands.len(), first * 2, "目印は毎フレーム描く");
         assert_eq!(dbg.seen.len(), 1, "ログは 1 回");
+    }
+
+    /// 地の木の目印は、開いている引き出しや modal (overlay の中身) より下。
+    #[test]
+    fn base_markers_go_under_the_overlay_content() {
+        let mut dbg = OverflowDebug { enabled: true, seen: HashSet::new() };
+        let mut build = sabitori_core::build::build_tree(&sabitori_core::element::div(), 10.0, 10.0);
+        let drawer = fill(Rect::new(0.0, 0.0, 280.0, 500.0), Color::WHITE);
+        build.overlay_list.commands.push(drawer);
+        build.overflows.push(toolbar_overflow());
+        dbg.flag(&mut build, None);
+        let last = build.overlay_list.commands.last().unwrap();
+        assert!(
+            matches!(last, RenderCommand::Rect(r) if r.rect.size.width == 280.0),
+            "引き出しが最後 (いちばん上) でない"
+        );
     }
 
     #[test]
