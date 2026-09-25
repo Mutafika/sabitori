@@ -190,6 +190,9 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 /// ツリーを 1 枚の画像にする。
 ///
 /// 文字は**実フォントで測ってから**組むので、折り返しも行数も画面と同じになる。
+///
+/// 幅の区分ごとの上書き (`.at(..)`) は畳まない — 紙の幅で当てたいなら、先に
+/// [`sabitori_core::element::apply_size_rules`]`(&mut view, sheet.width)` を呼ぶ。
 pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let (device, queue) = headless_device().ok_or(RenderError::NoGpu)?;
     // 読み戻す前提なので、画面と同じ sRGB で描く。
@@ -625,33 +628,65 @@ mod tests {
         Some(sabitori_text::TextRenderer::new(&device, format, ui.globals_bind_group_layout()))
     }
 
-    /// **版番号が同じ行は組み直さない** — 前の字形をそのまま使う。
-    /// 変えたら版を上げる、が約束 (`CellGrid::set` は自動で上げる)。
+    fn prep(
+        tr: &mut sabitori_text::TextRenderer,
+        g: &sabitori_core::CellGrid,
+        x: f32,
+        key: Option<u64>,
+    ) -> Vec<sabitori_text::GlyphInstance> {
+        tr.prepare_cell_grid(g, 0..g.rows, x, 0.0, 8.0, 18.0, 14.0, 1.0, None, key)
+    }
+
+    /// **中身が前と同じ行は組み直さない。** 位置だけ変わっても (格子ごと動かす)
+    /// 使い回す。
     #[test]
-    fn rows_with_the_same_version_reuse_last_frames_glyphs() {
+    fn unchanged_rows_reuse_last_frames_glyphs() {
         gpu_or_skip!();
         let mut tr = text_renderer().unwrap();
-        let mut g = grid_of(10, &[1, 2]);
-        let draw = |tr: &mut sabitori_text::TextRenderer, g: &sabitori_core::CellGrid, x: f32| {
-            tr.prepare_cell_grid(g, x, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(7))
-        };
-        let first = draw(&mut tr, &g, 0.0);
-        assert_eq!(first.len(), 2);
-
-        // 版を上げずに消す → 前の字形のまま (使い回している証拠)。
-        g.cells[2].ch = ' ';
-        assert_eq!(draw(&mut tr, &g, 0.0).len(), 2);
-        // 位置だけ変わっても使い回す (格子ごと動かす)。
-        let moved = draw(&mut tr, &g, 100.0);
+        let g = grid_of(10, &[1, 2]);
+        let first = prep(&mut tr, &g, 0.0, Some(7));
+        assert_eq!((first.len(), tr.grid_rows_built()), (2, 1));
+        let moved = prep(&mut tr, &g, 100.0, Some(7));
+        assert_eq!(tr.grid_rows_built(), 1, "組み直している");
         assert_eq!(moved[0].position[0], first[0].position[0] + 100.0);
-
-        // 版を上げれば組み直す。
-        g.row_versions[0] += 1;
-        assert_eq!(draw(&mut tr, &g, 0.0).len(), 1);
-
         // 鍵が無ければ毎回組む。
-        g.cells[1].ch = ' ';
-        assert_eq!(tr.prepare_cell_grid(&g, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, None).len(), 0);
+        prep(&mut tr, &g, 0.0, None);
+        assert_eq!(tr.grid_rows_built(), 2);
+    }
+
+    /// **知らせなくても、中身が変われば組み直す。** 毎フレーム格子を作り直す
+    /// アプリ (ログビューア) や、同じ要素に別の端末の格子を渡すタブ切替で、
+    /// 前の字が残らない。版番号 (書き込み回数) で見ていたころは、"abc" の次に
+    /// "xy " を書いた格子が同じ版 3 になり、"abc" のまま描かれていた。
+    #[test]
+    fn a_different_grid_under_the_same_key_is_redrawn() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid};
+        let mut tr = text_renderer().unwrap();
+        let mut a = CellGrid::new(3, 1, Color::BLACK);
+        a.put_str(0, 0, "abc", Color::BLACK, None, CellFlags::NONE);
+        let mut b = CellGrid::new(3, 1, Color::BLACK);
+        b.put_str(0, 0, "xy ", Color::BLACK, None, CellFlags::NONE);
+        assert_eq!(prep(&mut tr, &a, 0.0, Some(1)).len(), 3);
+        assert_eq!(prep(&mut tr, &b, 0.0, Some(1)).len(), 2);
+        // 直接書き換えても。
+        b.cells[2].ch = 'z';
+        assert_eq!(prep(&mut tr, &b, 0.0, Some(1)).len(), 3);
+    }
+
+    /// 描くのは渡した範囲 (見えている行) だけ。
+    #[test]
+    fn only_the_visible_rows_are_prepared() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid};
+        let mut tr = text_renderer().unwrap();
+        let mut g = CellGrid::new(4, 1000, Color::BLACK);
+        for r in 0..1000 {
+            g.put_str(0, r, "ab", Color::BLACK, None, CellFlags::NONE);
+        }
+        let out = tr.prepare_cell_grid(&g, 10..12, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(3));
+        assert_eq!(out.len(), 4);
+        assert_eq!(tr.grid_rows_built(), 2);
     }
 
     /// 字の大きさ・セルの寸法・不透明度が変われば、版が同じでも組み直す。
@@ -660,10 +695,10 @@ mod tests {
         gpu_or_skip!();
         let mut tr = text_renderer().unwrap();
         let g = grid_of(10, &[3]);
-        let a = tr.prepare_cell_grid(&g, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(1));
-        let b = tr.prepare_cell_grid(&g, 0.0, 0.0, 10.0, 18.0, 14.0, 1.0, None, Some(1));
+        let a = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(1));
+        let b = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 1.0, None, Some(1));
         assert!((b[0].position[0] - a[0].position[0] - 6.0).abs() < 0.01, "3 列目 × 2px");
-        let c = tr.prepare_cell_grid(&g, 0.0, 0.0, 10.0, 18.0, 14.0, 0.5, None, Some(1));
+        let c = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 0.5, None, Some(1));
         assert!((c[0].color[3] - 0.5).abs() < 0.01);
     }
 }

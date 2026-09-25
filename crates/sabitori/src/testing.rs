@@ -813,6 +813,9 @@ impl<A: DeclarativeApp> Harness<A> {
 }
 
 /// `Element` をレイアウトだけ通す。 ランタイムを組まずにツリーの寸法を見たいとき用。
+///
+/// 幅の区分ごとの上書き (`.at(..)`) は畳まない — 先に
+/// [`sabitori_core::element::apply_size_rules`] を呼ぶこと。
 pub fn layout(root: &Element, width: f32, height: f32) -> BuildResult {
     sabitori_core::build::build_tree_measured(root, width, height, &StubMeasure)
 }

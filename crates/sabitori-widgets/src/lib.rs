@@ -79,7 +79,7 @@ pub use focus::{FocusChange, FocusKeyResult, FocusManager};
 pub use menu_bar::{MenuBarState, MenuBarStyle, MenuDef};
 pub use modal::{modal, Modal, ModalState, ModalStyle};
 pub use nav_frame::{
-    nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavMode, NavState,
+    nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavMode, NavFrameState,
 };
 pub use time_picker::{
     parse_hhmm, DateTimePickerState, DateTimePickerStyle, TimePickerState, TimePickerStyle,

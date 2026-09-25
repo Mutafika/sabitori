@@ -4526,6 +4526,9 @@ impl<A: DeclarativeApp> AppState<A> {
             (root, built)
         };
         let _ = &root;
+        let mut build_result = build_result;
+        // はみ出しの目印 (#95)。別窓は overlay を描かないので地の上に積む。
+        self.overflow_debug.flag_on_top(&mut build_result);
 
         let (rects, lists) =
             UiDrawLists::extract(&build_result.render_list, &mut extra.text_renderer);

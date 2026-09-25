@@ -26,7 +26,8 @@
     見るなら `Harness::with_real_text` と組む。
   - **debug ビルドの画面**に目印を描く (はみ出した部分の網掛け + 親の辺の黄と黒の縞)。
     同じ所は 1 回だけ `log::warn!` に出す。release では何もしない。
-    `SABITORI_OVERFLOW=0` で消せる。
+    `SABITORI_OVERFLOW=0` で消せる。スクロールで隠れた所の目印は、見えている
+    範囲の外には描かない。別窓 (`view_for`) にも出る。
   - **`BuildResult::overflows`** / **`LayoutOverflow`** — id・根からの経路
     (`#main > #filters > #status` のように)・箱・各辺ではみ出した px。
   - **`Element::allow_overflow()`** — わざとはみ出させる要素を黙らせる。
@@ -46,7 +47,8 @@
 - **`Element::at` / `at_least` / `at_most` — 窓の幅の区分ごとの上書き**
   ([#97](https://github.com/Mutafika/sabitori/issues/97))。幅で変わるところを、
   `match ctx.size_class()` で木を 2 通り組まずに、**その要素の上に**書ける。
-  中身はふつうの builder なので、書けるものに制限は無い:
+  中身はふつうの builder で、要素に書けることは何でも書ける (closure は
+  `'static` なので `ctx` や `&self` は借りられない):
 
   ```rust
   // grid-cols-1 md:grid-cols-2
@@ -57,8 +59,8 @@
 
   区分は `SizeClass` (窓の幅)。窓を縮めたり広げたりすると、その場で切り替わる。
   ランタイムが `view()` / `overlay_view()` / `view_for()` の直後に畳むので、
-  `ctx` を部品の奥まで渡さなくてよい。`build_tree` を直接使うときは
-  `element::apply_size_rules` を先に呼ぶ。`SizeClass` は大小を比べられる
+  `ctx` を部品の奥まで渡さなくてよい。`build_tree` / `testing::layout` /
+  `offscreen::render` を直接使うときは `element::apply_size_rules` を先に呼ぶ。`SizeClass` は大小を比べられる
   (`Compact < Medium < Expanded`)。親の幅で切り替える版 (container query) は
   まだ無い。
 - **`cell_grid` — 等幅の文字の格子を要素 1 つで描く**
@@ -68,14 +70,16 @@
   - 字形は**文字単位で**キャッシュし (`(文字, 太字, 斜体, 大きさ)`)、
     `col * cell_w` に置く。行末でも背景・カーソルからずれない
   - 背景は行ごとに同じ色の続きを矩形 1 つにまとめる。下線・取り消し線も描く
-  - `CellGrid::row_versions` が前のフレームと同じ行は、字形を組み直さずに使い回す
-    (要素に `id` があるとき)。`CellGrid::set` / `put_str` は自動で版を上げる
+  - 中身が前のフレームと同じ行は、字形を組み直さずに使い回す (要素に `id` が
+    あるとき)。行の中身を比べて決めるので、「変えたら知らせる」約束は無い
+  - 描くのは見えている行だけ (スクロールの中の長いログでも重くならない)
 
   120×40 で 1 行ずつ書き換えると、組んでから描く準備までが 1 フレーム
   0.34ms → 0.03ms、全行が流れる場合で 0.37ms → 0.13ms (手元の release、
   8 字ずつの `text()` + セルごとの背景 `div` と比べて)。
   型は `CellGrid` / `GridCell` / `CellFlags` (表の `Cell` とぶつからない名前)。
   選択・カーソル・IME の変換中の文字は持たない — 格子の上に普通の要素として重ねる。
+  格子の文字は読み上げ (a11y) と `Harness::text_rect` には出ない。
   ブロック要素を矩形で描くオプションと、下線の色 (SGR 58) はまだ無い。
 
 ## [0.21.0] - 2026-09-25

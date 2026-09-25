@@ -159,6 +159,10 @@ pub struct LayoutOverflow {
     pub parent: Rect,
     /// 各辺で親を越えた量 (px)。越えていない辺は 0。
     pub by: crate::Edges<f32>,
+    /// 祖先の切る入れ物 (`.scroll(..)` / `.overflow_hidden()`) が見せている範囲。
+    /// `None` = 切られていない。目印はこの中にだけ描く — スクロールで隠れた行の
+    /// はみ出しが、ヘッダやツールバーの上に出ないように。
+    pub clip: Option<Rect>,
 }
 
 /// The result of [`build_tree`].
@@ -638,6 +642,7 @@ fn build_tree_impl(
         root_node,
         0,
         Some(viewport),
+        None,
         (0.0, 0.0),
         (0.0, 0.0),
         &anchor_positions,
@@ -670,10 +675,31 @@ fn emit_cell_grid(
     abs_y: f32,
     scale: f32,
     opacity: f32,
+    clip: Option<Rect>,
 ) {
     use crate::cell_grid::CellFlags;
     let grid = &cg.grid;
     let (cw, ch) = (cg.cell_w * scale, cg.cell_h * scale);
+    let cache_key = element.id.as_deref().map(|id| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut h);
+        h.finish()
+    });
+    let draw = crate::render_list::CellGridDraw {
+        element_index: index,
+        origin: Point::new(abs_x, abs_y),
+        cell_w: cw,
+        cell_h: ch,
+        font_size: style.font_size * scale,
+        grid: grid.clone(),
+        opacity,
+        font_family: style.font_family.clone(),
+        cache_key,
+    };
+    // 背景と線も見えている行だけ。スクロールの中の長いログで、見えない行の
+    // 矩形を毎フレーム出さない。
+    let rows = draw.visible_rows(clip);
     let rect = |col: usize, row: usize, cols: usize, y: f32, h: f32, color: Color| {
         RenderCommand::Rect(RectDraw {
             rect: Rect::new(abs_x + col as f32 * cw, abs_y + row as f32 * ch + y, cols as f32 * cw, h),
@@ -681,7 +707,7 @@ fn emit_cell_grid(
             ..Default::default()
         })
     };
-    for row in 0..grid.rows {
+    for row in rows.clone() {
         for (col, len, color) in grid.bg_runs(row) {
             target.commands.push(rect(col, row, len, 0.0, ch, color));
         }
@@ -689,7 +715,7 @@ fn emit_cell_grid(
     // 線の太さは字の大きさに合わせる (最低 1px)。下線はセルの下から 1 本ぶん上、
     // 取り消し線はセルの真ん中。
     let line = (style.font_size * scale / 14.0).max(1.0);
-    for row in 0..grid.rows {
+    for row in rows {
         for (col, cell) in grid.row(row).iter().enumerate() {
             let fg = if cell.flags.contains(CellFlags::DIM) { cell.fg.with_alpha(cell.fg.a * 0.5) } else { cell.fg };
             if cell.flags.contains(CellFlags::UNDERLINE) {
@@ -700,23 +726,7 @@ fn emit_cell_grid(
             }
         }
     }
-    let cache_key = element.id.as_deref().map(|id| {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        id.hash(&mut h);
-        h.finish()
-    });
-    target.commands.push(RenderCommand::CellGrid(crate::render_list::CellGridDraw {
-        element_index: index,
-        origin: Point::new(abs_x, abs_y),
-        cell_w: cw,
-        cell_h: ch,
-        font_size: style.font_size * scale,
-        grid: grid.clone(),
-        opacity,
-        font_family: style.font_family.clone(),
-        cache_key,
-    }));
+    target.commands.push(RenderCommand::CellGrid(draw));
 }
 
 // ---------------------------------------------------------------------------
@@ -764,6 +774,8 @@ fn collect_overflows<'a>(
     index: usize,
     // 親の箱 (画面座標)。`None` = 親が切る入れ物なので見ない。
     parent_box: Option<Rect>,
+    // 祖先の切る入れ物が見せている範囲 (画面座標)。
+    clip: Option<Rect>,
     parent_origin: (f32, f32),
     parent_scroll: (f32, f32),
     anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
@@ -826,6 +838,7 @@ fn collect_overflows<'a>(
                 rect,
                 parent: pb,
                 by,
+                clip,
             });
         }
     }
@@ -833,15 +846,23 @@ fn collect_overflows<'a>(
     // 子から見た親の箱 = この要素の箱。切る入れ物なら見ない。
     let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
     let inner = if clips { None } else { Some(rect) };
+    let child_clip = if clips {
+        Some(match clip {
+            Some(c) => c.intersect(&rect).unwrap_or(Rect::new(rect.origin.x, rect.origin.y, 0.0, 0.0)),
+            None => rect,
+        })
+    } else {
+        clip
+    };
     let child_origin = if clips { (x - style.scroll_x, y - style.scroll_y) } else { (x, y) };
     let child_scroll = if clips { (style.scroll_x, style.scroll_y) } else { parent_scroll };
 
-    let children = taffy.children(taffy_node).unwrap_or_default();
+    // `taffy.children()` は Vec を作るので、毎フレーム全ノードでは呼ばない。
     for (i, child) in element.children.iter().enumerate() {
-        if let Some(&node) = children.get(i) {
+        if let Ok(node) = taffy.child_at_index(taffy_node, i) {
             collect_overflows(
-                taffy, child, node, i, inner, child_origin, child_scroll, anchor_positions, path,
-                out,
+                taffy, child, node, i, inner, child_clip, child_origin, child_scroll,
+                anchor_positions, path, out,
             );
         }
     }
@@ -1617,7 +1638,7 @@ fn emit_commands(
             }
         }
         ElementKind::CellGrid(cg) => {
-            emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity);
+            emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity, parent_clip);
         }
         ElementKind::Image { key, data } => {
             target.commands.push(RenderCommand::Image(ImageDraw {
@@ -4877,6 +4898,7 @@ mod overflow_tests {
         assert_eq!(o.id.as_deref(), Some("wide"));
         assert_eq!(o.by.right, 60.0);
         assert_eq!(o.rect.origin.y, 60.0 - 30.0, "流した分だけ上に出る");
+        assert_eq!(o.clip, Some(Rect::new(0.0, 0.0, 200.0, 100.0)), "見えている範囲を持つ");
     }
 
     #[test]
@@ -5030,6 +5052,26 @@ mod cell_grid_tests {
         let without = build_tree(&cell_grid(term(), 8.0, 17.0), 1000.0, 600.0);
         assert!(commands(&with_id).1[0].cache_key.is_some());
         assert!(commands(&without).1[0].cache_key.is_none());
+    }
+
+    /// スクロールの中の長いログ: 背景は見えている行のぶんだけ出す。
+    #[test]
+    fn only_visible_rows_emit_backgrounds() {
+        let mut g = CellGrid::new(4, 1000, FG);
+        for r in 0..1000 {
+            g.put_str(0, r, "ab", FG, Some(RED), CellFlags::NONE);
+        }
+        let root = div()
+            .w(crate::element::Dimension::Px(100.0))
+            .h(crate::element::Dimension::Px(100.0))
+            .flex_col()
+            .scroll_manual(0.0, 170.0)
+            .child(cell_grid(Arc::new(g), 8.0, 17.0).shrink(0.0));
+        let b = build_tree(&root, 100.0, 100.0);
+        let (rects, grids) = commands(&b);
+        // 流した 170 から 270 まで = 10 行目から 15 行目の途中まで。
+        assert_eq!(grids[0].visible_rows(Some(Rect::new(0.0, 0.0, 100.0, 100.0))), 10..16);
+        assert_eq!(rects.len(), 6, "見えている 6 行ぶんだけ");
     }
 
     /// 2 セル幅の字の右半分は、背景だけ描いて字形は描かない (描画側の約束)。

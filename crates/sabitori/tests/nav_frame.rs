@@ -8,17 +8,17 @@ use sabitori::testing::Harness;
 use sabitori::*;
 use sabitori_core::element::{div, text};
 use sabitori_widgets::{
-    nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavState,
+    nav_frame, nav_item_id, nav_menu_button_id, NavFrameStyle, NavGroup, NavItem, NavFrameState,
 };
 
 struct Renta {
     page: String,
-    nav: NavState,
+    nav: NavFrameState,
 }
 
 impl Renta {
     fn new() -> Self {
-        Self { page: "dispatch".into(), nav: NavState::new() }
+        Self { page: "dispatch".into(), nav: NavFrameState::new() }
     }
 }
 
@@ -167,4 +167,26 @@ fn the_bar_sits_below_the_status_bar() {
     let menu = h.rect_of(&nav_menu_button_id("nav")).unwrap();
     assert_eq!(menu.origin.y, 62.0);
     assert_eq!(h.rect_of("nav::content").unwrap().origin.y, 62.0 + 48.0 + 1.0);
+}
+
+/// 見出しの無いまとまり 1 つだけのナビ。
+struct Plain(NavFrameState);
+
+impl DeclarativeApp for Plain {
+    fn view(&self, ctx: &ViewContext) -> Element {
+        let groups = [NavGroup::default().item(NavItem::new("a", "A"))];
+        nav_frame(ctx, "nav", &self.0, &NavFrameStyle::default_dark(), &groups, "a", |_: &mut Plain, _| {}, div())
+    }
+}
+
+/// 一覧の上の余白 8px は、セーフエリアに足される (上書きで消えない)。
+#[test]
+fn the_list_keeps_its_top_padding_with_and_without_a_safe_area() {
+    for (top, rail) in [(0.0, false), (0.0, true), (47.0, false)] {
+        let width = if rail { 820.0 } else { 1320.0 };
+        let mut h = Harness::new(Plain(NavFrameState::new()), width, 700.0);
+        h.set_safe_area(top, 0.0, 0.0, 0.0);
+        h.settle();
+        assert_eq!(h.rect_of(&nav_item_id("nav", "a")).unwrap().origin.y, top + 8.0, "幅 {width} 上 {top}");
+    }
 }

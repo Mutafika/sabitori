@@ -16,7 +16,7 @@
 //! 形の切り替え・引き出しの開閉のばね・「選んだら閉じる」は枠組みが持つ。
 //!
 //! ```ignore
-//! struct App { page: String, nav: NavState }
+//! struct App { page: String, nav: NavFrameState }
 //!
 //! fn view(&self, ctx: &ViewContext) -> Element {
 //!     let groups = [
@@ -197,9 +197,9 @@ struct NavInner {
 ///
 /// サイドバー・細い列の形では使わない (開閉が無い)。
 #[derive(Clone)]
-pub struct NavState(Rc<RefCell<NavInner>>);
+pub struct NavFrameState(Rc<RefCell<NavInner>>);
 
-impl Managed for NavState {
+impl Managed for NavFrameState {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -214,22 +214,22 @@ impl Managed for NavState {
     }
 }
 
-impl Default for NavState {
+impl Default for NavFrameState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for NavState {
+impl std::fmt::Debug for NavFrameState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NavState")
+        f.debug_struct("NavFrameState")
             .field("drawer_open", &self.is_drawer_open())
             .field("progress", &self.progress())
             .finish()
     }
 }
 
-impl NavState {
+impl NavFrameState {
     /// 引き出しを閉じた状態で作る。
     pub fn new() -> Self {
         Self(Rc::new(RefCell::new(NavInner {
@@ -283,6 +283,9 @@ impl NavState {
     }
 }
 
+/// 一覧・細い列の上下の余白。セーフエリアはこれに足す (上書きすると消える)。
+const LIST_PAD: f32 = 8.0;
+
 /// 項目を押したときにアプリへ渡す口。
 type OnSelect<A> = Rc<dyn Fn(&mut A, &str)>;
 
@@ -308,7 +311,7 @@ pub fn nav_menu_button_id(id: &str) -> String {
 pub fn nav_frame<A: 'static>(
     ctx: &ViewContext,
     id: &str,
-    state: &NavState,
+    state: &NavFrameState,
     style: &NavFrameStyle,
     groups: &[NavGroup],
     selected: &str,
@@ -352,9 +355,9 @@ pub fn nav_frame<A: 'static>(
                 .child(
                     nav.shrink(0.0)
                         .h_full()
-                        .pt(Px(safe.top))
+                        .pt(Px(LIST_PAD + safe.top))
                         .pl(Px(safe.left))
-                        .pb(Px(safe.bottom))
+                        .pb(Px(LIST_PAD + safe.bottom))
                         .bg(style.nav_bg),
                 )
                 .child(div().w(Px(1.0)).h_full().shrink(0.0).bg(style.border))
@@ -435,7 +438,7 @@ pub fn nav_frame<A: 'static>(
 fn drawer<A: 'static>(
     ctx: &ViewContext,
     id: &str,
-    state: &NavState,
+    state: &NavFrameState,
     style: &NavFrameStyle,
     groups: &[NavGroup],
     selected: &str,
@@ -463,9 +466,9 @@ fn drawer<A: 'static>(
         .w(Px(width))
         .h_full()
         .shrink(0.0)
-        .pt(Px(safe.top))
+        .pt(Px(LIST_PAD + safe.top))
         .pl(Px(safe.left))
-        .pb(Px(safe.bottom))
+        .pb(Px(LIST_PAD + safe.bottom))
         .bg(style.nav_bg)
         .shadow_md(Color::new(0.0, 0.0, 0.0, 0.5))
         .tx(-width * (1.0 - progress));
@@ -489,13 +492,13 @@ fn list<A: 'static>(
     groups: &[NavGroup],
     selected: &str,
     on_select: &OnSelect<A>,
-    closes: Option<&NavState>,
+    closes: Option<&NavFrameState>,
 ) -> Element {
     let mut col = div()
         .id(format!("{id}::list"))
         .scroll(format!("{id}::list"))
         .flex_col()
-        .py(Px(8.0));
+        .py(Px(LIST_PAD));
     for group in groups {
         if !group.title.is_empty() {
             col = col.child(
@@ -556,7 +559,7 @@ fn rail<A: 'static>(
         .scroll(format!("{id}::rail"))
         .flex_col()
         .items_center()
-        .py(Px(8.0))
+        .py(Px(LIST_PAD))
         .gap(2.0);
     for (gi, group) in groups.iter().enumerate() {
         if gi > 0 {
@@ -603,7 +606,7 @@ fn item_click<A: 'static>(
     id: &str,
     item: &NavItem,
     on_select: &OnSelect<A>,
-    closes: Option<&NavState>,
+    closes: Option<&NavFrameState>,
     el: Element,
 ) -> Element {
     let on_select = on_select.clone();

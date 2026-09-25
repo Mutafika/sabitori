@@ -48,7 +48,7 @@ fn everything_an_app_writes_is_reachable_from_the_facade() {
     let _responsive = div().at(SizeClass::Compact, |e| e.gap(4.0)).at_least(SizeClass::Medium, |e| e);
     // はみ出しの印 (#95)、ナビの枠組み (#98)
     let _quiet = div().allow_overflow();
-    let _nav = (NavState::new(), NavItem::new("a", "A").icon("◎"), NavGroup::new("g"), NavMode::for_width(800.0));
+    let _nav = (NavFrameState::new(), NavItem::new("a", "A").icon("◎"), NavGroup::new("g"), NavMode::for_width(800.0));
 
     // 非同期と HTTP (#64 / #63)
     let _tasks: Tasks<()> = Tasks::new();

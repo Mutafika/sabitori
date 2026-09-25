@@ -1150,8 +1150,10 @@ impl std::fmt::Debug for SizeRule {
 /// 木ぜんたいの [`Element::at`] などを、窓の幅 `width` で畳む
 /// ([#97](https://github.com/Mutafika/sabitori/issues/97))。
 ///
-/// ランタイムは `view()` / `overlay_view()` の直後に呼ぶので、アプリが呼ぶ必要は
-/// 無い。`build_tree` を直接使うときだけ、その前に呼ぶ。
+/// ランタイムは `view()` / `overlay_view()` / `view_for()` の直後に呼ぶので、
+/// アプリが呼ぶ必要は無い。**木を `&Element` で受け取る口** — `build_tree`、
+/// `testing::layout`、`offscreen::render` — は畳まない (`Element` は複製
+/// できないので、借りたまま上書きを当てられない)。その前にこれを呼ぶこと。
 ///
 /// 書いた順に当てる (後に書いた方が勝つ)。上書きの中で付けた `.at(..)` は
 /// 当てない (畳み終わった木に規則が残らないように)。子は親の上書きの**後**に
@@ -1556,7 +1558,6 @@ impl From<&std::sync::Arc<str>> for TextContent {
     }
 }
 
-/// Create a text element.
 /// **等幅の文字の格子を、要素 1 つで描く**
 /// ([#102](https://github.com/Mutafika/sabitori/issues/102))。端末・ログビューア・
 /// 16 進ダンプ・等幅の表に。詳しくは [`crate::cell_grid`]。
@@ -1581,6 +1582,7 @@ pub fn cell_grid(grid: std::sync::Arc<crate::cell_grid::CellGrid>, cell_w: f32, 
     el
 }
 
+/// Create a text element.
 pub fn text(content: impl Into<TextContent>) -> Element {
     Element {
         kind: ElementKind::Text { content: content.into().0 },
@@ -2290,7 +2292,9 @@ impl Element {
     ///
     /// 幅で変わるところを、分岐ではなく**その要素の上に**書ける。`ctx` を部品の
     /// 奥まで渡して `match ctx.size_class()` で木を 2 通り組まなくてよい。
-    /// 中身はふつうの builder なので、書けるものに制限は無い。
+    /// 中身はふつうの builder で、要素に書けることは何でも書ける。ただし
+    /// closure は `'static` なので、`ctx` や `&self` は借りられない (必要な値は
+    /// `move` で持ち込む)。
     ///
     /// ```ignore
     /// div()

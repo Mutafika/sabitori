@@ -48,6 +48,18 @@ pub struct CellGridDraw {
 }
 
 impl CellGridDraw {
+    /// `clip` の中に 1 画素でも入る行の範囲。描くのはこの行だけ。
+    pub fn visible_rows(&self, clip: Option<Rect>) -> std::ops::Range<usize> {
+        let rows = self.grid.rows;
+        let Some(c) = clip else { return 0..rows };
+        if self.cell_h <= 0.0 {
+            return 0..rows;
+        }
+        let top = ((c.origin.y - self.origin.y) / self.cell_h).floor().max(0.0) as usize;
+        let bottom = ((c.origin.y + c.size.height - self.origin.y) / self.cell_h).ceil().max(0.0) as usize;
+        top.min(rows)..bottom.min(rows)
+    }
+
     /// 格子の外形。
     pub fn rect(&self) -> Rect {
         Rect::new(

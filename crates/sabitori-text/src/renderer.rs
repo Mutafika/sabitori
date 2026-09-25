@@ -186,6 +186,8 @@ pub struct TextRenderer {
     /// 格子の行ごとの字形 (格子の左上からの相対位置・色込み)。版番号が同じ行は
     /// 組み直さずにこれを使う。
     grid_rows: std::collections::HashMap<(u64, usize), GridRow>,
+    /// 格子の行を組み直した回数 (テスト用。使い回しが効いているかを見る)。
+    grid_rows_built: usize,
 }
 
 /// [`TextRenderer::cell_glyphs`] の鍵。
@@ -201,14 +203,16 @@ struct CellGlyphKey {
 
 /// [`TextRenderer::grid_rows`] の 1 行。
 struct GridRow {
-    version: u64,
+    /// 組んだときの行の中身。同じなら字形を使い回す。
+    cells: Vec<sabitori_core::GridCell>,
     /// 字の大きさ・セルの寸法・不透明度・書体。どれか変われば組み直す。
     metrics: [u32; 5],
     glyphs: Vec<GlyphInstance>,
 }
 
 /// 行の使い回しを捨てる目安。格子が消えても鍵が残るので、溜まりすぎたら空ける。
-const GRID_ROWS_MAX: usize = 4096;
+/// 描くのは見えている行だけなので、ふつうはここまで溜まらない。
+const GRID_ROWS_MAX: usize = 16384;
 
 /// One shaped text run, stored **relative to the text origin** so it can be
 /// replayed at any `(x, y)`.
@@ -723,6 +727,7 @@ impl TextRenderer {
             glyph_cache: std::collections::HashMap::new(),
             cell_glyphs: std::collections::HashMap::new(),
             grid_rows: std::collections::HashMap::new(),
+            grid_rows_built: 0,
         }
     }
 
@@ -738,12 +743,16 @@ impl TextRenderer {
     ///
     /// 文字列をシェーピングしない。セルごとに文字単位のキャッシュから字形を引き、
     /// `(x + col * cell_w, y + row * cell_h)` に置く (字送りのズレは起きない)。
-    /// 行の中では上下の中央。`cache_key` があれば、版番号 (`row_versions`) が
-    /// 前と同じ行は組み直さずに前の字形を使う。
+    /// 行の中では上下の中央。描くのは `rows` の範囲の行だけ (見えている行)。
+    ///
+    /// `cache_key` があれば、**中身が前のフレームと同じ行**は組み直さずに前の字形を
+    /// 使う。版番号のような「変えたら上げる」約束には頼らない — 毎フレーム格子を
+    /// 作り直すアプリや、同じ要素に別の格子を渡すアプリでも、古い字が残らない。
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_cell_grid(
         &mut self,
         grid: &sabitori_core::CellGrid,
+        rows: std::ops::Range<usize>,
         x: f32,
         y: f32,
         cell_w: f32,
@@ -772,11 +781,11 @@ impl TextRenderer {
             self.grid_rows.clear();
         }
         let mut out = Vec::new();
-        for row in 0..grid.rows {
-            let version = grid.row_version(row);
+        for row in rows.start..rows.end.min(grid.rows) {
+            let cells = grid.row(row);
             let cached = cache_key
                 .and_then(|key| self.grid_rows.get(&(key, row)))
-                .filter(|c| c.version == version && c.metrics == metrics);
+                .filter(|c| c.metrics == metrics && c.cells.as_slice() == cells);
             if let Some(cached) = cached {
                 out.extend(cached.glyphs.iter().map(|g| {
                     let mut g = *g;
@@ -785,8 +794,9 @@ impl TextRenderer {
                 }));
                 continue;
             }
+            self.grid_rows_built += 1;
             let mut line = Vec::new();
-            for (col, cell) in grid.row(row).iter().enumerate() {
+            for (col, cell) in cells.iter().enumerate() {
                 if cell.ch == ' ' || cell.ch == '\0' || cell.flags.contains(CellFlags::WIDE_SPACER) {
                     continue;
                 }
@@ -812,10 +822,17 @@ impl TextRenderer {
                 g
             }));
             if let Some(key) = cache_key {
-                self.grid_rows.insert((key, row), GridRow { version, metrics, glyphs: line });
+                self.grid_rows
+                    .insert((key, row), GridRow { cells: cells.to_vec(), metrics, glyphs: line });
             }
         }
         out
+    }
+
+    /// 格子の行を組み直した回数。使い回しが効いているかをテストで見るための口。
+    #[doc(hidden)]
+    pub fn grid_rows_built(&self) -> usize {
+        self.grid_rows_built
     }
 
     /// 1 字ぶんの字形 (セルの左上からの相対位置)。無ければ 1 字だけシェーピングして

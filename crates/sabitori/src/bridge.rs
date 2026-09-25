@@ -414,6 +414,7 @@ fn cell_grid_to_glyphs(
 ) -> Vec<GlyphInstance> {
     let mut produced = tr.prepare_cell_grid(
         &d.grid,
+        d.visible_rows(clip),
         d.origin.x,
         d.origin.y,
         d.cell_w,

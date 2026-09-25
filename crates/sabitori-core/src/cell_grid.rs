@@ -15,7 +15,8 @@
 //!
 //! - 背景は、行ごとに同じ色の続きをまとめて矩形 1 つにする
 //! - 字形は `(col * cell_w, row * cell_h)` に置く (字送りのズレは起きない)
-//! - 変わっていない行 ([`CellGrid::row_versions`]) は前のフレームの字形を使い回す
+//! - 中身が前のフレームと同じ行は、前の字形を使い回す (要素に `id` があるとき)
+//! - 描くのは見えている行だけ (スクロールの中の長いログでも重くならない)
 //!
 //! 選択・ヒットテスト・カーソル・IME の変換中の文字は持たない。要素の矩形は
 //! 分かるので、呼ぶ側が格子の上に普通の要素として重ねる。合字は使わない
@@ -88,12 +89,10 @@ pub struct CellGrid {
     pub cols: usize,
     pub rows: usize,
     /// `rows * cols` 個、行ごとに左から。
-    pub cells: Vec<GridCell>,
-    /// 行ごとの版番号。**前のフレームと同じ番号の行は組み直さない**、という合図。
     ///
-    /// 行の中身を変えたら必ず上げること ([`CellGrid::set`] は自動で上げる)。
-    /// 上げ忘れると、その行は前の字のまま描かれる。
-    pub row_versions: Vec<u64>,
+    /// 直接書き換えてよい。字形の使い回しは行の**中身を比べて**決めるので、
+    /// 「変えたら知らせる」約束は無い。
+    pub cells: Vec<GridCell>,
 }
 
 impl CellGrid {
@@ -103,7 +102,6 @@ impl CellGrid {
             cols,
             rows,
             cells: vec![GridCell::blank(fg); cols * rows],
-            row_versions: vec![0; rows],
         }
     }
 
@@ -115,11 +113,10 @@ impl CellGrid {
         }
     }
 
-    /// セルを書き換え、その行の版を上げる。
+    /// セルを書き換える。範囲の外は捨てる。
     pub fn set(&mut self, col: usize, row: usize, cell: GridCell) {
         if col < self.cols && row < self.rows {
             self.cells[row * self.cols + col] = cell;
-            self.row_versions[row] = self.row_versions[row].wrapping_add(1);
         }
     }
 
@@ -130,12 +127,7 @@ impl CellGrid {
         &self.cells[start..end]
     }
 
-    /// 行の版。`row_versions` が足りなければ 0。
-    pub fn row_version(&self, row: usize) -> u64 {
-        self.row_versions.get(row).copied().unwrap_or(0)
-    }
-
-    /// 文字列を `(col, row)` から書く (はみ出した分は捨てる)。行の版は上がる。
+    /// 文字列を `(col, row)` から書く (はみ出した分は捨てる)。
     pub fn put_str(&mut self, col: usize, row: usize, s: &str, fg: Color, bg: Option<Color>, flags: CellFlags) {
         for (i, ch) in s.chars().enumerate() {
             self.set(col + i, row, GridCell { ch, fg, bg, flags });
@@ -171,13 +163,6 @@ mod tests {
         g.put_str(4, 0, "de", FG, Some(BLUE), CellFlags::NONE);
         g.put_str(7, 0, "f", FG, Some(RED), CellFlags::NONE);
         assert_eq!(g.bg_runs(0), vec![(1, 3, RED), (4, 2, BLUE), (7, 1, RED)]);
-    }
-
-    #[test]
-    fn writing_bumps_only_that_rows_version() {
-        let mut g = CellGrid::new(4, 3, FG);
-        g.put_str(0, 1, "x", FG, None, CellFlags::NONE);
-        assert_eq!(g.row_versions, vec![0, 1, 0]);
     }
 
     #[test]

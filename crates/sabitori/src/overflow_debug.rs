@@ -28,6 +28,8 @@ const STRIPE: f32 = 6.0;
 const YELLOW: Color = Color::new(1.0, 0.84, 0.0, 1.0);
 const BLACK: Color = Color::new(0.0, 0.0, 0.0, 1.0);
 const TINT: Color = Color::new(1.0, 0.15, 0.1, 0.28);
+/// ログに出した経路を覚えておく上限。
+const SEEN_MAX: usize = 4096;
 
 pub(crate) struct OverflowDebug {
     enabled: bool,
@@ -64,7 +66,26 @@ impl OverflowDebug {
         }
     }
 
+    /// 別窓 (`view_for`) 用。別窓の描画は `overlay_list` を描かないので、
+    /// 目印を地の描画命令の最後 (いちばん上) に積む。
+    pub(crate) fn flag_on_top(&mut self, build: &mut BuildResult) {
+        if !self.enabled {
+            return;
+        }
+        let mut marks = Vec::new();
+        for o in &build.overflows {
+            self.log_once(o);
+            marks.extend(markers(o));
+        }
+        build.render_list.commands.extend(marks);
+    }
+
     fn log_once(&mut self, o: &LayoutOverflow) {
+        // 行ごとに id の違う一覧などで、経路は際限なく増えうる。溜まったら忘れる
+        // (同じ所がまた 1 回出るだけ)。
+        if self.seen.len() >= SEEN_MAX {
+            self.seen.clear();
+        }
         if self.seen.insert(o.path.clone()) {
             log::warn!("{}", describe(o));
         }
@@ -87,7 +108,23 @@ pub(crate) fn describe(o: &LayoutOverflow) -> String {
 }
 
 /// 1 件ぶんの目印。はみ出した部分の網掛けと、親の辺に沿った縞。
+/// 祖先に切られていれば、その範囲の中にだけ描く。
 pub(crate) fn markers(o: &LayoutOverflow) -> Vec<RenderCommand> {
+    let body = marker_body(o);
+    match o.clip {
+        None => body,
+        Some(c) if c.size.width <= 0.0 || c.size.height <= 0.0 => Vec::new(),
+        Some(c) => {
+            let mut out = Vec::with_capacity(body.len() + 2);
+            out.push(RenderCommand::PushClip(c));
+            out.extend(body);
+            out.push(RenderCommand::PopClip);
+            out
+        }
+    }
+}
+
+fn marker_body(o: &LayoutOverflow) -> Vec<RenderCommand> {
     let (r, p) = (o.rect, o.parent);
     let (rl, rt, rr, rb) = (r.origin.x, r.origin.y, r.origin.x + r.size.width, r.origin.y + r.size.height);
     let (pl, pt, pr, pb) = (p.origin.x, p.origin.y, p.origin.x + p.size.width, p.origin.y + p.size.height);
@@ -151,6 +188,7 @@ mod tests {
             rect: Rect::new(300.0, 0.0, 460.0, 40.0),
             parent: Rect::new(0.0, 0.0, 600.0, 40.0),
             by: Edges::new(0.0, 160.0, 0.0, 0.0),
+            clip: None,
         }
     }
 
@@ -204,6 +242,17 @@ mod tests {
             matches!(last, RenderCommand::Rect(r) if r.rect.size.width == 280.0),
             "引き出しが最後 (いちばん上) でない"
         );
+    }
+
+    /// スクロールの中のはみ出しは、見えている範囲の中にだけ描く。
+    #[test]
+    fn markers_stay_inside_the_scroll_view() {
+        let clip = Rect::new(0.0, 50.0, 600.0, 200.0);
+        let cmds = markers(&LayoutOverflow { clip: Some(clip), ..toolbar_overflow() });
+        assert!(matches!(cmds.first(), Some(RenderCommand::PushClip(c)) if *c == clip));
+        assert!(matches!(cmds.last(), Some(RenderCommand::PopClip)));
+        let hidden = Rect::new(0.0, 50.0, 600.0, 0.0);
+        assert!(markers(&LayoutOverflow { clip: Some(hidden), ..toolbar_overflow() }).is_empty());
     }
 
     #[test]
