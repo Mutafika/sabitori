@@ -15,6 +15,16 @@
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-25
+
+### Fixed
+
+- **`cell_grid` の字がにじむ**
+  ([#103](https://github.com/Mutafika/sabitori/issues/103))。字形を
+  `col * cell_w` の端数のある位置にそのまま置いていたので、アトラスが線形補間で
+  読まれ、字が太ってにじんでいた (CJK で特に目立つ)。最後の画面上の位置を物理画素に
+  丸める。丸めは字ごとで積み重ならないので、行末でも格子からずれない。
+
 ## [0.22.0] - 2026-09-25
 
 ### Added
@@ -3966,7 +3976,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/Mutafika/sabitori/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Mutafika/sabitori/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Mutafika/sabitori/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/Mutafika/sabitori/compare/v0.20.0...v0.20.1

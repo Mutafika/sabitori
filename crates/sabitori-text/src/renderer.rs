@@ -780,6 +780,20 @@ impl TextRenderer {
         if self.grid_rows.len() > GRID_ROWS_MAX {
             self.grid_rows.clear();
         }
+        // 字形は物理画素の上に置く ([#103](https://github.com/Mutafika/sabitori/issues/103))。
+        // `col * cell_w` は端数を持つので、そのまま置くとアトラスが線形補間で読まれて
+        // 字がにじむ (text() は呼ぶ側が整数の位置に置くので起きない)。字形の中の位置は
+        // もともと物理画素の整数なので、最後の画面上の位置だけを丸めれば揃う。丸めは
+        // 字ごとで積み重ならないので、行末でも格子からずれない。
+        let scale = if self.scale_factor > 0.0 { self.scale_factor } else { 1.0 };
+        let place = |g: &GlyphInstance| {
+            let mut g = *g;
+            g.position = [
+                ((g.position[0] + x) * scale).round() / scale,
+                ((g.position[1] + y) * scale).round() / scale,
+            ];
+            g
+        };
         let mut out = Vec::new();
         for row in rows.start..rows.end.min(grid.rows) {
             let cells = grid.row(row);
@@ -787,11 +801,7 @@ impl TextRenderer {
                 .and_then(|key| self.grid_rows.get(&(key, row)))
                 .filter(|c| c.metrics == metrics && c.cells.as_slice() == cells);
             if let Some(cached) = cached {
-                out.extend(cached.glyphs.iter().map(|g| {
-                    let mut g = *g;
-                    g.position = [g.position[0] + x, g.position[1] + y];
-                    g
-                }));
+                out.extend(cached.glyphs.iter().map(place));
                 continue;
             }
             self.grid_rows_built += 1;
@@ -816,11 +826,7 @@ impl TextRenderer {
                     line.push(g);
                 }
             }
-            out.extend(line.iter().map(|g| {
-                let mut g = *g;
-                g.position = [g.position[0] + x, g.position[1] + y];
-                g
-            }));
+            out.extend(line.iter().map(place));
             if let Some(key) = cache_key {
                 self.grid_rows
                     .insert((key, row), GridRow { cells: cells.to_vec(), metrics, glyphs: line });

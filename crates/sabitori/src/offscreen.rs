@@ -701,4 +701,36 @@ mod tests {
         let c = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 0.5, None, Some(1));
         assert!((c[0].color[3] - 0.5).abs() < 0.01);
     }
+
+    /// **字形は物理画素の上に置く** ([#103](https://github.com/Mutafika/sabitori/issues/103))。
+    /// セル幅は端数を持つ (Hack 13px で ~7.83) ので、`col * cell_w` をそのまま使うと
+    /// 画素の途中に置かれ、線形補間で読まれた字がにじんでいた。行を使い回す経路でも
+    /// 同じく揃う。
+    #[test]
+    fn cell_grid_glyphs_land_on_whole_device_pixels() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid};
+        let mut tr = text_renderer().unwrap();
+        for scale in [1.0_f32, 2.0, 1.25] {
+            tr.set_scale_factor(scale);
+            let mut g = CellGrid::new(80, 3, Color::BLACK);
+            for r in 0..3 {
+                g.put_str(0, r, &"日本語abc".repeat(12), Color::BLACK, None, CellFlags::NONE);
+            }
+            for pass in ["組む", "使い回す"] {
+                let out = tr.prepare_cell_grid(&g, 0..3, 10.3, 5.7, 7.83, 18.2, 13.0, 1.0, None, Some(9));
+                assert!(!out.is_empty());
+                for gl in &out {
+                    for v in gl.position {
+                        let px = v * scale;
+                        assert!((px - px.round()).abs() < 1e-3, "{pass} (倍率 {scale}): 画素の途中 {px}");
+                    }
+                }
+                // 丸めても行末の字はそのセルの中 (積み重ならない)。
+                let last = out.iter().map(|gl| gl.position[0]).fold(0.0_f32, f32::max);
+                // 72 字なので最後は 72 列目 (添字 71)。
+                assert!(last >= 10.3 + 71.0 * 7.83 - 1.0 && last <= 10.3 + 72.0 * 7.83, "{pass}: 行末 {last}");
+            }
+        }
+    }
 }
