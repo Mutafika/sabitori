@@ -15,6 +15,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **iOS では窓が常に画面全体になる**
+  ([#100](https://github.com/Mutafika/sabitori/issues/100))。winit は iOS で
+  `inner_size` をそのまま画面の枠に使うので、`DeclarativeApp::size()` の大きさに
+  固定され、大きい機種では右と下が黒く抜けていた (iPhone 17 Pro Max で 390×844 の
+  枠に描かれる)。iOS では `size()` / `min_size()` を渡さず、最初の描画面も
+  窓全体 (`outer_size`) で組む。回転は `Resized` で追う。
+
+### Added
+
+- **`ViewContext::safe_area`** — 四辺のセーフエリアの余白 (論理 px)
+  ([#100](https://github.com/Mutafika/sabitori/issues/100))。iOS のステータスバー /
+  Dynamic Island / ホームインジケータ (横向きなら左右) の量で、機種と向きで変わる
+  ので毎フレーム読む。iOS 以外は 0。
+- **`Harness::set_safe_area`** — ヘッドレスで機種・向きのセーフエリアを模す。
+
+  > `ViewContext` を構造体リテラルで組んでいる場合は `safe_area` を足す必要がある
+  > (`Default::default()` で 0)。
+
 ## [0.20.1] - 2026-09-25
 
 ### Fixed

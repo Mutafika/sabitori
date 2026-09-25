@@ -606,6 +606,9 @@ pub trait DeclarativeApp: 'static {
     fn title(&self) -> &str { "Sabitori" }
 
     /// Initial window size (logical pixels).
+    ///
+    /// **iOS では使わない** — 窓は常に画面全体で、中身は [`ViewContext::safe_area`] の内側に
+    /// 置く（要求サイズを渡すと winit がそれを画面の枠にしてしまい、大きい機種で黒く抜ける）。
     fn size(&self) -> (f32, f32) { (1000.0, 700.0) }
 
     /// Optional initial window position in logical pixels (top-left).
@@ -614,6 +617,8 @@ pub trait DeclarativeApp: 'static {
     fn position(&self) -> Option<(f32, f32)> { None }
 
     /// Minimum window size (logical pixels). Default 400x300.
+    ///
+    /// **iOS では使わない** — [`Self::size`] と同じく、窓は常に画面全体。
     fn min_size(&self) -> (f32, f32) { (400.0, 300.0) }
 
     /// Whether the window background should be transparent.
@@ -942,6 +947,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// redraws unconditionally at 60fps.
     dirty: bool,
     window: Option<Arc<Window>>,
+    /// テスト用: `ctx.safe_area` を窓から読まずにこの値にする（`Harness::set_safe_area`）。
+    pub(crate) safe_area_override: Option<sabitori_core::Edges<f32>>,
     renderer: Option<GpuRenderer>,
     text_renderer: Option<TextRenderer>,
     image_renderer: Option<sabitori_gpu::ImageRenderer>,
@@ -1135,14 +1142,19 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
-        let (w, h) = self.app.size();
-        let mut attrs = WindowAttributes::default()
-            .with_title(self.app.title())
-            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
-            .with_min_inner_size({
-                let (mw, mh) = self.app.min_size();
-                winit::dpi::LogicalSize::new(mw, mh)
-            });
+        let mut attrs = WindowAttributes::default().with_title(self.app.title());
+        // iOS は `size()` / `min_size()` を渡さない。winit は iOS で要求サイズを**そのまま
+        // 画面の枠**に使うので、渡すと機種に関係なく要求した大きさに固定され、大きい画面では
+        // 右と下が黒く抜ける（iPhone 17 Pro Max で 390×844 の枠に描かれていた）。渡さなければ
+        // 画面全体になり、回転も `Resized` で追う。システム UI の下は `ctx.safe_area` で避ける。
+        #[cfg(not(target_os = "ios"))]
+        {
+            let (w, h) = self.app.size();
+            let (mw, mh) = self.app.min_size();
+            attrs = attrs
+                .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+                .with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));
+        }
         if let Some((x, y)) = self.app.position() {
             attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
         }
@@ -2655,6 +2667,7 @@ impl<A: DeclarativeApp> AppState<A> {
             app,
             dirty: true,
             window: None,
+            safe_area_override: None,
             renderer: None,
             text_renderer: None,
             image_renderer: None,
@@ -2822,6 +2835,10 @@ impl<A: DeclarativeApp> AppState<A> {
         let ctx = ViewContext {
             width: w,
             height: h,
+            safe_area: self
+                .safe_area_override
+                .or_else(|| self.window.as_ref().map(|win| sabitori_window::safe_area(win)))
+                .unwrap_or_default(),
             hovered: self.hovered_id.clone(),
             focused: self.focused_id.clone(),
             mouse_x: self.mouse_x,
@@ -4473,6 +4490,7 @@ impl<A: DeclarativeApp> AppState<A> {
             let ctx = ViewContext {
                 width: w,
                 height: h,
+                safe_area: sabitori_window::safe_area(&extra.window),
                 hovered: None,
                 focused: None,
                 mouse_x: 0.0,

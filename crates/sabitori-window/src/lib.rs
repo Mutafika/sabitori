@@ -20,8 +20,10 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 pub mod background;
 pub mod keymap;
+pub mod safe_area;
 pub mod surface_size;
 
+pub use safe_area::safe_area;
 pub use surface_size::surface_size;
 
 /// Trait for building interactive UIs with Sabitori.
