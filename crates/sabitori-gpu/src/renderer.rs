@@ -304,6 +304,11 @@ impl GpuRenderer {
         window: Arc<winit::window::Window>,
         transparent: bool,
     ) -> Result<Self, GpuInitError> {
+        // iOS の `inner_size` はセーフエリア（ステータスバー等を除いた部分）で、描画面は窓全体
+        // （`outer_size`）を覆う。inner で組むと最初の `Resized` が来るまで縦に伸びて描かれる。
+        #[cfg(target_os = "ios")]
+        let size = window.outer_size();
+        #[cfg(not(target_os = "ios"))]
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
 

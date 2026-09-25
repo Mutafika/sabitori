@@ -329,6 +329,14 @@ impl<A: DeclarativeApp> Harness<A> {
         self.settle_for(120)
     }
 
+    /// `ctx.safe_area` を決める（iOS のセーフエリアを模す）。次の [`Self::frame`] から効く。
+    ///
+    /// ヘッドレスには窓が無いので既定は 0。上下の余白を機種ごとに正しく空けているかは
+    /// これで試す（Dynamic Island 機の縦 = 上 62 / 下 34、横 = 左右 62 / 下 21 など）。
+    pub fn set_safe_area(&mut self, top: f32, right: f32, bottom: f32, left: f32) {
+        self.state.safe_area_override = Some(sabitori_core::Edges::new(top, right, bottom, left));
+    }
+
     /// ビューポートサイズを変える。 次の [`Self::frame`] から効く。
     pub fn resize(&mut self, width: f32, height: f32) {
         self.width = width;

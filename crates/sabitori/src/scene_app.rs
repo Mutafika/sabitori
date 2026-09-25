@@ -1220,6 +1220,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 let ctx = ViewContext {
                     width: w,
                     height: h,
+                    safe_area: self.window.as_ref().map(|win| sabitori_window::safe_area(win)).unwrap_or_default(),
                     hovered: self.hovered_id.clone(),
                     focused: self.focused_id.clone(),
                     mouse_x: self.mouse_x,

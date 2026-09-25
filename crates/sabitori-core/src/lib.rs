@@ -175,6 +175,11 @@ impl SizeClass {
 pub struct ViewContext<'a> {
     pub width: f32,
     pub height: f32,
+    /// 四辺のセーフエリアの余白（論理 px）。iOS では窓が画面全体を覆い、ステータスバー・
+    /// Dynamic Island・ホームインジケータ（横向きなら左右）がこの幅だけ中身に被る。
+    /// 大事な中身はこの内側に置くこと。量は機種と向きで変わる（定数で決め打ちしない）ので
+    /// 毎フレーム読む。iOS 以外は 0。
+    pub safe_area: Edges<f32>,
     /// ID of the currently hovered element (if any).
     pub hovered: Option<String>,
     /// ID of the currently focused element (if any).
@@ -647,6 +652,7 @@ mod view_context_tests {
         ViewContext {
             width: 800.0,
             height: 600.0,
+            safe_area: Edges::default(),
             hovered: None,
             focused: None,
             mouse_x: 0.0,
