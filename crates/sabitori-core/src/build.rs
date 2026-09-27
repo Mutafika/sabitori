@@ -1061,10 +1061,13 @@ fn lays_out_in_a_row(element: &Element) -> bool {
 /// - `.max_lines(n)` — n 行まで折り返して、それでも入らなければ「…」
 /// - `.min_w(Px(0.0))` — 行数の上限なしで折り返す
 /// - `.w(..)` — その幅で折り返す
+///
+/// 改行 (`\n`) を含む文字は対象外。行を書いた本人が分けているので、1 行に切ると
+/// 2 行目から先が消える (コードブロック・複数行のメモ)。
 fn shrinks_to_one_line(element: &Element, in_row: bool) -> bool {
     let st = &element.style;
     in_row
-        && matches!(element.kind, ElementKind::Text { .. })
+        && matches!(&element.kind, ElementKind::Text { content } if !content.contains('\n'))
         && st.width == Dimension::Auto
         && st.min_width == Dimension::Auto
 }

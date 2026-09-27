@@ -444,7 +444,8 @@ fn heading_index(level: HeadingLevel) -> usize {
 fn heading_block(theme: &MarkdownTheme, idx: usize, text_s: &str, slug: &str) -> Element {
     let size = theme.heading_sizes[idx.min(5)];
     let el = text(text_s).font_size(size).color(theme.heading).bold();
-    div().id(format!("heading:{slug}")).child(el)
+    // 縦並びにする — 横並び (`div()` の既定) だと長い見出しが 1 行の「…」に切れる。
+    div().id(format!("heading:{slug}")).flex_col().child(el)
 }
 
 fn paragraph_block(theme: &MarkdownTheme, s: &str) -> Element {
@@ -457,14 +458,18 @@ fn quote_block(theme: &MarkdownTheme, s: &str) -> Element {
         .gap(10.0)
         .children([
             div().w(Px(3.0)).bg(theme.quote_bar).rounded_px(2.0),
+            // 横並びの中の文は、最小幅 0 で折り返させる (書かないと 1 行の「…」)。
             text(s)
                 .font_size(theme.base_font_size)
-                .color(theme.dim),
+                .color(theme.dim)
+                .grow(1.0)
+                .min_w(Px(0.0)),
         ])
 }
 
 fn code_block(theme: &MarkdownTheme, code: &str) -> Element {
     div()
+        .flex_col()
         .bg(theme.code_bg)
         .rounded_px(6.0)
         .p(Px(12.0))
@@ -481,7 +486,7 @@ fn list_item(theme: &MarkdownTheme, marker: &str, content: &str) -> Element {
         text(marker)
             .font_size(theme.base_font_size)
             .color(theme.link),
-        text(content).font_size(theme.base_font_size).color(theme.body),
+        text(content).font_size(theme.base_font_size).color(theme.body).grow(1.0).min_w(Px(0.0)),
     ])
 }
 

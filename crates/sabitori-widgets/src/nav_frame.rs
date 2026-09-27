@@ -691,7 +691,8 @@ fn list<A: 'static>(
                         .then(|| {
                             let color = if on { style.accent } else { style.text_secondary };
                             let icon = item.icon_element(color, 14.0).unwrap_or_else(div);
-                            div().w(Px(20.0)).shrink(0.0).flex_row().items_center().child(icon)
+                            // 縦並びの欄に置く — 横並びだと 2 字のアイコンが「X…」に縮む。
+                            div().w(Px(20.0)).shrink(0.0).flex_col().justify_center().child(icon)
                         })
                         .into_iter()
                         .chain([bold_if(text(&item.label), on)

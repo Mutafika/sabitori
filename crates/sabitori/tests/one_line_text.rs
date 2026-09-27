@@ -121,3 +121,45 @@ fn writing_a_size_or_line_count_keeps_the_text_wrapping() {
     assert!(height("r3") > line * 2.5, "幅を書けばその幅で折り返す: {}", height("r3"));
     assert!(height("r4") > line * 2.5, "縦並びは今までどおり折り返す: {}", height("r4"));
 }
+
+/// 改行を含む文字は切らない — 2 行目から先が消える (コードブロック・メモ)。
+/// 浮かせた箱 (`.absolute()`) の中の文も、以前と同じ形で出す。
+struct Lines;
+
+impl DeclarativeApp for Lines {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        div().w(Px(400.0)).h(Px(400.0)).flex_col().children([
+            div().id("one").child(text("x")),
+            div().id("three").child(text("first line\nsecond line\nthird line")),
+            div()
+                .id("pop")
+                .absolute()
+                .pos(0.0, 200.0)
+                .w(Px(160.0))
+                .child(text("A popover explains what this button does in a few words").id("pop-text")),
+        ])
+    }
+}
+
+#[test]
+fn text_with_newlines_keeps_every_line() {
+    let mut h = Harness::with_real_text(Lines, 400.0, 400.0);
+    h.settle();
+    let one = h.rect_of("one").unwrap().size.height;
+    let three = h.rect_of("three").unwrap().size.height;
+    assert!(three > one * 2.5, "3 行が 1 行に切れた: {three} (1 行 {one})");
+    let drawn = h.build().render_list.commands.iter().find_map(|c| match c {
+        RenderCommand::Text(t) if t.content.contains("second") => Some(t.max_lines),
+        _ => None,
+    });
+    assert_eq!(drawn, Some(None));
+}
+
+#[test]
+fn a_fixed_width_popover_stays_inside_its_box() {
+    let mut h = Harness::with_real_text(Lines, 400.0, 400.0);
+    h.settle();
+    let pop = h.rect_of("pop").unwrap();
+    let t = h.text_rect("popover").unwrap();
+    assert!(right(t) <= right(pop) + 0.5, "{t:?} / {pop:?}");
+}
