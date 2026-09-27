@@ -326,7 +326,8 @@ pub trait DeclarativeApp: 'static {
     }
 
     /// **選ばれている文字の範囲が変わった** ([#107](https://github.com/Mutafika/sabitori/issues/107))。
-    /// `None` = 選択が消えた。ドラッグ中は描くたびに届く。
+    /// `None` = 選択が消えた。ドラッグ中や、選択したままスクロールしている間
+    /// (範囲の画面上の位置 `rect` が変わる) は、描くたびに届く。
     ///
     /// 範囲は `ctx.text_selection()` でも読める。こちらは「変わった瞬間」を
     /// 知りたいとき (選択の近くに自前のメニューを出す等) に使う。
@@ -1026,6 +1027,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 選択の両端につまみを描くか。指で選んだ選択だけ (#108)。マウスで選んだ
     /// ときは描かない。
     selection_handles: bool,
+    /// 選択が変わったので、もう 1 枚描く (#107)。
+    selection_redraw: bool,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
@@ -1777,7 +1780,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         &mut self.selecting,
                         &self.text_layouts,
                     );
-                    Self::sync_selection(
+                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
+                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
+                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
+                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
+                    self.selection_redraw |= Self::sync_selection(
                         &mut self.app,
                         &mut self.selection,
                         &mut self.selecting,
@@ -1860,7 +1867,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         &mut self.selecting,
                         &self.text_layouts,
                     );
-                    Self::sync_selection(
+                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
+                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
+                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
+                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
+                    self.selection_redraw |= Self::sync_selection(
                         &mut self.app,
                         &mut self.selection,
                         &mut self.selecting,
@@ -1930,6 +1941,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // Frame finished — invalidate the dirty flag so lazy mode
                 // can park the next about_to_wait until something changes.
                 self.dirty = false;
+                // 選択が変わった枚なら、新しい範囲で view を組み直す (1 回だけ —
+                // 次の枚では範囲が同じなので止まる)。
+                if std::mem::take(&mut self.selection_redraw) {
+                    self.dirty = true;
+                }
                 // 1 枚描いた (#69 のスクリーンショットは、描く前に撮ると
                 // 真っ白になるのでここを合図にする)。
                 #[cfg(not(target_arch = "wasm32"))]
@@ -2484,6 +2500,7 @@ impl<A: DeclarativeApp> AppState<A> {
             selecting: false,
             selection_snapshot: None,
             selection_handles: false,
+            selection_redraw: false,
             last_capture: UiCapture::default(),
         }
     }
@@ -3713,12 +3730,30 @@ impl<A: DeclarativeApp> AppState<A> {
         if !self.selection_handles {
             return None;
         }
+        // 押した所にアプリのボタン (選択の近くに出した「マーカー」のメニューなど)
+        // があれば、そちらが先。つまみの届く範囲は指の太さぶん広いので、すぐ下に
+        // 置いたメニューと重なる。
+        if self.control_at(x, y) {
+            return None;
+        }
         let sel = self.selection.as_ref().filter(|s| !s.is_empty())?;
         let (start, end) = sel.range_normalized();
-        let e = ends(start, end, &self.text_layouts)?;
+        let e = ends(start, end, &self.text_layouts);
         let which = grabbed(e, x, y)?;
-        let (fixed, (_, top, h)) = if which == 0 { (end, e[0]) } else { (start, e[1]) };
+        let (fixed, (_, top, h)) = if which == 0 { (end, e[0]?) } else { (start, e[1]?) };
         Some(TouchSelect::Handle { fixed, dy: top + h * 0.5 - y })
+    }
+
+    /// その点のいちばん手前の触れる要素が、押されると何かするもの (クリックの
+    /// 処理を持つ・つかんで動かせる) か。
+    fn control_at(&self, x: f32, y: f32) -> bool {
+        let pt = sabitori_core::Point::new(x, y);
+        self.last_build.as_ref().is_some_and(|b| {
+            b.hit_regions
+                .iter()
+                .find(|r| r.is_interactive() && r.rect.contains(pt))
+                .is_some_and(|r| r.has_click_handler || r.drag_data.is_some())
+        })
     }
 
     /// 指で選んでいる最中に指が動いた (#108)。
@@ -3784,6 +3819,19 @@ impl<A: DeclarativeApp> AppState<A> {
             return;
         }
         let (sx, sy) = td.start;
+        // つかんで動かせる要素 (かんばんのカード・並べ替えの行) は、押したまま
+        // 動かすのがドラッグ。本文中のリンクは押すと移る。どちらも文字を選ばない
+        // (マウスの側と同じ優先順)。
+        let draggable = self.last_build.as_ref().is_some_and(|b| {
+            let pt = sabitori_core::Point::new(sx, sy);
+            b.hit_regions
+                .iter()
+                .find(|r| r.is_interactive() && r.rect.contains(pt))
+                .is_some_and(|r| r.drag_data.is_some())
+        });
+        if draggable || self.link_at(sx, sy).is_some() {
+            return;
+        }
         let Some((idx, byte)) = Self::hit_test_text_in(&self.text_layouts, sx, sy, true) else {
             return;
         };
@@ -3832,10 +3880,8 @@ impl<A: DeclarativeApp> AppState<A> {
         }
         let Some(sel) = selection.filter(|s| !s.is_empty()) else { return Vec::new() };
         let (start, end) = sel.range_normalized();
-        match crate::touch_select::ends(start, end, text_layouts) {
-            Some(e) => crate::touch_select::handle_rects(e, sabitori_core::Color { a: 1.0, ..sel_bg }),
-            None => Vec::new(),
-        }
+        let e = crate::touch_select::ends(start, end, text_layouts);
+        crate::touch_select::handle_rects(e, sabitori_core::Color { a: 1.0, ..sel_bg })
     }
 
     /// 長押しを待っている (指が止まったまま、まだ選んでいない)。iOS は何も
@@ -4338,16 +4384,18 @@ impl<A: DeclarativeApp> AppState<A> {
         selecting: &mut bool,
         text_layouts: &[crate::bridge::TextHitLayout],
         snapshot: &mut Option<sabitori_core::SelectedText>,
-    ) {
+    ) -> bool {
         if app.take_clear_text_selection() {
             *selection = None;
             *selecting = false;
         }
         let now = Self::selection_snapshot_of(selection.as_ref(), text_layouts);
-        if now != *snapshot {
-            *snapshot = now;
-            app.on_selection_changed(snapshot.as_ref());
+        if now == *snapshot {
+            return false;
         }
+        *snapshot = now;
+        app.on_selection_changed(snapshot.as_ref());
+        true
     }
 
     /// View 切替 (list → article 等) で selection が指してる text 要素の content
@@ -6060,6 +6108,11 @@ mod highlight_tests {
         let sync = |app: &mut Marker, sel: &mut Option<TextSelection>, selecting: &mut bool, snap: &mut Option<_>| {
             AppState::<Marker>::sync_selection(app, sel, selecting, &layouts, snap)
         };
+        let mut probe = Some(select((0, 0), (0, 1), "abcdef", "abcdef"));
+        let mut probe_snap = None;
+        let mut probe_app = Marker::default();
+        assert!(sync(&mut probe_app, &mut probe, &mut selecting, &mut probe_snap), "変わった = もう 1 枚");
+        assert!(!sync(&mut probe_app, &mut probe, &mut selecting, &mut probe_snap), "同じなら描き足さない");
 
         sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
         sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
@@ -6177,6 +6230,44 @@ mod highlight_tests {
         state.handle_touch(TouchPhase::Ended, 4, 300.0, 200.0);
         assert!(state.selection.is_none());
         assert!(!state.selection_handles);
+    }
+
+    /// 当たり領域だけを置く (文字は `touch_state` の合成の配置)。
+    fn with_regions(state: &mut AppState<TestApp>, root: Element) {
+        state.last_build = Some(sabitori_core::build::build_tree(&root, 400.0, 300.0));
+    }
+
+    /// 選択のすぐ下に置いたアプリのメニューは、つまみの届く範囲に重なっても押せる。
+    #[test]
+    fn a_menu_button_next_to_a_handle_is_still_a_button() {
+        use sabitori_core::element::{div, Px};
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
+        held(&mut state, 0.6);
+        state.handle_touch(TouchPhase::Ended, 1, 25.0, 8.0);
+        // 終わりのつまみ (40, 22) の真下 12px にボタン。
+        with_regions(
+            &mut state,
+            div().w(Px(400.0)).h(Px(300.0)).child(
+                div().id("mark").on_click(|| {}).absolute().pos(20.0, 28.0).w(Px(60.0)).h(Px(20.0)),
+            ),
+        );
+        assert!(state.grab_selection_handle(41.0, 34.0).is_none(), "ボタンの上はつまみにならない");
+        assert!(state.grab_selection_handle(41.0, 22.0).is_some(), "ボタンの外の丸はつかめる");
+    }
+
+    /// つかんで動かせる要素の上の長押しはドラッグのため。文字を選ばない。
+    #[test]
+    fn a_long_press_on_a_draggable_card_does_not_select() {
+        use sabitori_core::element::{div, Px};
+        let mut state = touch_state();
+        with_regions(
+            &mut state,
+            div().w(Px(400.0)).h(Px(300.0)).child(div().id("card").draggable("card-1").w(Px(200.0)).h(Px(20.0))),
+        );
+        state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
+        held(&mut state, 0.6);
+        assert!(state.selection.is_none());
     }
 
     struct TestApp;

@@ -96,40 +96,54 @@ fn caret(layout: &TextHitLayout, byte: usize, end: bool) -> Option<(f32, f32, f3
     if end { right(byte).or_else(|| left(byte)) } else { left(byte).or_else(|| right(byte)) }
 }
 
-/// 選択の両端 `[始まり, 終わり]` の位置 (`(x, 行の上端, 行の高さ)`)。
+/// 選択の端の位置 (`(x, 行の上端, 行の高さ)`)。
+pub(crate) type End = (f32, f32, f32);
+
+/// 選択の両端 `[始まり, 終わり]` の位置。**見えている端だけ** `Some` — スクロールの
+/// 外や、切る入れ物の外へ出た端は描かず、つかめもしない (見出しの上に丸が出て、
+/// 見出しのボタンへのタップを横取りしないように)。
 pub(crate) fn ends(
     start: (usize, usize),
     end: (usize, usize),
     layouts: &[TextHitLayout],
-) -> Option<[(f32, f32, f32); 2]> {
-    let find = |idx: usize| layouts.iter().find(|l| l.text_idx == idx);
-    let a = caret(find(start.0)?, start.1, false)?;
-    let b = caret(find(end.0)?, end.1, true)?;
-    Some([a, b])
+) -> [Option<End>; 2] {
+    let at = |(idx, byte): (usize, usize), is_end: bool| {
+        let layout = layouts.iter().find(|l| l.text_idx == idx)?;
+        let e @ (x, y, h) = caret(layout, byte, is_end)?;
+        let visible = layout.clip_rect.is_none_or(|c| {
+            let my = y + h * 0.5;
+            x >= c.origin.x - 0.5
+                && x <= c.origin.x + c.size.width + 0.5
+                && my >= c.origin.y
+                && my <= c.origin.y + c.size.height
+        });
+        visible.then_some(e)
+    };
+    [at(start, false), at(end, true)]
 }
 
 /// つまみの丸の中心。始まりは行の上に、終わりは行の下に出す (iOS と同じ向き)。
-pub(crate) fn knob_centers(ends: [(f32, f32, f32); 2]) -> [(f32, f32); 2] {
-    let [(x0, y0, _), (x1, y1, h1)] = ends;
-    [(x0, y0 - HANDLE_RADIUS), (x1, y1 + h1 + HANDLE_RADIUS)]
+pub(crate) fn knob_center(end: End, is_end: bool) -> (f32, f32) {
+    let (x, y, h) = end;
+    if is_end { (x, y + h + HANDLE_RADIUS) } else { (x, y - HANDLE_RADIUS) }
 }
 
 /// 押した所がつまみなら、どちらか (0 = 始まり, 1 = 終わり)。近い方。
-pub(crate) fn grabbed(ends: [(f32, f32, f32); 2], x: f32, y: f32) -> Option<usize> {
-    let d = |(cx, cy): (f32, f32)| ((cx - x).powi(2) + (cy - y).powi(2)).sqrt();
-    let [a, b] = knob_centers(ends);
-    let (da, db) = (d(a), d(b));
-    match (da <= HANDLE_GRAB, db <= HANDLE_GRAB) {
-        (true, true) => Some(if da <= db { 0 } else { 1 }),
-        (true, false) => Some(0),
-        (false, true) => Some(1),
-        _ => None,
-    }
+pub(crate) fn grabbed(ends: [Option<End>; 2], x: f32, y: f32) -> Option<usize> {
+    ends.iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let (cx, cy) = knob_center((*e)?, i == 1);
+            let d = ((cx - x).powi(2) + (cy - y).powi(2)).sqrt();
+            (d <= HANDLE_GRAB).then_some((i, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 /// つまみの形: 端に沿った細い棒 + 丸。
 pub(crate) fn handle_rects(
-    ends: [(f32, f32, f32); 2],
+    ends: [Option<End>; 2],
     color: sabitori_core::Color,
 ) -> Vec<sabitori_gpu::RectInstance> {
     use sabitori_core::render_list::RectDraw;
@@ -143,7 +157,9 @@ pub(crate) fn handle_rects(
         })
     };
     let mut out = Vec::with_capacity(4);
-    for (&(x, y, h), (cx, cy)) in ends.iter().zip(knob_centers(ends)) {
+    for (i, e) in ends.iter().enumerate() {
+        let Some((x, y, h)) = *e else { continue };
+        let (cx, cy) = knob_center((x, y, h), i == 1);
         out.push(fill(Rect::new(x - 1.0, y, 2.0, h), 0.0));
         let r = HANDLE_RADIUS;
         out.push(fill(Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), r));
@@ -208,15 +224,29 @@ mod tests {
     #[test]
     fn the_handles_sit_at_both_ends_and_can_be_grabbed() {
         let layouts = [line(0, "abcdef", 0.0), line(1, "ghij", 40.0)];
-        let e = ends((0, 2), (1, 3), &layouts).unwrap();
-        assert_eq!(e, [(20.0, 0.0, 16.0), (30.0, 40.0, 16.0)]);
-        assert_eq!(knob_centers(e), [(20.0, -6.0), (30.0, 62.0)]);
+        let e = ends((0, 2), (1, 3), &layouts);
+        assert_eq!(e, [Some((20.0, 0.0, 16.0)), Some((30.0, 40.0, 16.0))]);
+        assert_eq!(knob_center(e[0].unwrap(), false), (20.0, -6.0));
+        assert_eq!(knob_center(e[1].unwrap(), true), (30.0, 62.0));
         assert_eq!(grabbed(e, 22.0, 0.0), Some(0));
         assert_eq!(grabbed(e, 30.0, 70.0), Some(1));
         assert_eq!(grabbed(e, 100.0, 20.0), None);
         // 行末で終わる選択の端は、行の右端 (次の行の頭ではない)。
-        let e = ends((0, 0), (0, 6), &layouts).unwrap();
-        assert_eq!(e[1].0, 60.0);
+        let e = ends((0, 0), (0, 6), &layouts);
+        assert_eq!(e[1].unwrap().0, 60.0);
         assert_eq!(handle_rects(e, sabitori_core::Color::WHITE).len(), 4);
+    }
+
+    /// スクロールの外へ出た端は描かず、つかめない。
+    #[test]
+    fn a_handle_scrolled_out_of_its_container_is_gone() {
+        let mut second = line(1, "ghij", 40.0);
+        second.clip_rect = Some(sabitori_core::Rect::new(0.0, 0.0, 200.0, 30.0));
+        let layouts = [line(0, "abcdef", 0.0), second];
+        let e = ends((0, 2), (1, 3), &layouts);
+        assert!(e[0].is_some());
+        assert_eq!(e[1], None, "y 40 の行は見えている範囲 (0..30) の外");
+        assert_eq!(grabbed(e, 30.0, 62.0), None);
+        assert_eq!(handle_rects(e, sabitori_core::Color::WHITE).len(), 2, "始まりのつまみだけ");
     }
 }
