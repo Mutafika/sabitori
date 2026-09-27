@@ -1023,6 +1023,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Drag/scroll state of the primary (first) touch. Extra fingers still emit
     /// `InputEvent::Pointer*` but don't steer this flow.
     touch_drag: Option<TouchDrag>,
+    /// 選択の両端につまみを描くか。指で選んだ選択だけ (#108)。マウスで選んだ
+    /// ときは描かない。
+    selection_handles: bool,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
@@ -1520,302 +1523,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let s = r.scale_factor;
                 let x = touch.location.x as f32 / s;
                 let y = touch.location.y as f32 / s;
-                let pos = sabitori_core::Point::new(x, y);
-                let id = touch.id.saturating_add(1);
-                // 連続タップの回数。押下で数え、タップ (解放) の時に
-                // `on_double_click` の判定へ使うので `TouchDrag` にも載せる。
-                let click_count = if matches!(touch.phase, winit::event::TouchPhase::Started) {
-                    self.clicks.press_now(pos, None, PointerKind::Touch)
-                } else {
-                    1
-                };
-
-                // Always update active_touches tracking and forward raw events.
-                match touch.phase {
-                    winit::event::TouchPhase::Started => {
-                        self.active_touches.insert(touch.id, (x, y));
-                        self.app.on_input(&InputEvent::PointerPressed {
-                            id,
-                            kind: PointerKind::Touch,
-                            position: pos,
-                            button: None,
-                            modifiers: self.modifiers,
-                            click_count,
-                        });
-                        self.pressed_id = self.hit_id_at(x, y);
-                    }
-                    winit::event::TouchPhase::Moved => {
-                        self.active_touches.insert(touch.id, (x, y));
-                        self.app.on_input(&InputEvent::PointerMoved {
-                            id,
-                            kind: PointerKind::Touch,
-                            position: pos,
-                            modifiers: self.modifiers,
-                        });
-                    }
-                    winit::event::TouchPhase::Ended => {
-                        self.active_touches.remove(&touch.id);
-                        self.app.on_input(&InputEvent::PointerReleased {
-                            id,
-                            kind: PointerKind::Touch,
-                            position: pos,
-                            button: None,
-                            modifiers: self.modifiers,
-                        });
-                        self.pressed_id = None;
-                    }
-                    winit::event::TouchPhase::Cancelled => {
-                        self.active_touches.remove(&touch.id);
-                        self.app.on_input(&InputEvent::PointerCancelled {
-                            id,
-                            kind: PointerKind::Touch,
-                        });
-                        self.pressed_id = None;
-                    }
-                }
-
-                // Mouse owns the primary flow → skip touch-driven logic.
-                if self.primary_input == PrimaryInput::Mouse {
-                    return;
-                }
-                if self.primary_input == PrimaryInput::None
-                    && matches!(touch.phase, winit::event::TouchPhase::Started)
-                {
-                    self.primary_input = PrimaryInput::Touch;
-                }
-
-                match touch.phase {
-                    winit::event::TouchPhase::Started => {
-                        let count = self.active_touches.len();
-                        if count == 1 {
-                            // First finger — set up single-touch drag.
-                            self.mouse_x = x;
-                            self.mouse_y = y;
-
-                            let mut click_target: Option<String> = None;
-                            let mut pending_drag: Option<(String, Option<String>)> = None;
-                            if let Some(ref build) = self.last_build {
-                                let mut focus_set = false;
-                                for region in &build.hit_regions {
-                                    // マウス押下と同じく、 意味だけの領域は透過する。
-                                    if region.is_interactive() && region.rect.contains(pos) {
-                                        if region.focusable {
-                                            self.focused_id = region.id.clone();
-                                            focus_set = true;
-                                        }
-                                        // 無効な要素は click を鳴らさない。ここで
-                                        // `break` は通るので押下は吸われ、下に居る
-                                        // 親のクリックが代わりに鳴ることはない (#62)。
-                                        if region.clickable && !region.disabled {
-                                            click_target = region.id.clone();
-                                        }
-                                        if let Some(ref drag_data) = region.drag_data {
-                                            pending_drag =
-                                                Some((drag_data.clone(), region.id.clone()));
-                                        }
-                                        break;
-                                    }
-                                }
-                                if !focus_set {
-                                    self.focused_id = None;
-                                }
-                            }
-                            if let Some((data, source_id)) = pending_drag {
-                                self.drag_manager.start_pending(data, source_id, x, y);
-                            }
-
-                            let mut scroll_target: Option<String> = None;
-                            if let Some(ref build) = self.last_build {
-                                for region in &build.hit_regions {
-                                    if region.rect.contains(pos) {
-                                        if let Some(ref rid) = region.id {
-                                            if self.scroll_states.contains_key(rid) {
-                                                scroll_target = Some(rid.clone());
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // If the touch landed on a managed scroll container,
-                            // begin a drag so any in-flight fling stops here.
-                            if let Some(ref sid) = scroll_target {
-                                if let Some(sv) = self.scroll_states.get_mut(sid) {
-                                    sv.begin_drag();
-                                }
-                            }
-                            self.touch_drag = Some(TouchDrag {
-                                id: touch.id,
-                                start: (x, y),
-                                last: (x, y),
-                                last_move_time: None,
-                                click_target,
-                                scroll_target,
-                                moved_beyond_slop: false,
-                                click_count,
-                            });
-                        } else if count == 2 && self.pinch.is_none() {
-                            // Second finger — promote to pinch. Cancel the
-                            // single-touch drag so no tap fires and no scroll
-                            // keeps running under the gesture.
-                            if let Some(ref mut td) = self.touch_drag {
-                                td.moved_beyond_slop = true;
-                            }
-                            self.drag_manager.cancel();
-
-                            let ids: Vec<u64> = self.active_touches.keys().copied().collect();
-                            // Pick the current touch + whichever other finger is active.
-                            let id_a = ids[0];
-                            let id_b = if ids[1] == id_a { ids[0] } else { ids[1] };
-                            let (other_a, other_b) =
-                                if id_a == touch.id { (id_b, id_a) } else { (id_a, id_b) };
-                            if let Some((dist, center)) =
-                                pinch_metrics(&self.active_touches, other_a, other_b)
-                            {
-                                self.pinch = Some(PinchGesture {
-                                    id_a: other_a,
-                                    id_b: other_b,
-                                    start_distance: dist.max(1.0),
-                                });
-                                self.app.on_pinch_start(center.0, center.1);
-                            }
-                        }
-                        // count >= 3: ignore, pinch already active (or would be with 2).
-                    }
-                    winit::event::TouchPhase::Moved => {
-                        // Pinch takes precedence over single-touch drag.
-                        if let Some(ref pinch) = self.pinch {
-                            if touch.id == pinch.id_a || touch.id == pinch.id_b {
-                                if let Some((dist, center)) =
-                                    pinch_metrics(&self.active_touches, pinch.id_a, pinch.id_b)
-                                {
-                                    let scale = dist / pinch.start_distance;
-                                    self.app.on_pinch(scale, center.0, center.1);
-                                }
-                            }
-                        } else if self
-                            .touch_drag
-                            .as_ref()
-                            .map(|t| t.id == touch.id)
-                            .unwrap_or(false)
-                        {
-                            self.mouse_x = x;
-                            self.mouse_y = y;
-                            self.update_hover();
-                            self.app.on_pointer_move(x, y);
-
-                            if let Some(ref mut td) = self.touch_drag {
-                                let dx = x - td.last.0;
-                                let dy = y - td.last.1;
-                                td.last = (x, y);
-                                let now = Instant::now();
-                                let dt = td
-                                    .last_move_time
-                                    .map(|t| (now - t).as_secs_f32())
-                                    .unwrap_or(0.0);
-                                td.last_move_time = Some(now);
-                                let total_dx = x - td.start.0;
-                                let total_dy = y - td.start.1;
-                                if !td.moved_beyond_slop
-                                    && (total_dx * total_dx + total_dy * total_dy).sqrt()
-                                        > TOUCH_SLOP
-                                {
-                                    td.moved_beyond_slop = true;
-                                }
-                                self.drag_manager.on_move(x, y);
-                                if !self.drag_manager.is_active() && td.moved_beyond_slop {
-                                    if let Some(ref sid) = td.scroll_target {
-                                        if let Some(sv) = self.scroll_states.get_mut(sid) {
-                                            sv.drag_by(dx, dy, dt);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                        let is_cancel = matches!(touch.phase, winit::event::TouchPhase::Cancelled);
-
-                        // End pinch if one of its fingers lifted.
-                        if let Some(pinch) = self.pinch.as_ref() {
-                            if touch.id == pinch.id_a || touch.id == pinch.id_b {
-                                self.pinch = None;
-                                self.app.on_pinch_end();
-                                // Don't resume single-drag; require full lift.
-                                // Any in-flight fling on the original target is killed.
-                                if let Some(td) = self.touch_drag.take() {
-                                    if let Some(sid) = td.scroll_target {
-                                        if let Some(sv) = self.scroll_states.get_mut(&sid) {
-                                            sv.cancel_fling();
-                                        }
-                                    }
-                                }
-                                self.drag_manager.cancel();
-                            }
-                        } else if self
-                            .touch_drag
-                            .as_ref()
-                            .map(|t| t.id == touch.id)
-                            .unwrap_or(false)
-                        {
-                            let td = self.touch_drag.take();
-                            let drop_completed = self.drag_manager.on_release();
-                            if let Some((data, _source_id)) = drop_completed {
-                                if !is_cancel {
-                                    if let Some(ref build) = self.last_build {
-                                        if let Some(target_id) = build
-                                            .hit_regions
-                                            .iter()
-                                            .find(|r| r.drop_zone && r.rect.contains(pos))
-                                            .and_then(|r| r.id.as_ref())
-                                        {
-                                            self.app.on_drop(&data, target_id);
-                                        }
-                                    }
-                                }
-                                // Drag-and-drop path: no scroll fling, just reset state.
-                                if let Some(td) = td {
-                                    if let Some(sid) = td.scroll_target {
-                                        if let Some(sv) = self.scroll_states.get_mut(&sid) {
-                                            sv.cancel_fling();
-                                        }
-                                    }
-                                }
-                            } else if let Some(td) = td {
-                                // Hand off to fling on release, or kill on cancel.
-                                if let Some(ref sid) = td.scroll_target {
-                                    if let Some(sv) = self.scroll_states.get_mut(sid) {
-                                        if is_cancel {
-                                            sv.cancel_fling();
-                                        } else {
-                                            sv.end_drag();
-                                        }
-                                    }
-                                }
-                                if !is_cancel && !td.moved_beyond_slop {
-                                    self.dispatch_click(
-                                        td.click_target.as_deref(),
-                                        td.click_count,
-                                        x,
-                                        y,
-                                    );
-                                }
-                            }
-                            if is_cancel {
-                                self.drag_manager.cancel();
-                            }
-                            self.app.on_pointer_up();
-                        }
-
-                        // Release primary-input ownership when the last finger lifts.
-                        if self.active_touches.is_empty()
-                            && self.primary_input == PrimaryInput::Touch
-                        {
-                            self.primary_input = PrimaryInput::None;
-                        }
-                    }
-                }
+                self.handle_touch(touch.phase, touch.id, x, y);
             }
             WindowEvent::DroppedFile(path) => {
                 self.app.on_file_drop(vec![path]);
@@ -2098,6 +1806,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         Self::recolor_selected_glyphs(&mut base_lists.glyphs, &sel_rects, fg);
                     }
                     base_rects.extend(sel_rects);
+                    base_rects.extend(Self::selection_handle_rects(
+                        self.selection_handles,
+                        self.selection.as_ref(),
+                        &self.text_layouts,
+                        sel_bg,
+                    ));
 
                     // 当たり領域の差し込みは `absorb_overlay` が済ませている。
                     let merged = build_result;
@@ -2169,6 +1883,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         Self::recolor_selected_glyphs(&mut lists.glyphs, &sel_rects, fg);
                     }
                     rects.extend(sel_rects);
+                    rects.extend(Self::selection_handle_rects(
+                        self.selection_handles,
+                        self.selection.as_ref(),
+                        &self.text_layouts,
+                        sel_bg,
+                    ));
 
                     let device = renderer.device.clone();
                     let queue = renderer.queue.clone();
@@ -2359,7 +2079,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Parking when idle lets the keyboard session be serviced; real input
         // (a keystroke, an animation) wakes the loop and restores the timer.
         #[cfg(target_os = "ios")]
-        if must_draw {
+        if must_draw || self.long_press_pending() {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                 self.last_frame + target,
             ));
@@ -2763,6 +2483,7 @@ impl<A: DeclarativeApp> AppState<A> {
             selection: None,
             selecting: false,
             selection_snapshot: None,
+            selection_handles: false,
             last_capture: UiCapture::default(),
         }
     }
@@ -3311,6 +3032,9 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 置き去りになるのも防ぐ。
     pub(crate) fn advance(&mut self, dt: f32) {
         self.app.tick(dt);
+        // 長押しで文字を選ぶ (#108)。時間で決まるので、指が止まっている間も
+        // ここで数える (動かない指からはイベントが来ない)。
+        self.check_long_press(dt);
         // `tick` でアプリの状態が変われば、 主張するフォーカスも変わりうる。
         // 描画されるフレームでの反映は `build_frame` 側が持つので、 ここは
         // 「時間が進んだ結果」を拾う分 (lazy_render で描画が止まっていても
@@ -3629,6 +3353,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     head_content: snap,
                 });
                 self.selecting = true;
+                self.selection_handles = false;
             } else {
                 // 空白領域 click → 既存 selection を取り消す。
                 self.selection = None;
@@ -3640,6 +3365,487 @@ impl<A: DeclarativeApp> AppState<A> {
         // Focus / pending-drag transitions feed the capture snapshot.
         self.push_ui_capture();
     
+    }
+
+    /// 指 1 本ぶんのタッチの処理本体 (`WindowEvent::Touch` から、座標を論理 px に
+    /// 直して呼ぶ)。窓の無いテストから同じ道を通せるように切り出してある。
+    pub(crate) fn handle_touch(
+        &mut self,
+        phase: winit::event::TouchPhase,
+        touch_id: u64,
+        x: f32,
+        y: f32,
+    ) {
+        let pos = sabitori_core::Point::new(x, y);
+        let id = touch_id.saturating_add(1);
+        // 連続タップの回数。押下で数え、タップ (解放) の時に
+        // `on_double_click` の判定へ使うので `TouchDrag` にも載せる。
+        let click_count = if matches!(phase, winit::event::TouchPhase::Started) {
+            self.clicks.press_now(pos, None, PointerKind::Touch)
+        } else {
+            1
+        };
+
+        // Always update active_touches tracking and forward raw events.
+        match phase {
+            winit::event::TouchPhase::Started => {
+                self.active_touches.insert(touch_id, (x, y));
+                self.app.on_input(&InputEvent::PointerPressed {
+                    id,
+                    kind: PointerKind::Touch,
+                    position: pos,
+                    button: None,
+                    modifiers: self.modifiers,
+                    click_count,
+                });
+                self.pressed_id = self.hit_id_at(x, y);
+            }
+            winit::event::TouchPhase::Moved => {
+                self.active_touches.insert(touch_id, (x, y));
+                self.app.on_input(&InputEvent::PointerMoved {
+                    id,
+                    kind: PointerKind::Touch,
+                    position: pos,
+                    modifiers: self.modifiers,
+                });
+            }
+            winit::event::TouchPhase::Ended => {
+                self.active_touches.remove(&touch_id);
+                self.app.on_input(&InputEvent::PointerReleased {
+                    id,
+                    kind: PointerKind::Touch,
+                    position: pos,
+                    button: None,
+                    modifiers: self.modifiers,
+                });
+                self.pressed_id = None;
+            }
+            winit::event::TouchPhase::Cancelled => {
+                self.active_touches.remove(&touch_id);
+                self.app.on_input(&InputEvent::PointerCancelled {
+                    id,
+                    kind: PointerKind::Touch,
+                });
+                self.pressed_id = None;
+            }
+        }
+
+        // Mouse owns the primary flow → skip touch-driven logic.
+        if self.primary_input == PrimaryInput::Mouse {
+            return;
+        }
+        if self.primary_input == PrimaryInput::None
+            && matches!(phase, winit::event::TouchPhase::Started)
+        {
+            self.primary_input = PrimaryInput::Touch;
+        }
+
+        match phase {
+            winit::event::TouchPhase::Started => {
+                let count = self.active_touches.len();
+                if count == 1 {
+                    // First finger — set up single-touch drag.
+                    self.mouse_x = x;
+                    self.mouse_y = y;
+
+                    // 指で作った選択のつまみを押したなら、その端を動かす (#108)。
+                    // 押した先のボタンやスクロールには渡さない。
+                    if let Some(select) = self.grab_selection_handle(x, y) {
+                        self.touch_drag = Some(TouchDrag {
+                            id: touch_id,
+                            start: (x, y),
+                            last: (x, y),
+                            last_move_time: None,
+                            click_target: None,
+                            scroll_target: None,
+                            moved_beyond_slop: true,
+                            click_count,
+                            held: 0.0,
+                            select: Some(select),
+                        });
+                        return;
+                    }
+
+                    let mut click_target: Option<String> = None;
+                    let mut pending_drag: Option<(String, Option<String>)> = None;
+                    if let Some(ref build) = self.last_build {
+                        let mut focus_set = false;
+                        for region in &build.hit_regions {
+                            // マウス押下と同じく、 意味だけの領域は透過する。
+                            if region.is_interactive() && region.rect.contains(pos) {
+                                if region.focusable {
+                                    self.focused_id = region.id.clone();
+                                    focus_set = true;
+                                }
+                                // 無効な要素は click を鳴らさない。ここで
+                                // `break` は通るので押下は吸われ、下に居る
+                                // 親のクリックが代わりに鳴ることはない (#62)。
+                                if region.clickable && !region.disabled {
+                                    click_target = region.id.clone();
+                                }
+                                if let Some(ref drag_data) = region.drag_data {
+                                    pending_drag =
+                                        Some((drag_data.clone(), region.id.clone()));
+                                }
+                                break;
+                            }
+                        }
+                        if !focus_set {
+                            self.focused_id = None;
+                        }
+                    }
+                    if let Some((data, source_id)) = pending_drag {
+                        self.drag_manager.start_pending(data, source_id, x, y);
+                    }
+
+                    let mut scroll_target: Option<String> = None;
+                    if let Some(ref build) = self.last_build {
+                        for region in &build.hit_regions {
+                            if region.rect.contains(pos) {
+                                if let Some(ref rid) = region.id {
+                                    if self.scroll_states.contains_key(rid) {
+                                        scroll_target = Some(rid.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // If the touch landed on a managed scroll container,
+                    // begin a drag so any in-flight fling stops here.
+                    if let Some(ref sid) = scroll_target {
+                        if let Some(sv) = self.scroll_states.get_mut(sid) {
+                            sv.begin_drag();
+                        }
+                    }
+                    self.touch_drag = Some(TouchDrag {
+                        id: touch_id,
+                        start: (x, y),
+                        last: (x, y),
+                        last_move_time: None,
+                        click_target,
+                        scroll_target,
+                        moved_beyond_slop: false,
+                        click_count,
+                        held: 0.0,
+                        select: None,
+                    });
+                } else if count == 2 && self.pinch.is_none() {
+                    // Second finger — promote to pinch. Cancel the
+                    // single-touch drag so no tap fires and no scroll
+                    // keeps running under the gesture.
+                    if let Some(ref mut td) = self.touch_drag {
+                        td.moved_beyond_slop = true;
+                    }
+                    self.drag_manager.cancel();
+
+                    let ids: Vec<u64> = self.active_touches.keys().copied().collect();
+                    // Pick the current touch + whichever other finger is active.
+                    let id_a = ids[0];
+                    let id_b = if ids[1] == id_a { ids[0] } else { ids[1] };
+                    let (other_a, other_b) =
+                        if id_a == touch_id { (id_b, id_a) } else { (id_a, id_b) };
+                    if let Some((dist, center)) =
+                        pinch_metrics(&self.active_touches, other_a, other_b)
+                    {
+                        self.pinch = Some(PinchGesture {
+                            id_a: other_a,
+                            id_b: other_b,
+                            start_distance: dist.max(1.0),
+                        });
+                        self.app.on_pinch_start(center.0, center.1);
+                    }
+                }
+                // count >= 3: ignore, pinch already active (or would be with 2).
+            }
+            winit::event::TouchPhase::Moved => {
+                // Pinch takes precedence over single-touch drag.
+                if let Some(ref pinch) = self.pinch {
+                    if touch_id == pinch.id_a || touch_id == pinch.id_b {
+                        if let Some((dist, center)) =
+                            pinch_metrics(&self.active_touches, pinch.id_a, pinch.id_b)
+                        {
+                            let scale = dist / pinch.start_distance;
+                            self.app.on_pinch(scale, center.0, center.1);
+                        }
+                    }
+                } else if self
+                    .touch_drag
+                    .as_ref()
+                    .map(|t| t.id == touch_id)
+                    .unwrap_or(false)
+                {
+                    // 指で選んでいる最中は、範囲を動かすだけ (スクロールしない)。
+                    if let Some(select) = self.touch_drag.as_ref().and_then(|t| t.select) {
+                        self.move_touch_selection(select, x, y);
+                        return;
+                    }
+                    self.mouse_x = x;
+                    self.mouse_y = y;
+                    self.update_hover();
+                    self.app.on_pointer_move(x, y);
+
+                    if let Some(ref mut td) = self.touch_drag {
+                        let dx = x - td.last.0;
+                        let dy = y - td.last.1;
+                        td.last = (x, y);
+                        let now = Instant::now();
+                        let dt = td
+                            .last_move_time
+                            .map(|t| (now - t).as_secs_f32())
+                            .unwrap_or(0.0);
+                        td.last_move_time = Some(now);
+                        let total_dx = x - td.start.0;
+                        let total_dy = y - td.start.1;
+                        if !td.moved_beyond_slop
+                            && (total_dx * total_dx + total_dy * total_dy).sqrt()
+                                > TOUCH_SLOP
+                        {
+                            td.moved_beyond_slop = true;
+                        }
+                        self.drag_manager.on_move(x, y);
+                        if !self.drag_manager.is_active() && td.moved_beyond_slop {
+                            if let Some(ref sid) = td.scroll_target {
+                                if let Some(sv) = self.scroll_states.get_mut(sid) {
+                                    sv.drag_by(dx, dy, dt);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                let is_cancel = matches!(phase, winit::event::TouchPhase::Cancelled);
+
+                // End pinch if one of its fingers lifted.
+                if let Some(pinch) = self.pinch.as_ref() {
+                    if touch_id == pinch.id_a || touch_id == pinch.id_b {
+                        self.pinch = None;
+                        self.app.on_pinch_end();
+                        // Don't resume single-drag; require full lift.
+                        // Any in-flight fling on the original target is killed.
+                        if let Some(td) = self.touch_drag.take() {
+                            if let Some(sid) = td.scroll_target {
+                                if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                                    sv.cancel_fling();
+                                }
+                            }
+                        }
+                        self.drag_manager.cancel();
+                    }
+                } else if self
+                    .touch_drag
+                    .as_ref()
+                    .map(|t| t.id == touch_id)
+                    .unwrap_or(false)
+                {
+                    let td = self.touch_drag.take();
+                    let drop_completed = self.drag_manager.on_release();
+                    if let Some((data, _source_id)) = drop_completed {
+                        if !is_cancel {
+                            if let Some(ref build) = self.last_build {
+                                if let Some(target_id) = build
+                                    .hit_regions
+                                    .iter()
+                                    .find(|r| r.drop_zone && r.rect.contains(pos))
+                                    .and_then(|r| r.id.as_ref())
+                                {
+                                    self.app.on_drop(&data, target_id);
+                                }
+                            }
+                        }
+                        // Drag-and-drop path: no scroll fling, just reset state.
+                        if let Some(td) = td {
+                            if let Some(sid) = td.scroll_target {
+                                if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                                    sv.cancel_fling();
+                                }
+                            }
+                        }
+                    } else if let Some(td) = td {
+                        // Hand off to fling on release, or kill on cancel.
+                        if let Some(ref sid) = td.scroll_target {
+                            if let Some(sv) = self.scroll_states.get_mut(sid) {
+                                if is_cancel {
+                                    sv.cancel_fling();
+                                } else {
+                                    sv.end_drag();
+                                }
+                            }
+                        }
+                        if !is_cancel && !td.moved_beyond_slop && td.select.is_none() {
+                            self.dispatch_click(
+                                td.click_target.as_deref(),
+                                td.click_count,
+                                x,
+                                y,
+                            );
+                            // 選択の外をタップしたら解除 (#108)。押した先の
+                            // `on_click` が先 — 「マーカー」ボタンが範囲を読める。
+                            if self.selection.is_some() {
+                                self.selection = None;
+                                self.selection_handles = false;
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                    if is_cancel {
+                        self.drag_manager.cancel();
+                    }
+                    self.app.on_pointer_up();
+                }
+
+                // Release primary-input ownership when the last finger lifts.
+                if self.active_touches.is_empty()
+                    && self.primary_input == PrimaryInput::Touch
+                {
+                    self.primary_input = PrimaryInput::None;
+                }
+            }
+        }
+    }
+
+    /// 押した所が、指で作った選択のつまみか (#108)。つまみなら、その端を動かす
+    /// 状態を返す。
+    fn grab_selection_handle(&self, x: f32, y: f32) -> Option<crate::touch_select::TouchSelect> {
+        use crate::touch_select::{ends, grabbed, TouchSelect};
+        if !self.selection_handles {
+            return None;
+        }
+        let sel = self.selection.as_ref().filter(|s| !s.is_empty())?;
+        let (start, end) = sel.range_normalized();
+        let e = ends(start, end, &self.text_layouts)?;
+        let which = grabbed(e, x, y)?;
+        let (fixed, (_, top, h)) = if which == 0 { (end, e[0]) } else { (start, e[1]) };
+        Some(TouchSelect::Handle { fixed, dy: top + h * 0.5 - y })
+    }
+
+    /// 指で選んでいる最中に指が動いた (#108)。
+    fn move_touch_selection(&mut self, select: crate::touch_select::TouchSelect, x: f32, y: f32) {
+        use crate::touch_select::TouchSelect;
+        let dy = match select {
+            TouchSelect::Handle { dy, .. } => dy,
+            TouchSelect::Word { .. } => 0.0,
+        };
+        let Some(hit) = self.hit_test_text(x, y + dy, false) else { return };
+        let (anchor, head) = match select {
+            // 長押しでつかんだ語は、どちらへ伸ばしても含んだまま。
+            TouchSelect::Word { idx, start, end } => {
+                if hit < (idx, start) {
+                    ((idx, end), hit)
+                } else if hit > (idx, end) {
+                    ((idx, start), hit)
+                } else {
+                    ((idx, start), (idx, end))
+                }
+            }
+            TouchSelect::Handle { fixed, .. } => (fixed, hit),
+        };
+        // 両端が重なる所まで縮めない (空になると選択ごと消える)。
+        if anchor == head {
+            return;
+        }
+        let content = |idx: usize| {
+            self.text_layouts
+                .iter()
+                .find(|l| l.text_idx == idx)
+                .map(|l| l.content.clone())
+                .unwrap_or_default()
+        };
+        let (anchor_content, head_content) = (content(anchor.0), content(head.0));
+        if let Some(sel) = self.selection.as_mut() {
+            sel.anchor = anchor;
+            sel.head = head;
+            sel.anchor_content = anchor_content;
+            sel.head_content = head_content;
+            self.dirty = true;
+        }
+    }
+
+    /// 長押しを数える。指を [`crate::touch_select::LONG_PRESS_SECS`] 秒止めたら、
+    /// その下の語を選ぶ (#108)。
+    fn check_long_press(&mut self, dt: f32) {
+        use crate::touch_select::{word_range, TouchSelect, LONG_PRESS_SECS};
+        if self.pinch.is_some() || self.drag_manager.is_active() {
+            return;
+        }
+        let Some(td) = self.touch_drag.as_mut() else { return };
+        if td.select.is_some() || td.moved_beyond_slop {
+            return;
+        }
+        let before = td.held;
+        td.held += dt;
+        // 閾値をまたいだ 1 回だけ。文字の上でなければ何もしない (タップのまま)。
+        if !(before < LONG_PRESS_SECS && td.held >= LONG_PRESS_SECS) {
+            return;
+        }
+        if !self.app.text_selection_enabled() {
+            return;
+        }
+        let (sx, sy) = td.start;
+        let Some((idx, byte)) = Self::hit_test_text_in(&self.text_layouts, sx, sy, true) else {
+            return;
+        };
+        let Some(layout) = self.text_layouts.iter().find(|l| l.text_idx == idx) else { return };
+        let content = layout.content.clone();
+        // 当たり判定が返すのはキャレット (字の間) の位置で、字の右半分を押すと次の
+        // 字の頭になる。語は**指の下の字**から決める。
+        let byte = layout
+            .hits
+            .iter()
+            .find(|h| sx >= h.x && sx < h.x + h.w && sy >= h.y && sy < h.y + h.h)
+            .map_or(byte, |h| h.byte_start);
+        let (start, end) = word_range(&content, byte);
+        if start == end {
+            return;
+        }
+        // 選んだら、この指はもうスクロールもタップもしない。
+        let td = self.touch_drag.as_mut().expect("上で見た");
+        td.select = Some(TouchSelect::Word { idx, start, end });
+        if let Some(sv) = td.scroll_target.clone().and_then(|sid| self.scroll_states.get_mut(&sid)) {
+            sv.cancel_fling();
+        }
+        self.drag_manager.cancel();
+        self.selection = Some(TextSelection {
+            anchor: (idx, start),
+            head: (idx, end),
+            anchor_content: content.clone(),
+            head_content: content,
+        });
+        self.selecting = false;
+        self.selection_handles = true;
+        self.dirty = true;
+    }
+
+    /// 指で作った選択の両端のつまみ (#108)。選択の色を不透明にして描く。
+    ///
+    /// 描画中は renderer を可変で借りているので、`self` ではなく欄を受け取る。
+    fn selection_handle_rects(
+        handles: bool,
+        selection: Option<&TextSelection>,
+        text_layouts: &[crate::bridge::TextHitLayout],
+        sel_bg: sabitori_core::Color,
+    ) -> Vec<sabitori_gpu::RectInstance> {
+        if !handles {
+            return Vec::new();
+        }
+        let Some(sel) = selection.filter(|s| !s.is_empty()) else { return Vec::new() };
+        let (start, end) = sel.range_normalized();
+        match crate::touch_select::ends(start, end, text_layouts) {
+            Some(e) => crate::touch_select::handle_rects(e, sabitori_core::Color { a: 1.0, ..sel_bg }),
+            None => Vec::new(),
+        }
+    }
+
+    /// 長押しを待っている (指が止まったまま、まだ選んでいない)。iOS は何も
+    /// 描かない間ループを寝かせるので、これが立っている間は起こし続ける —
+    /// 動かない指からはイベントが来ず、時間を数えられない。
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    fn long_press_pending(&self) -> bool {
+        self.touch_drag.as_ref().is_some_and(|t| {
+            t.select.is_none() && !t.moved_beyond_slop && t.held < crate::touch_select::LONG_PRESS_SECS
+        })
     }
 
     /// 主ボタン解放の処理本体。 [`Self::press_primary`] と同じ理由で切り出してある。
@@ -5870,6 +6076,107 @@ mod highlight_tests {
         assert_eq!(app.seen.last(), Some(&None));
         assert_eq!(snapshot, None, "ctx.text_selection() も空になる");
         assert_eq!(app.seen.len(), 3);
+    }
+
+    // ---------------------------------------------------------------
+    // #108 — タッチで文字を選ぶ
+    // ---------------------------------------------------------------
+
+    use winit::event::TouchPhase;
+
+    const LAW: &str = "損害賠償の責任を負う";
+
+    /// 1 行目 = LAW (1 字 10px・y 0..16)、2 行目 = "abcdef" (y 40..56)。
+    fn touch_state() -> AppState<TestApp> {
+        let mut state = AppState::new(TestApp);
+        state.text_layouts = vec![owned(0, Some("p1"), LAW, 0.0), owned(1, Some("p2"), "abcdef", 40.0)];
+        state
+    }
+
+    fn held(state: &mut AppState<TestApp>, secs: f32) {
+        let mut t = 0.0;
+        while t < secs {
+            state.advance(0.1);
+            t += 0.1;
+        }
+    }
+
+    fn range(state: &AppState<TestApp>) -> Option<((usize, usize), (usize, usize))> {
+        state.selection.as_ref().map(|s| s.range_normalized())
+    }
+
+    /// 長押しで、指の下の語 (漢字の続き) を選ぶ。離してもタップにならず、選択は残る。
+    #[test]
+    fn a_long_press_selects_the_word_under_the_finger() {
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0); // 「賠」
+        held(&mut state, 0.3);
+        assert!(state.selection.is_none(), "0.3 秒ではまだ");
+        held(&mut state, 0.3);
+        assert_eq!(range(&state), Some(((0, 0), (0, "損害賠償".len()))));
+        assert!(state.selection_handles, "指で選んだらつまみを出す");
+        state.handle_touch(TouchPhase::Ended, 1, 25.0, 8.0);
+        assert!(state.selection.is_some(), "離しても残る");
+    }
+
+    /// 動かした指はスクロール。長押しにならない。
+    #[test]
+    fn a_finger_that_moves_scrolls_instead() {
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
+        state.handle_touch(TouchPhase::Moved, 1, 25.0, 30.0);
+        held(&mut state, 1.0);
+        assert!(state.selection.is_none());
+    }
+
+    #[test]
+    fn a_long_press_on_nothing_selects_nothing() {
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 300.0, 200.0);
+        held(&mut state, 1.0);
+        assert!(state.selection.is_none());
+        assert!(!state.long_press_pending(), "1 回数えたら待たない");
+    }
+
+    /// 長押しのまま指を動かすと伸びる。つかんだ語は含んだまま。
+    #[test]
+    fn dragging_after_the_long_press_extends_the_selection() {
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 65.0, 8.0); // 「責」
+        held(&mut state, 0.6);
+        assert_eq!(range(&state), Some(((0, "損害賠償の".len()), (0, "損害賠償の責任".len()))));
+        state.handle_touch(TouchPhase::Moved, 1, 38.0, 48.0); // 2 行目の "abcd|"
+        assert_eq!(range(&state), Some(((0, "損害賠償の".len()), (1, 4))));
+        state.handle_touch(TouchPhase::Moved, 1, 12.0, 8.0); // 前へ
+        assert_eq!(range(&state), Some(((0, 3), (0, "損害賠償の責任".len()))), "語の終わりを残して前へ");
+    }
+
+    /// 選択の外をタップすると消える。つまみをつかむと端を動かせる。
+    #[test]
+    fn a_tap_clears_and_the_handles_move_the_ends() {
+        let mut state = touch_state();
+        state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
+        held(&mut state, 0.6);
+        state.handle_touch(TouchPhase::Ended, 1, 25.0, 8.0);
+
+        // 終わりのつまみ (「償」の右下・丸の中心は x 40, y 22) を 2 行目へ。
+        state.handle_touch(TouchPhase::Started, 2, 41.0, 24.0);
+        state.handle_touch(TouchPhase::Moved, 2, 21.0, 64.0);
+        state.handle_touch(TouchPhase::Ended, 2, 21.0, 64.0);
+        assert_eq!(range(&state), Some(((0, 0), (1, 2))), "終わりが 2 行目の ab| へ");
+        assert!(state.selection.is_some(), "つまみを離してもタップにならない");
+
+        // 始まりのつまみ (x 0, y -6) を右へ。
+        state.handle_touch(TouchPhase::Started, 3, 1.0, -5.0);
+        state.handle_touch(TouchPhase::Moved, 3, 29.0, -5.0);
+        state.handle_touch(TouchPhase::Ended, 3, 29.0, -5.0);
+        assert_eq!(range(&state), Some(((0, "損害賠".len()), (1, 2))), "x 29 に近い字の間 (賠|償)");
+
+        // 選択の外をタップ。
+        state.handle_touch(TouchPhase::Started, 4, 300.0, 200.0);
+        state.handle_touch(TouchPhase::Ended, 4, 300.0, 200.0);
+        assert!(state.selection.is_none());
+        assert!(!state.selection_handles);
     }
 
     struct TestApp;

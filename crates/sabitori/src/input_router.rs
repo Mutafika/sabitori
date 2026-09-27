@@ -26,6 +26,11 @@ pub(crate) struct TouchDrag {
     /// タップは解放で確定するので、押下時に数えた値をここで運んで
     /// `on_double_click` の判定に使う。
     pub click_count: u32,
+    /// 動かさずに押している時間 (秒)。長押しで文字を選ぶ判定に使う (#108)。
+    pub held: f32,
+    /// 指で文字を選んでいる最中なら、その状態 (#108)。この間はスクロールも
+    /// タップもしない。
+    pub select: Option<crate::touch_select::TouchSelect>,
 }
 
 /// winit のホイール delta を、配る単位 (論理 px) と精度フラグに直す。

@@ -41,6 +41,7 @@ pub mod slider_sync;
 pub mod image_runtime;
 pub mod hot_reload;
 pub(crate) mod input_router;
+pub(crate) mod touch_select;
 pub mod scene_app;
 /// システムクリップボードの読み書き (issue #20)。
 pub mod clipboard;

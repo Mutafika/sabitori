@@ -969,6 +969,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                 scroll_target: None,
                                 moved_beyond_slop: false,
                                 click_count,
+                                held: 0.0,
+                                select: None,
                             });
                         } else if count == 2 && self.pinch.is_none() {
                             if let Some(ref mut td) = self.touch_drag {
