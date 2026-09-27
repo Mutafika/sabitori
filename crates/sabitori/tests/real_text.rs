@@ -7,6 +7,10 @@
 //! 止められなかった。
 //!
 //! 実物の計測は入っている書体で寸法が変わるので、px ではなく関係を見る。
+//!
+//! v0.23 から、横並びの中で大きさを書いていない文字は既定で 1 行に縮めて「…」に
+//! する (#109)。直す前の形は、はみ出す代わりに 1 行で切れる。読ませたい文は
+//! `.min_w(Px(0.0))` (か `.max_lines(n)`) で折り返させる。
 
 use sabitori::testing::Harness;
 use sabitori::*;
@@ -35,17 +39,25 @@ fn right(r: Rect) -> f32 {
     r.origin.x + r.size.width
 }
 
-/// **直す前: 文字がカードからはみ出していることが見える。**
+/// **直す前: 文字は 1 行に切れて、カードの中に収まる (#109)。** 以前は
+/// カードの外まで伸びていた。
 #[test]
-fn text_that_does_not_wrap_is_seen_overflowing_its_card() {
+fn text_left_alone_is_cut_to_one_line_inside_its_card() {
     let mut h = Harness::with_real_text(Login { fixed: false }, 800.0, 600.0);
     h.frame();
     let card = h.rect_of("card").unwrap();
     let msg = h.text_rect("サーバー").expect("文字が描かれていない");
-    assert!(
-        right(msg) > right(card) + 1.0,
-        "折り返していない文字がカードに収まって見える: msg {msg:?} card {card:?}"
-    );
+    assert!(right(msg) <= right(card) + 0.5, "カードからはみ出している: msg {msg:?} card {card:?}");
+    let draw = h
+        .build()
+        .render_list
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            sabitori_core::render_list::RenderCommand::Text(t) if t.content.contains("サーバー") => Some(t.max_lines),
+            _ => None,
+        });
+    assert_eq!(draw, Some(Some(1)), "1 行で「…」にする指定で描かれていない");
 }
 
 /// **直した後: 文字は折り返してカードに収まり、帯が行数ぶん伸びる。**
@@ -88,9 +100,21 @@ fn the_stub_does_not_wrap() {
 
 /// **`overflows()` で同じ崩れを拾える** (#95)。上の 2 本は矩形を比べて書いたが、
 /// 画面ごとに「どこを比べるか」を考えなくても、空であることを見れば足りる。
+///
+/// 1 行で切れるようになったので (#109)、はみ出させるには最小幅を書く。
 #[test]
 fn overflows_names_the_banner_before_the_fix_and_nothing_after() {
-    let mut before = Harness::with_real_text(Login { fixed: false }, 800.0, 600.0);
+    struct Wide;
+    impl DeclarativeApp for Wide {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            // 文字に 1 行の幅を最小幅として書いた = 以前の既定と同じ形。
+            let msg = text(MESSAGE).font_size(13.0).min_w(Px(600.0));
+            let banner = div().id("banner").w_full().p_px(10.0).flex_row().child(msg);
+            let card = div().id("card").w(Px(316.0)).flex_col().child(banner);
+            div().w(Px(800.0)).h(Px(600.0)).flex_col().items_center().child(card)
+        }
+    }
+    let mut before = Harness::with_real_text(Wide, 800.0, 600.0);
     before.frame();
     let paths: Vec<_> = before.overflows().iter().map(|o| o.path.as_str()).collect();
     assert_eq!(

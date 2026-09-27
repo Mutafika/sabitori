@@ -571,7 +571,7 @@ fn build_tree_impl(
 
     // Phase 1: create Taffy nodes (bottom-up). Attach text context to leaf
     // text/button nodes so the measure_fn can re-measure under width constraints.
-    let root_node = create_taffy_node(&mut taffy, root, &measurer, false);
+    let root_node = create_taffy_node(&mut taffy, root, &measurer, false, false);
 
     // Phase 2: compute layout. If a measurer is available, use it via
     // compute_layout_with_measure; text nodes will be re-shaped under the
@@ -966,6 +966,8 @@ fn create_taffy_node(
     element: &Element,
     measurer: &Option<&dyn TextMeasure>,
     parent_scrolls: bool,
+    // 親が横に並べる (flex の row)。文字を 1 行で切るかの判断に使う (#109)。
+    in_row: bool,
 ) -> taffy::NodeId {
     // A scroll container's direct children must keep their natural size along the
     // scroll axis. Otherwise the default `flex_shrink: 1` squeezes them down to
@@ -978,13 +980,24 @@ fn create_taffy_node(
     let child_ids: Vec<taffy::NodeId> = element
         .children
         .iter()
-        .map(|child| create_taffy_node(taffy, child, measurer, this_scrolls))
+        .map(|child| create_taffy_node(taffy, child, measurer, this_scrolls, lays_out_in_a_row(element)))
         .collect();
 
     let mut style = convert_to_taffy_style(&element.style, &element.kind, *measurer);
     if parent_scrolls {
         style.flex_shrink = 0.0;
     }
+    if shrinks_to_one_line(element, in_row) {
+        style.min_size.width = LengthPercentageAuto::length(0.0);
+        // 測る物が無いとき、文字の幅は最小幅の見積もりだけで決まっていた。
+        // 最小幅を外すなら、見積もりは幅として残す (最小幅が 0 なので縮める。
+        // basis にすると、親が中身から大きさを決めるときに数えられず 0 になる)。
+        if let (None, ElementKind::Text { content }) = (measurer, &element.kind) {
+            let (w, _) = measure_or_estimate(content, &element.style, None);
+            style.size.width = taffy::Dimension::length(w);
+        }
+    }
+    let max_lines = effective_max_lines(element, in_row);
 
     // Attach measure context for leaf text/button nodes so compute_layout_with_measure
     // can re-shape under actual available width.
@@ -998,7 +1011,7 @@ fn create_taffy_node(
                 font_family: element.style.font_family.clone(),
                 padding: (0.0, 0.0, 0.0, 0.0),
                 typo: element.style.typography(),
-                max_lines: element.style.max_lines,
+                max_lines,
             }),
             ElementKind::Button { label, .. } => {
                 let pad = resolve_edges_px(&element.style.padding);
@@ -1010,7 +1023,7 @@ fn create_taffy_node(
                     font_family: element.style.font_family.clone(),
                     padding: (pad.1, pad.2, pad.3, pad.0), // (top, right, bottom, left)
                     typo: element.style.typography(),
-                    max_lines: element.style.max_lines,
+                    max_lines,
                 })
             }
             _ => None,
@@ -1030,6 +1043,44 @@ fn create_taffy_node(
         taffy
             .new_with_children(style, &child_ids)
             .expect("Failed to create Taffy node")
+    }
+}
+
+/// 子を横に並べる入れ物か (flex の row)。
+fn lays_out_in_a_row(element: &Element) -> bool {
+    element.style.display == Display::Flex
+        && matches!(element.style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse)
+}
+
+/// 横に並んだ文字を、幅が足りなければ縮めて 1 行で「…」にするか (#109)。
+///
+/// 大きさを何も指定していない `text()` が横並びの中にあるとき。これまでは文字の
+/// 最小幅が「1 行に並べた幅」のままで縮まず、隣の固定幅の部品 (鍵・× のボタン) を
+/// 行の外へ押し出していた。幅・最小幅・行数のどれかを書いた文字は、書いたとおり:
+///
+/// - `.max_lines(n)` — n 行まで折り返して、それでも入らなければ「…」
+/// - `.min_w(Px(0.0))` — 行数の上限なしで折り返す
+/// - `.w(..)` — その幅で折り返す
+fn shrinks_to_one_line(element: &Element, in_row: bool) -> bool {
+    let st = &element.style;
+    in_row
+        && matches!(element.kind, ElementKind::Text { .. })
+        && st.width == Dimension::Auto
+        && st.min_width == Dimension::Auto
+}
+
+/// 描くとき・測るときの行数の上限。
+///
+/// ボタンの文字は既定で 1 行 (#109)。幅を指定したボタンの文字が折り返して
+/// 下へはみ出すより、「…」で切れる方がよい。折り返したいなら `.max_lines(n)`。
+fn effective_max_lines(element: &Element, in_row: bool) -> Option<u32> {
+    if element.style.max_lines.is_some() {
+        return element.style.max_lines;
+    }
+    match element.kind {
+        ElementKind::Button { .. } => Some(1),
+        ElementKind::Text { .. } if shrinks_to_one_line(element, in_row) => Some(1),
+        _ => None,
     }
 }
 
@@ -1564,6 +1615,10 @@ fn emit_commands(
     }
 
     // Emit text draw for Text and Button elements
+    //
+    // 行数の上限は測ったときと同じもの (`effective_max_lines`) を使う。違えば
+    // 1 行と測った箱に 2 行描いて、下の行が隣に重なる。
+    let max_lines = taffy.get_node_context(taffy_node).map_or(style.max_lines, |c| c.max_lines);
     match &element.kind {
         ElementKind::Text { content } => {
             // padding はレイアウト空間の px なので、描画位置に使う前に scale する
@@ -1580,7 +1635,7 @@ fn emit_commands(
                 bold: style.bold,
                 monospace: style.monospace,
                 font_family: style.font_family.clone(),
-                max_lines: style.max_lines,
+                max_lines,
                 typo: style.typography(),
                 color_spans: style.color_spans.clone(),
                 highlight: style.highlight.clone(),
@@ -1605,7 +1660,7 @@ fn emit_commands(
                 bold: style.bold,
                 monospace: style.monospace,
                 font_family: style.font_family.clone(),
-                max_lines: style.max_lines,
+                max_lines,
                 typo: style.typography(),
                 color_spans: style.color_spans.clone(),
                 highlight: style.highlight.clone(),
