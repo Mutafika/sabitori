@@ -154,6 +154,9 @@ pub struct LayoutOverflow {
     /// 例: `#app > div[1] > #toolbar > text[3]("期間")`。
     pub path: String,
     /// はみ出した要素の箱 (画面座標。見た目だけの `translate` / `scale` は含まない)。
+    ///
+    /// レイアウトの**丸める前**の値 (描かれる箱とは 1px 未満ずれうる)。丸めた後で
+    /// 比べると、丸めの 1px をはみ出しと数えてしまう (#104)。
     pub rect: Rect,
     /// 親の箱 (padding を含む・画面座標)。根なら窓。
     pub parent: Rect,
@@ -784,7 +787,13 @@ fn collect_overflows<'a>(
     path: &mut Vec<(&'a Element, usize)>,
     out: &mut Vec<LayoutOverflow>,
 ) {
-    let Ok(layout) = taffy.layout(taffy_node) else { return };
+    // 丸める前の値で比べる (#104)。taffy の丸めは、位置を親からの相対のまま丸め、
+    // 幅を累計の右端の差で出すので、丸めた位置を足し上げると 1px 食い違う
+    // (小数幅の `fr` の列で、右に寄せた子が親より 1px 出て見える)。崩れではない。
+    if element.style.hidden {
+        return;
+    }
+    let layout = taffy.unrounded_layout(taffy_node);
     let style = &element.style;
     let mut x = parent_origin.0 + layout.location.x;
     let mut y = parent_origin.1 + layout.location.y;
@@ -1125,6 +1134,10 @@ fn collect_anchor_boxes(
     rects: &mut std::collections::HashMap<String, Rect>,
     pending: &mut Vec<(taffy::NodeId, Anchor)>,
 ) {
+    // 隠した要素 (と中身) は、貼り付け先にも貼り付ける側にもならない。
+    if element.style.hidden {
+        return;
+    }
     let Ok(layout) = taffy.layout(taffy_node) else { return };
     let style = &element.style;
     let scale = parent_scale * style.scale;
@@ -1335,6 +1348,9 @@ fn record_probes(
     probes: &std::collections::HashSet<String>,
     probe_positions: &mut std::collections::HashMap<String, f32>,
 ) {
+    if element.style.hidden {
+        return;
+    }
     let Ok(layout) = taffy.layout(taffy_node) else { return };
     let style = &element.style;
     let abs_x = parent_x + layout.location.x + style.translate_x;
@@ -1387,6 +1403,13 @@ fn emit_commands(
     // `sticky_x` / `sticky_y` はこれを打ち消して元の位置に留まる。
     parent_scroll: (f32, f32),
 ) {
+    // 隠した要素 (`display: none`) は中身ごと描かず、押せもしない。taffy は
+    // 中身ごと大きさ 0 に置くので箱のある物は下の「0 は飛ばす」で消えるが、
+    // `polyline()` は箱が 0 でも点で描く — ここで止めないと隠した線が残る。
+    if element.style.hidden {
+        count_elements(element, element_counter);
+        return;
+    }
     let disabled = parent_disabled || element.disabled;
     let layout = taffy.layout(taffy_node).expect("Missing layout");
     let style = &element.style;
@@ -2104,6 +2127,7 @@ fn convert_to_taffy_style(
 
     TaffyStyle {
         display: match style.display {
+            _ if style.hidden => taffy::Display::None,
             Display::Flex => taffy::Display::Flex,
             Display::Grid => taffy::Display::Grid,
         },
@@ -4859,6 +4883,43 @@ mod overflow_tests {
         assert_eq!(b.overflows.len(), 1);
         assert_eq!(b.overflows[0].path, "#app");
         assert_eq!(b.overflows[0].by, crate::Edges::new(0.0, 180.0, 0.0, 0.0));
+    }
+
+    /// 幅が小数になる `fr` の列でも、丸めの 1px は数えない (#104)。
+    ///
+    /// taffy は幅を「右端の累計を丸めた差」で、位置を「親からの位置を丸めた値」で
+    /// 出す。丸めた位置を足し上げると、列の右端に寄せた子が親より 1px 出ることがある。
+    #[test]
+    fn rounding_in_fractional_grid_columns_is_not_an_overflow() {
+        use crate::element::Track;
+        let mut hits = Vec::new();
+        for (w, pad) in (600..640).flat_map(|w| (1..10).map(move |p| (w as f32, 12.0 + p as f32 * 0.1))) {
+            let row = || {
+                div().flex_row().justify_between().children([
+                    text("項目").w(Px(33.0)).h(Px(20.0)),
+                    div().w(Px(7.0)).h(Px(20.0)),
+                ])
+            };
+            let root = div().w(Px(w)).h(Px(400.0)).flex_col().px_pad(Px(pad)).child(
+                div().grid().grid_cols(Track::repeat(3, Track::fr(1.0))).gap(17.0).children([
+                    row(), row(), row(), row(), row(), row(),
+                ]),
+            );
+            let b = build_tree(&root, w, 400.0);
+            hits.extend(b.overflows.into_iter().map(|o| (w, pad, o.path, o.by)));
+        }
+        assert!(hits.is_empty(), "{} 件: {:?}", hits.len(), &hits[..hits.len().min(3)]);
+    }
+
+    /// 丸めを見なくなっても、1px を越える本物のはみ出しは拾う。
+    #[test]
+    fn a_real_overflow_of_two_pixels_is_still_reported() {
+        let root = div().w(Px(400.0)).h(Px(100.0)).child(
+            div().w(Px(100.5)).h(Px(20.0)).flex_row().child(div().w(Px(102.5)).h(Px(20.0)).shrink(0.0)),
+        );
+        let b = build_tree(&root, 400.0, 100.0);
+        assert_eq!(b.overflows.len(), 1, "{:?}", b.overflows);
+        assert!((b.overflows[0].by.right - 2.0).abs() < 1e-3, "{:?}", b.overflows[0].by);
     }
 
     /// 流す・切る入れ物の中身は、はみ出すのが仕事なので見ない。

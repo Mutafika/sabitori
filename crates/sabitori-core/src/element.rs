@@ -189,13 +189,17 @@ pub enum Position {
 
 /// この要素が子をどう並べるか。
 ///
-/// CSS の `display` のうち、 アプリの UI で要るのはこの 2 つだけ。 `none` は
-/// 入れていない — 宣言的に組む以上「隠す」は要素を**出さない**ことで書けて、
-/// そちらの方が中身の計算ごと消える。
+/// CSS の `display` のうち、 並べ方の 2 つ。 `none` にあたるのは
+/// [`Element::hidden`] (並べ方を覚えたまま隠せるように、 別に持つ)。
+///
+/// 状態で出し分けるなら、 要素を**出さない**方が中身の計算ごと消える:
 ///
 /// ```ignore
-/// if self.show_sidebar { children.push(sidebar) }   // display: none の代わり
+/// if self.show_sidebar { children.push(sidebar) }
 /// ```
+///
+/// 幅で出し分ける (`.at(..)`) ときは、 要素を返す関数の中から消せないので
+/// `.hidden()` を使う。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Display {
     /// フレックスボックス。 既定。
@@ -726,6 +730,8 @@ pub struct ElementStyle {
     pub sticky_y: bool,
     /// 親からはみ出していても知らせない ([`Element::allow_overflow`])。
     pub allow_overflow: bool,
+    /// 隠す (`display: none`)。[`Element::hidden`]。
+    pub hidden: bool,
     /// **別の要素の箱に貼り付けて浮かせる指定** ([`Element::anchor_to`])。
     ///
     /// レイアウトが終わってから相手の箱を見て位置を決めるので、`view()` の中で
@@ -879,6 +885,7 @@ impl Default for ElementStyle {
             sticky_x: false,
             sticky_y: false,
             allow_overflow: false,
+            hidden: false,
             anchor: None,
         }
     }
@@ -2626,6 +2633,32 @@ impl Element {
     /// [`Element::anchor_to`] で浮かせた要素は、付けなくても対象外。
     pub fn allow_overflow(mut self) -> Self {
         self.style.allow_overflow = true;
+        self
+    }
+
+    /// **隠す。** CSS の `display: none` — 描かず、 押せず、 場所も取らない
+    /// (中身ごと)。
+    ///
+    /// 幅で出し分けるのに使う ([#106](https://github.com/Mutafika/sabitori/issues/106))。
+    /// Tailwind の `hidden md:block` / `md:hidden` にあたる:
+    ///
+    /// ```ignore
+    /// // 狭い窓では出さない
+    /// col.at(SizeClass::Compact, |e| e.hidden())
+    /// // 広い窓でだけ出す
+    /// col.hidden().at_least(SizeClass::Medium, |e| e.shown())
+    /// ```
+    ///
+    /// 状態で出し分けるだけなら、 要素を木に入れない方が安い (レイアウトの
+    /// ノードも作らない)。
+    pub fn hidden(mut self) -> Self {
+        self.style.hidden = true;
+        self
+    }
+
+    /// [`Element::hidden`] を取り消す。 `flex` / `grid` の並べ方は元のまま。
+    pub fn shown(mut self) -> Self {
+        self.style.hidden = false;
         self
     }
 

@@ -15,6 +15,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Element::hidden()` / `Element::shown()`** — `display: none`
+  ([#106](https://github.com/Mutafika/sabitori/issues/106))。描かず、押せず、場所も
+  取らない (中身ごと)。`.at(..)` と組んで幅で出し分ける (Tailwind の
+  `hidden md:block` / `md:hidden`): `.at(SizeClass::Compact, |e| e.hidden())`、
+  `.hidden().at_least(SizeClass::Medium, |e| e.shown())`。`flex` / `grid` の並べ方は
+  隠しても覚えている。
+
+### Fixed
+
+- **はみ出しの検出が丸めの 1px を拾う**
+  ([#104](https://github.com/Mutafika/sabitori/issues/104))。taffy は位置を親からの
+  相対のまま丸め、幅を累計の右端の差で出すので、丸めた位置を足し上げると小数幅の
+  `fr` の列で右に寄せた子が親より 1px 出て見えていた。丸める前の値で比べる
+  (`LayoutOverflow::rect` / `parent` も丸める前の値になる)。
+
 ## [0.22.1] - 2026-09-25
 
 ### Fixed
