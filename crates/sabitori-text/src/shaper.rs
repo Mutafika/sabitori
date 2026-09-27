@@ -493,6 +493,50 @@ impl TextShaper {
         buffer
     }
 
+    /// **描かれる文字列** — `max_lines` で切ったとき、「…」を付けた後の形 (#110)。
+    /// 切らずに収まるならそのまま。描く道 (`TextRenderer`) と同じ切り方を通る。
+    #[allow(clippy::too_many_arguments)]
+    pub fn clamped_text(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        bold: bool,
+        monospace: bool,
+        family_override: Option<&str>,
+        max_width: Option<f32>,
+        max_lines: Option<u32>,
+        typo: Typography,
+    ) -> String {
+        let n = match max_lines {
+            Some(n) if n > 0 => n as usize,
+            _ => return text.to_string(),
+        };
+        self.require_fonts();
+        let font_size = quantize_font_size(font_size);
+        let metrics = Metrics::new(font_size, typo.line_height_px(font_size));
+        let width = max_width.unwrap_or(f32::MAX);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        buffer.set_size(&mut self.font_system, Some(width), None);
+        let family = resolve_family(
+            &self.preferred_family,
+            &self.preferred_monospace_family,
+            monospace,
+            family_override,
+        );
+        let weight = cosmic_text::Weight(typo.resolved_weight(bold));
+        let mut attrs = Attrs::new().family(family).weight(weight);
+        if typo.italic {
+            attrs = attrs.style(cosmic_text::Style::Italic);
+        }
+        buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
+        apply_align(&mut buffer, typo.align);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        if buffer.layout_runs().count() <= n {
+            return text.to_string();
+        }
+        clamp_last_line(&mut self.font_system, &buffer, metrics, &attrs, text, width, n)
+    }
+
     /// `byte_offset` にキャレットを置いたときの位置。
     ///
     /// # 論理行と視覚行
@@ -635,6 +679,95 @@ impl TextShaper {
 }
 
 /// `offset` を直前の文字境界まで戻し、 文字列長で頭打ちにする。
+/// `max_lines` で切る: 最初の n-1 行は折り返したまま残し、**最後の行だけ字の
+/// 単位で**、「…」を足して行幅に収まる最長の前置きにする (#110)。
+///
+/// `buffer` は `text` を幅 `width` で組み終えたもの (n 行に収まらないことは
+/// 呼ぶ側が確かめている)。描く道 (`TextRenderer`) と、描かずに結果の文字列だけ
+/// 欲しい道 ([`TextShaper::clamped_text`]) が同じこれを通る。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn clamp_last_line(
+    font_system: &mut FontSystem,
+    buffer: &Buffer,
+    metrics: Metrics,
+    attrs: &Attrs<'_>,
+    text: &str,
+    width: f32,
+    n_lines: usize,
+) -> String {
+    // 最初の n-1 行は折り返したまま残し、**最後の行だけ字の単位で**
+    // 詰める (#110)。以前は (n+1) 行目の頭 = 語の切れ目から後ろへ削って
+    // いたので、行幅を超える塊 (`sabun-gacha-4222703072-07_7-2`) を
+    // 含むと、塊ごと次の行へ送られた所 (`sabun-`) で「…」になった。
+    // 試す文字列も語の単位で折り返して行数を数えていたので、塊を
+    // 含む候補はどれも 2 行になり、前へ詰め直せなかった。
+    //
+    // 最後の行は折り返さずに測り、「…」を足して行幅に収まる最長の
+    // 前置きを二分探索で探す (CSS の `text-overflow: ellipsis` と同じ)。
+    let last_start = if n_lines <= 1 {
+        0
+    } else {
+        buffer
+            .layout_runs()
+            .nth(n_lines - 1)
+            .and_then(|run| run.glyphs.iter().map(|g| g.start).min())
+            .unwrap_or(0)
+    };
+    // cosmic-text の glyph.start は cluster 先頭でない場合がある (= 日本語等
+    // multi-byte 中で line break が入ると mid-char になる) 。 char 境界まで
+    // 巻き戻してから slice する (= UTF-8 panic 防止) 。
+    let mut last_start = last_start.min(text.len());
+    while last_start > 0 && !text.is_char_boundary(last_start) {
+        last_start -= 1;
+    }
+    // 最後の行は、改行があればそこまで。
+    let line_end = text[last_start..].find('\n').map_or(text.len(), |i| last_start + i);
+    // 候補の切れ目 (字の境目)。0 個目 = 最後の行に何も置かない。
+    let cuts: Vec<usize> = std::iter::once(last_start)
+        .chain(text[last_start..line_end].char_indices().skip(1).map(|(i, _)| last_start + i))
+        .chain(std::iter::once(line_end))
+        .collect();
+    let mut one_line = Buffer::new(font_system, metrics);
+    one_line.set_wrap(font_system, cosmic_text::Wrap::None);
+    one_line.set_size(font_system, None, None);
+    let mut fits = |cut: usize| {
+        let trial = format!("{}…", text[last_start..cut].trim_end());
+        one_line.set_text(font_system, &trial, *attrs, Shaping::Advanced);
+        one_line.shape_until_scroll(font_system, false);
+        let w = one_line.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
+        // 余裕は持たせない — 描くときは同じ幅で語の単位で折り返すので、わずかでも
+        // はみ出す候補は 2 行に割れる。
+        w <= width
+    };
+    // cuts[lo] は収まる (何も置かなければ「…」だけ) とみなし、収まる最大を探す。
+    let (mut lo, mut hi) = (0usize, cuts.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(cuts[mid]) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    // 念のため、実際に描く形 (幅 `width` で語の単位の折り返し) で n 行に収まるかを
+    // 見て、収まらなければ 1 字ずつ戻す。1 行ぶんの幅は上で測ってあるので、ここに
+    // 来るのは前の行が巻き込んで折り返し直した場合くらい。
+    let mut wrapped = Buffer::new(font_system, metrics);
+    wrapped.set_size(font_system, Some(width), None);
+    loop {
+        let out = format!("{}…", text[..cuts[lo]].trim_end());
+        if lo == 0 {
+            return out;
+        }
+        wrapped.set_text(font_system, &out, *attrs, Shaping::Advanced);
+        wrapped.shape_until_scroll(font_system, false);
+        if wrapped.layout_runs().count() <= n_lines {
+            return out;
+        }
+        lo -= 1;
+    }
+}
+
 fn clamp_to_boundary(text: &str, offset: usize) -> usize {
     let mut n = offset.min(text.len());
     while n > 0 && !text.is_char_boundary(n) {

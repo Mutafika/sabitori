@@ -163,3 +163,75 @@ fn a_fixed_width_popover_stays_inside_its_box() {
     let t = h.text_rect("popover").unwrap();
     assert!(right(t) <= right(pop) + 0.5, "{t:?} / {pop:?}");
 }
+
+/// 途中で切れない長い塊を含む名前も、入るだけ詰めて「…」にする
+/// ([#110](https://github.com/Mutafika/sabitori/issues/110))。以前は語の切れ目
+/// (`-` の後ろ) で塊ごと落ちて `sabun-…` になっていた。
+struct Names;
+
+impl DeclarativeApp for Names {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        div().w(Px(180.0)).flex_col().children(vec![
+            div().child(text("sabun-gacha-4222703072-07_7-2-and-more-and-more").font_size(12.0)),
+            div().child(text("sabun-sabun-nawamahou_-yurikochokubi-extra").font_size(12.0)),
+            div().child(text("sabun-short").font_size(12.0)),
+        ])
+    }
+}
+
+#[test]
+fn a_long_unbreakable_chunk_is_cut_by_character_not_by_word() {
+    let mut h = Harness::with_real_text(Names, 400.0, 200.0);
+    h.settle();
+    for needle in ["sabun-gacha", "sabun-sabun"] {
+        let shown = h.drawn_text(needle).unwrap();
+        assert!(shown.ends_with('…'), "{shown:?}");
+        assert!(
+            shown.chars().count() >= 20,
+            "180px に 12px の字が 20 字も入らないはずはない: {shown:?}"
+        );
+    }
+    assert_eq!(h.drawn_text("sabun-short").as_deref(), Some("sabun-short"), "収まるものは切らない");
+    // スタブは切らない (切り方は実物の書体で決まる)。
+    let mut stub = Harness::new(Names, 400.0, 200.0);
+    stub.settle();
+    assert_eq!(stub.drawn_text("sabun-gacha").as_deref(), Some("sabun-gacha-4222703072-07_7-2-and-more-and-more"));
+}
+
+/// 詰めた結果が、描く形 (語の単位の折り返し) で 2 行に割れない (#110)。
+struct Words;
+
+impl DeclarativeApp for Words {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        div().w(Px(180.0)).flex_col().children(
+            [
+                "sabun-outputs-lucy-suke_5200-more-words",
+                "sabun-gacha-4222703072-07_7-2",
+                "alpha beta gamma delta epsilon zeta eta theta",
+            ]
+            .map(|s| div().id(s).child(text(s).font_size(12.0))),
+        )
+    }
+}
+
+#[test]
+fn the_clamped_text_stays_on_one_line() {
+    let mut h = Harness::with_real_text(Words, 400.0, 200.0);
+    h.settle();
+    let one = h.rect_of("sabun-gacha-4222703072-07_7-2").unwrap().size.height;
+    for s in ["sabun-outputs-lucy-suke_5200-more-words", "alpha beta gamma delta epsilon zeta eta theta"] {
+        let shown = h.drawn_text(s).unwrap();
+        assert!(shown.ends_with('…'), "{shown:?}");
+        assert_eq!(h.rect_of(s).unwrap().size.height, one, "{s}");
+        // 描く形で数える: 同じ幅・同じ字で折り返して 1 行。
+        let lines = sabitori_text::TextShaper::new()
+            .measure_text(&shown, 12.0, false, false, None, Some(180.0), None, Default::default())
+            .size
+            .height;
+        let single = sabitori_text::TextShaper::new()
+            .measure_text("x", 12.0, false, false, None, Some(180.0), None, Default::default())
+            .size
+            .height;
+        assert_eq!(lines, single, "{shown:?} が 2 行に割れる");
+    }
+}

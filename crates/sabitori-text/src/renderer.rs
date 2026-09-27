@@ -409,10 +409,8 @@ fn shape_run(
         attrs = attrs.style(cosmic_text::Style::Italic);
     }
 
-    // Reshape with line-clamp: drop trailing chars + append "…"
-    // until the wrapped output fits within `max_lines`. The
-    // shaper is cheap enough that a bounded iterative search is
-    // fine in practice (most strings settle in ≤3 iterations).
+    // 行数の上限: 収まらなければ、最後の行を字の単位で詰めて「…」を付ける
+    // (`clamp_last_line`、#110)。
     let owned;
     let final_text: &str = match max_lines {
         Some(n) if n > 0 => {
@@ -422,49 +420,15 @@ fn shape_run(
             if buffer.layout_runs().count() <= n as usize {
                 text
             } else {
-                let n_lines = n as usize;
-                // Seed truncation at the start of the (n+1)-th
-                // layout run — that's the first byte we *don't*
-                // want to render. Step back from there in char
-                // increments until the shaped output (with "…"
-                // appended) settles within `n` lines.
-                let cutoff_byte = buffer
-                    .layout_runs()
-                    .nth(n_lines)
-                    .and_then(|run| run.glyphs.iter().map(|g| g.start).min())
-                    .unwrap_or(text.len());
-                // cosmic-text の glyph.start は cluster 先頭でない場合がある (= 日本語等
-                // multi-byte 中で line break が入ると mid-char になる) 。 char 境界まで
-                // 巻き戻してから slice する (= UTF-8 panic 防止) 。
-                let mut safe_cut = cutoff_byte.min(text.len());
-                while safe_cut > 0 && !text.is_char_boundary(safe_cut) {
-                    safe_cut -= 1;
-                }
-                let mut head = text[..safe_cut].trim_end().to_string();
-                let mut iters = 0;
-                let trimmed = loop {
-                    let trial = format!("{}…", head);
-                    buffer.set_text(
-                        ctx.font_system,
-                        &trial,
-                        attrs.clone(),
-                        Shaping::Advanced,
-                    );
-                    apply_align(&mut buffer, typo.align);
-                    buffer.shape_until_scroll(ctx.font_system, false);
-                    if buffer.layout_runs().count() <= n_lines || head.is_empty() {
-                        break trial;
-                    }
-                    // Drop one grapheme cluster's worth of bytes
-                    // from the tail. Char popping is good enough
-                    // for the languages cosmic-text shapes well.
-                    head.pop();
-                    iters += 1;
-                    if iters > 32 {
-                        break format!("{}…", head);
-                    }
-                };
-                owned = trimmed;
+                owned = crate::shaper::clamp_last_line(
+                    ctx.font_system,
+                    &buffer,
+                    metrics,
+                    &attrs,
+                    text,
+                    width,
+                    n as usize,
+                );
                 owned.as_str()
             }
         }
@@ -1741,6 +1705,56 @@ mod shaping_cache_tests {
         assert!(!hits.is_empty());
         let lines = hits.iter().map(|h| h.line_index).max().unwrap();
         assert_eq!(lines, 0, "max_lines(1) must leave exactly one line");
+    }
+
+    /// 幅と行数の上限を与えて組み、描かれる文字列 (「…」込み) と右端を返す。
+    fn clamped(f: &mut Fixture, text: &str, width: f32, max_lines: u32) -> (String, f32, u32) {
+        let font_size = quantize_font_size(12.0);
+        let typo = Typography::default();
+        let key = run_cache_key(text, font_size, Some(width), false, false, None, Some(max_lines), typo);
+        let mut ctx = ShapeCtx {
+            font_system: &mut f.font_system,
+            swash_cache: &mut f.swash_cache,
+            atlas: &mut f.atlas,
+            scale_factor: 1.0,
+            preferred_family: &f.family,
+            preferred_monospace_family: &f.mono_family,
+        };
+        ensure_shaped(
+            &mut f.cache, &mut ctx, key, text, 0.0, 0.0, font_size, Some(width), false, false, None,
+            Some(max_lines), typo,
+        );
+        let hits = &f.cache[&key].hits;
+        // 最後の字形が「…」。その前までが本文の前置き。
+        let last = hits.iter().max_by_key(|h| h.byte_start).unwrap();
+        let shown = format!("{}…", &text[..last.byte_start]);
+        let right = hits.iter().map(|h| h.x + h.w).fold(0.0_f32, f32::max);
+        let lines = hits.iter().map(|h| h.line_index).max().unwrap() + 1;
+        (shown, right, lines)
+    }
+
+    /// 行幅を超える塊を含む文字も、最後の行は**字の単位で**入るだけ詰める (#110)。
+    /// 以前は語の切れ目 (`-` の後ろ) で塊ごと落ちて `sabun-…` になっていた。
+    #[test]
+    fn the_last_line_is_filled_character_by_character() {
+        let mut f = Fixture::new();
+        let width = 120.0;
+        for name in ["sabun-gacha-4222703072-07_7-2", "sabun-sabun-nawamahou_-yurikochokubi"] {
+            let (shown, right, lines) = clamped(&mut f, name, width, 1);
+            assert_eq!(lines, 1, "{name}: {shown}");
+            assert!(right <= width + 0.5, "{name}: 幅を越えた {right}");
+            assert!(shown.chars().count() > "sabun-…".chars().count() + 4, "{name}: 先頭で切れた {shown:?}");
+            // もう 1 字足すと入らない (= 入るだけ詰めてある)。
+            let head = shown.trim_end_matches('…');
+            let one_more: String = name.chars().take(head.chars().count() + 1).collect();
+            let (_, natural, _) = clamped(&mut f, &format!("{one_more}…"), 10_000.0, 1);
+            assert!(natural > width, "{name}: まだ入る ({shown:?}、1 字足して {natural})");
+        }
+        // 2 行: 1 行目は語の切れ目で折り返したまま、2 行目を字の単位で詰める。
+        let (shown, right, lines) = clamped(&mut f, "sabun outputs-lucy-suke_5200-extra-long-chunk-name-here", 90.0, 2);
+        assert_eq!(lines, 2, "{shown}");
+        assert!(right <= 90.5);
+        assert!(shown.starts_with("sabun outputs-"), "{shown:?}");
     }
 
     /// Everything that changes shaping has to be in the key. If any of these

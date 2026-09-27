@@ -593,6 +593,38 @@ impl<A: DeclarativeApp> Harness<A> {
         )
     }
 
+    /// **描かれる文字列** — 行数の上限で切られたなら「…」を付けた後の形
+    /// ([#110](https://github.com/Mutafika/sabitori/issues/110))。`needle` を含む
+    /// 最初の文字を探す。
+    ///
+    /// 横並びの文字は既定で 1 行の「…」になる (#109) ので、「どこで切れたか」を
+    /// 回帰テストで止めるのに使う。切り方は画面と同じ関数を通る。**実物の計測
+    /// ([`Self::with_real_text`]) のときだけ**意味があり、スタブでは切らずにそのまま返す。
+    pub fn drawn_text(&self, needle: &str) -> Option<String> {
+        let build = self.build();
+        let t = build
+            .render_list
+            .commands
+            .iter()
+            .chain(build.overlay_list.commands.iter())
+            .find_map(|c| match c {
+                RenderCommand::Text(t) if t.content.contains(needle) => Some(t),
+                _ => None,
+            })?;
+        let Some(real) = &self.real_text else { return Some(t.content.to_string()) };
+        let max_width = (t.max_width > 0.0 && t.max_width < f32::MAX).then_some(t.max_width);
+        Some(real.shaper.borrow_mut().clamped_text(
+            &t.content,
+            t.font_size,
+            t.bold,
+            t.monospace,
+            t.font_family.as_deref(),
+            max_width,
+            t.max_lines,
+            t.typo,
+        ))
+    }
+
     /// キーを押して離す。 押しっぱなしを作りたいなら [`Self::key_down`]。
     pub fn key(&mut self, key: Key, modifiers: Modifiers) {
         self.key_down(key, modifiers);

@@ -15,6 +15,25 @@
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-27
+
+### Added
+
+- **`Harness::drawn_text(needle)`** — 描かれる文字列 (行数の上限で切ったなら「…」を
+  付けた後の形) ([#110](https://github.com/Mutafika/sabitori/issues/110))。
+  「どこで切れたか」を回帰テストで止められる。切り方は画面と同じ関数を通る。
+  `Harness::with_real_text` のときだけ意味がある (スタブは切らずに返す)。
+  同じものを `TextShaper::clamped_text` でも出せる。
+
+### Fixed
+
+- **自動の「…」が語の切れ目で切るので、長い塊を含む文字が先頭数文字で「…」になる**
+  (#110)。`sabun-gacha-4222703072-07_7-2` が 180px の列で `sabun-…` になっていた。
+  (n+1) 行目の頭 = 語の切れ目から後ろへ削るだけで、行幅を超える塊は塊ごと次の行へ
+  送られていた (試す文字列も語の単位で折り返して数えていたので、前へ詰め直せなかった)。
+  最初の n-1 行は折り返したまま、**最後の行だけ字の単位で**、「…」を足して行幅に
+  収まる最長の前置きを探す (CSS の `text-overflow: ellipsis` と同じ)。
+
 ## [0.24.0] - 2026-09-27
 
 ### Added
@@ -4054,7 +4073,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/Mutafika/sabitori/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Mutafika/sabitori/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Mutafika/sabitori/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Mutafika/sabitori/compare/v0.22.0...v0.22.1
