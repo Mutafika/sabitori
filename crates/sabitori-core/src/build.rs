@@ -625,6 +625,7 @@ fn build_tree_impl(
         &mut probe_positions,
         &anchor_positions,
         (0.0, 0.0),
+        None,
     );
 
     // Reverse each list so front-most (last drawn) comes first for picking,
@@ -1456,6 +1457,9 @@ fn emit_commands(
     // いちばん近い「切る入れ物」が子に課しているスクロール量 (素の px)。
     // `sticky_x` / `sticky_y` はこれを打ち消して元の位置に留まる。
     parent_scroll: (f32, f32),
+    // id の付いたいちばん近い祖先の id。文字に持たせて、選択範囲をアプリが
+    // 安定した位置 (段落の id) に戻せるようにする (#107)。
+    parent_owner: Option<&std::sync::Arc<str>>,
 ) {
     // 隠した要素 (`display: none`) は中身ごと描かず、押せもしない。taffy は
     // 中身ごと大きさ 0 に置くので箱のある物は下の「0 は飛ばす」で消えるが、
@@ -1465,6 +1469,9 @@ fn emit_commands(
         return;
     }
     let disabled = parent_disabled || element.disabled;
+    // id を持つ要素だけ 1 回確保する。子孫の文字は参照カウントで持ち回す。
+    let own_id: Option<std::sync::Arc<str>> = element.id.as_deref().map(std::sync::Arc::from);
+    let owner = own_id.as_ref().or(parent_owner);
     let layout = taffy.layout(taffy_node).expect("Missing layout");
     let style = &element.style;
     // `scale` cascades multiplicatively like opacity: `parent_scale` is what
@@ -1572,7 +1579,7 @@ fn emit_commands(
                     disabled,
                     // 大きさ 0 の入れ物は切らない (切るものは上で返している)
                     // ので、留まる相手は親から素通し。
-                    probes, probe_positions, anchor_positions, parent_scroll,
+                    probes, probe_positions, anchor_positions, parent_scroll, owner,
                 );
             }
         }
@@ -1647,6 +1654,7 @@ fn emit_commands(
                 // ピボットが違う (rect = 中心 / text = 原点)。TextDraw::rotation 参照。
                 rotation: style.rotation,
                 no_select,
+                owner: owner.cloned(),
             }));
         }
         ElementKind::Button { label, .. } => {
@@ -1673,6 +1681,7 @@ fn emit_commands(
                 // across a toolbar should never leave it highlighted. Always
                 // non-selectable, regardless of the inherited flag.
                 no_select: true,
+                owner: owner.cloned(),
             }));
         }
         ElementKind::Div => {}
@@ -1944,7 +1953,7 @@ fn emit_commands(
                 no_select, scale,
                 child_clip,
                 disabled,
-                probes, probe_positions, anchor_positions, child_scroll,
+                probes, probe_positions, anchor_positions, child_scroll, owner,
             );
         }
     }
@@ -2836,6 +2845,35 @@ mod tests {
         assert_eq!(&*text_cmd.content, "Hello world");
         assert!((text_cmd.font_size - 20.0).abs() < 0.01);
         assert!(!text_cmd.no_select, "既定は選択可能のまま");
+    }
+
+    /// 文字は、id の付いたいちばん近い祖先 (自分を含む) の id を持つ (#107)。
+    /// 選択範囲をアプリへ渡すとき「どの段落か」になる。
+    #[test]
+    fn text_carries_the_id_of_its_nearest_identified_ancestor() {
+        let root = div().flex_col().children([
+            div().id("art@第709条").flex_col().children([
+                text("故意又は過失によって"),
+                div().child(text("他人の権利を侵害した者は")),
+                text("これによって生じた損害を賠償する").id("tail"),
+            ]),
+            text("id の無い所"),
+        ]);
+        let result = build_tree(&root, 800.0, 600.0);
+        let owners: Vec<_> = result
+            .render_list
+            .texts()
+            .map(|t| (t.content.chars().take(4).collect::<String>(), t.owner.as_deref().map(str::to_owned)))
+            .collect();
+        assert_eq!(
+            owners,
+            [
+                ("故意又は".to_string(), Some("art@第709条".to_string())),
+                ("他人の権".to_string(), Some("art@第709条".to_string())),
+                ("これによ".to_string(), Some("tail".to_string())),
+                ("id の".to_string(), None),
+            ]
+        );
     }
 
     /// `.no_select()` は CSS の `user-select` と同じく subtree に継承する。

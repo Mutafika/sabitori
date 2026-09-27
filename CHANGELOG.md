@@ -15,6 +15,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **選ばれている文字の範囲をアプリが読める**
+  ([#107](https://github.com/Mutafika/sabitori/issues/107))。選んだ語句にマーカー・
+  メモを文字単位で付けられる。
+  - `ctx.text_selection() -> Option<&SelectedText>` — 文字要素ごとの
+    `SelectedPiece { owner, content, range, rect }`。`owner` は id の付いた
+    いちばん近い祖先の id (段落に id を付けておけば、そこへ戻せる)、`range` は全文の
+    中のバイト範囲、`rect` は画面上の外接矩形 (自前のメニューを出す位置)。
+    `text` は ⌘C で写るのと同じ文字列。
+  - `DeclarativeApp::on_selection_changed(Option<&SelectedText>)` — 変わったときだけ
+    届く。ボタンの `on_click` は選択が消える前に呼ばれる。
+  - `DeclarativeApp::take_clear_text_selection() -> bool` — アプリから選択を消す。
+  - 描く側は足していない。付けたマーカーは既存の `HighlightSpec` で描ける。
+  - `TextDraw::owner` (id の付いた祖先) が増えた。`TextDraw` を自分で組み立てている
+    所は `owner: None` を足す。
+
 ## [0.23.0] - 2026-09-27
 
 ### Added

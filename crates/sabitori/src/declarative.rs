@@ -325,6 +325,22 @@ pub trait DeclarativeApp: 'static {
         true
     }
 
+    /// **選ばれている文字の範囲が変わった** ([#107](https://github.com/Mutafika/sabitori/issues/107))。
+    /// `None` = 選択が消えた。ドラッグ中は描くたびに届く。
+    ///
+    /// 範囲は `ctx.text_selection()` でも読める。こちらは「変わった瞬間」を
+    /// 知りたいとき (選択の近くに自前のメニューを出す等) に使う。
+    ///
+    /// ボタンを押すと、押した瞬間に選択は消える (押したところが文字ではないので)。
+    /// 「マーカー」ボタンの `on_click` は選択が消える**前**に呼ばれるので、
+    /// ここで覚えておいた範囲をそのまま使える。
+    fn on_selection_changed(&mut self, _selection: Option<&sabitori_core::SelectedText>) {}
+
+    /// **選択を消す。** `true` を返すと、次に描く前にランタイムが選択を消す。
+    /// マーカーを付けた後など。1 回 `true` を返したら、次からは `false` に戻すこと
+    /// ([`Self::take_focus_once`] と同じ取り出し型)。
+    fn take_clear_text_selection(&mut self) -> bool { false }
+
     /// Called when files are dropped onto the window from another app/window.
     fn on_file_drop(&mut self, _paths: Vec<std::path::PathBuf>) {}
 
@@ -1087,6 +1103,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// drag-selection 中か。 mouse_down で text 要素にヒットしたら true、
     /// mouse_up で false。 true の間の mouse_move は selection.head を更新する。
     selecting: bool,
+    /// アプリに最後に渡した選択範囲 (#107)。`ctx.text_selection()` の中身で、
+    /// 変わったときだけ `on_selection_changed` を呼ぶための比較にも使う。
+    pub(crate) selection_snapshot: Option<sabitori_core::SelectedText>,
     /// Last [`UiCapture`] snapshot pushed to the app. Used to dedup
     /// `on_ui_capture` calls to actual state transitions.
     pub(crate) last_capture: UiCapture,
@@ -2050,6 +2069,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         &mut self.selecting,
                         &self.text_layouts,
                     );
+                    Self::sync_selection(
+                        &mut self.app,
+                        &mut self.selection,
+                        &mut self.selecting,
+                        &self.text_layouts,
+                        &mut self.selection_snapshot,
+                    );
                     // Selection highlight rects を base_rects の末尾に append (=
                     // 他の base rects の上、 glyph の下に painter order で挟まる)。
                     // renderer の mutable borrow 中なので self.selection_rects() が
@@ -2119,6 +2145,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         &mut self.selection,
                         &mut self.selecting,
                         &self.text_layouts,
+                    );
+                    Self::sync_selection(
+                        &mut self.app,
+                        &mut self.selection,
+                        &mut self.selecting,
+                        &self.text_layouts,
+                        &mut self.selection_snapshot,
                     );
                     let (sel_bg, sel_fg) = match self.app.selection_style() {
                         Some((bg, fg)) => (bg, Some(fg.to_array())),
@@ -2729,6 +2762,7 @@ impl<A: DeclarativeApp> AppState<A> {
             text_layouts: Vec::new(),
             selection: None,
             selecting: false,
+            selection_snapshot: None,
             last_capture: UiCapture::default(),
         }
     }
@@ -2869,6 +2903,7 @@ impl<A: DeclarativeApp> AppState<A> {
             measurer: Some(measurer),
             managed: Default::default(),
             actions: Default::default(),
+            text_selection: self.selection_snapshot.clone(),
         };
         // Build main UI tree.
         // `hot_reload::call` はホットリロードの境界 (feature off なら素の呼び出し)。
@@ -3974,7 +4009,16 @@ impl<A: DeclarativeApp> AppState<A> {
     /// Selection 範囲を plain text として返す。 (text_idx, byte) の lexicographic
     /// 順に anchor〜head を解釈、 跨いだ text 間は改行で join。
     fn selected_text(&self) -> Option<String> {
-        let sel = self.selection.as_ref()?;
+        Self::selection_snapshot_of(self.selection.as_ref(), &self.text_layouts).map(|s| s.text)
+    }
+
+    /// 選択範囲を、アプリが読める形 ([`sabitori_core::SelectedText`]) にする (#107)。
+    /// ⌘C の文字列もここで作る — アプリに渡す範囲と写る文字列が食い違わないように。
+    fn selection_snapshot_of(
+        selection: Option<&TextSelection>,
+        text_layouts: &[crate::bridge::TextHitLayout],
+    ) -> Option<sabitori_core::SelectedText> {
+        let sel = selection?;
         if sel.is_empty() {
             return None;
         }
@@ -3993,7 +4037,8 @@ impl<A: DeclarativeApp> AppState<A> {
         // (row y, x of right edge of last piece, advance estimate) of the
         // previously appended piece — for line/space inference.
         let mut prev: Option<(f32, f32, f32)> = None;
-        for layout in &self.text_layouts {
+        let mut pieces: Vec<sabitori_core::SelectedPiece> = Vec::new();
+        for layout in text_layouts {
             let idx = layout.text_idx;
             // 塗らないものは copy もしない — 見た目と clipboard を一致させる (#67)。
             if layout.no_select || idx < start.0 || idx > end.0 {
@@ -4055,13 +4100,47 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                 }
                 prev = Some((y, x1, adv));
+                let y1 = layout
+                    .hits
+                    .iter()
+                    .filter(|h| h.byte_start >= a && h.byte_start < b)
+                    .fold(y, |m, h| m.max(h.y + h.h));
+                pieces.push(sabitori_core::SelectedPiece {
+                    owner: layout.owner.clone(),
+                    content: layout.content.clone(),
+                    range: a..b,
+                    rect: sabitori_core::Rect::new(x0, y, x1 - x0, y1 - y),
+                });
             }
             out.push_str(piece);
         }
         if out.is_empty() {
             None
         } else {
-            Some(out)
+            Some(sabitori_core::SelectedText { pieces, text: out })
+        }
+    }
+
+    /// 選択範囲をアプリと揃える (#107)。描くたびに、文字の配置が決まった後で呼ぶ。
+    ///
+    /// - アプリが [`DeclarativeApp::take_clear_text_selection`] で消すよう頼んで
+    ///   いれば消す
+    /// - 範囲が前に渡したものと変わっていれば `on_selection_changed` を呼ぶ
+    fn sync_selection(
+        app: &mut A,
+        selection: &mut Option<TextSelection>,
+        selecting: &mut bool,
+        text_layouts: &[crate::bridge::TextHitLayout],
+        snapshot: &mut Option<sabitori_core::SelectedText>,
+    ) {
+        if app.take_clear_text_selection() {
+            *selection = None;
+            *selecting = false;
+        }
+        let now = Self::selection_snapshot_of(selection.as_ref(), text_layouts);
+        if now != *snapshot {
+            *snapshot = now;
+            app.on_selection_changed(snapshot.as_ref());
         }
     }
 
@@ -4517,7 +4596,9 @@ impl<A: DeclarativeApp> AppState<A> {
                 mono_advance,
                 measurer: Some(&measurer),
                 managed: Default::default(),
-            actions: Default::default(),
+                actions: Default::default(),
+                // 選択は主窓の文字だけが持つ。別窓の view からも読めるように同じものを渡す。
+                text_selection: self.selection_snapshot.clone(),
             };
             let mut root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
             // 区分はその窓の幅で決める (#97)。
@@ -5475,6 +5556,7 @@ mod highlight_tests {
             highlight,
             link_ranges: None,
             no_select: false,
+            owner: None,
         }
     }
 
@@ -5572,6 +5654,7 @@ mod highlight_tests {
             highlight: Vec::new(),
             link_ranges: None,
             no_select,
+            owner: None,
         }
     }
 
@@ -5675,6 +5758,118 @@ mod highlight_tests {
         assert_eq!(rects.len(), 2, "no_select の 1 行を飛ばして 2 行ぶんだけ塗る");
         assert_eq!(rects[0].rect[1], 0.0);
         assert_eq!(rects[1].rect[1], 40.0, "y=20 の no_select 行は塗られない");
+    }
+
+    // ---------------------------------------------------------------
+    // #107 — 選択範囲をアプリが読む
+    // ---------------------------------------------------------------
+
+    /// 1 字 = 3 バイト (漢字) を 10px ずつ並べた 1 行。
+    fn owned(idx: usize, owner: Option<&str>, content: &str, y: f32) -> TextHitLayout {
+        TextHitLayout {
+            owner: owner.map(std::sync::Arc::from),
+            content: std::sync::Arc::from(content),
+            hits: content
+                .char_indices()
+                .enumerate()
+                .map(|(i, (b, c))| GlyphHit {
+                    byte_start: b,
+                    byte_end: b + c.len_utf8(),
+                    x: i as f32 * 10.0,
+                    y,
+                    w: 10.0,
+                    h: 16.0,
+                    line_index: 0,
+                })
+                .collect(),
+            ..hit_layout(idx, 0, 0.0, y, false)
+        }
+    }
+
+    fn select(anchor: (usize, usize), head: (usize, usize), a: &str, h: &str) -> TextSelection {
+        TextSelection { anchor, head, anchor_content: a.into(), head_content: h.into() }
+    }
+
+    /// 段落をまたいだ選択は、段落ごとに id・全文・バイト範囲・画面上の矩形で渡る。
+    /// ⌘C の文字列と同じ所から作る。
+    #[test]
+    fn a_selection_is_given_as_owner_content_and_byte_range() {
+        let p1 = "故意又は過失";
+        let p2 = "他人の権利";
+        let layouts = vec![
+            owned(0, Some("art@第709条"), p1, 0.0),
+            owned(1, None, "見出し", 20.0),
+            owned(2, Some("art@第710条"), p2, 40.0),
+        ];
+        // 「過失」(6..) から 2 つ先の段落の「他人」(..6) まで。後ろから前へ選んでも同じ。
+        let sel = select((2, 6), (0, 12), p2, p1);
+        let got = AppState::<TestApp>::selection_snapshot_of(Some(&sel), &layouts).unwrap();
+
+        assert_eq!(got.pieces.len(), 3);
+        let first = &got.pieces[0];
+        assert_eq!(first.owner.as_deref(), Some("art@第709条"));
+        assert_eq!(&*first.content, p1);
+        assert_eq!(first.range, 12..18);
+        assert_eq!(first.text(), "過失");
+        assert_eq!(first.rect, sabitori_core::Rect::new(40.0, 0.0, 20.0, 16.0));
+        assert_eq!(got.pieces[1].owner, None);
+        assert_eq!(got.pieces[2].range, 0..6);
+        assert_eq!(got.pieces[2].text(), "他人");
+        assert_eq!(got.text, "過失\n見出し\n他人");
+        assert_eq!(got.bounds(), Some(sabitori_core::Rect::new(0.0, 0.0, 60.0, 56.0)));
+    }
+
+    #[test]
+    fn an_empty_selection_is_none() {
+        let layouts = vec![owned(0, Some("p"), "abc", 0.0)];
+        let sel = select((0, 1), (0, 1), "abc", "abc");
+        assert_eq!(AppState::<TestApp>::selection_snapshot_of(Some(&sel), &layouts), None);
+    }
+
+    #[derive(Default)]
+    struct Marker {
+        seen: Vec<Option<String>>,
+        clear: bool,
+    }
+    impl DeclarativeApp for Marker {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            sabitori_core::div()
+        }
+        fn on_selection_changed(&mut self, sel: Option<&sabitori_core::SelectedText>) {
+            self.seen.push(sel.map(|s| s.text.clone()));
+        }
+        fn take_clear_text_selection(&mut self) -> bool {
+            std::mem::take(&mut self.clear)
+        }
+    }
+
+    /// 変わったときだけ知らせる (描くたびには知らせない)。アプリが頼めば消える。
+    #[test]
+    fn the_app_hears_each_change_once_and_can_clear_it() {
+        let layouts = vec![owned(0, Some("p"), "abcdef", 0.0)];
+        let mut app = Marker::default();
+        let mut snapshot = None;
+        let mut selecting = false;
+        let mut sel = Some(select((0, 0), (0, 2), "abcdef", "abcdef"));
+        let sync = |app: &mut Marker, sel: &mut Option<TextSelection>, selecting: &mut bool, snap: &mut Option<_>| {
+            AppState::<Marker>::sync_selection(app, sel, selecting, &layouts, snap)
+        };
+
+        sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
+        sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
+        assert_eq!(app.seen, [Some("ab".to_string())], "同じ範囲で 2 度知らせた");
+
+        sel.as_mut().unwrap().head = (0, 4);
+        sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
+        assert_eq!(app.seen.last(), Some(&Some("abcd".to_string())));
+
+        // マーカーを付けたので消してほしい。
+        app.clear = true;
+        sync(&mut app, &mut sel, &mut selecting, &mut snapshot);
+        assert!(sel.is_none());
+        assert_eq!(app.seen.last(), Some(&None));
+        assert_eq!(snapshot, None, "ctx.text_selection() も空になる");
+        assert_eq!(app.seen.len(), 3);
     }
 
     struct TestApp;

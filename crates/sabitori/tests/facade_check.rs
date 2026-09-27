@@ -49,6 +49,12 @@ fn everything_an_app_writes_is_reachable_from_the_facade() {
     // はみ出しの印 (#95)、ナビの枠組み (#98)
     let _quiet = div().allow_overflow();
     let _nav = (NavFrameState::new(), NavItem::new("a", "A").icon("◎"), NavGroup::new("g"), NavMode::for_width(800.0));
+    // 隠す (#106)、ナビの見出し・足元 (#105)、選ばれている文字 (#107)
+    let _hidden = div().hidden().at_least(SizeClass::Medium, |e| e.shown());
+    let _slots = NavSlots::new().header(div()).footer(div());
+    let _icon = NavItem::new("a", "A").icon_view(|c, s| div().w(Px(s)).h(Px(s)).bg(c));
+    let _sel: Option<SelectedText> = None;
+    let _piece: fn(&SelectedPiece) -> &str = SelectedPiece::text;
 
     // 非同期と HTTP (#64 / #63)
     let _tasks: Tasks<()> = Tasks::new();

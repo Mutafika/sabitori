@@ -1265,6 +1265,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     measurer: Some(&measurer),
                     managed: Default::default(),
             actions: Default::default(),
+            text_selection: None,
                 };
 
                 let mut root = self.app.view(&ctx);

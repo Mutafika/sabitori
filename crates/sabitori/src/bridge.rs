@@ -403,6 +403,9 @@ pub struct TextHitLayout {
     /// label)。 `true` の layout は selection の hit-test / 塗り / clipboard 抽出の
     /// 全部から外れる。 highlight と link は selection と別系統なので効き続ける。
     pub no_select: bool,
+    /// id の付いたいちばん近い祖先の id ([`TextDraw::owner`])。選択範囲をアプリへ
+    /// 渡すときに使う (#107)。
+    pub owner: Option<std::sync::Arc<str>>,
 }
 
 /// 格子の字形 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
@@ -561,6 +564,7 @@ pub fn render_list_to_gpu_with_hits(
                         highlight: d.highlight.clone(),
                         link_ranges: d.link_ranges.clone(),
                         no_select: d.no_select,
+                        owner: d.owner.clone(),
                     });
                 }
             }
@@ -1035,6 +1039,7 @@ mod tests {
             link_ranges: None,
             rotation,
             no_select: false,
+            owner: None,
         }
     }
 
@@ -1101,6 +1106,7 @@ mod tests {
             link_ranges: None,
             rotation: 0.0,
             no_select: false,
+            owner: None,
         };
         // top を -200 までスクロール、高さ 300 → bottom=100 は viewport 内 → 描く。
         // 旧 font_size*1.5(=24px) 近似だと top=-200 の rect は viewport 外 → 誤 cull。
@@ -1422,6 +1428,7 @@ mod hit_layout_tests {
             link_ranges: None,
             rotation: 0.0,
             no_select: false,
+            owner: None,
         }
     }
 

@@ -247,6 +247,10 @@ pub struct TextDraw {
     /// 飛ばす)。`Element::no_select` が subtree に継承された結果と、button の label
     /// (= コントロールのラベルであって本文ではない) がここに立つ。
     pub no_select: bool,
+    /// id の付いたいちばん近い祖先 (自分を含む) の id。選択範囲をアプリへ渡す
+    /// ときの「どの段落か」の手掛かり ([#107](https://github.com/Mutafika/sabitori/issues/107))。
+    /// 描画の順の番号 (`element_index`) はフレームごとに変わりうるので保存できない。
+    pub owner: Option<std::sync::Arc<str>>,
 }
 
 /// Draw an image at a position.

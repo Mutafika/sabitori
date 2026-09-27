@@ -9,11 +9,13 @@ pub mod tui;
 pub mod forms;
 pub mod image_cache;
 pub mod cell_grid;
+pub mod selection;
 
 pub use color::Color;
 pub use geometry::{Corners, Edges, Point, Rect, Size, TextMetrics};
 pub use theme::AppTheme;
 pub use cell_grid::{CellFlags, CellGrid, GridCell};
+pub use selection::{SelectedPiece, SelectedText};
 pub use scrollbar::ScrollbarStyle;
 
 // Re-export key element API items at crate root for convenience.
@@ -232,6 +234,9 @@ pub struct ViewContext<'a> {
     /// `view()` の最中に [`Element::click`] が登録したクリック処理。
     /// 直に触らず [`ViewContext::register_action`] / [`ViewContext::take_actions`] を使う。
     pub actions: std::cell::RefCell<Vec<(String, Action)>>,
+    /// 選ばれている文字の範囲 (直前に描いたフレームの時点)。直に触らず
+    /// [`ViewContext::text_selection`] を使う。
+    pub text_selection: Option<SelectedText>,
 }
 
 /// **ランタイムに配線を任せるものの目印。**
@@ -288,6 +293,16 @@ pub trait Managed: std::any::Any {
 pub type Action = std::rc::Rc<dyn Fn(&mut dyn std::any::Any)>;
 
 impl ViewContext<'_> {
+    /// **選ばれている文字の範囲** ([#107](https://github.com/Mutafika/sabitori/issues/107))。
+    /// 何も選ばれていなければ `None`。
+    ///
+    /// 段落ごとに id を付けておくと、[`SelectedPiece::owner`] と
+    /// [`SelectedPiece::range`] でマーカー・メモを文字単位で保存できる。
+    /// 変わった瞬間を知りたいなら `DeclarativeApp::on_selection_changed`。
+    pub fn text_selection(&self) -> Option<&SelectedText> {
+        self.text_selection.as_ref()
+    }
+
     /// クリック時の処理を id に結びつける。 [`Element::click`] が呼ぶ。
     pub fn register_action(&self, id: impl Into<String>, action: Action) {
         let id = id.into();
@@ -674,6 +689,7 @@ mod view_context_tests {
             measurer,
             managed: Default::default(),
             actions: Default::default(),
+            text_selection: None,
         }
     }
 
