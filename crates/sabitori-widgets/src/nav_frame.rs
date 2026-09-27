@@ -36,6 +36,10 @@
 //!
 //! 引き出しは**選ばれている項目が変わったら閉じる**。項目を押したときだけでなく、
 //! 本文の中のリンクや「戻る」で画面が移った場合も閉じる (URL が変わったら閉じる)。
+//!
+//! アプリ名・ログイン中の人・ログアウトのような、項目の一覧の上下に置くものは
+//! [`nav_frame_with`] と [`NavSlots`] で渡す
+//! ([#105](https://github.com/Mutafika/sabitori/issues/105))。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -44,6 +48,24 @@ use sabitori_anim::{Animated, Spring};
 use sabitori_core::element::{div, text, Percent, Px, Role};
 use sabitori_core::{Color, Element, Managed, SizeClass, ViewContext};
 
+/// 項目のアイコンを要素で描く関数。`(色, 大きさ px)` を受け取る — 色は選ばれて
+/// いるかどうかで変わる。[`NavItem::icon_view`] で渡す。
+#[derive(Clone)]
+pub struct NavIcon(pub Rc<dyn Fn(Color, f32) -> Element>);
+
+impl std::fmt::Debug for NavIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NavIcon(..)")
+    }
+}
+
+/// 同じ関数 (同じ `Rc`) なら等しい。
+impl PartialEq for NavIcon {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// ナビの 1 項目。
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
@@ -51,15 +73,20 @@ pub struct NavItem {
     pub id: String,
     /// サイドバー・引き出しに出る名前。上のバーの見出しにもなる。
     pub label: String,
-    /// 細い列で名前の上に出す 1〜2 文字 (記号・絵文字)。無ければ名前の先頭 1 文字。
+    /// 名前の前 (細い列では上) に出す 1〜2 文字 (記号・絵文字)。
+    ///
+    /// 細い列では、アイコンが無ければ名前の先頭 1 文字を出す。サイドバー・引き出し
+    /// では出さない (名前と同じ字が並ぶだけなので)。
     pub icon: Option<String>,
+    /// アイコンを要素で描く ([`NavItem::icon_view`])。`icon` より優先。
+    pub icon_view: Option<NavIcon>,
     /// 細い列で出す短い名前。無ければ `label`。
     pub short: Option<String>,
 }
 
 impl NavItem {
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), icon: None, short: None }
+        Self { id: id.into(), label: label.into(), icon: None, icon_view: None, short: None }
     }
 
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
@@ -67,15 +94,44 @@ impl NavItem {
         self
     }
 
+    /// アイコンを**要素で**描く。図形で描いた線画や画像を、書体に依らずに出せる
+    /// (web に同梱の書体の記号には「配車」「整備」を表せるものが無い)。
+    ///
+    /// 関数は `(色, 大きさ px)` を受け取る。大きさの四角に収まる要素を返す。
+    ///
+    /// ```ignore
+    /// NavItem::new("vehicles", "車両").icon_view(|color, size| car_icon(color, size))
+    /// ```
+    pub fn icon_view(mut self, view: impl Fn(Color, f32) -> Element + 'static) -> Self {
+        self.icon_view = Some(NavIcon(Rc::new(view)));
+        self
+    }
+
+    fn has_icon(&self) -> bool {
+        self.icon.is_some() || self.icon_view.is_some()
+    }
+
+    /// 指定されたアイコン。無ければ `None`。
+    fn icon_element(&self, color: Color, size: f32) -> Option<Element> {
+        if let Some(view) = &self.icon_view {
+            return Some(div().w(Px(size)).h(Px(size)).shrink(0.0).child((view.0)(color, size)));
+        }
+        self.icon.as_ref().map(|s| text(s).font_size(size).color(color))
+    }
+
     pub fn short(mut self, short: impl Into<String>) -> Self {
         self.short = Some(short.into());
         self
     }
 
-    fn icon_text(&self) -> String {
-        self.icon
-            .clone()
-            .unwrap_or_else(|| self.label.chars().next().map(String::from).unwrap_or_default())
+    /// 細い列のアイコン。指定が無ければ名前の先頭 1 文字 (細い列は字が無いと
+    /// 見分けられない)。
+    fn rail_icon(&self, color: Color, size: f32) -> Element {
+        self.icon_element(color, size).unwrap_or_else(|| {
+            text(self.label.chars().next().map(String::from).unwrap_or_default())
+                .font_size(size)
+                .color(color)
+        })
     }
 
     fn short_text(&self) -> &str {
@@ -148,6 +204,9 @@ pub struct NavFrameStyle {
     pub hover_bg: Color,
     /// 引き出しが開いている間、本文に被せる幕。
     pub scrim: Color,
+    /// サイドバー・引き出しでアイコンを出す。既定は `true` — ただし出すのは
+    /// アイコンを指定した項目がある時だけ。`false` なら指定があっても名前だけ。
+    pub sidebar_icons: bool,
 }
 
 impl NavFrameStyle {
@@ -182,6 +241,7 @@ impl NavFrameStyle {
             selected_bg: t.select_bg,
             hover_bg: t.hover_bg,
             scrim: Color::new(0.0, 0.0, 0.0, 0.5),
+            sidebar_icons: true,
         }
     }
 }
@@ -286,6 +346,53 @@ impl NavFrameState {
 /// 一覧・細い列の上下の余白。セーフエリアはこれに足す (上書きすると消える)。
 const LIST_PAD: f32 = 8.0;
 
+/// 項目の一覧の上下に置くもの ([`nav_frame_with`])。
+///
+/// 業務アプリのナビには、ほぼ必ずアプリ名 (見出し) と、ログイン中の人・
+/// ログアウト (足元) が付く。一覧だけがスクロールし、見出しと足元は動かない。
+///
+/// サイドバー・引き出しでは `header` / `footer` を、細い列では `rail_header` /
+/// `rail_footer` を出す (細い列は 76px しか無いので、アイコンだけの見出しや、
+/// 押すと開くメニューのように形を変えたものを渡す)。細い列の側を渡さなければ、
+/// 細い列には何も出さない。
+#[derive(Default)]
+pub struct NavSlots {
+    pub header: Option<Element>,
+    pub footer: Option<Element>,
+    pub rail_header: Option<Element>,
+    pub rail_footer: Option<Element>,
+}
+
+impl NavSlots {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// サイドバー・引き出しの一覧の上 (アプリ名など)。
+    pub fn header(mut self, el: Element) -> Self {
+        self.header = Some(el);
+        self
+    }
+
+    /// サイドバー・引き出しの一覧の下 (ログイン中の人・ログアウトなど)。
+    pub fn footer(mut self, el: Element) -> Self {
+        self.footer = Some(el);
+        self
+    }
+
+    /// 細い列の一覧の上。
+    pub fn rail_header(mut self, el: Element) -> Self {
+        self.rail_header = Some(el);
+        self
+    }
+
+    /// 細い列の一覧の下。
+    pub fn rail_footer(mut self, el: Element) -> Self {
+        self.rail_footer = Some(el);
+        self
+    }
+}
+
 /// 項目を押したときにアプリへ渡す口。
 type OnSelect<A> = Rc<dyn Fn(&mut A, &str)>;
 
@@ -307,6 +414,8 @@ pub fn nav_menu_button_id(id: &str) -> String {
 /// * 引き出しは、選ばれている項目が変わったら閉じる。幕を押しても閉じる
 /// * ナビの側は `ctx.safe_area` の内側に置く (iOS のステータスバー等)。
 ///   本文の側はアプリが持つ
+///
+/// 見出し・足元を置くなら [`nav_frame_with`]。
 #[allow(clippy::too_many_arguments)]
 pub fn nav_frame<A: 'static>(
     ctx: &ViewContext,
@@ -317,6 +426,32 @@ pub fn nav_frame<A: 'static>(
     selected: &str,
     on_select: impl Fn(&mut A, &str) + 'static,
     content: Element,
+) -> Element {
+    nav_frame_with(ctx, id, state, style, groups, selected, on_select, content, NavSlots::new())
+}
+
+/// [`nav_frame`] に、一覧の上下に置くもの ([`NavSlots`]) を足したもの。
+///
+/// ```ignore
+/// let slots = NavSlots::new()
+///     .header(text("レンタカー管理").bold().px_pad(Px(16.0)).py(Px(12.0)))
+///     .footer(div().p_px(12.0).flex_col().gap(6.0).children([
+///         text(&self.user_name),
+///         button("ログアウト").click(ctx, "logout", |app: &mut App| app.logout()),
+///     ]));
+/// nav_frame_with(ctx, "nav", &self.nav, &style, &groups, &self.page, on_select, page, slots)
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn nav_frame_with<A: 'static>(
+    ctx: &ViewContext,
+    id: &str,
+    state: &NavFrameState,
+    style: &NavFrameStyle,
+    groups: &[NavGroup],
+    selected: &str,
+    on_select: impl Fn(&mut A, &str) + 'static,
+    content: Element,
+    slots: NavSlots,
 ) -> Element {
     ctx.register_managed(id, Rc::new(state.clone()));
     state.note_selected(selected);
@@ -342,24 +477,19 @@ pub fn nav_frame<A: 'static>(
     match mode {
         NavMode::Sidebar | NavMode::Rail => {
             let nav = if mode == NavMode::Sidebar {
-                list(ctx, id, style, groups, selected, &on_select, None)
-                    .w(Px(style.sidebar_width + safe.left))
+                let list = list(ctx, id, style, groups, selected, &on_select, None);
+                column(ctx, style, list, slots.header, slots.footer).w(Px(style.sidebar_width + safe.left))
             } else {
-                rail(ctx, id, style, groups, selected, &on_select).w(Px(style.rail_width + safe.left))
+                let rail = rail(ctx, id, style, groups, selected, &on_select);
+                column(ctx, style, rail, slots.rail_header, slots.rail_footer)
+                    .w(Px(style.rail_width + safe.left))
             };
             div()
                 .id(id)
                 .w_full()
                 .h_full()
                 .flex_row()
-                .child(
-                    nav.shrink(0.0)
-                        .h_full()
-                        .pt(Px(LIST_PAD + safe.top))
-                        .pl(Px(safe.left))
-                        .pb(Px(LIST_PAD + safe.bottom))
-                        .bg(style.nav_bg),
-                )
+                .child(nav.id(format!("{id}::nav")))
                 .child(div().w(Px(1.0)).h_full().shrink(0.0).bg(style.border))
                 .child(body)
         }
@@ -426,7 +556,9 @@ pub fn nav_frame<A: 'static>(
                 .child(body);
             let progress = state.progress();
             if progress > 0.01 || state.is_drawer_open() {
-                root = root.child(drawer(ctx, id, state, style, groups, selected, &on_select, progress));
+                root = root.child(drawer(
+                    ctx, id, state, style, groups, selected, &on_select, progress, slots,
+                ));
             }
             root
         }
@@ -444,6 +576,7 @@ fn drawer<A: 'static>(
     selected: &str,
     on_select: &OnSelect<A>,
     progress: f32,
+    slots: NavSlots,
 ) -> Element {
     let scrim_id = format!("{id}::scrim");
     let panel_id = format!("{id}::drawer");
@@ -459,17 +592,12 @@ fn drawer<A: 'static>(
 
     let safe = ctx.safe_area;
     let width = style.drawer_width.min((ctx.width - 56.0).max(0.0)) + safe.left;
-    let panel = list(ctx, id, style, groups, selected, on_select, Some(state))
+    let list = list(ctx, id, style, groups, selected, on_select, Some(state));
+    let panel = column(ctx, style, list, slots.header, slots.footer)
         .id(&panel_id)
         .role(Role::Dialog)
         .label("メニュー")
         .w(Px(width))
-        .h_full()
-        .shrink(0.0)
-        .pt(Px(LIST_PAD + safe.top))
-        .pl(Px(safe.left))
-        .pb(Px(LIST_PAD + safe.bottom))
-        .bg(style.nav_bg)
         .shadow_md(Color::new(0.0, 0.0, 0.0, 0.5))
         .tx(-width * (1.0 - progress));
     div()
@@ -481,6 +609,34 @@ fn drawer<A: 'static>(
         .bg(Color::new(style.scrim.r, style.scrim.g, style.scrim.b, style.scrim.a * progress))
         .flex_row()
         .child(panel)
+}
+
+/// ナビの縦の列: 見出し・一覧 (ここだけスクロール)・足元。セーフエリアの内側に置く。
+fn column(
+    ctx: &ViewContext,
+    style: &NavFrameStyle,
+    list: Element,
+    header: Option<Element>,
+    footer: Option<Element>,
+) -> Element {
+    let safe = ctx.safe_area;
+    let rule = || div().w_full().h(Px(1.0)).shrink(0.0).bg(style.border);
+    let mut col = div()
+        .h_full()
+        .shrink(0.0)
+        .flex_col()
+        .pt(Px(safe.top))
+        .pl(Px(safe.left))
+        .pb(Px(safe.bottom))
+        .bg(style.nav_bg);
+    if let Some(h) = header {
+        col = col.child(h.shrink(0.0)).child(rule());
+    }
+    col = col.child(list.grow(1.0).min_h(Px(0.0)));
+    if let Some(f) = footer {
+        col = col.child(rule()).child(f.shrink(0.0));
+    }
+    col
 }
 
 /// サイドバー / 引き出しの中身: 見出し付きの一覧。
@@ -499,6 +655,9 @@ fn list<A: 'static>(
         .scroll(format!("{id}::list"))
         .flex_col()
         .py(Px(LIST_PAD));
+    // アイコンの欄は、どれかの項目にアイコンがある時だけ取る。無い項目は空けて
+    // 名前の頭を揃える (名前の先頭の字で埋めると、名前と同じ字が並ぶだけ)。
+    let icons = style.sidebar_icons && groups.iter().flat_map(|g| &g.items).any(NavItem::has_icon);
     for group in groups {
         if !group.title.is_empty() {
             col = col.child(
@@ -527,18 +686,20 @@ fn list<A: 'static>(
                 .rounded_px(6.0)
                 .bg(if on { style.selected_bg } else { Color::TRANSPARENT })
                 .hover(|s| s.bg(if on { style.selected_bg } else { style.hover_bg }))
-                .children([
-                    text(item.icon_text())
-                        .font_size(14.0)
-                        .color(if on { style.accent } else { style.text_secondary })
-                        .w(Px(20.0))
-                        .shrink(0.0),
-                    bold_if(text(&item.label), on)
-                        .font_size(14.0)
-                        .color(if on { style.accent } else { style.text })
-                        .max_lines(1)
-                        .min_w(Px(0.0)),
-                ]);
+                .children(
+                    icons
+                        .then(|| {
+                            let color = if on { style.accent } else { style.text_secondary };
+                            let icon = item.icon_element(color, 14.0).unwrap_or_else(div);
+                            div().w(Px(20.0)).shrink(0.0).flex_row().items_center().child(icon)
+                        })
+                        .into_iter()
+                        .chain([bold_if(text(&item.label), on)
+                            .font_size(14.0)
+                            .color(if on { style.accent } else { style.text })
+                            .max_lines(1)
+                            .min_w(Px(0.0))]),
+                );
             col = col.child(item_click(ctx, id, item, on_select, closes, row));
         }
     }
@@ -581,9 +742,7 @@ fn rail<A: 'static>(
                 .bg(if on { style.selected_bg } else { Color::TRANSPARENT })
                 .hover(|s| s.bg(if on { style.selected_bg } else { style.hover_bg }))
                 .children([
-                    text(item.icon_text())
-                        .font_size(18.0)
-                        .color(if on { style.accent } else { style.text_secondary }),
+                    item.rail_icon(if on { style.accent } else { style.text_secondary }, 18.0),
                     bold_if(text(item.short_text()), on)
                         .font_size(10.0)
                         .color(if on { style.accent } else { style.text_secondary })

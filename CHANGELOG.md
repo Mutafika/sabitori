@@ -23,6 +23,22 @@
   `hidden md:block` / `md:hidden`): `.at(SizeClass::Compact, |e| e.hidden())`、
   `.hidden().at_least(SizeClass::Medium, |e| e.shown())`。`flex` / `grid` の並べ方は
   隠しても覚えている。
+- **`nav_frame` の見出し・足元** — `nav_frame_with(.., NavSlots)`
+  ([#105](https://github.com/Mutafika/sabitori/issues/105))。アプリ名・ログイン中の人・
+  ログアウトを一覧の上下に置ける。一覧だけがスクロールし、見出しと足元は動かない。
+  サイドバーと引き出しは `header` / `footer` を、細い列は `rail_header` /
+  `rail_footer` を出す (細い列の側を渡さなければ何も出さない)。
+- **`NavItem::icon_view(|color, size| ..)`** — アイコンを要素で描く (図形の線画や画像)。
+  書体に依らずに出せる。色は選ばれているかどうかで変わる。
+- **`NavFrameStyle::sidebar_icons`** — `false` ならサイドバー・引き出しではアイコンを
+  出さない。
+
+### Changed
+
+- **`nav_frame` のサイドバー・引き出しで、アイコンを指定しない項目に名前の先頭の字を
+  出さない** (#105)。「配 配車表」「顧 顧客」と同じ字が並ぶだけだった。アイコンの欄は
+  どれかの項目にアイコンがある時だけ取る。細い列は字が無いと見分けられないので、
+  これまでどおり先頭の字を出す。
 
 ### Fixed
 
