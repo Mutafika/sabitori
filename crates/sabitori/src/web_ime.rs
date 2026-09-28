@@ -57,6 +57,10 @@ thread_local! {
     /// Rust 側へ問い合わせる余裕が無い。前フレームの値を置いておく。
     /// ⌘A の直後 1 フレーム (16ms) だけ古い値になるが、人の指では作れない間隔。
     static SELECTION: RefCell<Option<(String, bool)>> = const { RefCell::new(None) };
+    /// 画面の選択の ⌘C を textarea へ回した最中 (#111)。`copy` を書き終えたら
+    /// 焦点を canvas へ返す — textarea に置いたままだと、次のフレームで外れて
+    /// 焦点が body に落ち、canvas に打鍵が届かなくなる。
+    static ROUTED_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// `cut` イベントでクリップボードに**書けた**という合図。ランタイムが
     /// 汲んで、そこで初めて本文を消す (「書けてから消す」issue #33)。
     static CUT_WRITTEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -263,6 +267,9 @@ fn build() -> Option<Bridge> {
     keep.push(listen(target, "copy", |e| {
         write_clipboard(&e);
         clear_textarea();
+        if ROUTED_COPY.with(|r| r.replace(false)) {
+            focus_canvas();
+        }
     }));
     keep.push(listen(target, "cut", |e| {
         crate::web_wake::wake();
@@ -347,6 +354,52 @@ fn build() -> Option<Bridge> {
         push(key_event(key, mods));
     }));
 
+    // --- 画面の選択の ⌘C (#111) ---------------------------------------------
+    //
+    // 焦点が canvas にあると、上の listener には何も来ない (winit が canvas の
+    // `keydown` の既定動作を止めるので、ブラウザの `copy` も起きない)。窓の
+    // **捕獲段階**で canvas より先に拾い、textarea に焦点を移して選択文字列を
+    // 全選択しておく。すると既定動作の `copy` が textarea で起き、上の `copy`
+    // listener が書く。canvas へは流さない (winit に止められないように)。
+    if let Some(window) = web_sys::window() {
+        let ta = textarea.clone();
+        let c = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+            let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else { return };
+            let sel = SELECTION.with(|s| s.borrow().clone());
+            let mods = crate::web_keys::CopyMods {
+                mac: is_mac(),
+                meta: ke.meta_key(),
+                ctrl: ke.ctrl_key(),
+                shift: ke.shift_key(),
+                alt: ke.alt_key(),
+            };
+            let Some(text) =
+                crate::web_keys::copy_to_route(&ke.key(), mods, canvas_has_focus(), sel.as_ref())
+            else {
+                return;
+            };
+            let el: &web_sys::HtmlElement = ta.as_ref();
+            let _ = el.focus();
+            select_in_textarea(&text);
+            ROUTED_COPY.with(|r| r.set(true));
+            e.stop_propagation();
+        });
+        let _ = window.add_event_listener_with_callback_and_bool("keydown", c.as_ref().unchecked_ref(), true);
+        keep.push(c);
+        // `copy` が来なかったとき (ブラウザが既定動作を出さなかった) の後始末。
+        // 離した時点で旗が残っていれば、焦点を canvas へ返して旗を下ろす —
+        // 残すと textarea に焦点が居座り、次のフレームで body に落ちて打鍵が
+        // canvas に届かなくなる。
+        let up = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            if ROUTED_COPY.with(|r| r.replace(false)) {
+                clear_textarea();
+                focus_canvas();
+            }
+        });
+        let _ = window.add_event_listener_with_callback_and_bool("keyup", up.as_ref().unchecked_ref(), true);
+        keep.push(up);
+    }
+
     Some(Bridge { textarea, canvas_hooked: false, _keep: keep })
 }
 
@@ -387,6 +440,37 @@ fn hook_canvas(
         .is_ok();
     keep.push(c);
     ok
+}
+
+/// ⌘ がコピーの修飾キーの環境か (mac / iOS)。
+fn is_mac() -> bool {
+    web_sys::window()
+        .and_then(|w| w.navigator().platform().ok())
+        .is_some_and(|p| p.starts_with("Mac") || p.starts_with("iP"))
+}
+
+/// 焦点が canvas か、どこにも無い (body) か。ページに置かれた別の入力欄や
+/// 隠し textarea に焦点があるなら `Elsewhere`。
+fn canvas_has_focus() -> crate::web_keys::CopyFocus {
+    use crate::web_keys::CopyFocus;
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return CopyFocus::Elsewhere };
+    let active = doc.active_element();
+    let on_canvas = match &active {
+        None => true,
+        Some(a) => a.id() == "sabitori-canvas" || doc.body().is_some_and(|b| a.is_same_node(Some(b.as_ref()))),
+    };
+    if on_canvas { CopyFocus::Canvas } else { CopyFocus::Elsewhere }
+}
+
+/// 焦点を canvas へ戻す。
+fn focus_canvas() {
+    let canvas = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("sabitori-canvas"))
+        .and_then(|c| c.dyn_into::<web_sys::HtmlElement>().ok());
+    if let Some(c) = canvas {
+        let _ = c.focus();
+    }
 }
 
 fn listen(

@@ -322,6 +322,7 @@ impl DropdownState {
                 let mut row = div()
                     .id(&id)
                     .role(Role::ListItem)
+                    .no_select()
                     .label(label)
                     .w_full()
                     .h(Px(style.item_height))

@@ -284,6 +284,7 @@ fn tree_row(
     div()
         .id(&row_id)
         .role(Role::TreeItem)
+        .no_select()
         .label(&item.label)
         // 深さは 1 始まり (根が 1)。 支援技術の階層表現に合わせる。
         .heading(item.depth as u8 + 1)

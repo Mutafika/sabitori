@@ -362,6 +362,7 @@ impl ColorPickerState {
                     div()
                         .id(&id)
                         .role(Role::Radio)
+                        .no_select()
                         .w(Px(style.swatch_size))
                         .h(Px(style.swatch_size))
                         .bg(*c)

@@ -15,6 +15,32 @@
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-28
+
+### Changed
+
+- **押せる要素の中の文字を押すと、クリックは離すまで待つ**
+  ([#111](https://github.com/Mutafika/sabitori/issues/111))。動かさずに (4px 以内で)
+  離せばクリック、ドラッグすれば文字の選択。以前は押した瞬間に鳴ったので、一覧の行
+  (押すと詳細へ移る) の文字を選ぼうとした途端に移ってしまい、選べなかった
+  (ブラウザのリンクの行と同じ動きになった)。
+  - 押した瞬間に鳴るもの (今までどおり): ボタンの文字・余白・つかんで動かせる要素・
+    本文中のリンク・手前の木 (menu・modal) の中・`.no_select()` の中。
+  - 押した瞬間に反応させたい部品 (窓の見出しをつかむ等) は `.no_select()` を付ける。
+    組み込みの部品 (メニュー・選択肢・日付・時刻・表の見出し・木・ナビ・色) は付けた。
+- **選んだ文字を写すとき、同じ行の離れた要素の間はタブ** (#111)。表計算に貼ると列に
+  分かれる。以前は空白の連なり (`会員番号                    C00001000`)。字 1 つぶん
+  の隙間は空白 1 つ、詰まっている要素の間は何も入れない。
+
+### Fixed
+
+- **web で画面の文字を選んで ⌘C / Ctrl+C してもコピーされない** (#111)。焦点が
+  canvas にあると、⌘C を受ける隠し textarea に打鍵が届かず、canvas に届いた打鍵は
+  winit が既定動作を止めるのでブラウザの `copy` も起きなかった。窓の捕獲段階で拾い、
+  textarea 経由で写してから焦点を canvas へ返す。テキスト欄の中の ⌘C・ページに
+  置かれた別の入力欄・⌘⇧C (要素を調べる) には触らない。何も選んでいなければ
+  クリップボードは変えない。
+
 ## [0.25.0] - 2026-09-27
 
 ### Added
@@ -4073,7 +4099,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/Mutafika/sabitori/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Mutafika/sabitori/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Mutafika/sabitori/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Mutafika/sabitori/compare/v0.22.1...v0.23.0

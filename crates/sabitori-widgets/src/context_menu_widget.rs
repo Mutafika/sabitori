@@ -175,6 +175,7 @@ impl ContextMenuState {
                 let mut row = div()
                     .id(&item.id)
                     .role(Role::Button)
+                    .no_select()
                     .label(&item.label)
                     .w_full()
                     .h(Px(item_h))

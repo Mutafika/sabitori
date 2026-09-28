@@ -524,6 +524,7 @@ pub fn nav_frame_with<A: 'static>(
                     div()
                         .id(&menu_id)
                         .role(Role::Button)
+                        .no_select()
                         .label("メニュー")
                         .w(Px(style.bar_height))
                         .h(Px(style.bar_height))
@@ -675,6 +676,7 @@ fn list<A: 'static>(
             let on = item.id == selected;
             let row = div()
                 .role(Role::Link)
+                .no_select()
                 .label(&item.label)
                 .mx(Px(8.0))
                 .px_pad(Px(8.0))
@@ -731,6 +733,7 @@ fn rail<A: 'static>(
             let on = item.id == selected;
             let cell = div()
                 .role(Role::Link)
+                .no_select()
                 .label(&item.label)
                 .tooltip(&item.label)
                 .w(Px(style.rail_width - 12.0))

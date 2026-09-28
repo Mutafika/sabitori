@@ -2942,6 +2942,12 @@ impl Element {
     ///
     /// To kill selection app-wide instead, return `false` from
     /// `DeclarativeApp::text_selection_enabled`.
+    ///
+    /// **押した瞬間に反応させたい部品にも付ける** (#111)。押せる要素の中の
+    /// 選べる文字を押すと、クリックは離すまで待つ (動かさずに離せばクリック、
+    /// ドラッグすれば文字の選択)。メニュー・選択肢・窓の見出し (つかんで窓を
+    /// 動かす) のように押した瞬間に動いてほしい所は、これで文字を選べなく
+    /// すると今までどおり押した瞬間に鳴る。組み込みの部品は付けてある。
     pub fn no_select(mut self) -> Self {
         self.no_select = true;
         self

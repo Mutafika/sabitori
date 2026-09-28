@@ -238,6 +238,10 @@ impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
 /// 要求するのは、 `Element::click` で登録されたハンドラが
 /// `&mut dyn Any` 経由でアプリ本体に降りるため。 アプリはランタイムが所有して
 /// プロセス寿命まで持つので、 実質的な制約にはならない。
+/// 押せる要素の中の文字を押して、この距離 (論理 px) 以内で離したらクリック。
+/// 越えたら文字の選択 (#111)。
+const CLICK_SLOP: f32 = 4.0;
+
 pub trait DeclarativeApp: 'static {
     /// Build the UI tree. Called every frame.
     /// Use `ctx.hovered` to check which element the mouse is over.
@@ -1029,6 +1033,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     selection_handles: bool,
     /// 選択が変わったので、もう 1 枚描く (#107)。
     selection_redraw: bool,
+    /// 選べる文字の上で押したので、離すまで待っているクリック
+    /// `(id, 回数, 押した位置)` (#111)。
+    deferred_click: Option<(String, u32, (f32, f32))>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
@@ -2501,6 +2508,7 @@ impl<A: DeclarativeApp> AppState<A> {
             selection_snapshot: None,
             selection_handles: false,
             selection_redraw: false,
+            deferred_click: None,
             last_capture: UiCapture::default(),
         }
     }
@@ -3252,6 +3260,8 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     pub(crate) fn press_primary(&mut self) {
+        // 前の押下の離しが来なかった (窓の外で離した等) なら、待っていたクリックは捨てる。
+        self.deferred_click = None;
         // ★帯が一番先。帯は中身の上に重なっているので、後ろへ渡すと**掴んだだけで
         // 下の物が押される**（一覧なら絵が選ばれ、行の並びならその行が開く）。
         if self.bars.press(
@@ -3289,6 +3299,9 @@ impl<A: DeclarativeApp> AppState<A> {
             // クリック対象はここでは決めるだけ。 実行はループを抜けてから —
             // ハンドラは `&mut self` を要り、 `build` を借りたままでは呼べない。
             let mut click_target: Option<String> = None;
+            // 押した要素が手前の木 (menu・modal) か。手前の文字は選べないので、
+            // その下の本文に当たっても待たない (#111)。
+            let mut target_overlay = false;
             for region in &build.hit_regions {
                 // 意味だけの領域 (role/label のみ) は透過する。 これを止めると
                 // 表のセルに `Role::Cell` を書いた瞬間、 行のクリックが死ぬ
@@ -3316,6 +3329,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     // (下の親が代わりに鳴らない = ブラウザと同じ) (#62)。
                     if region.clickable && !region.disabled {
                         click_target = region.id.clone();
+                        target_overlay = region.overlay;
                         hit_clickable_or_drag = true;
                     }
                     // Check for drag data
@@ -3326,7 +3340,24 @@ impl<A: DeclarativeApp> AppState<A> {
                     break;
                 }
             }
-            self.dispatch_click(click_target.as_deref(), click_count, self.mouse_x, self.mouse_y);
+            // 押せる要素の中の**選べる文字**を押したなら、クリックは離すまで待つ
+            // (#111)。動かさずに離せばクリック、ドラッグすれば文字の選択 —
+            // ブラウザのリンクの行と同じ。押した瞬間に鳴らすと、一覧の行の文字を
+            // 選ぼうとした途端に詳細へ移ってしまう。ボタンの文字 (選べない)・
+            // 余白・つかんで動かせる要素は、今までどおり押した瞬間に鳴る。
+            let defer = click_target.is_some()
+                && !target_overlay
+                && pending_drag.is_none()
+                && self.app.text_selection_enabled()
+                && self.link_at(self.mouse_x, self.mouse_y).is_none()
+                && self.hit_test_text(self.mouse_x, self.mouse_y, true).is_some();
+            if defer {
+                self.deferred_click =
+                    click_target.clone().map(|id| (id, click_count, (self.mouse_x, self.mouse_y)));
+            } else {
+                self.deferred_click = None;
+                self.dispatch_click(click_target.as_deref(), click_count, self.mouse_x, self.mouse_y);
+            }
             // Blur if clicked on a non-focusable region (or empty area)
             if !focus_set {
                 self.focused_id = None;
@@ -3464,6 +3495,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     // First finger — set up single-touch drag.
                     self.mouse_x = x;
                     self.mouse_y = y;
+                    self.deferred_click = None;
 
                     // 指で作った選択のつまみを押したなら、その端を動かす (#108)。
                     // 押した先のボタンやスクロールには渡さない。
@@ -3912,6 +3944,19 @@ impl<A: DeclarativeApp> AppState<A> {
         self.pressed_id = None;
         // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
         self.selecting = false;
+        // 押した所で待っていたクリック (#111): 文字を選ばずに離したなら鳴らす。
+        // ドラッグして選んだなら、それは選択であってクリックではない。
+        //
+        // 手のぶれ (数 px) はクリック。字の真ん中をまたぐだけで 1 字選ばれるので、
+        // 選択ができたかではなく、**どれだけ動いたか**で分ける。
+        if let Some((id, count, (px, py))) = self.deferred_click.take() {
+            let moved = ((self.mouse_x - px).powi(2) + (self.mouse_y - py).powi(2)).sqrt();
+            if moved <= CLICK_SLOP {
+                // ぶれで選ばれた 1〜2 字は、クリックの意図なので消す。
+                self.selection = None;
+                self.dispatch_click(Some(&id), count, self.mouse_x, self.mouse_y);
+            }
+        }
         // 1 文字も範囲が無いなら (= 単なる click) 視覚 noise になるので消す。
         if let Some(ref sel) = self.selection {
             if sel.is_empty() {
@@ -4342,11 +4387,21 @@ impl<A: DeclarativeApp> AppState<A> {
                     if (y - py).abs() > 1.0 {
                         out.push('\n'); // dropped to a new visual row
                     } else {
-                        // Same row: turn an x-gap into the right number of
-                        // spaces (unit = the narrower cell, robust to wide chars).
-                        let unit = padv.min(adv).max(1.0);
-                        let gap = ((x0 - px_end) / unit).round() as i32;
-                        for _ in 0..gap.max(0) {
+                        // 同じ行の別の要素の間 (unit = 広い方の字の幅)。
+                        //
+                        // - 詰まっている (字 1 つの半分未満) → 何も入れない。1 字ずつ
+                        //   別の要素にした並び (1 マス 1 要素の格子) が語のまま続く
+                        // - 字 1 つぶん前後 → 空白 1 つ (語の間)
+                        // - それより離れている → **タブ** (#111)。表の列・「項目名 ─ 値」
+                        //   の行は、表計算に貼ると列に分かれる。以前は空白の連なり
+                        //   (`会員番号                    C00001000`) になっていた。
+                        // 広い方の字で測る — 狭い字 ("i" "," "1") を基準にすると、
+                        // ふつうの隙間 (8px) でも 1.5 字を越えてタブになる。
+                        let unit = padv.max(adv).max(1.0);
+                        let gap = (x0 - px_end) / unit;
+                        if gap >= 1.5 {
+                            out.push('\t');
+                        } else if gap >= 0.5 {
                             out.push(' ');
                         }
                     }
@@ -6073,6 +6128,32 @@ mod highlight_tests {
         assert_eq!(got.bounds(), Some(sabitori_core::Rect::new(0.0, 0.0, 60.0, 56.0)));
     }
 
+    /// 同じ行の別の要素の間は、離れていればタブ、字 1 つぶんなら空白、
+    /// 詰まっていれば何も入れない (#111)。
+    #[test]
+    fn pieces_on_one_row_are_joined_by_tab_space_or_nothing() {
+        let at = |idx: usize, content: &str, x0: f32| TextHitLayout {
+            text_idx: idx,
+            ..{
+                let mut l = owned(idx, None, content, 0.0);
+                for h in &mut l.hits {
+                    h.x += x0;
+                }
+                l
+            }
+        };
+        // 「会員番号」(4 字 = 0..40) … 離れて 「C001」(200..)
+        let layouts = vec![at(0, "会員番号", 0.0), at(1, "C001", 200.0)];
+        let sel = select((0, 0), (1, 4), "会員番号", "C001");
+        let got = AppState::<TestApp>::selection_snapshot_of(Some(&sel), &layouts).unwrap();
+        assert_eq!(got.text, "会員番号\tC001");
+        // 字 1 つぶん空いた語の間は空白、詰まった 1 字ずつの要素はそのまま。
+        let layouts = vec![at(0, "ab", 0.0), at(1, "cd", 30.0), at(2, "e", 50.0)];
+        let sel = select((0, 0), (2, 1), "ab", "e");
+        let got = AppState::<TestApp>::selection_snapshot_of(Some(&sel), &layouts).unwrap();
+        assert_eq!(got.text, "ab cde");
+    }
+
     #[test]
     fn an_empty_selection_is_none() {
         let layouts = vec![owned(0, Some("p"), "abc", 0.0)];
@@ -6268,6 +6349,91 @@ mod highlight_tests {
         state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
         held(&mut state, 0.6);
         assert!(state.selection.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // #111 — 押せる要素の中の文字は、離すまでクリックを待つ
+    // ---------------------------------------------------------------
+
+    #[derive(Default)]
+    struct Rows {
+        clicked: Vec<String>,
+    }
+    impl DeclarativeApp for Rows {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            sabitori_core::div()
+        }
+        fn on_click(&mut self, id: &str) {
+            self.clicked.push(id.to_string());
+        }
+    }
+
+    /// 一覧の行 (id 付き・押すと詳細へ) の上に、1 行目の文字 (x 0..60, y 0..16)。
+    fn rows() -> AppState<Rows> {
+        use sabitori_core::element::{div, Px};
+        let mut state = AppState::new(Rows::default());
+        state.text_layouts = vec![owned(0, Some("row-1"), "C00001", 0.0)];
+        state.last_build = Some(sabitori_core::build::build_tree(
+            &div().w(Px(400.0)).h(Px(300.0)).child(div().id("row-1").w(Px(300.0)).h(Px(24.0))),
+            400.0,
+            300.0,
+        ));
+        state
+    }
+
+    fn press(state: &mut AppState<Rows>, x: f32, y: f32) {
+        state.pointer_moved_to(x, y);
+        state.press_primary();
+    }
+
+    #[test]
+    fn a_click_on_row_text_fires_on_release_when_the_pointer_did_not_move() {
+        let mut state = rows();
+        press(&mut state, 25.0, 8.0);
+        assert!(state.app.clicked.is_empty(), "押した瞬間には鳴らさない");
+        state.release_primary();
+        assert_eq!(state.app.clicked, ["row-1"]);
+        assert!(state.selection.is_none());
+    }
+
+    #[test]
+    fn dragging_across_row_text_selects_it_instead_of_clicking() {
+        let mut state = rows();
+        press(&mut state, 2.0, 8.0);
+        state.pointer_moved_to(42.0, 8.0);
+        state.release_primary();
+        assert!(state.app.clicked.is_empty(), "選んだのに詳細へ移った");
+        assert_eq!(state.selected_text().as_deref(), Some("C000"));
+    }
+
+    /// 手のぶれ (数 px・字の真ん中をまたいで 1 字選ばれる) はクリック。
+    #[test]
+    fn a_wobble_on_row_text_is_still_a_click() {
+        let mut state = rows();
+        press(&mut state, 14.0, 8.0);
+        state.pointer_moved_to(16.0, 9.0); // 2 字目の真ん中 (15) をまたぐ
+        state.release_primary();
+        assert_eq!(state.app.clicked, ["row-1"]);
+        assert!(state.selection.is_none(), "ぶれで選ばれた字は残さない");
+    }
+
+    /// 選べない文字 (`.no_select()` — メニュー・選択肢・窓の見出し) は、押した瞬間に鳴る。
+    #[test]
+    fn no_select_text_keeps_press_timing() {
+        let mut state = rows();
+        state.text_layouts[0].no_select = true;
+        press(&mut state, 25.0, 8.0);
+        assert_eq!(state.app.clicked, ["row-1"]);
+    }
+
+    /// 文字の無い所 (行の余白) は今までどおり押した瞬間に鳴る。
+    #[test]
+    fn a_click_on_row_padding_still_fires_on_press() {
+        let mut state = rows();
+        press(&mut state, 250.0, 8.0);
+        assert_eq!(state.app.clicked, ["row-1"]);
+        state.release_primary();
+        assert_eq!(state.app.clicked, ["row-1"], "離して 2 度目は鳴らない");
     }
 
     struct TestApp;

@@ -434,6 +434,7 @@ fn header(
             sized(div(), c, plan.mins[col])
                 .id(&table_header_id(id, col))
                 .role(Role::ColumnHeader)
+                .no_select()
                 .label(&c.label)
                 .h_full()
                 .px_pad(Px(style.cell_padding_x))

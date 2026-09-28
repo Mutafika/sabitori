@@ -226,6 +226,7 @@ impl TimePickerState {
             div()
                 .id(&id)
                 .role(Role::Button)
+                .no_select()
                 .label(&label)
                 .w(Px(style.cell_w))
                 .h(Px(style.cell_h))

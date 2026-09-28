@@ -1271,6 +1271,9 @@ impl DeclarativeApp for FilerApp {
 
         let header = div()
             .id("title-bar")
+            // 押した瞬間に窓をつかむ (`drag_window`)。文字を選べると、クリックが
+            // 離すまで待たされて窓が動かない (#111)。
+            .no_select()
             .h(Px(38.0)).shrink(0.0).bg(elevated)
             .flex_col().children([
                 div().flex_1().flex_row().items_center().px_pad(Px(14.0)).children([
