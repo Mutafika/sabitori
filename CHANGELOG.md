@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-02
+
 ### Added
 
 - **`font_assets()` と `font_asset!` — フォントを宣言だけで読み込む。** native は
@@ -29,6 +31,15 @@
 - **組み込みの HackGen (10.2MB) が使われないまま wasm に載っていたら警告する。**
   `font_assets()` を宣言している、または `fonts()` だけで日本語が組めるのに
   `builtin-font-jp` が有効なとき、ブラウザのコンソールに外し方を出す。既定は変えない。
+
+### Fixed
+
+- **macOS で入力ソースを切り替えた直後の 1 打が、まれに前のモードのまま処理される。**
+  Ctrl+Space 等で日本語 ⇄ 英字を切り替えると、表示は A/あ に変わるのに、直後の 1 打が
+  15〜25% の確率で切替前のモードで IME に渡っていた (「あ」のはずが a、またはその逆)。
+  入力ソースの値は正しく、IME のセッションへの反映だけが取りこぼされる (winit の view)。
+  入力ソースが変わっていたら、次の打鍵が届く直前に入力コンテキストを張り直すようにした。
+  切替の瞬間に張り直さないのは、入力モードの表示が出なくなることがあるため。
 
 ## [0.27.0] - 2026-10-02
 
@@ -4147,7 +4158,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/Mutafika/sabitori/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Mutafika/sabitori/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/Mutafika/sabitori/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Mutafika/sabitori/compare/v0.24.0...v0.25.0
