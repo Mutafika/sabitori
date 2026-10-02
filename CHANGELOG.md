@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-02
+
 ### Added
 
 - **`ctx.image_url_max(url, 論理px)` — 読み込むときに縮める**
@@ -4130,7 +4132,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/Mutafika/sabitori/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/Mutafika/sabitori/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Mutafika/sabitori/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Mutafika/sabitori/compare/v0.23.0...v0.24.0
