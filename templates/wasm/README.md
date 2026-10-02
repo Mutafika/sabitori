@@ -91,6 +91,30 @@ native と wasm で見た目を揃えたいなら、組み込みに寄りかか�
 埋めてしまう。
 </details>
 
+<details>
+<summary>大きなフォントは焼き込まずに取ってくる（<code>font_asset!</code>）</summary>
+
+`fonts()` に `include_bytes!` した分はそのまま wasm に乗り、初回表示が遅れる。
+日本語フォントのような大きなものは宣言だけにすると、wasm では起動時に fetch される
+（native はビルド時に埋め込まれるので、コードは共通）。
+
+```rust
+fn font_assets(&self) -> Vec<sabitori::fonts::FontAsset> {
+    vec![sabitori::font_asset!("assets/fonts/NotoSansJP-Regular.otf")]
+}
+```
+
+配信側にも同じパスで置く:
+
+```html
+<link data-trunk rel="copy-file" href="assets/fonts/NotoSansJP-Regular.otf" data-target-path="assets/fonts" />
+```
+
+自前で日本語を用意するなら、組み込みの HackGen は要らない。
+`default-features = false, features = ["builtin-font-latin"]` にしておく
+（有効なままだと、ブラウザのコンソールに警告が出る）。
+</details>
+
 ### 3. シェーダーの inter-stage component 上限
 
 WebGL2 の varying 上限は **31 コンポーネント**（WebGPU より低い）。

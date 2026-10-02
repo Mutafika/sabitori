@@ -15,6 +15,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`font_assets()` と `font_asset!` — フォントを宣言だけで読み込む。** native は
+  ビルド時に埋め込み、wasm は起動時に fetch して届いた順に足す (宣言順は保つ)。
+  大きな日本語フォントを wasm に焼き込まずに済み、wasm の大きさとフォントの重さを
+  切り離せる。届くまでの数フレームは組み込みか `fonts()` の face で描く。
+  ```rust
+  fn font_assets(&self) -> Vec<sabitori::fonts::FontAsset> {
+      vec![sabitori::font_asset!("assets/fonts/NotoSansJP-Regular.otf")]
+  }
+  ```
+- **組み込みの HackGen (10.2MB) が使われないまま wasm に載っていたら警告する。**
+  `font_assets()` を宣言している、または `fonts()` だけで日本語が組めるのに
+  `builtin-font-jp` が有効なとき、ブラウザのコンソールに外し方を出す。既定は変えない。
+
 ## [0.27.0] - 2026-10-02
 
 ### Added
