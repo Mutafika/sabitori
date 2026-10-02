@@ -11,11 +11,13 @@ struct App {
     name: TextInputState,
     /// #74: URL と戻るボタン。`#/detail/<n>` を出し入れする。
     detail: Option<u32>,
+    /// #114: サムネイルの大きさを 1 回だけ console に出す。
+    thumb_logged: std::cell::Cell<bool>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self { name: TextInputState::new("お名前"), detail: None }
+        Self { name: TextInputState::new("お名前"), detail: None, thumb_logged: Default::default() }
     }
 }
 
@@ -89,6 +91,9 @@ impl DeclarativeApp for App {
                     })
                     .color(Color::WHITE),
                 ]),
+                // #114: 縮めて読んだ写真が出るか。photo.jpg は 800×600 で
+                // 「90° 回して見せる」印付き — 縦長で、赤が上に来れば向きも合っている。
+                self.thumbnail(ctx),
                 // #71: ピルが描かれるか
                 div()
                     .id("pill")
@@ -102,6 +107,15 @@ impl DeclarativeApp for App {
 }
 
 impl App {
+    fn thumbnail(&self, ctx: &ViewContext) -> Element {
+        if let Some(d) = ctx.image_data_max("photo.jpg", 60.0) {
+            if !self.thumb_logged.replace(true) {
+                log::info!("thumb={}x{} dpr={}", d.width, d.height, ctx.scale_factor);
+            }
+        }
+        div().p(Px(8.0)).child(ctx.image_url_max("photo.jpg", 60.0).w(Px(45.0)).h(Px(60.0)))
+    }
+
     fn fragment(&self) -> String {
         match self.detail {
             Some(n) => format!("#/detail/{n}"),

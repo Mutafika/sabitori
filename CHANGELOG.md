@@ -15,6 +15,37 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`ctx.image_url_max(url, 論理px)` — 読み込むときに縮める**
+  ([#114](https://github.com/Mutafika/sabitori/issues/114))。長い辺が
+  `論理px × dpr` を超える画像は読んだ直後に縮め、縮めた方だけを持つ。4032×3024 の
+  写真 (RGBA で 48MB) を 400px のサムネイルにすれば 0.5MB 弱。キャッシュとテクスチャの
+  鍵は (URL, 大きさ) なので、一覧の `image_url_max(url, 200.0)` と拡大表示の
+  `image_url(url)` を同じ URL で並べてよい。生データ版の `image_data_max` も。
+  - `ViewContext::scale_factor` (論理 px 1 つが物理 px いくつか) を足した。
+  - `sabitori_net::decode::decode_image_max(bytes, Some(px))` で、自前の読み込みからも縮められる。
+  - `ImageCtx::request` は URL の代わりに `ImageRequest { url, max_px }` を受ける
+    (ランタイムを自作していて `ImageCtx` を組んでいる場合だけ影響する)。
+
+### Changed
+
+- **web では画像の読み込みをブラウザに任せる** (#114)。`createImageBitmap` は読み込みと
+  縮小を画面のスレッドの外でやる。以前は wasm の中で同期に読んでいたので、4032×3024 の
+  JPEG 1 枚で 150ms ほど画面が止まっていた (release、Chrome)。いまの止まりは縮めた後の
+  画素を取り出す分だけ。ブラウザで読めないとき (古いブラウザで `OffscreenCanvas` が
+  無い等) は今までどおり wasm の中で読む。
+- **写真の向きの印 (EXIF Orientation) に従う** (#114)。スマホの写真は横長で撮って
+  「縦に回して見せる」印を付けていることが多く、ブラウザはこれに従う。native も従う
+  ようにした — 揃えないと web と native で写真の向きが変わる。
+
+### Fixed
+
+- **`image_url` の画像が、読み終わっても次に画面を触るまで出ない** (#114 の確認で
+  見つけた)。既定の `lazy_render` では、描く理由が無いと描かない。届いた画像をキャッシュへ
+  入れるのは描くフレームの中なので、読み終わっただけでは誰も描かなかった。届いた画像を
+  描く理由に数えるようにした (web は届いた時点で 1 フレーム起こす)。
+
 ## [0.26.0] - 2026-09-28
 
 ### Changed

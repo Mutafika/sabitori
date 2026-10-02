@@ -2049,6 +2049,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             runtime_animating: self.runtime_animating(),
             caret_blinking: self.caret_blinking(),
             atlas_recover_pending: self.atlas_recover_pending,
+            images_arrived: !self.image_pending.lock().unwrap().is_empty(),
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         };
@@ -2150,6 +2151,12 @@ pub(crate) struct DrawGate {
     pub(crate) caret_blinking: bool,
     /// グリフアトラスが溢れた直後。 次のフレームで flush + 再シェイプが要る。
     pub(crate) atlas_recover_pending: bool,
+    /// 裏で読んでいた画像 (`image_url`) が届いて、キャッシュへ入るのを待っている。
+    ///
+    /// 届いた画像を入れるのは描くフレームの中なので、これが無いと
+    /// **画像が届いても次に画面を触るまで出ない**
+    /// ([#114](https://github.com/Mutafika/sabitori/issues/114) の確認で見つけた)。
+    pub(crate) images_arrived: bool,
     /// 測れたスクロール枠の大きさが `view()` の見た値と違った (#99)。
     /// 前のフレームの寸法で決まる物 (`table` の列、`visible_range`) を正しい
     /// 寸法で組み直すために、もう 1 枚要る。
@@ -2178,6 +2185,7 @@ impl DrawGate {
             || self.runtime_animating
             || self.caret_blinking
             || self.atlas_recover_pending
+            || self.images_arrived
     }
 
     /// このフレームで redraw を出すべきか。
@@ -2642,6 +2650,7 @@ impl<A: DeclarativeApp> AppState<A> {
             theme: self.app.theme(),
             presence: self.presence_animator.all_progress(),
             images: Some(self.image_ctx.clone()),
+            scale_factor: self.renderer.as_ref().map_or(1.0, |r| r.scale_factor),
             mono_advance,
             // 実フォント計測をアプリに渡す。 これが無いとキャレット位置を
             // 計算する手段が無く、 等幅以外のテキスト欄にカーソルを置けない
@@ -4902,6 +4911,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 theme: self.app.theme(),
                 presence: std::collections::HashMap::new(),
                 images: Some(self.image_ctx.clone()),
+                scale_factor: scale,
                 mono_advance,
                 measurer: Some(&measurer),
                 managed: Default::default(),
@@ -6981,17 +6991,18 @@ mod draw_gate_tests {
         assert!(DrawGate { lazy: false, ..DrawGate::default() }.must_draw());
     }
 
-    /// 描く理由は 7 つあり、 **どれ 1 つでも欠けると画面が止まる**。
+    /// 描く理由は 8 つあり、 **どれ 1 つでも欠けると画面が止まる**。
     /// 表にして 1 本ずつ立て、 全部が単独で効くことを見る。
     #[test]
     fn every_reason_draws_on_its_own() {
-        let reasons: [(&str, fn(&mut DrawGate)); 7] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 8] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
             ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+            ("読んでいた画像が届いた", |g| g.images_arrived = true),
             ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {
@@ -7007,13 +7018,14 @@ mod draw_gate_tests {
     /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     #[test]
     fn an_occluded_window_draws_for_no_reason_at_all() {
-        let reasons: [(&str, fn(&mut DrawGate)); 7] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 8] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
             ("ランタイムのアニメーターが動いている", |g| g.runtime_animating = true),
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
+            ("読んでいた画像が届いた", |g| g.images_arrived = true),
             ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {

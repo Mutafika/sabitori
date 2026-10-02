@@ -39,6 +39,7 @@ probes/ にあるもの:
 | `clipboard.mjs` | ⌘C / ⌘X / ⌘V (#76) |
 | `history.mjs` | URL と戻るボタン (#74) |
 | `files.mjs` | ダウンロード (#77) |
+| `images.mjs` | 縮めて読んだ写真が入力無しに出るか・読み込み中の長いタスク (#114)。console の `thumb=45x60` (dpr 1) が縦長なら向きも合っている。`dist/photo.jpg` を 4032×3024 の写真に差し替えると、画面のスレッドで読んでいないかが `longtasks=[]` で分かる |
 
 `drive.mjs` は CDP (Chrome DevTools Protocol) を Node の組み込み `WebSocket`
 だけで叩く。出力は console のログ・例外・PNG。**`--use-angle=swiftshader` は
