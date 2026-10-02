@@ -179,7 +179,7 @@ impl ShaperMeasure {
     /// 当てたもの。
     pub fn for_app<A: DeclarativeApp>(app: &A) -> Self {
         let mut shaper = TextShaper::new();
-        let fonts = app.fonts();
+        let fonts = crate::fonts::startup_fonts(app);
         if !fonts.is_empty() {
             shaper.prefer_user_fonts(&fonts);
         }

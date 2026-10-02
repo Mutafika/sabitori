@@ -693,6 +693,9 @@ pub trait DeclarativeApp: 'static {
     /// 日本語 UI がそのまま出る**。 `builtin-font-latin` に落とすと 302KB まで
     /// 軽くなるが、 日本語は豆腐になる。
     ///
+    /// ここで返した分は wasm にそのまま乗る。 大きなフォントは
+    /// [`font_assets`](Self::font_assets) で宣言すると、 wasm では起動時に取ってくる。
+    ///
     /// ここで返したフォントは組み込みより**先**に当たるので、 上書きの心配は
     /// 要らない。 組み込みは穴埋めにしか使われない。
     ///
@@ -709,6 +712,25 @@ pub trait DeclarativeApp: 'static {
     /// }
     /// ```
     fn fonts(&self) -> Vec<Vec<u8>> { Vec::new() }
+
+    /// 起動時に読み込むフォントを**宣言だけ**する。 [`fonts`](Self::fonts) の後ろに入る。
+    ///
+    /// native はビルド時に埋め込み (最初のフレームから効く)、 wasm は起動時に
+    /// fetch して届いた順に足す (wasm の大きさに乗らない)。 届くまでの数フレームは
+    /// 組み込みか `fonts()` の face で描かれ、 届いたら組み直される。
+    ///
+    /// ```ignore
+    /// fn font_assets(&self) -> Vec<sabitori::fonts::FontAsset> {
+    ///     vec![
+    ///         sabitori::font_asset!("assets/fonts/NotoSansJP-Regular.otf"),
+    ///         sabitori::font_asset!("assets/fonts/Hack-Bold.ttf"),
+    ///     ]
+    /// }
+    /// ```
+    ///
+    /// 配信側にも同じパスで置くこと (trunk なら
+    /// `<link data-trunk rel="copy-dir" href="assets/fonts" data-target-path="assets/fonts" />`)。
+    fn font_assets(&self) -> Vec<crate::fonts::FontAsset> { Vec::new() }
 
     /// Return the app theme. Override to customize colors.
     /// The theme is available in `view()` via `ctx.theme`.
@@ -941,7 +963,7 @@ fn init_renderers<A: DeclarativeApp>(app: &A, gpu: &GpuRenderer) -> Renderers {
     let layout = &gpu.globals_bind_group_layout;
 
     let mut text = TextRenderer::new(&gpu.device, format, layout);
-    let user_fonts = app.fonts();
+    let user_fonts = crate::fonts::startup_fonts(app);
     if !user_fonts.is_empty() {
         text.prefer_user_fonts(&user_fonts);
     }

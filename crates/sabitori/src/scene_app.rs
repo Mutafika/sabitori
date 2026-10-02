@@ -444,7 +444,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         window.set_ime_allowed(true);
         let mut gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
         let mut text = TextRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
-        let user_fonts = self.app.fonts();
+        let user_fonts = crate::fonts::startup_fonts(&self.app);
         if !user_fonts.is_empty() {
             text.prefer_user_fonts(&user_fonts);
         }
@@ -1757,7 +1757,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
                         gpu.surface_config.format,
                         &gpu.globals_bind_group_layout,
                     );
-                    let user_fonts = s.app.fonts();
+                    let user_fonts = crate::fonts::startup_fonts(&s.app);
                     if !user_fonts.is_empty() {
                         text.prefer_user_fonts(&user_fonts);
                     }
