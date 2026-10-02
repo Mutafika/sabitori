@@ -66,6 +66,8 @@ pub mod offscreen;
 pub mod macos_drag;
 #[cfg(target_os = "macos")]
 pub mod macos_blur;
+#[cfg(target_os = "macos")]
+mod macos_ime;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
 /// web の打鍵の仕分け (DOM を触らない部分)。wasm でしか動かない `web_ime` から

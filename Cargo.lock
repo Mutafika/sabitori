@@ -3079,6 +3079,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "arboard",
+ "block2 0.6.2",
  "bytemuck",
  "console_error_panic_hook",
  "console_log",

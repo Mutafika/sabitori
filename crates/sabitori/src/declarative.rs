@@ -1272,7 +1272,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // On iOS `set_ime_allowed` shows/hides the software keyboard, so there it is
         // toggled per focus in the redraw loop instead of forced on at startup.
         #[cfg(not(target_os = "ios"))]
-        window.set_ime_allowed(true);
+        crate::runtime_shared::enable_ime(&window);
         let gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
         let r = init_renderers(&self.app, &gpu);
         self.app.set_window(window.clone());

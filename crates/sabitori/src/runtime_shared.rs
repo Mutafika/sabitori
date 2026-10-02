@@ -601,3 +601,11 @@ fn slide(states: &mut HashMap<String, ScrollView>, id: &str, to: f32) {
         sv.scroll_y.set_immediate(to.clamp(0.0, max));
     }
 }
+
+/// IME を有効にする (両ランタイム共通)。macOS では入力モード切替の取りこぼし対策
+/// ([`crate::macos_ime`]) もここで仕込むので、`set_ime_allowed(true)` を直接呼ばずにこれを使う。
+pub(crate) fn enable_ime(window: &winit::window::Window) {
+    window.set_ime_allowed(true);
+    #[cfg(target_os = "macos")]
+    crate::macos_ime::install_mode_resync();
+}

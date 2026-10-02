@@ -441,7 +441,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         // Enable IME so Japanese (and other) input methods deliver
         // preedit/commit events to the `WindowEvent::Ime` handler. Without
         // this winit never emits them and IME is silently dead in run_scene.
-        window.set_ime_allowed(true);
+        crate::runtime_shared::enable_ime(&window);
         let mut gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
         let mut text = TextRenderer::new(&gpu.device, gpu.surface_config.format, &gpu.globals_bind_group_layout);
         let user_fonts = crate::fonts::startup_fonts(&self.app);
@@ -1721,7 +1721,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
                 .with_inner_size(winit::dpi::LogicalSize::new(w, h));
             let window = Arc::new(event_loop.create_window(attrs).unwrap());
             // Enable IME so input methods deliver preedit/commit events.
-            window.set_ime_allowed(true);
+            crate::runtime_shared::enable_ime(&window);
 
             // Attach canvas to DOM
             {
