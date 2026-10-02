@@ -126,10 +126,11 @@ pub struct DragInfo {
 #[derive(Clone)]
 pub struct ImageCtx {
     pub cache: std::sync::Arc<std::sync::Mutex<image_cache::ImageCache>>,
-    /// Called synchronously by `image_url()` for URLs not yet in the cache.
-    /// The closure is responsible for spawning an async fetch + decode and
-    /// writing the result back into the cache when it completes.
-    pub request: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+    /// Called synchronously by `image_url()` for keys not yet in the cache.
+    /// The closure is responsible for spawning an async fetch + decode
+    /// (縮める指定があれば縮めて) and writing the result back into the cache
+    /// under [`image_cache::ImageRequest::key`] when it completes.
+    pub request: std::sync::Arc<dyn Fn(image_cache::ImageRequest<'_>) + Send + Sync>,
 }
 
 /// Coarse responsive breakpoint bucket derived from the viewport width.
@@ -213,6 +214,9 @@ pub struct ViewContext<'a> {
     pub presence: std::collections::HashMap<String, f32>,
     /// Shared image cache + spawner. `None` until the runtime wires it up.
     pub images: Option<ImageCtx>,
+    /// 論理 px 1 つが物理 px いくつか (Retina なら 2)。
+    /// [`ViewContext::image_url_max`] が読み込む大きさを決めるのに使う。
+    pub scale_factor: f32,
     /// Advance width of one monospace cell at font-size 1.0 — i.e. the active
     /// `.mono()` face's `measure("0…", s) / n / s`. Multiply by your font px for
     /// an exact cell width (terminals, code grids tile perfectly for any face).
@@ -585,21 +589,26 @@ impl ViewContext<'_> {
     /// driver, fall back to `element::image(key, data)` with your own
     /// cache, or populate `ViewContext::images`.
     pub fn image_url(&self, url: &str) -> element::Element {
-        let images = self
-            .images
-            .as_ref()
-            .expect("ViewContext::image_url requires a runtime that wires up ImageCtx");
-        let state = images.cache.lock().unwrap().get(url);
-        match state {
-            image_cache::CacheState::Loaded(data) => element::image(url, data),
-            image_cache::CacheState::Missing => {
-                (images.request)(url);
-                element::div()
-            }
-            image_cache::CacheState::Loading | image_cache::CacheState::Failed(_) => {
-                element::div()
-            }
-        }
+        self.image_element(image_cache::ImageRequest { url, max_px: None })
+    }
+
+    /// **縮めて読む** [`Self::image_url`]
+    /// ([#114](https://github.com/Mutafika/sabitori/issues/114))。
+    ///
+    /// 長い辺が `max_logical` 論理 px (× [`Self::scale_factor`]) を超える画像は、
+    /// 読み込んだ直後に縮めてから持つ。写真のサムネイル向け —
+    /// 4032×3024 の JPEG を原寸で持つと RGBA で 48MB、縮めれば数百 KB で済む。
+    /// 小さい画像は拡大しない。
+    ///
+    /// 大きさごとに別にキャッシュされるので、一覧で `image_url_max(url, 200.0)`、
+    /// 拡大表示で `image_url(url)` のように同じ URL を並べて使ってよい。
+    ///
+    /// ```ignore
+    /// ctx.image_url_max(&photo.url, 240.0).w(240.0).h(180.0).object_fit(ObjectFit::Cover)
+    /// ```
+    pub fn image_url_max(&self, url: &str, max_logical: f32) -> element::Element {
+        let max_px = self.physical_max(max_logical);
+        self.image_element(image_cache::ImageRequest { url, max_px: Some(max_px) })
     }
 
     /// Raw-data variant of [`Self::image_url`]. Same fetch-on-miss behaviour,
@@ -607,12 +616,41 @@ impl ViewContext<'_> {
     /// Useful for adapters (e.g., the markdown renderer's resolver callback)
     /// that need the pixel data directly.
     pub fn image_data(&self, url: &str) -> Option<element::ImageData> {
+        self.image_state(image_cache::ImageRequest { url, max_px: None })
+    }
+
+    /// [`Self::image_url_max`] の生データ版。
+    pub fn image_data_max(&self, url: &str, max_logical: f32) -> Option<element::ImageData> {
+        let max_px = self.physical_max(max_logical);
+        self.image_state(image_cache::ImageRequest { url, max_px: Some(max_px) })
+    }
+
+    /// 論理 px の上限を物理 px へ。端数は切り上げ (足りずにぼやけるより 1px 多い方がいい)。
+    fn physical_max(&self, max_logical: f32) -> u32 {
+        let scale = if self.scale_factor > 0.0 { self.scale_factor } else { 1.0 };
+        (max_logical * scale).ceil().max(1.0) as u32
+    }
+
+    fn image_element(&self, req: image_cache::ImageRequest<'_>) -> element::Element {
+        assert!(
+            self.images.is_some(),
+            "ViewContext::image_url requires a runtime that wires up ImageCtx",
+        );
+        match self.image_state(req) {
+            // テクスチャも大きさごとの鍵で持つ (同じ URL の原寸と縮小が混ざらない)。
+            Some(data) => element::image(req.key(), data),
+            None => element::div(),
+        }
+    }
+
+    /// 読めていれば中身。まだなら読み込みを頼んで `None`。
+    fn image_state(&self, req: image_cache::ImageRequest<'_>) -> Option<element::ImageData> {
         let images = self.images.as_ref()?;
-        let state = images.cache.lock().unwrap().get(url);
+        let state = images.cache.lock().unwrap().get(&req.key());
         match state {
             image_cache::CacheState::Loaded(data) => Some(data),
             image_cache::CacheState::Missing => {
-                (images.request)(url);
+                (images.request)(req);
                 None
             }
             image_cache::CacheState::Loading | image_cache::CacheState::Failed(_) => None,
@@ -685,12 +723,54 @@ mod view_context_tests {
             theme: AppTheme::default(),
             presence: std::collections::HashMap::new(),
             images: None,
+            scale_factor: 1.0,
             mono_advance: 0.6,
             measurer,
             managed: Default::default(),
             actions: Default::default(),
             text_selection: None,
         }
+    }
+
+    /// 頼まれた注文を記録するだけの `ImageCtx`。
+    fn recording_images() -> (ImageCtx, std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u32>)>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log_for_closure = log.clone();
+        let ctx = ImageCtx {
+            cache: Default::default(),
+            request: std::sync::Arc::new(move |req: image_cache::ImageRequest<'_>| {
+                log_for_closure.lock().unwrap().push((req.url.to_string(), req.max_px));
+            }),
+        };
+        (ctx, log)
+    }
+
+    /// 論理 px に dpr を掛けた物理 px で頼み、読めたら大きさごとの鍵で描く (#114)。
+    #[test]
+    fn image_url_max_asks_for_physical_pixels_under_its_own_key() {
+        let (images, log) = recording_images();
+        let mut c = ctx(None);
+        c.images = Some(images.clone());
+        c.scale_factor = 2.0;
+
+        let _ = c.image_url_max("https://x/a.jpg", 200.5);
+        let _ = c.image_url("https://x/a.jpg");
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![("https://x/a.jpg".to_string(), Some(401)), ("https://x/a.jpg".to_string(), None)],
+        );
+
+        let key = image_cache::ImageRequest { url: "https://x/a.jpg", max_px: Some(401) }.key();
+        let data = element::ImageData::new(vec![0; 4], 1, 1);
+        images.cache.lock().unwrap().insert(&key, image_cache::CacheState::Loaded(data));
+        let el = c.image_url_max("https://x/a.jpg", 200.5);
+        match &el.kind {
+            element::ElementKind::Image { key: k, .. } => assert_eq!(*k, key),
+            _ => panic!("読めた画像は Image で出る"),
+        }
+        assert!(c.image_data_max("https://x/a.jpg", 200.5).is_some());
+        // 原寸の方はまだ読めていない (大きさ違いが混ざらない)。
+        assert!(c.image_data("https://x/a.jpg").is_none());
     }
 
     /// キャレット位置が文字送りに比例して伸びること。 これが取れないと、

@@ -1261,6 +1261,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     // SceneApp doesn't wire up an image runtime yet; callers
                     // can still use `image(key, data)` with their own cache.
                     images: None,
+                    scale_factor: scale,
                     mono_advance,
                     // 実フォント計測をアプリに渡す (issue #15)。 計測器は下の
                     // `build_tree_measured` でも使い回す。
@@ -1530,6 +1531,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             // グリフアトラスの復旧も declarative 側にしか無い。 溢れたときの
             // 振る舞いは lazy の前後で変わらない (どちらも復旧しない)。
             atlas_recover_pending: false,
+            // 画像の読み込み (`image_url`) をこのランタイムは配線していない。
+            images_arrived: false,
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         };

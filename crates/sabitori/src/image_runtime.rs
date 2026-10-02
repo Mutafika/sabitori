@@ -13,10 +13,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use sabitori_core::image_cache::{CacheState, ImageCache};
+use sabitori_core::image_cache::{CacheState, ImageCache, ImageRequest};
 use sabitori_core::ImageCtx;
 
-/// Results from background fetches, keyed by the request URL.
+/// Results from background fetches, keyed by [`ImageRequest::key`].
 pub type PendingQueue = Arc<Mutex<Vec<(String, CacheState)>>>;
 
 /// Drop all finished fetches into the shared cache. Call once per frame
@@ -36,9 +36,38 @@ pub fn drain_pending(
     }
 }
 
+/// 取って、読んで (縮める指定があれば縮めて)、キャッシュに置く形にする。
+async fn load(url: &str, max_px: Option<u32>) -> CacheState {
+    let bytes = match sabitori_net::fetch::fetch_bytes(url).await {
+        Ok(bytes) => bytes,
+        Err(e) => return CacheState::Failed(e),
+    };
+    // web はブラウザに読ませる (`createImageBitmap` は画面のスレッドの外で
+    // 読み込みと縮小をする)。native はこのタスク自体が画面の外にいる。
+    #[cfg(target_arch = "wasm32")]
+    let decoded = sabitori_net::decode::decode_image_in_browser(&bytes, max_px).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    let decoded = sabitori_net::decode::decode_image_max(&bytes, max_px);
+    match decoded {
+        Ok(data) => CacheState::Loaded(data),
+        Err(e) => CacheState::Failed(e),
+    }
+}
+
+/// 鍵にまだ何も無ければ `Loading` を付けて `true`。同じフレーム (や、読み終わる
+/// までの後続フレーム) で同じ鍵が何度頼まれても 1 回しか読みに行かない。
+fn claim(cache: &Mutex<ImageCache>, key: &str) -> bool {
+    let mut c = cache.lock().unwrap();
+    if !matches!(c.get(key), CacheState::Missing) {
+        return false;
+    }
+    c.mark_loading(key);
+    true
+}
+
 /// Build an `ImageCtx` whose `request` closure spawns `fetch_bytes` +
-/// `decode_image` in the background, writing the result into `pending`.
-/// Already-queued URLs are skipped via the cache's `Loading` marker.
+/// decode in the background, writing the result into `pending`.
+/// Already-queued keys are skipped via the cache's `Loading` marker.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn make_image_ctx(
     cache: Arc<Mutex<ImageCache>>,
@@ -46,29 +75,17 @@ pub fn make_image_ctx(
     rt: tokio::runtime::Handle,
 ) -> ImageCtx {
     let cache_for_closure = cache.clone();
-    let pending_for_closure = pending.clone();
-    let request: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |url: &str| {
-        // Mark Loading immediately so repeated `image_url` calls in the
-        // same frame (or in follow-up frames before fetch completes) don't
-        // re-spawn.
-        {
-            let mut c = cache_for_closure.lock().unwrap();
-            if !matches!(c.get(url), CacheState::Missing) {
-                return;
-            }
-            c.mark_loading(url);
+    let request: Arc<dyn Fn(ImageRequest<'_>) + Send + Sync> = Arc::new(move |req: ImageRequest<'_>| {
+        let key = req.key();
+        if !claim(&cache_for_closure, &key) {
+            return;
         }
-        let url_owned = url.to_string();
-        let pending = pending_for_closure.clone();
+        let url = req.url.to_string();
+        let max_px = req.max_px;
+        let pending = pending.clone();
         rt.spawn(async move {
-            let result = match sabitori_net::fetch::fetch_bytes(&url_owned).await {
-                Ok(bytes) => match sabitori_net::decode::decode_image(&bytes) {
-                    Ok(data) => CacheState::Loaded(data),
-                    Err(e) => CacheState::Failed(e),
-                },
-                Err(e) => CacheState::Failed(e),
-            };
-            pending.lock().unwrap().push((url_owned, result));
+            let result = load(&url, max_px).await;
+            pending.lock().unwrap().push((key, result));
         });
     });
     ImageCtx { cache, request }
@@ -81,26 +98,20 @@ pub fn make_image_ctx(
     pending: PendingQueue,
 ) -> ImageCtx {
     let cache_for_closure = cache.clone();
-    let pending_for_closure = pending.clone();
-    let request: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |url: &str| {
-        {
-            let mut c = cache_for_closure.lock().unwrap();
-            if !matches!(c.get(url), CacheState::Missing) {
-                return;
-            }
-            c.mark_loading(url);
+    let request: Arc<dyn Fn(ImageRequest<'_>) + Send + Sync> = Arc::new(move |req: ImageRequest<'_>| {
+        let key = req.key();
+        if !claim(&cache_for_closure, &key) {
+            return;
         }
-        let url_owned = url.to_string();
-        let pending = pending_for_closure.clone();
+        let url = req.url.to_string();
+        let max_px = req.max_px;
+        let pending = pending.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let result = match sabitori_net::fetch::fetch_bytes(&url_owned).await {
-                Ok(bytes) => match sabitori_net::decode::decode_image(&bytes) {
-                    Ok(data) => CacheState::Loaded(data),
-                    Err(e) => CacheState::Failed(e),
-                },
-                Err(e) => CacheState::Failed(e),
-            };
-            pending.lock().unwrap().push((url_owned, result));
+            let result = load(&url, max_px).await;
+            pending.lock().unwrap().push((key, result));
+            // 入力が無いと web のループは描かない。届いたら 1 フレーム起こす
+            // (native は毎刻みに `DrawGate::images_arrived` で拾う)。
+            crate::web_wake::wake();
         });
     });
     ImageCtx { cache, request }

@@ -38,4 +38,14 @@ web-sys = { version = "0.3", features = [
     "RequestCredentials",
     "AbortController",
     "AbortSignal",
+    # 画像をブラウザに読ませる (#114): 読み込みと縮小を画面のスレッドの外へ。
+    "ImageBitmap",
+    "ImageBitmapOptions",
+    "ImageOrientation",
+    "PremultiplyAlpha",
+    "ColorSpaceConversion",
+    "ResizeQuality",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "ImageData",
 ] }
