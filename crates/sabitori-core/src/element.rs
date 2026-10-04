@@ -1131,6 +1131,9 @@ pub struct Element {
     /// Button labels are non-selectable regardless of this flag: a control
     /// label is not content.
     pub no_select: bool,
+    /// 窓のつかみどころ ([`Element::window_drag`])。ここの空いた所を押すと、
+    /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) が始まる。
+    pub window_drag: bool,
     /// 窓の幅の区分ごとの上書き ([`Element::at`])。ランタイムが `view()` の直後に
     /// [`apply_size_rules`] で畳む。
     pub size_rules: Vec<SizeRule>,
@@ -1494,6 +1497,7 @@ pub fn div() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -1614,6 +1618,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -1653,6 +1658,7 @@ pub fn polyline() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -1698,6 +1704,7 @@ pub fn arc() -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -1727,6 +1734,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -1789,6 +1797,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         animate_presence: false,
         cursor: None,
         no_select: false,
+        window_drag: false,
         size_rules: Vec::new(),
     }
 }
@@ -3330,6 +3339,26 @@ impl Element {
     /// Mark this element as a drop zone (accepts dragged items).
     pub fn droppable(mut self) -> Self {
         self.drop_zone = true;
+        self
+    }
+
+    /// **窓のつかみどころにする。** 押してドラッグすると窓が動き、ダブルクリック
+    /// すると拡大する (macOS はシステム設定の「ウインドウのタイトルバーを
+    /// ダブルクリックで」に従う)。
+    ///
+    /// タイトルバーを自前で描くときの帯に付ける — 中身と一体のタイトルバー
+    /// (`DeclarativeApp::titlebar` が `Titlebar::Unified`) や `decorations()` を
+    /// `false` にした窓では、これが無いと窓をつかむ所が無い。
+    ///
+    /// 帯の中の**押せる物** (id・クリック・ドラッグを持つ子) を押したときは
+    /// そちらが勝ち、窓が動くのは**空いた所**を押したときだけ。この要素自身の
+    /// クリックは鳴らず、押下はアプリにも届かない — OS のタイトルバーと同じで、
+    /// 窓をドラッグしている間は OS が離しまで引き取り、押下だけが届いて離しが
+    /// 来ない形になるため。
+    ///
+    /// 効くのは宣言的ランタイム (`run_declarative`) の主窓。
+    pub fn window_drag(mut self) -> Self {
+        self.window_drag = true;
         self
     }
 

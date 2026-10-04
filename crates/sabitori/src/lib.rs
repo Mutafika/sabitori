@@ -88,6 +88,8 @@ pub mod web_history;
 #[cfg(target_arch = "wasm32")]
 pub mod web_wake;
 pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
+mod titlebar;
+pub use titlebar::{Titlebar, WindowGesture};
 pub use tasks::Tasks;
 pub use scene_app::SceneApp;
 pub use scene_app::run_scene;

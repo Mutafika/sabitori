@@ -67,6 +67,9 @@ pub struct HitRegion {
     pub drag_data: Option<String>,
     /// Whether this region is a drop zone (set via `.droppable()`).
     pub drop_zone: bool,
+    /// 窓のつかみどころ (`.window_drag()`)。ここが押下の最前面なら、ランタイムは
+    /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) を始める。
+    pub window_drag: bool,
     /// Cursor preference (set via `.cursor(...)`). `None` means
     /// "no opinion" — runtime falls back to platform default.
     pub cursor: Option<Cursor>,
@@ -106,7 +109,7 @@ impl HitRegion {
     /// 透過するようにした。
     pub fn is_interactive(&self) -> bool {
         self.clickable || self.focusable || self.hoverable || self.drop_zone
-            || self.drag_data.is_some()
+            || self.drag_data.is_some() || self.window_drag
     }
 }
 
@@ -1767,7 +1770,7 @@ fn emit_commands(
     // も領域として出す。 支援技術に渡すには「意味を持つものが全部並んでいる」
     // 必要があるため (issue #21)。
     let has_semantics = element.role.is_some() || element.label.is_some();
-    if clickable || hoverable || element.focusable || has_semantics {
+    if clickable || hoverable || element.focusable || has_semantics || element.window_drag {
         let hit_rect = match parent_clip {
             Some(clip) => match rect.intersect(&clip) {
                 Some(r) => r,
@@ -1796,6 +1799,7 @@ fn emit_commands(
                 tooltip: element.tooltip.clone(),
                 drag_data: if disabled { None } else { element.drag_data.clone() },
                 drop_zone: element.drop_zone && !disabled,
+                window_drag: element.window_drag && !disabled,
                 // 無効なら、明示指定を押しのけて NotAllowed。押せないものに
                 // 手のカーソルが出るのが一番紛らわしい。
                 cursor: if disabled { Some(Cursor::NotAllowed) } else { element.cursor },
@@ -3937,6 +3941,30 @@ mod a11y_tests {
             .iter()
             .find(|r| r.id.as_deref() == Some(id))
             .unwrap_or_else(|| panic!("{id} が hit_regions に居ない"))
+    }
+
+    /// 窓のつかみどころ (`.window_drag()`) は id が無くても押下を受ける領域になり、
+    /// 中の押せる物 (タブ) はその手前に並ぶ。押下の解決は「点を含む最前面の
+    /// 領域」なので、この順で「タブを押せば押せる・空いた所なら窓が動く」が決まる。
+    #[test]
+    fn window_drag_makes_a_region_behind_its_children() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().window_drag().w(Px(400.0)).h(Px(38.0)).child(
+                div().id("tab").w(Px(100.0)).h(Px(38.0)).on_click(|| {}),
+            ),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+
+        let bar = b
+            .hit_regions
+            .iter()
+            .position(|r| r.window_drag)
+            .expect("つかみどころが領域になっていない");
+        assert!(b.hit_regions[bar].is_interactive(), "押下を受けない (下へ抜ける)");
+        assert!(!b.hit_regions[bar].clickable, "つかみどころ自身はクリック先ではない");
+        let tab = b.hit_regions.iter().position(|r| r.id.as_deref() == Some("tab")).unwrap();
+        assert!(tab < bar, "タブがつかみどころより奥にいる");
+        assert!(!region(&b, "tab").window_drag, "子へ印が移っている");
     }
 
     /// 役割とラベルがビルド結果まで運ばれること。 ここに載らないと、

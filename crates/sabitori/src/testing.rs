@@ -472,6 +472,13 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.release_primary();
     }
 
+    /// 窓のつかみどころ (`.window_drag()`) を押して頼まれた窓の操作を取り出す。
+    /// 本物の窓ではランタイムがその場で窓へ渡すが、Harness には窓が無いので
+    /// ここに残る。取り出すと空になる。
+    pub fn take_window_gesture(&mut self) -> Option<crate::WindowGesture> {
+        self.state.window_gesture.take()
+    }
+
     /// 右ボタンを座標で押して離す。 `on_input` に
     /// `PointerPressed` / `PointerReleased { button: Some(Right) }` が届き、
     /// 押下が消費されなければ `on_right_click(id, x, y)` が鳴る (空白なら `""`)。
