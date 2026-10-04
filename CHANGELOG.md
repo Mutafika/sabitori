@@ -15,6 +15,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`DeclarativeApp::titlebar` と `Titlebar::Unified` — タイトルバーを中身と一体にする
+  (Warp・Safari の形)** ([#117](https://github.com/Mutafika/sabitori/issues/117))。
+  macOS で、タイトルの文字を消し、中身を窓の上端から描く。信号ボタン (閉じる・最小化・
+  拡大) は中身の上に重なり、アプリが決めた高さの帯の縦の真ん中に来る。帯の部品は
+  `ctx.window_controls` (信号ボタンの場所) の右から並べる。フルスクリーン中は信号
+  ボタンが OS の帯へ移るので `None` になる。効くのは macOS の主窓だけで、他の OS・
+  `ExtraWindow` は標準のタイトルバーのまま。
+  ```rust
+  fn titlebar(&self) -> Titlebar { Titlebar::Unified { height: 38.0 } }
+
+  fn view(&self, ctx: &ViewContext) -> Element {
+      let lead = ctx.window_controls.map_or(12.0, |r| r.origin.x + r.size.width + 12.0);
+      let bar = div().window_drag().h(Px(38.0)).flex_row().pl(Px(lead)).children(tabs);
+      div().flex_col().children([bar, body])
+  }
+  ```
+- **`.window_drag()` — 窓のつかみどころ** (#117)。押してドラッグすると窓が動き、
+  ダブルクリックで拡大する (macOS はシステム設定の「ウインドウのタイトルバーをダブル
+  クリックで」に従う)。中の押せる物 (タブ等) を押したときはそちらが勝ち、窓が動くのは
+  空いた所を押したときだけ。押下はアプリにも要素にも渡さない (OS のタイトルバーと同じ。
+  ドラッグ中は OS が離しまで引き取るので、渡すと押下だけ届いて離しが来ない)。
+  `Titlebar::Unified` や `decorations()` を `false` にした窓の帯に付ける。
+- **`Harness::take_window_gesture`** — `.window_drag()` を押して頼まれた窓の操作
+  (`WindowGesture::Drag` / `DoubleClick`) をテストで読む。
+- 例 `unified_titlebar` (`cargo run -p sabitori --example unified_titlebar`)。
+
 ## [0.28.0] - 2026-10-02
 
 ### Added

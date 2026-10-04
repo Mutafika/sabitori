@@ -153,6 +153,10 @@ name = "declarative"
 path = "../../examples/declarative.rs"
 
 [[example]]
+name = "unified_titlebar"
+path = "../../examples/unified_titlebar.rs"
+
+[[example]]
 name = "tui_demo"
 path = "../../examples/tui_demo.rs"
 

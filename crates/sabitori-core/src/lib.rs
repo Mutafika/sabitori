@@ -187,6 +187,14 @@ pub struct ViewContext<'a> {
     /// 大事な中身はこの内側に置くこと。量は機種と向きで変わる（定数で決め打ちしない）ので
     /// 毎フレーム読む。iOS 以外は 0。
     pub safe_area: Edges<f32>,
+    /// 窓の信号ボタン (閉じる・最小化・拡大) が中身に重なっている場所 (論理 px、
+    /// 窓の左上が原点)。帯の部品はこの右から並べる。
+    ///
+    /// `Some` になるのは、中身と一体のタイトルバー (`DeclarativeApp::titlebar` が
+    /// `Titlebar::Unified`) にした macOS の窓だけ。標準のタイトルバー・macOS 以外・
+    /// フルスクリーン中 (信号ボタンは帯から消え、画面の上端に寄せると出る OS の帯へ
+    /// 移る) は `None`。フルスクリーンの出入りで変わるので毎フレーム読む。
+    pub window_controls: Option<Rect>,
     /// ID of the currently hovered element (if any).
     pub hovered: Option<String>,
     /// ID of the currently focused element (if any).
@@ -710,6 +718,7 @@ mod view_context_tests {
             width: 800.0,
             height: 600.0,
             safe_area: Edges::default(),
+            window_controls: None,
             hovered: None,
             focused: None,
             mouse_x: 0.0,

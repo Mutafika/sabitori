@@ -21,6 +21,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::bridge::{draw_ui_layer, UiDrawLists, UiRenderers};
+use crate::titlebar::{Titlebar, WindowGesture};
 use sabitori_gpu::RenderPhase;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -662,6 +663,13 @@ pub trait DeclarativeApp: 'static {
     /// Return false for a fully custom title bar.
     fn decorations(&self) -> bool { true }
 
+    /// タイトルバーの形。既定は OS 標準 ([`Titlebar::Native`])。
+    ///
+    /// [`Titlebar::Unified`] にすると、macOS では Warp・Safari のように
+    /// タイトルバーとアプリの帯が 1 段になる。帯の置き方は [`Titlebar::Unified`] を
+    /// 参照。効くのは macOS の主窓だけ (他の OS・[`ExtraWindow`] は標準のまま)。
+    fn titlebar(&self) -> Titlebar { Titlebar::Native }
+
     /// macOS-only hook, called once with the underlying winit `Window`
     /// right after creation. Use this to set platform-specific properties
     /// winit doesn't expose: `NSWindow.level`, `collectionBehavior`,
@@ -1058,6 +1066,10 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 選べる文字の上で押したので、離すまで待っているクリック
     /// `(id, 回数, 押した位置)` (#111)。
     deferred_click: Option<(String, u32, (f32, f32))>,
+    /// 窓のつかみどころ (`.window_drag()`) を押して頼まれた窓の操作。押下の処理の
+    /// 直後に窓へ渡して空にする (ドラッグは押下を処理しているその場でないと始まらない)。
+    /// テストでは [`crate::testing::Harness::take_window_gesture`] が読む。
+    pub(crate) window_gesture: Option<WindowGesture>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
@@ -1228,6 +1240,14 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         {
             use winit::platform::macos::WindowAttributesExtMacOS;
             attrs = attrs.with_accepts_first_mouse(true);
+            // 中身と一体のタイトルバー: 帯を透かし、文字を消し、中身を窓の上端まで
+            // 広げる。信号ボタンの縦位置は窓を作った後で合わせる (`titlebar::install`)。
+            if let Titlebar::Unified { .. } = self.app.titlebar() {
+                attrs = attrs
+                    .with_titlebar_transparent(true)
+                    .with_title_hidden(true)
+                    .with_fullsize_content_view(true);
+            }
         }
         attrs = sabitori_window::background::apply_background_attrs(attrs);
         // **表示する前に**支援技術のアダプタを作る必要がある (accesskit の要件で、
@@ -1257,6 +1277,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     blur,
                     self.app.backdrop_blur_top_strip_height(),
                 );
+            }
+            if let Titlebar::Unified { height } = self.app.titlebar() {
+                crate::titlebar::install(&window, height);
             }
             self.app.macos_configure_window(&window);
         }
@@ -1416,6 +1439,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     self.primary_input = PrimaryInput::Mouse;
                 }
                 self.press_primary();
+                // 窓のつかみどころを押したなら、この押下を処理しているうちに窓へ渡す
+                // (macOS のドラッグは「今処理中の押下」を OS に渡して始める)。
+                if let (Some(gesture), Some(w)) = (self.window_gesture.take(), self.window.as_ref()) {
+                    crate::titlebar::perform(w, gesture);
+                }
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
@@ -2539,6 +2567,7 @@ impl<A: DeclarativeApp> AppState<A> {
             selection_handles: false,
             selection_redraw: false,
             deferred_click: None,
+            window_gesture: None,
             last_capture: UiCapture::default(),
         }
     }
@@ -2654,6 +2683,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 .safe_area_override
                 .or_else(|| self.window.as_ref().map(|win| sabitori_window::safe_area(win)))
                 .unwrap_or_default(),
+            window_controls: self.window_controls(),
             hovered: self.hovered_id.clone(),
             focused: self.focused_id.clone(),
             mouse_x: self.mouse_x,
@@ -3307,6 +3337,18 @@ impl<A: DeclarativeApp> AppState<A> {
         let position = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
         let click_count =
             self.clicks.press_now(position, Some(InputMouseButton::Left), PointerKind::Mouse);
+        // 窓のつかみどころ (`.window_drag()`) の空いた所なら、押下は窓が引き取る。
+        // アプリにも要素にも渡さない — OS のタイトルバーと同じ。渡すと、窓を
+        // ドラッグしている間は OS が離しまで飲み込むので、押下だけが届いて離しが
+        // 来ない形になる。
+        if self.window_drag_at(self.mouse_x, self.mouse_y) {
+            self.window_gesture = Some(if click_count == 2 {
+                WindowGesture::DoubleClick
+            } else {
+                WindowGesture::Drag
+            });
+            return;
+        }
         // マウス押下もタッチ同様 InputEvent::Pointer* としてアプリへ転送する
         // （キャンバスのドラッグパン等が押下状態を観測できるように）。#62
         self.app.on_input(&InputEvent::PointerPressed {
@@ -4755,6 +4797,32 @@ impl<A: DeclarativeApp> AppState<A> {
         crate::runtime_shared::hit_id_at(build, x, y)
     }
 
+    /// `(x, y)` で押下を受ける最前面の領域が、窓のつかみどころ (`.window_drag()`) か。
+    /// 中の押せる物 (タブ等) や手前の層 (menu・modal) が上に居れば、そちらが先に当たる。
+    fn window_drag_at(&self, x: f32, y: f32) -> bool {
+        let Some(build) = self.last_build.as_ref() else {
+            return false;
+        };
+        let pt = sabitori_core::Point::new(x, y);
+        build
+            .hit_regions
+            .iter()
+            .find(|r| r.is_interactive() && r.rect.contains(pt))
+            .is_some_and(|r| r.window_drag)
+    }
+
+    /// 信号ボタンの場所 ([`ViewContext::window_controls`])。macOS で
+    /// [`Titlebar::Unified`] にしていて、フルスクリーンでないときだけ。
+    fn window_controls(&self) -> Option<sabitori_core::Rect> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        if self.window.as_ref().is_some_and(|w| w.fullscreen().is_some()) {
+            return None;
+        }
+        self.app.titlebar().window_controls()
+    }
+
     /// ポインタ直下のホバー / tooltip / cursor を引き直し、変化をアプリへ通知する。
     /// 解決そのものは [`crate::runtime_shared::resolve_hover`]（scene ランタイムと
     /// 共通）で、ここが足すのは本文中リンクの上書きだけ。
@@ -4920,6 +4988,8 @@ impl<A: DeclarativeApp> AppState<A> {
                 width: w,
                 height: h,
                 safe_area: sabitori_window::safe_area(&extra.window),
+                // 別窓は標準のタイトルバーのまま (`titlebar()` は主窓だけ)。
+                window_controls: None,
                 hovered: None,
                 focused: None,
                 mouse_x: 0.0,
