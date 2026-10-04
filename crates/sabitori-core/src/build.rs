@@ -897,8 +897,13 @@ pub struct TextNodeContext {
     pub monospace: bool,
     /// Specific font family override (see `ElementStyle::font_family`).
     pub font_family: Option<String>,
-    /// Padding added around measured text content. Only set for button-kind
-    /// leaves so the final size matches `content + padding`.
+    /// The node's own padding. Only set for button-kind leaves.
+    ///
+    /// **Not added to the measured size** — taffy's leaf layout
+    /// (`compute_leaf_layout`) treats what the measure returns as the
+    /// content box and adds the node's style padding itself. Adding it here
+    /// too counted a button's padding twice (#112). It is only used to turn a
+    /// border-box `known.width` into the width the label is shaped at.
     pub padding: (f32, f32, f32, f32), // (top, right, bottom, left)
     /// Extended typography (weight / letter-spacing / line-height) so the
     /// measure pass matches what the render pass will shape.
@@ -931,7 +936,13 @@ fn measure_text_leaf(
     // Translate Taffy's AvailableSpace to a max_width for shaping.
     // MinContent → unconstrained (we'll still clamp later).
     // MaxContent → unconstrained (report natural width).
-    // Definite(w) → use w minus padding for the content shape.
+    // Definite(w) → w as is: `compute_leaf_layout` has already taken the
+    //   node's padding / border off, so it is the content width.
+    //
+    // `known` is the node's border-box size (taffy passes it through
+    // untouched), so a known width does need the padding taken off.
+    // Everything returned is the **content** box — taffy adds the padding
+    // back around it (#112).
     let (pad_top, pad_right, pad_bottom, pad_left) = ctx.padding;
     // Shape at the node's already-resolved width when Taffy has fixed it (explicit
     // `.w()`), and only fall back to `avail`. Deriving max_width solely from `avail`
@@ -941,7 +952,7 @@ fn measure_text_leaf(
     let max_width = match known.width {
         Some(w) => Some((w - pad_left - pad_right).max(0.0)),
         None => match avail.width {
-            AvailableSpace::Definite(w) => Some((w - pad_left - pad_right).max(0.0)),
+            AvailableSpace::Definite(w) => Some(w.max(0.0)),
             AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
         },
     };
@@ -960,8 +971,8 @@ fn measure_text_leaf(
     // Layout uses the box only — the baseline rides along for hosts that need
     // it (see `TextMeasure::measure`) and never affects taffy.
     let size = metrics.size;
-    let w = known.width.unwrap_or(size.width + pad_left + pad_right);
-    let h = known.height.unwrap_or(size.height + pad_top + pad_bottom);
+    let w = known.width.map_or(size.width, |w| (w - pad_left - pad_right).max(0.0));
+    let h = known.height.map_or(size.height, |h| (h - pad_top - pad_bottom).max(0.0));
     TaffySize { width: w, height: h }
 }
 
@@ -1661,21 +1672,47 @@ fn emit_commands(
             }));
         }
         ElementKind::Button { label, .. } => {
-            // Button label is centered text
+            // Button label is centered text (#112) — `button()` sets
+            // justify / align center, but a button is a leaf, so taffy has no
+            // child to center; the label is centered here instead.
+            //
+            // 横: 行を padding の内側の幅で中央揃えにする (`text_align` を
+            //   書いていれば (既定の `Start` 以外なら) それに従う)。
+            // 縦: taffy が measure から受け取ったラベルの高さ (葉の
+            //   `scrollable_overflow_rect` = 上 padding + 測った高さ) を使い、
+            //   内側の箱の余りを上下に等分する。中身どおりの大きさなら余りは 0
+            //   で、以前と同じ位置になる。ラベルが箱より高いときは上に揃える
+            //   (はみ出しを上へ出さない)。
             let padding = scale_edges(resolve_edges_px(&style.padding), scale);
+            let inner_h = (h - padding.1 - padding.3).max(0.0);
+            let label_h = {
+                let measured = layout.scrollable_overflow_rect.bottom - layout.padding.top;
+                if measured > 0.0 {
+                    measured
+                } else {
+                    // 測る物が無い (`compute_layout`) と measure が呼ばれず 0。
+                    // 最小の大きさと同じ見積もりを使う。
+                    measure_or_estimate(label, style, None).1
+                }
+            } * scale;
+            let dy = ((inner_h - label_h) * 0.5).max(0.0);
+            let mut typo = style.typography();
+            if typo.align == crate::element::TextAlign::Start {
+                typo.align = crate::element::TextAlign::Center;
+            }
             target.commands.push(RenderCommand::Text(TextDraw {
                 element_index: index,
                 content: label.clone(),
-                position: Point::new(abs_x + padding.0, abs_y + padding.1),
+                position: Point::new(abs_x + padding.0, abs_y + padding.1 + dy),
                 max_width: (w - padding.0 - padding.2).max(0.0),
-                max_height: (h - padding.1 - padding.3).max(0.0),
+                max_height: (inner_h - dy).max(0.0),
                 font_size: style.font_size * scale,
                 color: apply_opacity(style.color, effective_opacity),
                 bold: style.bold,
                 monospace: style.monospace,
                 font_family: style.font_family.clone(),
                 max_lines,
-                typo: style.typography(),
+                typo,
                 color_spans: style.color_spans.clone(),
                 highlight: style.highlight.clone(),
                 link_ranges: style.link_ranges.clone(),
