@@ -14,6 +14,7 @@ members = [
     "crates/sabitori-markdown",
     "crates/sabitori-net",
     "crates/sabitori",
+    "crates/sabitori-reel",
 ]
 
 [workspace.package]

@@ -1,0 +1,34 @@
+[package]
+name = "sabitori-reel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Programmatic motion-graphics video for Sabitori: render a scene as a pure function of the frame, offscreen, to a PNG sequence."
+
+[features]
+# 3D stage behind the UI overlay, rendered by `seimei` (PBR + shadows) onto the
+# same offscreen device. Off by default so a 2D reel stays a light build.
+three-d = ["dep:seimei"]
+
+[dependencies]
+sabitori = { path = "../sabitori" }
+sabitori-core = { path = "../sabitori-core" }
+sabitori-gpu = { path = "../sabitori-gpu" }
+sabitori-text = { path = "../sabitori-text" }
+wgpu.workspace = true
+bytemuck = { workspace = true }
+pollster.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Same wgpu 24 / glam 0.29 as Sabitori, and its `Renderer::new` takes
+# `Arc<Device>`/`Arc<Queue>` with no surface, so it runs on the reel's own
+# offscreen device. `gltf` off: reel builds meshes itself. Pinned to a tag like
+# consumers pin sabitori, so CI resolves it without a sibling checkout.
+seimei = { git = "https://github.com/Mutafika/seimei", tag = "v0.4.1", default-features = false, optional = true }
+
+[[example]]
+name = "stage3d"
+required-features = ["three-d"]
+
+[[example]]
+name = "enchu_opener"
+required-features = ["three-d"]

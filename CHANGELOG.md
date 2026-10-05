@@ -15,6 +15,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`sabitori-reel` — `Element` のツリーから動画を作る別のクレート。** 場面は
+  「フレーム番号 → `Element`」の関数で、窓を開かずに 1 コマずつ描いて PNG の連番か
+  MP4 (`ffmpeg`) に書き出す。Remotion の考え方を sabitori の宣言的な UI に移した物。
+  - 動きの道具: `interpolate` / `interpolate_eased` / `spring` / `Seq` (場面の区間)。
+    どれも時刻だけで値が決まるので、巻き戻しても同じ絵になる
+  - `Reel::fonts` / `Reel::family`: 書体を渡して、ふつうの文字をその書体で組む
+  - `Reel::scale`: 組み方は論理 px のまま、2 倍なら 1920×1080 → 3840×2160 で描く
+    (文字はその大きさで描くので、拡大でぼやけない)
+  - `Reel::crf`: MP4 の画質 (既定 18)
+  - `Reel::preview`: コマを前後に動かして見られるプレビュー窓
+  - `three-d` (任意): seimei で描く 3D の舞台を UI の下に敷く
+  ```rust
+  let mut reel = Reel::new(1920, 1080, 60, 60 * 30);
+  reel.scale = 2.0;
+  reel.render_mp4(&|ctx: FrameCtx| div().w(Px(ctx.width)).h(Px(ctx.height))
+      .child(text("Hello").opacity(interpolate(ctx.t(), [0.0, 0.5], [0.0, 1.0]))),
+      Path::new("hello.mp4"))?;
+  ```
+
 ### Fixed
 
 - **開始色が透明なグラデーションが、丸ごと描かれない。** `.gradient(透明, 黒, ..)` の
@@ -22,6 +43,7 @@
   消えていた。描くかどうかを塗りの色 (= グラデーションの開始色) の透明さだけで決めて
   いたため、終わりの不透明な側ごと捨てていた。グラデーションの終わりの色も見るように
   した。
+
 ## [0.29.1] - 2026-10-04
 
 ### Fixed
