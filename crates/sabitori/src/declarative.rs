@@ -600,6 +600,11 @@ pub trait DeclarativeApp: 'static {
     /// その画面に居るので、呼ぶと自分の遷移を自分で解釈し直すことになる)。
     fn on_url_changed(&mut self, _fragment: &str) {}
 
+    /// 主窓を閉じたい。`true` を返すと、OS の閉じるボタン (`CloseRequested`) と同じく
+    /// アプリを終える — アプリの `Drop` も走る。[`Titlebar::Custom`] の帯に自分で描いた
+    /// 閉じるボタン用。毎周回読むので、返したら旗を下ろすこと。
+    fn take_close_request(&mut self) -> bool { false }
+
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
     fn on_drop(&mut self, _data: &str, _target_id: &str) {}
@@ -667,7 +672,8 @@ pub trait DeclarativeApp: 'static {
     ///
     /// [`Titlebar::Unified`] にすると、macOS では Warp・Safari のように
     /// タイトルバーとアプリの帯が 1 段になる。帯の置き方は [`Titlebar::Unified`] を
-    /// 参照。効くのは macOS の主窓だけ (他の OS・[`ExtraWindow`] は標準のまま)。
+    /// 参照。[`Titlebar::Custom`] なら信号ボタンも消え、窓の操作ボタンはアプリが描く。
+    /// 効くのは macOS の主窓だけ (他の OS・[`ExtraWindow`] は標準のまま)。
     fn titlebar(&self) -> Titlebar { Titlebar::Native }
 
     /// macOS-only hook, called once with the underlying winit `Window`
@@ -1242,7 +1248,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             attrs = attrs.with_accepts_first_mouse(true);
             // 中身と一体のタイトルバー: 帯を透かし、文字を消し、中身を窓の上端まで
             // 広げる。信号ボタンの縦位置は窓を作った後で合わせる (`titlebar::install`)。
-            if let Titlebar::Unified { .. } = self.app.titlebar() {
+            if self.app.titlebar().unified_height().is_some() {
                 attrs = attrs
                     .with_titlebar_transparent(true)
                     .with_title_hidden(true)
@@ -1278,9 +1284,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     self.app.backdrop_blur_top_strip_height(),
                 );
             }
-            if let Titlebar::Unified { height } = self.app.titlebar() {
-                crate::titlebar::install(&window, height);
-            }
+            crate::titlebar::install(&window, self.app.titlebar());
             self.app.macos_configure_window(&window);
         }
 
@@ -2013,6 +2017,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // 帯に描いた閉じるボタン。フレームの間引きより前に見る (間引かれた周回でも閉じる)。
+        if self.app.take_close_request() {
+            event_loop.exit();
+            return;
+        }
         let elapsed = self.last_frame.elapsed();
         // Default 8ms (~120Hz). App can override via `target_frame_interval`.
         let target = self.app.target_frame_interval();
@@ -4812,7 +4821,8 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     /// 信号ボタンの場所 ([`ViewContext::window_controls`])。macOS で
-    /// [`Titlebar::Unified`] にしていて、フルスクリーンでないときだけ。
+    /// [`Titlebar::Unified`] にしていて、フルスクリーンでないときだけ
+    /// ([`Titlebar::Custom`] はボタンを消すので常に `None`)。
     fn window_controls(&self) -> Option<sabitori_core::Rect> {
         if !cfg!(target_os = "macos") {
             return None;

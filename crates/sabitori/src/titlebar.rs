@@ -57,6 +57,20 @@ pub enum Titlebar {
         /// 帯の高さ (論理 px)。信号ボタンはこの縦の真ん中に置く。
         height: f32,
     },
+    /// [`Titlebar::Unified`] と同じく中身と一体にし、そのうえ信号ボタンも消す。
+    /// 窓の操作ボタン (最小化・拡大・閉じる) はアプリが帯に自分で描く
+    /// (Windows のように右端へ置く等)。
+    ///
+    /// - `ctx.window_controls` は常に `None` (帯の部品は左端から並べてよい)
+    /// - ボタンの動作は [`crate::DeclarativeApp::set_window`] で受け取った窓へ
+    ///   (`set_minimized` / `set_maximized`)。閉じるは
+    ///   [`crate::DeclarativeApp::take_close_request`] — OS の閉じるボタンと同じ道を通る
+    /// - フルスクリーン中だけは信号ボタンを戻す。画面の上端に寄せると出る OS の帯で
+    ///   フルスクリーンを抜けられるように
+    Custom {
+        /// 帯の高さ (論理 px)。フルスクリーンを抜けたとき OS の帯をこの高さへ戻す。
+        height: f32,
+    },
 }
 
 impl Titlebar {
@@ -65,13 +79,22 @@ impl Titlebar {
     const CONTROL_GAP: f32 = 6.0;
     const CONTROL_SIZE: f32 = 14.0;
 
-    /// この形で信号ボタンが占める場所 (論理 px、窓の左上が原点)。`Native` は `None`。
+    /// 帯の高さ。中身を窓の上端から描く形 (`Unified` / `Custom`) だけ。
+    pub(crate) fn unified_height(self) -> Option<f32> {
+        match self {
+            Titlebar::Native => None,
+            Titlebar::Unified { height } | Titlebar::Custom { height } => Some(height),
+        }
+    }
+
+    /// この形で信号ボタンが占める場所 (論理 px、窓の左上が原点)。`Native` と、
+    /// ボタンを消す `Custom` は `None`。
     ///
     /// OS もフルスクリーンも見ない。アプリが読むのは、それを畳んだ
     /// `ViewContext::window_controls`。
     pub(crate) fn window_controls(self) -> Option<Rect> {
         match self {
-            Titlebar::Native => None,
+            Titlebar::Native | Titlebar::Custom { .. } => None,
             Titlebar::Unified { height } => Some(Rect::new(
                 Self::CONTROLS_LEFT,
                 ((height - Self::CONTROL_SIZE) * 0.5).max(0.0),
@@ -121,11 +144,16 @@ fn double_click(window: &Window) {
 }
 
 /// 信号ボタンを高さ `height` の帯の縦の真ん中へ置き、そのまま保たせる
-/// ([`Titlebar::Unified`])。窓を作った直後に 1 度だけ呼ぶ。
+/// ([`Titlebar::Unified`])。`Custom` ならボタンを消す (フルスクリーン中だけ戻す)。
+/// 窓を作った直後に 1 度だけ呼ぶ。
 #[cfg(target_os = "macos")]
-pub(crate) fn install(window: &Window, height: f32) {
+pub(crate) fn install(window: &Window, titlebar: Titlebar) {
+    let Some(height) = titlebar.unified_height() else {
+        return;
+    };
+    let hide = matches!(titlebar, Titlebar::Custom { .. });
     if let Some(ns_window) = macos::ns_window(window) {
-        macos::install(ns_window, height as f64);
+        macos::install(ns_window, height as f64, hide);
     }
 }
 
@@ -168,8 +196,9 @@ mod macos {
         ns_view.window()
     }
 
-    pub(super) fn install(window: Retained<NSWindow>, height: f64) {
-        apply(&window, height);
+    /// `hide` なら信号ボタンを消す ([`super::Titlebar::Custom`])。フルスクリーン中は戻す。
+    pub(super) fn install(window: Retained<NSWindow>, height: f64, hide: bool) {
+        apply(&window, height, hide);
         // SAFETY: 通知の登録は主スレッドから。止めない (主窓はアプリと同じだけ生きる)。
         unsafe {
             let Some(container) = titlebar_container(&window) else {
@@ -182,20 +211,21 @@ mod macos {
             let w = window.clone();
             observe("NSViewFrameDidChangeNotification", container, true, move || {
                 if !is_fullscreen(&w) {
-                    apply(&w, height);
+                    apply(&w, height, hide);
                 }
             });
-            // フルスクリーンの出入り。入る前に標準の高さ・不透明へ、出る前に元へ。
+            // フルスクリーンの出入り。入る前に標準の高さ・不透明へ (消したボタンも
+            // 戻す — OS の帯から抜けられるように)、出る前に元へ。
             let object = Retained::as_ptr(&window) as *mut AnyObject;
             let w = window.clone();
             observe("NSWindowWillEnterFullScreenNotification", object, false, move || {
                 w.setTitlebarAppearsTransparent(false);
-                apply(&w, DEFAULT_TITLEBAR_HEIGHT);
+                apply(&w, DEFAULT_TITLEBAR_HEIGHT, false);
             });
             let w = window.clone();
             observe("NSWindowWillExitFullScreenNotification", object, false, move || {
                 w.setTitlebarAppearsTransparent(true);
-                apply(&w, height);
+                apply(&w, height, hide);
             });
         }
     }
@@ -223,8 +253,8 @@ mod macos {
     }
 
     /// タイトルバーの入れ物を高さ `height` にして窓の上端へ寄せ、信号ボタンを
-    /// その縦の真ん中に留める。何度呼んでもよい。
-    fn apply(window: &NSWindow, height: f64) {
+    /// その縦の真ん中に留める (`hide` なら消す)。何度呼んでもよい。
+    fn apply(window: &NSWindow, height: f64, hide: bool) {
         // SAFETY: 辿った view がどれか欠けていたら何もしない。主スレッドから呼ぶ。
         unsafe {
             let Some(container) = titlebar_container(window) else {
@@ -276,6 +306,9 @@ mod macos {
             // とき (= 本体が作り直された) と、ボタンが作り直されて目印が無いときだけ。
             for (i, which) in BUTTONS.into_iter().enumerate() {
                 let button: *mut AnyObject = msg_send![window, standardWindowButton: which];
+                if !button.is_null() {
+                    let _: () = msg_send![button, setHidden: hide];
+                }
                 if button.is_null() || (!fresh && !constraint_with_id(button, BUTTON_SIZE_ID).is_null()) {
                     continue;
                 }
