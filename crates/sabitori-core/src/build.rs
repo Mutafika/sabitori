@@ -1608,10 +1608,15 @@ fn emit_commands(
     // `.accent()` 付きのボタンだけホバー色が出なかった。
     let bg = style.background;
 
-    // Emit rect draw if the element has any visual content
-    let has_visual = bg.a > 0.0
-        || style.border_width > 0.0
-        || style.shadow.is_some();
+    // Emit rect draw if the element has any visual content.
+    //
+    // グラデーションは `bg` と別に見る。`bg` はグラデーションの**開始色**でしか
+    // ないので、「上が透明・下が不透明」のスクリム (動画や写真の上の文字の下に
+    // 敷く定番) は `bg.a == 0` で、ここで丸ごと落ちていた。0 は「グラデーション
+    // 無し」(rect.wgsl と同じ判定)。
+    let has_gradient = style.gradient_angle.abs() > 0.001 && style.gradient_end.a > 0.0;
+    let has_visual =
+        bg.a > 0.0 || has_gradient || style.border_width > 0.0 || style.shadow.is_some();
 
     if has_visual {
         let (shadow_color, shadow_offset, shadow_blur, shadow_spread) =
@@ -2531,6 +2536,39 @@ fn apply_opacity(color: Color, opacity: f32) -> Color {
 mod tests {
     use super::*;
     use crate::element::{button, div, text, Px};
+
+    /// 開始色が透明なグラデーション (透明 → 黒のスクリム) も描く。`bg` は
+    /// 開始色でしかないので、その透明さで捨てると終わりの不透明な側まで消える。
+    #[test]
+    fn gradient_from_transparent_is_drawn() {
+        let rects = |el: Element| -> Vec<RectDraw> {
+            let b = build_tree(&div().w(Px(100.0)).h(Px(100.0)).child(el), 100.0, 100.0);
+            b.render_list
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    RenderCommand::Rect(r) => Some(r.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let scrim = div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .gradient(Color::TRANSPARENT, Color::BLACK, std::f32::consts::FRAC_PI_2);
+        let drawn = rects(scrim);
+        assert_eq!(drawn.len(), 1, "スクリムが描画対象から落ちている");
+        assert_eq!(drawn[0].gradient_end_color, Color::BLACK);
+
+        // 終わりも透明なら、描く物は無い (今まで通り捨てる)。
+        let invisible = div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .gradient(Color::TRANSPARENT, Color::TRANSPARENT, std::f32::consts::FRAC_PI_2);
+        assert!(rects(invisible).is_empty());
+        // 角度 0 はグラデーション無し。透明な塗りだけなら描かない。
+        assert!(rects(div().w(Px(100.0)).h(Px(100.0)).bg(Color::TRANSPARENT)).is_empty());
+    }
 
     /// Marker color identifying the scrolled rows in the clip-leak tests.
     const ROW_COLOR: Color = Color::new(0.12, 0.34, 0.56, 1.0);
