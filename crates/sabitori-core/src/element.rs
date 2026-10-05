@@ -3347,7 +3347,7 @@ impl Element {
     /// ダブルクリックで」に従う)。
     ///
     /// タイトルバーを自前で描くときの帯に付ける — 中身と一体のタイトルバー
-    /// (`DeclarativeApp::titlebar` が `Titlebar::Unified`) や `decorations()` を
+    /// (`DeclarativeApp::titlebar` が `Titlebar::Unified` / `Custom`) や `decorations()` を
     /// `false` にした窓では、これが無いと窓をつかむ所が無い。
     ///
     /// 帯の中の**押せる物** (id・クリック・ドラッグを持つ子) を押したときは
