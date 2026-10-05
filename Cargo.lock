@@ -782,6 +782,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,6 +1301,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.11.0",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -3192,6 +3209,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sabitori-reel"
+version = "0.29.1"
+dependencies = [
+ "bytemuck",
+ "image",
+ "pollster",
+ "sabitori",
+ "sabitori-core",
+ "sabitori-gpu",
+ "sabitori-text",
+ "seimei",
+ "wgpu",
+]
+
+[[package]]
 name = "sabitori-scene"
 version = "0.29.1"
 dependencies = [
@@ -3288,6 +3320,31 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit",
  "tiny-skia",
+]
+
+[[package]]
+name = "seimei"
+version = "0.4.1"
+source = "git+https://github.com/Mutafika/seimei?tag=v0.4.1#126c358b33e2306b5cf10c70011c0adb917883da"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "half",
+ "seimei-math",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "seimei-math"
+version = "0.4.1"
+source = "git+https://github.com/Mutafika/seimei?tag=v0.4.1#126c358b33e2306b5cf10c70011c0adb917883da"
+dependencies = [
+ "glam",
+ "serde",
 ]
 
 [[package]]

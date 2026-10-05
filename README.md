@@ -373,6 +373,8 @@ sabitori (umbrella)
 └── sabitori-net       HTTP fetch (reqwest / wasm fetch)
 ```
 
+`sabitori-reel` sits outside the umbrella: it renders a scene — an `Element` tree as a pure function of the frame — offscreen to a PNG sequence or an MP4 (via `ffmpeg`), for programmatic motion-graphics video. `cargo run -p sabitori-reel --example demo --release`.
+
 ## WASM Target
 
 `templates/wasm/` contains a `Trunk.toml` + `index.html` template along with a README covering the common pitfalls.
