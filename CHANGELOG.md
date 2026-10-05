@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-05
+
 ### Added
 
 - **`Titlebar::Custom` — 中身と一体のタイトルバーで、信号ボタンも消す。** 窓の操作
@@ -4246,7 +4248,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/Mutafika/sabitori/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/Mutafika/sabitori/compare/v0.29.1...v0.30.0
 [0.29.1]: https://github.com/Mutafika/sabitori/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/Mutafika/sabitori/compare/v0.28.0...v0.29.0
