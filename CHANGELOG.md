@@ -15,6 +15,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Titlebar::Custom` — 中身と一体のタイトルバーで、信号ボタンも消す。** 窓の操作
+  ボタン (最小化・拡大・閉じる) はアプリが帯に自分で描く (Windows のように右端へ等)。
+  `ctx.window_controls` は常に `None`。フルスクリーン中だけは信号ボタンを戻し、
+  OS の帯から抜けられるようにする。効くのは macOS の主窓だけ。
+- **`DeclarativeApp::take_close_request`** — `true` を返すと、OS の閉じるボタンと
+  同じく主窓を閉じてアプリを終える (アプリの `Drop` も走る)。帯に描いた閉じるボタン用。
+
 ## [0.30.0] - 2026-10-05
 
 ### Added

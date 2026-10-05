@@ -153,3 +153,24 @@ fn window_controls_sit_in_the_middle_of_the_bar_on_macos() {
         assert_eq!(controls, None);
     }
 }
+
+/// `Titlebar::Custom` は信号ボタンを消すので、どの OS でも場所は `None` —
+/// 帯の部品は左端から並べてよい。帯をつかんで窓を動かせるのは `Unified` と同じ。
+#[test]
+fn custom_titlebar_has_no_window_controls() {
+    struct Custom(Chrome);
+    impl DeclarativeApp for Custom {
+        fn titlebar(&self) -> Titlebar {
+            Titlebar::Custom { height: BAR_H }
+        }
+        fn view(&self, ctx: &ViewContext) -> Element {
+            self.0.view(ctx)
+        }
+    }
+    let mut h = Harness::new(Custom(Chrome::default()), 400.0, 300.0);
+    h.frame();
+
+    assert_eq!(h.app().0.controls.get(), None);
+    h.click_at(300.0, BAR_H / 2.0);
+    assert_eq!(h.take_window_gesture(), Some(WindowGesture::Drag), "帯の空いた所はつかめる");
+}
