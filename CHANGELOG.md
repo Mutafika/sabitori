@@ -15,6 +15,27 @@
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-06
+
+### Added
+
+- **goo にパネルと同じ面の質感を付けられる。** `goo_gradient(top, bottom)` で体
+  (形 `b`) の上から下へのグラデーション (首は `top`)、`goo_border(w, color)` で
+  合成した輪郭の内側に縁、`goo_shadow(BoxShadow)` で合成した形の影 (`spread` は
+  無視)。3 つとも smooth union と同じ距離から描くので、矩形の border / shadow と
+  違い首やつぶれた形に沿う。goo をポップアップの背景そのものにしても、通常の
+  パネルと見た目がそろう。
+
+### Changed（破壊的）
+
+- **`ElementKind::Goo` が `Box<GooKind>` を持つ。** `GooKind` に面の質感の
+  フィールド (`color_end` / `border_width` / `border_color` / `shadow`) が増え、
+  そのままでは `Element` が 320B の上限 (wasm のスタック、#56) を超えるため。
+  `GooKind` を自前で組み立てている所と、`ElementKind::Goo` を match している所が
+  影響を受ける。`goo()` と `goo_*` のビルダーを使っているだけなら変更は要らない。
+- **`GooDraw` / `GooInstance` にフィールドが増えた** (`GooInstance` は 80B → 144B)。
+  `GooDraw::bounds` は影の届く範囲を含む。
+
 ## [0.32.0] - 2026-10-06
 
 ### Added
@@ -4263,7 +4284,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/Mutafika/sabitori/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Mutafika/sabitori/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/Mutafika/sabitori/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/Mutafika/sabitori/compare/v0.29.1...v0.30.0
