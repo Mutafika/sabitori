@@ -1234,7 +1234,9 @@ pub enum ElementKind {
     /// layout-box origin, like [`ElementKind::Polyline`]; the box itself
     /// draws nothing. Purely decorative — no layout or hit-test
     /// contribution from the shapes.
-    Goo(GooKind),
+    /// Boxed: with its surface options a `GooKind` would grow every
+    /// `Element` past the wasm stack budget (see `tests/size_probe.rs`).
+    Goo(Box<GooKind>),
     /// 等幅の文字の格子 ([`cell_grid`])。レイアウト上は箱 1 つ。
     CellGrid(CellGridKind),
 }
@@ -1299,8 +1301,16 @@ pub struct GooKind {
     /// between their edges drops below `smooth / 2`, and overlapping
     /// shapes get a fillet of about that size; `0` = plain union.
     pub smooth: f32,
-    /// Fill color.
+    /// Fill color (top of the body when `color_end` is set).
     pub color: Color,
+    /// Fill color at the bottom of shape `b`: a top-to-bottom gradient
+    /// over the body. `None` = flat `color`.
+    pub color_end: Option<Color>,
+    /// Rim just inside the fused edge: width (logical px) and color.
+    pub border_width: f32,
+    pub border_color: Color,
+    /// Drop shadow of the fused shape (`spread` is ignored).
+    pub shadow: Option<BoxShadow>,
 }
 
 /// Layout-independent arc parameters. Wrapped inside [`ElementKind::Arc`].
@@ -1706,14 +1716,18 @@ pub fn polyline() -> Element {
 /// ```
 pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
     Element {
-        kind: ElementKind::Goo(GooKind {
+        kind: ElementKind::Goo(Box::new(GooKind {
             a,
             b,
             radius_a: 0.0,
             radius_b: 0.0,
             smooth: 16.0,
             color: Color::TRANSPARENT,
-        }),
+            color_end: None,
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+            shadow: None,
+        })),
         style: Box::default(),
         children: Vec::new(),
         id: None,
@@ -3152,6 +3166,35 @@ impl Element {
     pub fn goo_color(mut self, c: Color) -> Self {
         if let ElementKind::Goo(g) = &mut self.kind {
             g.color = c;
+        }
+        self
+    }
+
+    /// Fill a goo element with a top-to-bottom gradient over its second
+    /// shape (the body); the neck takes `top`.
+    pub fn goo_gradient(mut self, top: Color, bottom: Color) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.color = top;
+            g.color_end = Some(bottom);
+        }
+        self
+    }
+
+    /// Draw a rim of `width` just inside a goo element's fused edge —
+    /// it follows the neck, unlike a rect's border.
+    pub fn goo_border(mut self, width: f32, color: Color) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.border_width = width.max(0.0);
+            g.border_color = color;
+        }
+        self
+    }
+
+    /// Cast a drop shadow of a goo element's fused shape. `spread` is
+    /// ignored.
+    pub fn goo_shadow(mut self, shadow: BoxShadow) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.shadow = Some(shadow);
         }
         self
     }

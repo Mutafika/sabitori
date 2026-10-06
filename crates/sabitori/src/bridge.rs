@@ -220,6 +220,10 @@ pub fn goo_to_instance(d: &GooDraw) -> GooInstance {
         params: [d.radius_a, d.radius_b, d.smooth, 0.0],
         color: d.color.to_array(),
         clip_rect: [0.0; 4],
+        color_end: d.color_end.to_array(),
+        border_color: d.border_color.to_array(),
+        shadow_color: d.shadow_color.to_array(),
+        surface: [d.border_width, d.shadow_blur, d.shadow_offset.x, d.shadow_offset.y],
     }
 }
 

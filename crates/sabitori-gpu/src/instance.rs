@@ -16,8 +16,16 @@ pub struct GooInstance {
     /// Per-instance scissor clip rect in logical pixels: x, y, w, h.
     /// `w == 0 || h == 0` → no clipping. See `RectInstance::clip_rect`.
     pub clip_rect: [f32; 4], // offset 64, size 16
+    /// Fill color at the bottom of shape B; `color` is the top.
+    pub color_end: [f32; 4], // offset 80, size 16
+    /// Rim color (straight linear RGBA).
+    pub border_color: [f32; 4], // offset 96, size 16
+    /// Shadow color (straight linear RGBA). `a == 0` → no shadow.
+    pub shadow_color: [f32; 4], // offset 112, size 16
+    /// Rim width, shadow blur, shadow offset x, shadow offset y.
+    pub surface: [f32; 4],   // offset 128, size 16
 }
-// Total: 80 bytes
+// Total: 144 bytes
 
 impl GooInstance {
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -27,6 +35,10 @@ impl GooInstance {
             2 => Float32x4, // params
             3 => Float32x4, // color
             4 => Float32x4, // clip_rect
+            5 => Float32x4, // color_end
+            6 => Float32x4, // border_color
+            7 => Float32x4, // shadow_color
+            8 => Float32x4, // surface
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GooInstance>() as wgpu::BufferAddress,

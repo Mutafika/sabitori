@@ -1791,6 +1791,16 @@ fn emit_commands(
                 radius_b: g.radius_b * scale,
                 smooth: g.smooth * scale,
                 color: apply_opacity(g.color, effective_opacity),
+                color_end: apply_opacity(g.color_end.unwrap_or(g.color), effective_opacity),
+                border_width: g.border_width * scale,
+                border_color: apply_opacity(g.border_color, effective_opacity),
+                shadow_color: g
+                    .shadow
+                    .map_or(Color::TRANSPARENT, |sh| apply_opacity(sh.color, effective_opacity)),
+                shadow_blur: g.shadow.map_or(0.0, |sh| sh.blur * scale),
+                shadow_offset: g
+                    .shadow
+                    .map_or(Point::ZERO, |sh| Point::new(sh.offset.x * scale, sh.offset.y * scale)),
             }));
         }
         ElementKind::CellGrid(cg) => {
@@ -3324,6 +3334,48 @@ mod tests {
         assert_eq!((g.radius_a, g.radius_b, g.smooth), (10.0, 12.0, 24.0));
         // The neck can bulge `smooth` past either shape.
         assert_eq!(g.bounds(), Rect::new(76.0, 31.0, 168.0, 163.0));
+        // Flat by default: no gradient, rim or shadow.
+        assert_eq!(g.color_end, g.color);
+        assert_eq!((g.border_width, g.shadow_color.a), (0.0, 0.0));
+    }
+
+    /// The surface options (gradient, rim, shadow) reach the draw with the
+    /// element's opacity folded in, and the shadow widens the bounds.
+    #[test]
+    fn goo_carries_its_surface_into_the_draw() {
+        use crate::element::*;
+        let shadow = BoxShadow {
+            color: crate::Color::BLACK.with_alpha(0.4),
+            offset: crate::Point::new(0.0, 10.0),
+            blur: 20.0,
+            spread: 0.0,
+        };
+        let tree = div().w(Px(400.0)).h(Px(300.0)).child(
+            goo(Rect::new(10.0, 0.0, 20.0, 4.0), Rect::new(0.0, 10.0, 100.0, 80.0))
+                .pos(0.0, 0.0)
+                .goo_smooth(10.0)
+                .goo_gradient(crate::Color::WHITE, crate::Color::BLACK)
+                .goo_border(1.0, crate::Color::WHITE)
+                .goo_shadow(shadow)
+                .opacity(0.5),
+        );
+        let r = build_tree(&tree, 400.0, 300.0);
+        let g = r
+            .render_list
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::Goo(g) => Some(*g),
+                _ => None,
+            })
+            .expect("goo was not drawn");
+        assert_eq!((g.color.a, g.color_end.a), (0.5, 0.5));
+        assert_eq!(g.color_end.r, 0.0);
+        assert_eq!(g.border_width, 1.0);
+        assert!((g.shadow_color.a - 0.2).abs() < 1e-6);
+        assert_eq!((g.shadow_blur, g.shadow_offset.y), (20.0, 10.0));
+        // Shadow reach: smooth 10 + blur 60, shifted 10 down.
+        assert_eq!(g.bounds(), Rect::new(-70.0, -60.0, 240.0, 230.0));
     }
 
     /// **`polyline()` が、大きさを書かなくても描かれること。**

@@ -147,18 +147,38 @@ pub struct GooDraw {
     pub radius_b: f32,
     /// Smooth-union radius (logical px). `0` = plain union.
     pub smooth: f32,
-    /// Fill color (straight alpha, opacity already folded in).
+    /// Fill color (straight alpha, opacity already folded in). Top of
+    /// the body when `color_end` differs.
     pub color: Color,
+    /// Fill color at the bottom of `b` (equal to `color` when flat).
+    pub color_end: Color,
+    /// Rim width (logical px) and color, inside the fused edge.
+    pub border_width: f32,
+    pub border_color: Color,
+    /// Drop shadow: color (transparent = none), blur, offset.
+    pub shadow_color: Color,
+    pub shadow_blur: f32,
+    pub shadow_offset: Point,
 }
 
 impl GooDraw {
     /// Screen-space bounds of everything this draw can touch — both shapes
-    /// plus the smoothing margin the neck can bulge into.
+    /// plus the smoothing margin the neck can bulge into, and the shadow's
+    /// reach (blur × 3 past its offset, as `goo.wgsl` sizes its quad).
     pub fn bounds(&self) -> Rect {
-        let x0 = self.a.origin.x.min(self.b.origin.x) - self.smooth;
-        let y0 = self.a.origin.y.min(self.b.origin.y) - self.smooth;
-        let x1 = (self.a.origin.x + self.a.size.width).max(self.b.origin.x + self.b.size.width) + self.smooth;
-        let y1 = (self.a.origin.y + self.a.size.height).max(self.b.origin.y + self.b.size.height) + self.smooth;
+        let (mut ml, mut mt, mut mr, mut mb) = (self.smooth, self.smooth, self.smooth, self.smooth);
+        if self.shadow_color.a > 0.0 {
+            let reach = self.smooth + self.shadow_blur * 3.0;
+            let (dx, dy) = (self.shadow_offset.x, self.shadow_offset.y);
+            ml = ml.max(reach - dx);
+            mr = mr.max(reach + dx);
+            mt = mt.max(reach - dy);
+            mb = mb.max(reach + dy);
+        }
+        let x0 = self.a.origin.x.min(self.b.origin.x) - ml;
+        let y0 = self.a.origin.y.min(self.b.origin.y) - mt;
+        let x1 = (self.a.origin.x + self.a.size.width).max(self.b.origin.x + self.b.size.width) + mr;
+        let y1 = (self.a.origin.y + self.a.size.height).max(self.b.origin.y + self.b.size.height) + mb;
         Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
 }
