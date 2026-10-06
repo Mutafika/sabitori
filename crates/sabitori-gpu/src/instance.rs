@@ -1,5 +1,41 @@
 use bytemuck::{Pod, Zeroable};
 
+/// GPU instance data for one goo — two rounded rects fused by a smooth
+/// union. Layout must match the `GooInstance` struct in `goo.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GooInstance {
+    /// Shape A: x, y, w, h (logical px).
+    pub rect_a: [f32; 4],    // offset 0,  size 16
+    /// Shape B: x, y, w, h (logical px).
+    pub rect_b: [f32; 4],    // offset 16, size 16
+    /// Corner radius A, corner radius B, smooth radius, padding.
+    pub params: [f32; 4],    // offset 32, size 16
+    /// Fill color (straight linear RGBA).
+    pub color: [f32; 4],     // offset 48, size 16
+    /// Per-instance scissor clip rect in logical pixels: x, y, w, h.
+    /// `w == 0 || h == 0` → no clipping. See `RectInstance::clip_rect`.
+    pub clip_rect: [f32; 4], // offset 64, size 16
+}
+// Total: 80 bytes
+
+impl GooInstance {
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+            0 => Float32x4, // rect_a
+            1 => Float32x4, // rect_b
+            2 => Float32x4, // params
+            3 => Float32x4, // color
+            4 => Float32x4, // clip_rect
+        ];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GooInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: ATTRS,
+        }
+    }
+}
+
 /// GPU instance data for one arc / ring segment. Layout must match the
 /// `RingInstance` struct in `arc.wgsl`. One instance renders both the
 /// active ("fill") arc and the inactive ("track") arc as a single

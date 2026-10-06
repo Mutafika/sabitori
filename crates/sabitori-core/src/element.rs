@@ -1228,6 +1228,13 @@ pub enum ElementKind {
     /// the element's layout box origin. Use for charts, sparklines,
     /// connectors.
     Polyline(PolylineKind),
+    /// Goo — two rounded rects fused by an SDF smooth union, so they read
+    /// as one blob with a liquid "neck" between them while close (see
+    /// `goo.wgsl`). Shapes are logical px relative to the element's
+    /// layout-box origin, like [`ElementKind::Polyline`]; the box itself
+    /// draws nothing. Purely decorative — no layout or hit-test
+    /// contribution from the shapes.
+    Goo(GooKind),
     /// 等幅の文字の格子 ([`cell_grid`])。レイアウト上は箱 1 つ。
     CellGrid(CellGridKind),
 }
@@ -1275,6 +1282,25 @@ pub struct PolylineKind {
     /// リサイズにも勝手に追随する
     /// ([#75](https://github.com/Mutafika/sabitori/issues/75) の 11)。
     pub normalized: bool,
+}
+
+/// Two rounded rects drawn as one shape. Wrapped inside [`ElementKind::Goo`].
+#[derive(Clone, Copy, Debug)]
+pub struct GooKind {
+    /// First shape, logical px relative to the element's layout-box origin.
+    pub a: crate::Rect,
+    /// Second shape, same space as `a`.
+    pub b: crate::Rect,
+    /// Corner radius of `a` (clamped to half its shorter side).
+    pub radius_a: f32,
+    /// Corner radius of `b` (clamped to half its shorter side).
+    pub radius_b: f32,
+    /// Smooth-union radius (logical px). The shapes fuse once the gap
+    /// between their edges drops below `smooth / 2`, and overlapping
+    /// shapes get a fillet of about that size; `0` = plain union.
+    pub smooth: f32,
+    /// Fill color.
+    pub color: Color,
 }
 
 /// Layout-independent arc parameters. Wrapped inside [`ElementKind::Arc`].
@@ -1636,6 +1662,57 @@ pub fn polyline() -> Element {
             width: 1.5,
             color: Color::TRANSPARENT,
             normalized: false,
+        }),
+        style: Box::default(),
+        children: Vec::new(),
+        id: None,
+        on_click: None,
+        on_hover: None,
+        focusable: false,
+        disabled: false,
+        disabled_style: None,
+        role: None,
+        label: None,
+        heading_level: None,
+        hover_style: None,
+        active_style: None,
+        transitions: Vec::new(),
+        overlay: false,
+        tooltip: None,
+        drag_data: None,
+        drop_zone: false,
+        animate_presence: false,
+        cursor: None,
+        no_select: false,
+        window_drag: false,
+        size_rules: Vec::new(),
+    }
+}
+
+/// Create a goo element: two rounded rects `a` and `b` (logical px,
+/// relative to the element's layout-box origin) filled as a single
+/// shape. While the gap between them is under half the smoothing radius
+/// they fuse with a liquid neck; further apart they render as two plain
+/// rounded rects. Drive `a` / `b` / `.goo_smooth` from an animation to get the
+/// "drip out of the pill" morph.
+///
+/// The element's own box draws nothing and may stay 0×0 — place it with
+/// `.pos(x, y)` and express the shapes relative to that point. It paints
+/// in tree order like a background, so later siblings and children land
+/// on top of it.
+///
+/// ```ignore
+/// goo(pill, popup).goo_radii(14.0, 12.0).goo_smooth(24.0).goo_color(bg)
+/// ```
+pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
+    Element {
+        kind: ElementKind::Goo(GooKind {
+            a,
+            b,
+            radius_a: 0.0,
+            radius_b: 0.0,
+            smooth: 16.0,
+            color: Color::TRANSPARENT,
         }),
         style: Box::default(),
         children: Vec::new(),
@@ -3046,6 +3123,35 @@ impl Element {
     pub fn stroke_color(mut self, c: Color) -> Self {
         if let ElementKind::Polyline(p) = &mut self.kind {
             p.color = c;
+        }
+        self
+    }
+
+    // -- Goo parameters (no-op on non-Goo elements) --
+
+    /// Set the corner radii of a goo element's two shapes.
+    pub fn goo_radii(mut self, a: f32, b: f32) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.radius_a = a.max(0.0);
+            g.radius_b = b.max(0.0);
+        }
+        self
+    }
+
+    /// Set the smooth-union radius (logical px) of a goo element. The
+    /// shapes start to fuse once their gap is below `k / 2`; larger values
+    /// reach further and make a fatter neck. `0` draws a plain union.
+    pub fn goo_smooth(mut self, k: f32) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.smooth = k.max(0.0);
+        }
+        self
+    }
+
+    /// Set the fill color of a goo element.
+    pub fn goo_color(mut self, c: Color) -> Self {
+        if let ElementKind::Goo(g) = &mut self.kind {
+            g.color = c;
         }
         self
     }

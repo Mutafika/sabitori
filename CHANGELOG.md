@@ -15,6 +15,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`goo(a, b)` — 角丸矩形 2 つを SDF の smooth union で 1 つの形として塗る。**
+  隙間が `goo_smooth(k)` の半分を切るとねっとりした「首」でつながり、重なると
+  `k` 程度のフィレットで溶け合う。形は要素の箱の原点からの相対 (polyline と同じ)
+  で、箱は 0×0 のままでよい。ポップアップがピルから垂れて出るモーフ用。
+  `cargo run --example goo` で単体の挙動を見られる。
+- **goo は木の順で矩形の間に描かれる。** ring / line のように「その層の矩形を全部
+  描いた後」ではなく、矩形の描画を goo の位置で分けて間に挟む。背景として置いた
+  goo に、後ろの兄弟の矩形 (ポップアップの行など) がちゃんと乗る。
+  `GpuRenderer::set_goo` で次の描画呼び出しに渡す (declarative / scene_app は配線済み)。
+  `offscreen::render` と `UiOverlayRenderer` (外部 wgpu への埋め込み) はまだ goo を描かない。
+
 ## [0.31.0] - 2026-10-05
 
 ### Added

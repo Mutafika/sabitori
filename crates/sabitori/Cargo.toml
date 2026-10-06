@@ -199,3 +199,7 @@ path = "../../examples/measure_headless.rs"
 [[example]]
 name = "hot_reload"
 path = "../../examples/hot_reload.rs"
+
+[[example]]
+name = "goo"
+path = "../../examples/goo.rs"

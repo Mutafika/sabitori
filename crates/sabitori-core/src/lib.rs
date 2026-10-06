@@ -20,7 +20,7 @@ pub use scrollbar::ScrollbarStyle;
 
 // Re-export key element API items at crate root for convenience.
 pub use element::{
-    arc, div, text, button, image, polyline, ArcKind, Cursor, Element, ElementKind, HighlightSpec,
+    arc, div, goo, text, button, image, polyline, ArcKind, GooKind, Cursor, Element, ElementKind, HighlightSpec,
     ImageData, LinkRange, ObjectFit, PolylineKind, Role, ScrollOwner, Typography,
 };
 pub use element::{Dimension, Px, Percent, Auto, DimensionExt};
@@ -47,7 +47,7 @@ pub use element::{
 pub use element::{
     EasingFn, StateStyle, Transition, TransitionKind, TransitionProperty,
 };
-pub use render_list::{RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
+pub use render_list::{GooDraw, RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
 pub use build::{
     build_tree, build_tree_measured, BuildResult, CaretPos, HitRegion, ScrollMeasure, TextMeasure,
     TextShape,

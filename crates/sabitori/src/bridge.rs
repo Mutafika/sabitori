@@ -6,13 +6,13 @@ use std::collections::HashMap;
 use sabitori_core::build::{CaretPos, TextMeasure, TextShape};
 use sabitori_core::element::{ImageData, ObjectFit, Typography};
 use sabitori_core::render_list::{
-    ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw,
+    GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw,
 };
 use sabitori_core::TextMetrics;
 // `wgpu` comes via sabitori-gpu's re-export rather than a direct dependency, so
 // there is exactly one wgpu version in the tree.
 use sabitori_gpu::wgpu;
-use sabitori_gpu::{ImageInstance, LineInstance, RectInstance, RingInstance};
+use sabitori_gpu::{GooInstance, GooSlot, ImageInstance, LineInstance, RectInstance, RingInstance};
 use sabitori_text::{GlyphHit, GlyphInstance, TextRenderer};
 
 /// `TextDraw` の前景色スパンを、テキスト側の型へ移す (#78)。
@@ -206,6 +206,19 @@ pub fn ring_to_instance(d: &RingDraw) -> RingInstance {
         arc_params: [d.start_angle, d.sweep_angle, d.value, 0.0],
         fill_color: d.fill_color.to_array(),
         track_color: d.track_color.to_array(),
+        clip_rect: [0.0; 4],
+    }
+}
+
+/// Convert a [`GooDraw`] to a [`GooInstance`]. Colors stay straight, like
+/// every other UI pipeline.
+pub fn goo_to_instance(d: &GooDraw) -> GooInstance {
+    let rect = |r: &sabitori_core::Rect| [r.origin.x, r.origin.y, r.size.width, r.size.height];
+    GooInstance {
+        rect_a: rect(&d.a),
+        rect_b: rect(&d.b),
+        params: [d.radius_a, d.radius_b, d.smooth, 0.0],
+        color: d.color.to_array(),
         clip_rect: [0.0; 4],
     }
 }
@@ -452,6 +465,16 @@ pub fn render_list_to_gpu_with_hits(
     list: &RenderList,
     tr: &mut TextRenderer,
 ) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>, Vec<TextHitLayout>) {
+    render_list_to_gpu_with_hits_impl(list, tr, &mut Vec::new())
+}
+
+/// [`render_list_to_gpu_with_hits`] that also collects goo, positioned in the returned rect
+/// sequence (see [`GooSlot`]).
+fn render_list_to_gpu_with_hits_impl(
+    list: &RenderList,
+    tr: &mut TextRenderer,
+    goo: &mut Vec<GooSlot>,
+) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>, Vec<TextHitLayout>) {
     // Self-heal a full glyph atlas before shaping this frame's text: if it
     // overflowed last frame (dropped glyphs → blank/missing text), flush it now
     // so the visible glyph set re-rasterizes fresh. See `maybe_recover_atlas`.
@@ -568,6 +591,18 @@ pub fn render_list_to_gpu_with_hits(
                     });
                 }
             }
+            RenderCommand::Goo(d) => {
+                let clip = clip_stack.last().copied();
+                if let Some(c) = clip {
+                    if is_clipped(&c, &d.bounds()) { continue; }
+                }
+                let mut inst = goo_to_instance(d);
+                if let Some(c) = clip {
+                    inst.clip_rect = clip_to_array(&c);
+                }
+                // Drawn between rects, in tree order — it is a background.
+                goo.push(GooSlot { before_rect: rects.len() as u32, instance: inst });
+            }
             RenderCommand::Polyline(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -603,6 +638,16 @@ pub fn render_list_to_gpu_with_hits(
 pub fn render_list_to_gpu_with_rings(
     list: &RenderList,
     tr: &mut TextRenderer,
+) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>) {
+    render_list_to_gpu_with_rings_impl(list, tr, &mut Vec::new())
+}
+
+/// [`render_list_to_gpu_with_rings`] that also collects goo, positioned in the returned rect
+/// sequence (see [`GooSlot`]).
+fn render_list_to_gpu_with_rings_impl(
+    list: &RenderList,
+    tr: &mut TextRenderer,
+    goo: &mut Vec<GooSlot>,
 ) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>) {
     // Self-heal a full glyph atlas before shaping this frame's text (see the
     // `_with_hits` sibling and `maybe_recover_atlas`).
@@ -664,6 +709,18 @@ pub fn render_list_to_gpu_with_rings(
                     }
                 }
                 glyphs.extend(produced);
+            }
+            RenderCommand::Goo(d) => {
+                let clip = clip_stack.last().copied();
+                if let Some(c) = clip {
+                    if is_clipped(&c, &d.bounds()) { continue; }
+                }
+                let mut inst = goo_to_instance(d);
+                if let Some(c) = clip {
+                    inst.clip_rect = clip_to_array(&c);
+                }
+                // Drawn between rects, in tree order — it is a background.
+                goo.push(GooSlot { before_rect: rects.len() as u32, instance: inst });
             }
             RenderCommand::Polyline(d) => {
                 let clip = clip_stack.last().copied();
@@ -820,6 +877,11 @@ pub struct UiDrawLists {
     pub rings: Vec<RingInstance>,
     pub lines: Vec<LineInstance>,
     pub glyphs: Vec<GlyphInstance>,
+    /// Goo is not drawn by [`draw_ui_layer`]: it paints *between* the rects,
+    /// so it goes to the renderer with them — hand it over with
+    /// [`GpuRenderer::set_goo`](sabitori_gpu::GpuRenderer::set_goo) before the
+    /// render call.
+    pub goo: Vec<GooSlot>,
 }
 
 impl UiDrawLists {
@@ -841,10 +903,11 @@ impl UiDrawLists {
     /// rects alongside (they are drawn by the renderer itself, before the pass
     /// callback runs).
     pub fn extract(list: &RenderList, tr: &mut TextRenderer) -> (Vec<RectInstance>, Self) {
-        let (rects, glyphs, rings, lines) = render_list_to_gpu_with_rings(list, tr);
+        let mut goo = Vec::new();
+        let (rects, glyphs, rings, lines) = render_list_to_gpu_with_rings_impl(list, tr, &mut goo);
         (
             rects,
-            Self { images: extract_image_batches(list), rings, lines, glyphs },
+            Self { images: extract_image_batches(list), rings, lines, glyphs, goo },
         )
     }
 
@@ -854,10 +917,11 @@ impl UiDrawLists {
         list: &RenderList,
         tr: &mut TextRenderer,
     ) -> (Vec<RectInstance>, Self, Vec<TextHitLayout>) {
-        let (rects, glyphs, rings, lines, layouts) = render_list_to_gpu_with_hits(list, tr);
+        let mut goo = Vec::new();
+        let (rects, glyphs, rings, lines, layouts) = render_list_to_gpu_with_hits_impl(list, tr, &mut goo);
         (
             rects,
-            Self { images: extract_image_batches(list), rings, lines, glyphs },
+            Self { images: extract_image_batches(list), rings, lines, glyphs, goo },
             layouts,
         )
     }

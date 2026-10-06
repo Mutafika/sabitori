@@ -1889,6 +1889,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
+                    renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
                     let _ = renderer.render_layered(
                         &base_rects,
                         &overlay_rects,
@@ -1967,6 +1968,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
+                    renderer.set_goo(lists.goo.clone(), Vec::new());
                     let _ = renderer.render_with(&rects, |pass, globals_bg| {
                         let mut r = UiRenderers {
                             images: ir.as_mut(),
@@ -5053,6 +5055,7 @@ impl<A: DeclarativeApp> AppState<A> {
         let line_r = &mut extra.line_renderer;
         let tr = &mut extra.text_renderer;
         let renderer = &mut extra.renderer;
+        renderer.set_goo(lists.goo.clone(), Vec::new());
         #[cfg(not(target_arch = "wasm32"))]
         let app = &mut self.app;
 

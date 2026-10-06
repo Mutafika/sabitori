@@ -1393,6 +1393,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
+                    renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
                     let _ = renderer.render_scene_then_ui_layered(
                         |scene_ctx| {
                             self.app.render_scene(scene_ctx);
@@ -1430,6 +1431,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
+                    renderer.set_goo(lists.goo.clone(), Vec::new());
                     let _ = renderer.render_scene_then_ui(
                         |scene_ctx| {
                             self.app.render_scene(scene_ctx);

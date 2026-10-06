@@ -3,7 +3,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::context::{GpuContext, SceneRenderContext};
-use crate::instance::RectInstance;
+use crate::goo_renderer::{GooRenderer, GooSlot};
+use crate::instance::{GooInstance, RectInstance};
 
 /// Pick the surface composite alpha mode.
 ///
@@ -185,6 +186,14 @@ struct Globals {
     _pad: f32,
 }
 
+/// Where one uploaded goo instance is drawn: before rect `at` (index into
+/// the shared rect instance buffer), as goo buffer entry `index`.
+#[derive(Clone, Copy, Debug)]
+struct GooMark {
+    at: u32,
+    index: u32,
+}
+
 pub struct GpuRenderer {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -201,6 +210,10 @@ pub struct GpuRenderer {
     pub depth_texture: Option<wgpu::Texture>,
     pub depth_view: Option<wgpu::TextureView>,
     pub depth_format: wgpu::TextureFormat,
+    /// Goo (smooth-union backgrounds) — drawn between rects, see [`GooRenderer`].
+    goo_renderer: GooRenderer,
+    /// Goo queued by [`GpuRenderer::set_goo`] for the next render call.
+    pending_goo: [Vec<GooSlot>; 2],
     /// 次に描くフレームを読み戻す ([`GpuRenderer::request_capture`])。
     capture_pending: bool,
     /// 読み戻したフレーム ([`GpuRenderer::take_captured`] で取り出す)。
@@ -512,6 +525,8 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
+
         Ok(Self {
             device,
             queue,
@@ -527,6 +542,8 @@ impl GpuRenderer {
             depth_texture: None,
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
+            goo_renderer,
+            pending_goo: [Vec::new(), Vec::new()],
             capture_pending: false,
             captured: None,
         })
@@ -711,6 +728,8 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
+
         Self {
             device,
             queue,
@@ -726,6 +745,8 @@ impl GpuRenderer {
             depth_texture: None,
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
+            goo_renderer,
+            pending_goo: [Vec::new(), Vec::new()],
             capture_pending: false,
             captured: None,
         }
@@ -904,6 +925,64 @@ impl GpuRenderer {
         }
     }
 
+    /// Queue goo for the next render call, per layer (base, overlay). Each
+    /// slot's `before_rect` indexes into the rect slice of its own layer as
+    /// passed to that call. Consumed by the call; single-layer render
+    /// functions (`render_with`, `render_scene_then_ui`) draw only `base`.
+    pub fn set_goo(&mut self, base: Vec<GooSlot>, overlay: Vec<GooSlot>) {
+        self.pending_goo = [base, overlay];
+    }
+
+    /// Upload the queued goo and return each layer's draw marks, with
+    /// overlay positions shifted by `overlay_rect_base` into the shared
+    /// rect buffer's index space.
+    fn upload_goo(&mut self, overlay_rect_base: u32) -> (Vec<GooMark>, Vec<GooMark>) {
+        let [base, overlay] = std::mem::take(&mut self.pending_goo);
+        if base.is_empty() && overlay.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let instances: Vec<GooInstance> =
+            base.iter().chain(overlay.iter()).map(|g| g.instance).collect();
+        self.goo_renderer.upload(&self.device, &self.queue, &instances);
+        let marks = |slots: &[GooSlot], at_base: u32, index_base: u32| {
+            let mut marks: Vec<GooMark> = slots
+                .iter()
+                .enumerate()
+                .map(|(i, g)| GooMark { at: at_base + g.before_rect, index: index_base + i as u32 })
+                .collect();
+            // Stable: goo queued at the same position keeps tree order.
+            marks.sort_by_key(|m| m.at);
+            marks
+        };
+        let base_marks = marks(&base, 0, 0);
+        let overlay_marks = marks(&overlay, overlay_rect_base, base.len() as u32);
+        (base_marks, overlay_marks)
+    }
+
+    /// Draw rect instances `range` from the shared instance buffer,
+    /// switching to the goo pipeline at each mark so goo paints in tree
+    /// order between the rects around it.
+    fn draw_rects(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>, goo: &[GooMark]) {
+        let mut cur = range.start;
+        for mark in goo {
+            let at = mark.at.clamp(cur, range.end);
+            self.draw_rect_run(pass, cur..at);
+            cur = at;
+            self.goo_renderer.draw(pass, &self.globals_bind_group, mark.index..mark.index + 1);
+        }
+        self.draw_rect_run(pass, cur..range.end);
+    }
+
+    fn draw_rect_run(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
+        pass.set_pipeline(&self.rect_pipeline);
+        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        pass.draw(0..6, range);
+    }
+
     pub fn render(&mut self, rects: &[RectInstance]) -> Result<(), wgpu::SurfaceError> {
         self.render_with(rects, |_, _| {})
     }
@@ -934,6 +1013,8 @@ impl GpuRenderer {
                 .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
         }
 
+        // Single-layer path: there is no overlay layer to put overlay goo in.
+        let (goo_base, _) = self.upload_goo(0);
         let output = self.acquire_drawable()?;
         let view = output
             .texture
@@ -967,12 +1048,7 @@ impl GpuRenderer {
             });
 
             // Draw rects
-            if count > 0 {
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                pass.draw(0..6, 0..count as u32);
-            }
+            self.draw_rects(&mut pass, 0..count as u32, &goo_base);
 
             // Draw extra (text, etc.)
             extra_draw(&mut pass, &self.globals_bind_group);
@@ -1044,6 +1120,7 @@ impl GpuRenderer {
                 .write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(overlay_rects));
         }
 
+        let (goo_base, goo_overlay) = self.upload_goo(base_count as u32);
         let output = self.acquire_drawable()?;
         let view = output
             .texture
@@ -1072,12 +1149,7 @@ impl GpuRenderer {
                     occlusion_query_set: None,
                 });
 
-                if base_count > 0 {
-                    pass.set_pipeline(&self.rect_pipeline);
-                    pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                    pass.draw(0..6, 0..base_count as u32);
-                }
+                self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
 
                 draw_fn(RenderPhase::BaseText, &mut pass, &self.globals_bind_group);
             }
@@ -1085,7 +1157,7 @@ impl GpuRenderer {
         }
 
         // Pass 2: overlay layer — separate encoder + submit
-        if overlay_count > 0 || overlay_has_content {
+        if overlay_count > 0 || overlay_has_content || !goo_overlay.is_empty() {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("sabitori_overlay_encoder"),
             });
@@ -1105,10 +1177,7 @@ impl GpuRenderer {
                     occlusion_query_set: None,
                 });
 
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                pass.draw(0..6, base_count as u32..(base_count + overlay_count) as u32);
+                self.draw_rects(&mut pass, base_count as u32..(base_count + overlay_count) as u32, &goo_overlay);
 
                 draw_fn(RenderPhase::OverlayText, &mut pass, &self.globals_bind_group);
             }
@@ -1168,6 +1237,8 @@ impl GpuRenderer {
         ui_rects: &[RectInstance],
         ui_draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
     ) -> Result<(), wgpu::SurfaceError> {
+        // Single-layer path: there is no overlay layer to put overlay goo in.
+        let (goo_base, _) = self.upload_goo(0);
         let output = self.acquire_drawable()?;
         let surface_view = output
             .texture
@@ -1240,12 +1311,7 @@ impl GpuRenderer {
                     occlusion_query_set: None,
                 });
 
-                if count > 0 {
-                    pass.set_pipeline(&self.rect_pipeline);
-                    pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                    pass.draw(0..6, 0..count as u32);
-                }
+                self.draw_rects(&mut pass, 0..count as u32, &goo_base);
 
                 ui_draw(&mut pass, &self.globals_bind_group);
             }
@@ -1309,6 +1375,7 @@ impl GpuRenderer {
                 .write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(overlay_rects));
         }
 
+        let (goo_base, goo_overlay) = self.upload_goo(base_count as u32);
         let output = self.acquire_drawable()?;
         let surface_view = output
             .texture
@@ -1361,19 +1428,14 @@ impl GpuRenderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                if base_count > 0 {
-                    pass.set_pipeline(&self.rect_pipeline);
-                    pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                    pass.draw(0..6, 0..base_count as u32);
-                }
+                self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
                 draw_fn(RenderPhase::BaseText, &mut pass, &self.globals_bind_group);
             }
             self.queue.submit(std::iter::once(encoder.finish()));
         }
 
         // === Pass 3: overlay UI (no depth, LoadOp::Load) ===
-        if overlay_count > 0 || overlay_has_content {
+        if overlay_count > 0 || overlay_has_content || !goo_overlay.is_empty() {
             let mut encoder = self.device.create_command_encoder(
                 &wgpu::CommandEncoderDescriptor {
                     label: Some("sabitori_scene_ui_overlay_encoder"),
@@ -1394,10 +1456,7 @@ impl GpuRenderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                pass.draw(0..6, base_count as u32..(base_count + overlay_count) as u32);
+                self.draw_rects(&mut pass, base_count as u32..(base_count + overlay_count) as u32, &goo_overlay);
                 draw_fn(RenderPhase::OverlayText, &mut pass, &self.globals_bind_group);
             }
             self.queue.submit(std::iter::once(encoder.finish()));

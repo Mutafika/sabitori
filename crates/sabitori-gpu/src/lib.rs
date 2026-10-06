@@ -1,5 +1,6 @@
 mod camera;
 mod context;
+mod goo_renderer;
 mod image_renderer;
 mod instance;
 mod line_renderer;
@@ -16,7 +17,8 @@ pub use wgpu;
 pub use camera::OrbitCamera;
 pub use context::{GpuContext, SceneRenderContext};
 pub use image_renderer::{ImageInstance, ImageRenderer};
-pub use instance::{LineInstance, RectInstance, RingInstance};
+pub use goo_renderer::{GooRenderer, GooSlot};
+pub use instance::{GooInstance, LineInstance, RectInstance, RingInstance};
 pub use line_renderer::LineRenderer;
 pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, RenderPhase};
 pub use ring_renderer::RingRenderer;

@@ -14,6 +14,7 @@ const SHADERS: &[&str] = &[
     "glyph.wgsl",
     "line.wgsl",
     "arc.wgsl",
+    "goo.wgsl",
     "blur.wgsl",
     "scene3d.wgsl",
 ];

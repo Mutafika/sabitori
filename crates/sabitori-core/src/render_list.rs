@@ -20,6 +20,8 @@ pub enum RenderCommand {
     Ring(RingDraw),
     /// Draw a polyline — an open sequence of connected line segments.
     Polyline(PolylineDraw),
+    /// Draw two rounded rects fused by an SDF smooth union.
+    Goo(GooDraw),
     /// 等幅の文字の格子の字形 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
     /// 背景と下線・取り消し線は `Rect` として別に出ている。
     CellGrid(CellGridDraw),
@@ -127,6 +129,37 @@ impl Default for RingDraw {
             fill_color: Color::TRANSPARENT,
             track_color: Color::TRANSPARENT,
         }
+    }
+}
+
+/// Two rounded rects filled as one shape via an SDF smooth union
+/// (`goo.wgsl`). Painted in command order relative to [`RectDraw`]s, so it
+/// can stand in for a background rect.
+#[derive(Clone, Copy, Debug)]
+pub struct GooDraw {
+    /// First shape, absolute logical px.
+    pub a: Rect,
+    /// Second shape, absolute logical px.
+    pub b: Rect,
+    /// Corner radius of `a`.
+    pub radius_a: f32,
+    /// Corner radius of `b`.
+    pub radius_b: f32,
+    /// Smooth-union radius (logical px). `0` = plain union.
+    pub smooth: f32,
+    /// Fill color (straight alpha, opacity already folded in).
+    pub color: Color,
+}
+
+impl GooDraw {
+    /// Screen-space bounds of everything this draw can touch — both shapes
+    /// plus the smoothing margin the neck can bulge into.
+    pub fn bounds(&self) -> Rect {
+        let x0 = self.a.origin.x.min(self.b.origin.x) - self.smooth;
+        let y0 = self.a.origin.y.min(self.b.origin.y) - self.smooth;
+        let x1 = (self.a.origin.x + self.a.size.width).max(self.b.origin.x + self.b.size.width) + self.smooth;
+        let y1 = (self.a.origin.y + self.a.size.height).max(self.b.origin.y + self.b.size.height) + self.smooth;
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
 }
 

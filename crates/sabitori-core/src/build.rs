@@ -19,7 +19,7 @@ use crate::element::{
     Placement, Position, Track, TrackSize, Typography,
 };
 use crate::Corners;
-use crate::render_list::{ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
+use crate::render_list::{GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
 use crate::{Color, Point, Rect};
 
 use crate::TextMetrics;
@@ -759,6 +759,7 @@ fn path_segment(element: &Element, index: usize) -> String {
         ElementKind::Image { .. } => format!("image[{index}]"),
         ElementKind::Arc(_) => format!("arc[{index}]"),
         ElementKind::Polyline(_) => format!("polyline[{index}]"),
+        ElementKind::Goo(_) => format!("goo[{index}]"),
         ElementKind::CellGrid(_) => format!("cell_grid[{index}]"),
     }
 }
@@ -1547,7 +1548,8 @@ fn emit_commands(
     // なるため、ここで飛ばすと**明示的に大きさを書かない限り 1 本も描かれない**
     // (panic もログも無い)。`arc()` は半径を箱から出すので例外にしない —
     // 0 の箱なら本当に描くものが無い。
-    let draws_without_a_box = matches!(element.kind, ElementKind::Polyline(_));
+    // `goo()` も同じ — 形は 2 つの矩形で決まり、箱は置き場所でしかない。
+    let draws_without_a_box = matches!(element.kind, ElementKind::Polyline(_) | ElementKind::Goo(_));
     if (w <= 0.0 || h <= 0.0) && !draws_without_a_box {
         // A zero-sized CLIPPING container (overflow Hidden/Scroll) shows
         // nothing: cull the entire subtree. Recursing here would emit the
@@ -1771,6 +1773,25 @@ fn emit_commands(
                     color: apply_opacity(pl.color, effective_opacity),
                 }));
             }
+        }
+        ElementKind::Goo(g) => {
+            // Shapes are local to the element box, like polyline points.
+            let place = |r: &Rect| {
+                Rect::new(
+                    abs_x + r.origin.x * scale,
+                    abs_y + r.origin.y * scale,
+                    r.size.width * scale,
+                    r.size.height * scale,
+                )
+            };
+            target.commands.push(RenderCommand::Goo(GooDraw {
+                a: place(&g.a),
+                b: place(&g.b),
+                radius_a: g.radius_a * scale,
+                radius_b: g.radius_b * scale,
+                smooth: g.smooth * scale,
+                color: apply_opacity(g.color, effective_opacity),
+            }));
         }
         ElementKind::CellGrid(cg) => {
             emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity, parent_clip);
@@ -2226,7 +2247,8 @@ fn convert_to_taffy_style(
         | ElementKind::Image { .. }
         | ElementKind::Arc(_)
         | ElementKind::CellGrid(_)
-        | ElementKind::Polyline(_) => (
+        | ElementKind::Polyline(_)
+        | ElementKind::Goo(_) => (
             convert_min_dimension(style.min_width),
             // 縦も横と同じ 0。taffy 0.9 までは「子コンテナに定値の `min_height`
             // があると padding のある親が膨らむ」ため縦だけ絞っていたが、
@@ -3254,6 +3276,54 @@ mod tests {
             assert_eq!(drawn.points[1], Point::new(width / 2.0, 0.0), "真ん中の上");
             assert_eq!(drawn.points[2], Point::new(width, 50.0), "右の中ほど");
         }
+    }
+
+    /// **`goo()` は箱が 0×0 でも描かれ、形は箱の原点からの相対で置かれること。**
+    /// 加えて、描画命令は木の順 — 前の兄弟の矩形と後ろの兄弟の矩形の**間**に入る
+    /// (背景として使うので、後ろの中身に被ってはいけない)。
+    #[test]
+    fn goo_draws_from_a_zero_box_in_tree_order() {
+        use crate::element::*;
+        let tree = div()
+            .w(Px(400.0))
+            .h(Px(300.0))
+            .child(div().pos(0.0, 0.0).w(Px(400.0)).h(Px(40.0)).bg(crate::Color::BLACK))
+            .child(
+                goo(Rect::new(10.0, 5.0, 60.0, 20.0), Rect::new(0.0, 40.0, 120.0, 80.0))
+                    .pos(100.0, 50.0)
+                    .goo_radii(10.0, 12.0)
+                    .goo_smooth(24.0)
+                    .goo_color(crate::Color::WHITE),
+            )
+            .child(div().pos(110.0, 100.0).w(Px(80.0)).h(Px(20.0)).bg(crate::Color::WHITE));
+
+        let r = build_tree(&tree, 400.0, 300.0);
+        let kinds: Vec<&str> = r
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Rect(_) => Some("rect"),
+                RenderCommand::Goo(_) => Some("goo"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, ["rect", "goo", "rect"]);
+
+        let g = r
+            .render_list
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::Goo(g) => Some(*g),
+                _ => None,
+            })
+            .expect("goo was not drawn");
+        assert_eq!(g.a, Rect::new(110.0, 55.0, 60.0, 20.0));
+        assert_eq!(g.b, Rect::new(100.0, 90.0, 120.0, 80.0));
+        assert_eq!((g.radius_a, g.radius_b, g.smooth), (10.0, 12.0, 24.0));
+        // The neck can bulge `smooth` past either shape.
+        assert_eq!(g.bounds(), Rect::new(76.0, 31.0, 168.0, 163.0));
     }
 
     /// **`polyline()` が、大きさを書かなくても描かれること。**
