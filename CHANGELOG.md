@@ -15,6 +15,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **v0.34.1 が macOS でビルドできなかった。** `mod macos_open;` と
+  `DeclarativeApp::on_open_paths` の呼び出しだけが入り、`macos_open.rs` 本体が
+  抜けていた。本体を足した: Finder の「このアプリで開く」・`open -a` / `open -b`・
+  Dock へのドロップで渡されたファイル・フォルダが `on_open_paths` に届く
+  (`.app` として起動されたときだけ。受け付ける種類は Info.plist の
+  `CFBundleDocumentTypes` で宣言する)。winit 0.30 の delegate に
+  `application:openURLs:` を実行時に足しているので、起動のきっかけになった分も
+  取りこぼさない。
+- **`on_reveal_paths` を外した。** v0.34.1 で一緒に入ったが、どのプラットフォーム
+  でも呼ばれることが無かった (他のアプリの「Finder に表示」は、`NSFileViewer` を
+  向けても macOS 26 ではパスが届かなかった)。上書きしていた所はその実装を消す。
+
 ## [0.34.1] - 2026-10-08
 
 ### Fixed
