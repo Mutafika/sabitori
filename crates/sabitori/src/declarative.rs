@@ -2144,6 +2144,25 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         self.note_draw_gate(&gate);
         let must_draw = gate.must_draw();
 
+        // 主窓が隠れていても、別窓は見えていることがある — 主窓より大きな板
+        // (lustar の Quick Look) を前に浮かせると、主窓は**完全に覆われて**
+        // occluded になる。そのとき主窓の描画と一緒に、タスクの結果を当てるのも
+        // 別窓の描き直しも止まり、板が固まって見えた。主窓は描かないまま、
+        // 結果を当てて別窓だけ描き直す。主窓は見えた瞬間に描き直す (Occluded の
+        // 処理が dirty を立てる) ので、ここで dirty を下ろしてよい — 下ろさないと
+        // 別窓を毎刻み描き続ける。
+        if gate.extras_only(!self.extras.is_empty()) {
+            if let Some(tasks) = self.app.tasks().cloned() {
+                for apply in tasks.drain() {
+                    apply(&mut self.app);
+                }
+            }
+            for extra in self.extras.values() {
+                extra.window.request_redraw();
+            }
+            self.dirty = false;
+        }
+
         // 落ち着いたら 1 枚撮って終わる (#69)。`must_draw` が下りたフレームが
         // 「描くものが無くなった」= 非同期のロードも含めて落ち着いた合図。
         #[cfg(not(target_arch = "wasm32"))]
@@ -2282,6 +2301,12 @@ impl DrawGate {
             || self.atlas_recover_pending
             || self.images_arrived
             || self.tasks_arrived
+    }
+
+    /// 主窓は隠れていて描かないが、別窓 (`has_extras`) は描き直すべきか。
+    /// 描く理由はあるのに主窓が隠れているとき。
+    pub(crate) fn extras_only(self, has_extras: bool) -> bool {
+        has_extras && self.occluded && (self.has_other_reason() || self.relayout_pending)
     }
 
     /// このフレームで redraw を出すべきか。
@@ -7219,6 +7244,23 @@ mod draw_gate_tests {
             set(&mut g);
             assert!(g.must_draw(), "{why} のに描かれない");
         }
+    }
+
+    /// 主窓が別窓に完全に覆われても、別窓は描き直す (lustar の Quick Look が
+    /// 主窓より大きいと、中身が替わらず固まって見えた)。
+    #[test]
+    fn an_occluded_main_still_lets_extras_redraw() {
+        let mut g = idle();
+        g.occluded = true;
+        g.tasks_arrived = true;
+        assert!(!g.must_draw(), "主窓は描かない");
+        assert!(g.extras_only(true), "別窓は描く");
+        assert!(!g.extras_only(false), "別窓が無ければ何もしない");
+        g.tasks_arrived = false;
+        assert!(!g.extras_only(true), "理由が無ければ描かない");
+        g.occluded = false;
+        g.dirty = true;
+        assert!(!g.extras_only(true), "主窓が見えていれば普段の道 (must_draw) で描く");
     }
 
     /// **見えていない窓では、どの理由があっても描かない** (#79)。
