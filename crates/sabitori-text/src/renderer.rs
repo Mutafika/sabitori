@@ -783,8 +783,18 @@ impl TextRenderer {
                 color.a *= opacity;
                 let color = color.to_array();
                 let (cx, cy) = (col as f32 * cell_w, row as f32 * cell_h);
-                for g in self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash) {
+                // 字形がセルより広いときは横に縮めて収める。端末は `⌘` を 1 セルの字と
+                // 数えるが、HackGen などは全角幅の字形を持っていて、そのまま置くと隣の字に
+                // 重なる (WezTerm も同じく縮める)。
+                let span = if cell.flags.contains(CellFlags::WIDE) { 2.0 * cell_w } else { cell_w };
+                let glyphs = self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash);
+                let fit = fit_to_cell(glyphs, span);
+                for g in glyphs {
                     let mut g = *g;
+                    if let Some((left, k)) = fit {
+                        g.position[0] = (g.position[0] - left) * k;
+                        g.size[0] *= k;
+                    }
                     g.position = [g.position[0] + cx, g.position[1] + cy];
                     g.color = color;
                     line.push(g);
@@ -1836,4 +1846,15 @@ mod color_span_tests {
         ];
         assert_eq!(span_color(&overlapping, 3, 4), Some(RED));
     }
+}
+
+
+/// 1 セルぶんの字形が `span` (セルの幅) からはみ出すなら、`(左端, 倍率)` を返す。
+/// 字形を左端からその倍率で横に縮めれば、セルの中に収まる。はみ出さなければ `None`。
+/// 0.5px までのはみ出しは許す (字の左右の余白や丸めで、普通の字もわずかに出る)。
+fn fit_to_cell(glyphs: &[GlyphInstance], span: f32) -> Option<(f32, f32)> {
+    let left = glyphs.iter().map(|g| g.position[0]).fold(f32::INFINITY, f32::min);
+    let right = glyphs.iter().map(|g| g.position[0] + g.size[0]).fold(f32::NEG_INFINITY, f32::max);
+    let width = right - left;
+    (width.is_finite() && width > span + 0.5 && span > 0.0).then(|| (left.min(0.0), span / width))
 }

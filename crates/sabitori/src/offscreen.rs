@@ -637,6 +637,30 @@ mod tests {
         tr.prepare_cell_grid(g, 0..g.rows, x, 0.0, 8.0, 18.0, 14.0, 1.0, None, key)
     }
 
+    /// **セルより広い字形は、セルの中に縮めて置く。** 端末は `⌘` を 1 セルと数えるが、
+    /// 全角幅の字形を持つ字体があり、そのまま置くと隣の字に重なっていた。全角の
+    /// セル (`WIDE`) の字は 2 セルぶん使えるので縮めない。
+    #[test]
+    fn glyphs_wider_than_their_cell_are_squeezed_into_it() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid, GridCell};
+        let mut tr = text_renderer().unwrap();
+        let ink = |gs: &[sabitori_text::GlyphInstance]| {
+            let l = gs.iter().map(|g| g.position[0]).fold(f32::INFINITY, f32::min);
+            let r = gs.iter().map(|g| g.position[0] + g.size[0]).fold(f32::NEG_INFINITY, f32::max);
+            (l, r)
+        };
+        let mut g = CellGrid::new(4, 1, Color::BLACK);
+        g.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::NONE });
+        let (l, r) = ink(&prep(&mut tr, &g, 0.0, None));
+        assert!(l >= 8.0 - 0.01 && r <= 16.5, "1 セル (8..16) に収まっていない: {l}..{r}");
+        let mut wide = CellGrid::new(4, 1, Color::BLACK);
+        wide.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE });
+        wide.set(2, 0, GridCell { ch: ' ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE_SPACER });
+        let (l, r) = ink(&prep(&mut tr, &wide, 0.0, None));
+        assert!(r - l > 9.0, "全角のセルなのに縮めている: {l}..{r}");
+    }
+
     /// **中身が前と同じ行は組み直さない。** 位置だけ変わっても (格子ごと動かす)
     /// 使い回す。
     #[test]
