@@ -661,6 +661,34 @@ mod tests {
         assert!(r - l > 9.0, "全角のセルなのに縮めている: {l}..{r}");
     }
 
+    /// **字送りがセルに収まる字は縮めない。** 字形の矩形は左右に 1px ほどの余白を
+    /// 持ち、`M` や `W` でも字送りより広い。矩形で決めると、字送りどおりの幅の
+    /// 格子でもほぼ全部の字が横に縮んでいた。
+    #[test]
+    fn glyphs_that_fit_their_cell_by_advance_are_left_alone() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid};
+        let mut tr = text_renderer().unwrap();
+        let mono = |tr: &mut sabitori_text::TextRenderer, s: &str| {
+            tr.measure_text(s, 14.0, false, true, None, None, None, Default::default()).size.width
+        };
+        // 実際の端末と同じく、セル幅は字送りを測って決める
+        let cell_w = mono(&mut tr, "MMMMMMMMMM") / 10.0;
+        for ch in "MWXm_".chars() {
+            let mut g = CellGrid::new(2, 1, Color::BLACK);
+            g.put_str(0, 0, &ch.to_string(), Color::BLACK, None, CellFlags::NONE);
+            let at = |tr: &mut sabitori_text::TextRenderer, w: f32| {
+                tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, w, 18.0, 14.0, 1.0, None, None)
+                    .iter()
+                    .map(|g| g.size[0])
+                    .sum::<f32>()
+            };
+            let (fitted, free) = (at(&mut tr, cell_w), at(&mut tr, 1000.0));
+            assert!(free > cell_w, "前提: `{ch}` の矩形は字送り ({cell_w}) より広い ({free})");
+            assert_eq!(fitted, free, "`{ch}` は字送りがセルに収まるのに縮めている");
+        }
+    }
+
     /// **中身が前と同じ行は組み直さない。** 位置だけ変わっても (格子ごと動かす)
     /// 使い回す。
     #[test]
@@ -719,10 +747,12 @@ mod tests {
         gpu_or_skip!();
         let mut tr = text_renderer().unwrap();
         let g = grid_of(10, &[3]);
-        let a = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 8.0, 18.0, 14.0, 1.0, None, Some(1));
-        let b = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 1.0, None, Some(1));
+        // どちらも 14px の字送り (~8.7) より広いセルにする。狭いと字が縮められて
+        // (`glyphs_wider_than_their_cell_are_squeezed_into_it`)、位置の差が寸法の差だけでなくなる。
+        let a = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 1.0, None, Some(1));
+        let b = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 12.0, 18.0, 14.0, 1.0, None, Some(1));
         assert!((b[0].position[0] - a[0].position[0] - 6.0).abs() < 0.01, "3 列目 × 2px");
-        let c = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 10.0, 18.0, 14.0, 0.5, None, Some(1));
+        let c = tr.prepare_cell_grid(&g, 0..1, 0.0, 0.0, 12.0, 18.0, 14.0, 0.5, None, Some(1));
         assert!((c[0].color[3] - 0.5).abs() < 0.01);
     }
 

@@ -312,7 +312,7 @@ mod tests {
         }
     }
 
-    /// 大文字の文字キーも同じ `Key` に落ちること（Shift 併用時）。
+    /// ⇧ で字が変わった記号も、⇧ 無しと同じ `Key` に落ちること。
     #[test]
     fn shifted_symbols_map_to_the_unshifted_key() {
         // ⇧⌘. は logical が `>` で来ることがある。⌘ のショートカットとして同じキー
@@ -335,8 +335,9 @@ mod tests {
         assert_eq!(physical_key(KeyCode::KeyA), None, "文字キーは文字で決める");
     }
 
+    /// 大文字の文字キーも同じ `Key` に落ちること（Shift 併用時）。
     #[test]
-        fn uppercase_characters_map_to_the_same_key() {
+    fn uppercase_characters_map_to_the_same_key() {
         assert_eq!(key_from_winit(&WinitKey::Character("A".into())), Some(Key::A));
         assert_eq!(key_from_winit(&WinitKey::Character("Z".into())), Some(Key::Z));
     }

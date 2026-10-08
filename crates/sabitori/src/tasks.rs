@@ -343,7 +343,6 @@ mod tests {
         assert_eq!(app.log, vec!["got 42"]);
     }
 
-    /// **1 回だけ当たること。** 2 回当たると、一覧が二重に積まれる。
     /// 止まる処理が作業スレッドを握らない: 作業スレッドの数 (2) より多く
     /// 同時に止めても、`spawn` のタスクは先に終わる。
     #[test]
@@ -379,6 +378,7 @@ mod tests {
         assert_eq!(app.log.iter().filter(|l| *l == "blocking").count(), 4);
     }
 
+    /// **1 回だけ当たること。** 2 回当たると、一覧が二重に積まれる。
     #[test]
     fn a_result_applies_once() {
         let tasks: Tasks<App> = Tasks::new();
