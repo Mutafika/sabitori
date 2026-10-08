@@ -385,18 +385,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
 
             // IME events
             WindowEvent::Ime(ime) => {
-                let input_event = match ime {
-                    Ime::Enabled => InputEvent::ImeEnabled,
-                    Ime::Preedit(text, cursor) => InputEvent::ImePreedit { text, cursor },
-                    Ime::Commit(text) => InputEvent::ImeCommit { text },
-                    Ime::Disabled => {
-                        // Send an empty preedit to clear any composing state
-                        InputEvent::ImePreedit {
-                            text: String::new(),
-                            cursor: None,
-                        }
-                    }
-                };
+                let input_event = keymap::input_from_ime(&ime);
                 self.process_event(input_event);
             }
 

@@ -722,6 +722,15 @@ impl<A: DeclarativeApp> Harness<A> {
         self.dispatch_focused(InputEvent::ImeEnabled);
     }
 
+    /// IME が切れたことにする (winit の `Ime::Disabled`)。 変換中に入力ソースが
+    /// 変わったときに届く。 ランタイムと同じ変換を通すので、 変換中の文字は
+    /// 確定されずに消える (#124)。
+    pub fn ime_disabled(&mut self) {
+        self.dispatch_focused(sabitori_window::keymap::input_from_ime(
+            &winit::event::Ime::Disabled,
+        ));
+    }
+
     /// フォーカス経路 → アプリ の順で 1 イベント配る。 ランタイム本体と同じ順序。
     fn dispatch_focused(&mut self, event: InputEvent) {
         if !self.state.route_to_managed(&event) {

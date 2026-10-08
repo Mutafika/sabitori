@@ -1648,16 +1648,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 self.handle_key_input(key, pressed, chars);
             }
             WindowEvent::Ime(ime_event) => {
-                let event = match &ime_event {
-                    winit::event::Ime::Preedit(text_str, cursor) => {
-                        InputEvent::ImePreedit { text: text_str.clone(), cursor: cursor.map(|(s, e)| (s, e)) }
-                    }
-                    winit::event::Ime::Commit(text_str) => {
-                        InputEvent::ImeCommit { text: text_str.clone() }
-                    }
-                    winit::event::Ime::Enabled => InputEvent::ImeEnabled,
-                    winit::event::Ime::Disabled => { return; }
-                };
+                let event = sabitori_window::keymap::input_from_ime(&ime_event);
                 let handled = self.route_to_managed(&event)
                     || match self.focused_id {
                         Some(ref id) => self.app.on_focused_input(id, &event),
