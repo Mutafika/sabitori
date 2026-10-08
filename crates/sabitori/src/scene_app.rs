@@ -1094,7 +1094,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 if event.state == winit::event::ElementState::Pressed {
                     // winit → Key の変換は sabitori_window::keymap に集約している
                     // （3 ランタイム共通）。対応が無い名前付きキーは Other として届ける。
-                    let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
+                    let key = sabitori_window::keymap::key_from_event(&event)
                         .unwrap_or(Key::Other);
                     let key_event = InputEvent::KeyInput {
                         key,
@@ -1537,6 +1537,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             atlas_recover_pending: false,
             // 画像の読み込み (`image_url`) をこのランタイムは配線していない。
             images_arrived: false,
+            // `Tasks` もこのランタイムは配線していない。
+            tasks_arrived: false,
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         };

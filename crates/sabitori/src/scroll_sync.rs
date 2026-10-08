@@ -182,8 +182,13 @@ fn resolve_and_scroll(
     delta_y: f32,
 ) -> Option<String> {
     let pt = sabitori_core::Point::new(x, y);
+    let covered = covered_by_overlay(build, pt);
     for region in &build.hit_regions {
         if !region.rect.contains(pt) {
+            continue;
+        }
+        // 幕 (modal の背景など) が下りている所では、幕の中のコンテナだけ
+        if covered && !region.overlay {
             continue;
         }
         let Some(ref id) = region.id else { continue };
@@ -199,10 +204,25 @@ fn resolve_and_scroll(
 /// カーソル下に管理コンテナが 1 つでも在るか (動けるかは問わない)。
 fn any_container_under(build: &BuildResult, states: &HashMap<String, ScrollView>, x: f32, y: f32) -> bool {
     let pt = sabitori_core::Point::new(x, y);
+    let covered = covered_by_overlay(build, pt);
+    build.hit_regions.iter().any(|r| {
+        r.rect.contains(pt)
+            && (r.overlay || !covered)
+            && r.id.as_ref().is_some_and(|id| states.contains_key(id))
+    })
+}
+
+/// `pt` が手前の層 (`.overlay()` / `overlay_view`) の押せる物に覆われているか。
+///
+/// modal の背景が下りている間にホイールを回すと、**幕の後ろの一覧が動いていた**
+/// (lustar の設定のモーダルで見つけた)。クリックは幕が受けるのに、ホイールの
+/// 届け先は層を見ずにカーソル下のコンテナを探していたため。押せない手前の物
+/// (toast など) は覆いに数えない — 触れないものが後ろを止めると困る。
+fn covered_by_overlay(build: &BuildResult, pt: sabitori_core::Point) -> bool {
     build
         .hit_regions
         .iter()
-        .any(|r| r.rect.contains(pt) && r.id.as_ref().is_some_and(|id| states.contains_key(id)))
+        .any(|r| r.overlay && r.is_interactive() && r.rect.contains(pt))
 }
 
 /// トラックパッドの 1 ジェスチャの間、ホイールの届け先を固定する (macOS の latching)。
@@ -561,6 +581,43 @@ mod chaining_tests {
         assert!(states["inner"].can_scroll_y(-1.0), "前提: 内側は動ける");
         assert!(states["outer"].can_scroll_y(-1.0), "前提: 外側も動ける");
         (build, states)
+    }
+
+    /// 幕 (押せる手前の層) が覆っている所では、後ろのコンテナは動かない。
+    /// 幕の中のコンテナは動く。
+    #[test]
+    fn a_modal_backdrop_keeps_the_wheel_off_what_is_behind_it() {
+        let mut states = HashMap::new();
+        let mut root = div().w(Px(400.0)).h(Px(300.0)).children([
+            nested_tree(),
+            div()
+                .id("backdrop")
+                .overlay()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .children([div()
+                    .scroll("sheet")
+                    .w(Px(200.0))
+                    .h(Px(100.0))
+                    .flex_col()
+                    .children((0..10).map(|_| div().w_full().h(Px(40.0))).collect::<Vec<_>>())]),
+        ]);
+        patch_scroll_offsets(&mut root, &mut states);
+        let build = build_tree(&root, 400.0, 300.0);
+        apply_scroll_measures(&build, &mut states);
+
+        // 幕の上 (板の外): 後ろの内側リストの真上だが、動かない
+        assert!(!route_wheel(&build, &mut states, 20.0, 175.0, 0.0, -60.0));
+        assert_eq!(states["inner"].scroll_y.target(), 0.0);
+        assert_eq!(states["outer"].scroll_y.target(), 0.0);
+
+        // 板の中: 板のコンテナが動く
+        assert!(route_wheel(&build, &mut states, 200.0, 150.0, 0.0, -60.0));
+        assert!(states["sheet"].scroll_y.target() > 0.0);
+        assert_eq!(states["inner"].scroll_y.target(), 0.0);
     }
 
     /// 内側の上に居て、内側に余地があれば内側だけが動く (従来どおり)。

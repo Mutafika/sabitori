@@ -87,7 +87,7 @@ pub mod web_history;
 /// これが無いと積んだ入力が誰にも汲まれない (issue #73 / #74)。
 #[cfg(target_arch = "wasm32")]
 pub mod web_wake;
-pub use declarative::{BackdropBlur, DeclarativeApp, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
+pub use declarative::{BackdropBlur, DeclarativeApp, ExtraInput, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
 mod titlebar;
 pub use titlebar::{Titlebar, WindowGesture};
 pub use tasks::Tasks;

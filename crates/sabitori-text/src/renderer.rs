@@ -181,8 +181,11 @@ pub struct TextRenderer {
     /// 格子のセル 1 つ分の字形 ([#102])。鍵は文字と太さ・斜体・大きさだけ —
     /// 格子は文字列をシェーピングしないので、端末の行が 1 字変わってもここに当たる。
     ///
+    /// 字形と一緒に字送り (シェーピングの advance) を持つ — セルからはみ出すかは
+    /// 字形の矩形ではなくこれで決める。
+    ///
     /// [#102]: https://github.com/Mutafika/sabitori/issues/102
-    cell_glyphs: std::collections::HashMap<CellGlyphKey, Vec<GlyphInstance>>,
+    cell_glyphs: std::collections::HashMap<CellGlyphKey, (Vec<GlyphInstance>, f32)>,
     /// 格子の行ごとの字形 (格子の左上からの相対位置・色込み)。版番号が同じ行は
     /// 組み直さずにこれを使う。
     grid_rows: std::collections::HashMap<(u64, usize), GridRow>,
@@ -787,12 +790,13 @@ impl TextRenderer {
                 // 数えるが、HackGen などは全角幅の字形を持っていて、そのまま置くと隣の字に
                 // 重なる (WezTerm も同じく縮める)。
                 let span = if cell.flags.contains(CellFlags::WIDE) { 2.0 * cell_w } else { cell_w };
-                let glyphs = self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash);
-                let fit = fit_to_cell(glyphs, span);
+                let (glyphs, advance) =
+                    self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash);
+                let fit = fit_to_cell(advance, span);
                 for g in glyphs {
                     let mut g = *g;
-                    if let Some((left, k)) = fit {
-                        g.position[0] = (g.position[0] - left) * k;
+                    if let Some(k) = fit {
+                        g.position[0] *= k;
                         g.size[0] *= k;
                     }
                     g.position = [g.position[0] + cx, g.position[1] + cy];
@@ -827,7 +831,7 @@ impl TextRenderer {
         cell_h: f32,
         family: Option<&str>,
         family_hash: u64,
-    ) -> &[GlyphInstance] {
+    ) -> (&[GlyphInstance], f32) {
         let key = CellGlyphKey {
             ch,
             bold,
@@ -857,15 +861,20 @@ impl TextRenderer {
                 &mut self.glyph_cache, &mut ctx, run_key, text, 0.0, 0.0, font_size, None, bold,
                 true, family, Some(1), typo,
             );
-            let glyphs = self.glyph_cache[&run_key].glyphs.clone();
+            let run = &self.glyph_cache[&run_key];
+            let glyphs = run.glyphs.clone();
+            // 字送りはペンの進んだ幅 (字形の矩形はアンチエイリアスの余白などで
+            // 左右に 1px ほど広く、普通の字でも字送りを超える)。
+            let advance = run.hits.iter().map(|h| h.x + h.w).fold(0.0, f32::max);
             // アトラスが溢れて字形が落ちた結果は覚えない (次のフレームで復旧してから取り直す)。
             if !self.atlas.exhausted {
-                self.cell_glyphs.insert(key, glyphs);
+                self.cell_glyphs.insert(key, (glyphs, advance));
             } else {
-                return &[];
+                return (&[], 0.0);
             }
         }
-        &self.cell_glyphs[&key]
+        let (glyphs, advance) = &self.cell_glyphs[&key];
+        (glyphs, *advance)
     }
 
     /// Override the generic sans-serif family. When set, proportional text
@@ -1849,12 +1858,13 @@ mod color_span_tests {
 }
 
 
-/// 1 セルぶんの字形が `span` (セルの幅) からはみ出すなら、`(左端, 倍率)` を返す。
-/// 字形を左端からその倍率で横に縮めれば、セルの中に収まる。はみ出さなければ `None`。
-/// 0.5px までのはみ出しは許す (字の左右の余白や丸めで、普通の字もわずかに出る)。
-fn fit_to_cell(glyphs: &[GlyphInstance], span: f32) -> Option<(f32, f32)> {
-    let left = glyphs.iter().map(|g| g.position[0]).fold(f32::INFINITY, f32::min);
-    let right = glyphs.iter().map(|g| g.position[0] + g.size[0]).fold(f32::NEG_INFINITY, f32::max);
-    let width = right - left;
-    (width.is_finite() && width > span + 0.5 && span > 0.0).then(|| (left.min(0.0), span / width))
+/// 1 セルぶんの字の字送り `advance` が `span` (セルの幅) からはみ出すなら、横に
+/// 縮める倍率を返す。字形をセルの左端からその倍率で縮めれば、字送りがセルに
+/// 収まる。はみ出さなければ `None`。
+///
+/// 見るのは字送りで、字形の矩形ではない。矩形は左右に 1px ほどの余白を持ち、
+/// `M` や `W` でも字送りより広いので、矩形で決めると格子のほぼ全部の字が縮む。
+/// 0.5px までは丸めの差として許す (セル幅は字送りを端数ごと測った値)。
+fn fit_to_cell(advance: f32, span: f32) -> Option<f32> {
+    (advance > span + 0.5 && span > 0.0).then(|| span / advance)
 }
