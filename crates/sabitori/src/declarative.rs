@@ -634,13 +634,6 @@ pub trait DeclarativeApp: 'static {
     /// 受け付ける種類は Info.plist の `CFBundleDocumentTypes` で宣言する。
     fn on_open_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
 
-    /// OS から「これを見せて」と頼まれたファイル・フォルダ (macOS: 他のアプリの
-    /// 「Finder に表示」)。開くのではなく、入っている場所を開いてそれを選ぶ。
-    ///
-    /// このアプリが既定のファイルビューアのときだけ来る
-    /// (`defaults write -g NSFileViewer -string <bundle id>`)。それ以外は Finder へ行く。
-    fn on_reveal_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
-
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
     fn on_drop(&mut self, _data: &str, _target_id: &str) {}
@@ -1242,17 +1235,14 @@ impl TextSelection {
 }
 
 impl<A: DeclarativeApp> AppState<A> {
-    /// OS から渡されたパスをアプリへ (macOS のみ。[`DeclarativeApp::on_open_paths`] /
-    /// [`DeclarativeApp::on_reveal_paths`])。主窓ができるまでは溜めたまま待つ —
-    /// 起動時の分を窓のない状態で渡さない。
+    /// OS から渡されたパスをアプリへ (macOS のみ。[`DeclarativeApp::on_open_paths`])。
+    /// 主窓ができるまでは溜めたまま待つ — 起動時の分を窓のない状態で渡さない。
     fn deliver_open_paths(&mut self) {
         #[cfg(target_os = "macos")]
         if self.window.is_some() {
-            for req in crate::macos_open::take() {
-                match req {
-                    crate::macos_open::Request::Open(p) => self.app.on_open_paths(p),
-                    crate::macos_open::Request::Reveal(p) => self.app.on_reveal_paths(p),
-                }
+            let paths = crate::macos_open::take();
+            if !paths.is_empty() {
+                self.app.on_open_paths(paths);
             }
         }
     }
