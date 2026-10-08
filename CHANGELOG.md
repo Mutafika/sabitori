@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-08
+
 ### Changed（破壊的）
 
 - **`Key` に数字と記号のキーを足した** (`Digit0`〜`Digit9`、`Period` / `Comma` /
@@ -4333,7 +4335,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/Mutafika/sabitori/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Mutafika/sabitori/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Mutafika/sabitori/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/Mutafika/sabitori/compare/v0.30.0...v0.31.0
