@@ -631,6 +631,9 @@ pub struct ElementStyle {
     pub shadow: Option<BoxShadow>,
     pub opacity: f32,
     pub object_fit: ObjectFit,
+    /// 画像を、 同じ層の矩形 (地・枠・ボタン) より**先に**描く。 背景の画像用
+    /// ([`Element::underlay`])。
+    pub underlay: bool,
     /// 回転角 (ラジアン)。正 = 画面上時計回り (Y 下向き座標系)。
     ///
     /// 矩形は**中心**まわり (線描画 = 回転した細 rect 用)、テキストは
@@ -860,6 +863,7 @@ impl Default for ElementStyle {
             shadow: None,
             opacity: 1.0,
             object_fit: ObjectFit::default(),
+            underlay: false,
             rotation: 0.0,
             translate_x: 0.0,
             translate_y: 0.0,
@@ -2085,6 +2089,23 @@ impl Element {
     /// Set object-fit mode for Image elements.
     pub fn object_fit(mut self, fit: ObjectFit) -> Self {
         self.style.object_fit = fit;
+        self
+    }
+
+    /// **画像を背景として敷く** — 同じ層の矩形 (地・枠・ボタンの塗り) より先に描く。
+    ///
+    /// ランタイムは 1 つの層を「矩形 → 画像 → 文字」の順にまとめて描くので、
+    /// 何もしないと、 一番下に置いたつもりの画像がその上の地やボタンを覆い、
+    /// 文字だけが浮いて見える。 画面いっぱいの背景画像に付ける。
+    ///
+    /// ```ignore
+    /// div().children([
+    ///     image("bg", img).underlay().absolute().pos(0.0, 0.0).w(Px(w)).h(Px(h)),
+    ///     content, // 半透明の地やボタンが画像の上に乗る
+    /// ])
+    /// ```
+    pub fn underlay(mut self) -> Self {
+        self.style.underlay = true;
         self
     }
 

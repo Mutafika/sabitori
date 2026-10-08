@@ -1815,6 +1815,7 @@ fn emit_commands(
                     .clamped_to_size(rect.size.width, rect.size.height),
                 opacity: effective_opacity,
                 object_fit: style.object_fit,
+                underlay: style.underlay,
             }));
         }
     }

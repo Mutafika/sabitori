@@ -815,7 +815,8 @@ fn compute_object_fit_uv(
 /// sub-sampled so only the visible portion renders. Without this, images
 /// inside scroll containers bleed out of their bounds (e.g. onto a fixed
 /// toolbar or into neighbouring regions).
-pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
+/// `underlay` が一致する画像だけを集める (背景の画像は矩形より先に描くので別に持つ)。
+pub fn extract_image_batches(list: &RenderList, underlay: bool) -> Vec<ImageBatch> {
     let mut batches: Vec<ImageBatch> = Vec::new();
     let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
 
@@ -827,7 +828,7 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
             RenderCommand::PopClip => {
                 clip_stack.pop();
             }
-            RenderCommand::Image(d) => {
+            RenderCommand::Image(d) if d.underlay == underlay => {
                 let base_uv = compute_object_fit_uv(
                     d.data.width, d.data.height,
                     d.rect.size.width, d.rect.size.height,
@@ -877,6 +878,8 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
 /// extraction call yields which kind — see [`draw_ui_layer`].
 #[derive(Default)]
 pub struct UiDrawLists {
+    /// 矩形より先に描く背景の画像 (`Element::underlay`)。 [`draw_underlay`] が描く。
+    pub underlay: Vec<ImageBatch>,
     pub images: Vec<ImageBatch>,
     pub rings: Vec<RingInstance>,
     pub lines: Vec<LineInstance>,
@@ -897,7 +900,8 @@ impl UiDrawLists {
     /// (an undecorated `div` emits none) but is very much not empty — see
     /// [`GpuRenderer::render_layered`](sabitori_gpu::GpuRenderer::render_layered).
     pub fn is_empty(&self) -> bool {
-        self.images.is_empty()
+        self.underlay.is_empty()
+            && self.images.is_empty()
             && self.rings.is_empty()
             && self.lines.is_empty()
             && self.glyphs.is_empty()
@@ -911,7 +915,14 @@ impl UiDrawLists {
         let (rects, glyphs, rings, lines) = render_list_to_gpu_with_rings_impl(list, tr, &mut goo);
         (
             rects,
-            Self { images: extract_image_batches(list), rings, lines, glyphs, goo },
+            Self {
+                underlay: extract_image_batches(list, true),
+                images: extract_image_batches(list, false),
+                rings,
+                lines,
+                glyphs,
+                goo,
+            },
         )
     }
 
@@ -925,7 +936,14 @@ impl UiDrawLists {
         let (rects, glyphs, rings, lines, layouts) = render_list_to_gpu_with_hits_impl(list, tr, &mut goo);
         (
             rects,
-            Self { images: extract_image_batches(list), rings, lines, glyphs, goo },
+            Self {
+                underlay: extract_image_batches(list, true),
+                images: extract_image_batches(list, false),
+                rings,
+                lines,
+                glyphs,
+                goo,
+            },
             layouts,
         )
     }
@@ -942,7 +960,8 @@ pub struct UiRenderers<'a> {
 }
 
 /// Draw one UI layer inside an open render pass: images → rings → polylines →
-/// glyphs, so text always lands on top.
+/// glyphs, so text always lands on top. 背景の画像 (`Element::underlay`) は
+/// ここでは描かない — 矩形より前に [`draw_underlay`] で描く。
 ///
 /// **この関数が描画順とパイプラインの網羅を持つ唯一の場所。** 以前は declarative と
 /// scene_app が同じ並びを各所で手書きしていて、 scene_app 側だけ image / ring / line
@@ -964,23 +983,48 @@ pub fn draw_ui_layer(
     pass: &mut wgpu::RenderPass<'_>,
     globals_bg: &wgpu::BindGroup,
 ) {
-    if let Some(img_r) = r.images.as_deref_mut() {
-        if !lists.images.is_empty() {
-            for b in &lists.images {
-                img_r.ensure_texture(
-                    device, queue, &b.key,
-                    &b.data.rgba, b.data.width, b.data.height,
-                );
-            }
-            img_r.render_many(
-                device,
-                queue,
-                lists.images.iter().map(|b| (b.key.as_str(), b.instances.as_slice())),
-                pass,
-                globals_bg,
-            );
-        }
-    }
+    draw_ui_layer_from(r, lists, device, queue, pass, globals_bg, 0);
+}
+
+/// 層の背景の画像 (`Element::underlay`) を描く。 **矩形より前に**呼ぶ。
+/// 画像の instance buffer をどこまで使ったかを返すので、 同じ pass の
+/// [`draw_ui_layer_from`] にそのまま渡す (続きから書かないと潰す)。
+pub fn draw_underlay(
+    r: &mut UiRenderers<'_>,
+    lists: &UiDrawLists,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::RenderPass<'_>,
+    globals_bg: &wgpu::BindGroup,
+) -> u32 {
+    draw_images(r, &lists.underlay, device, queue, pass, globals_bg, 0)
+}
+
+/// 矩形より先に描く口が無い所 (overlay の層・層を分けない描画) 用。 背景の画像も
+/// 普通の画像と同じく矩形の後に描く — 黙って落とすよりは見える方がよい。
+pub fn draw_ui_layer_all(
+    r: &mut UiRenderers<'_>,
+    lists: &UiDrawLists,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::RenderPass<'_>,
+    globals_bg: &wgpu::BindGroup,
+) {
+    let next = draw_underlay(r, lists, device, queue, pass, globals_bg);
+    draw_ui_layer_from(r, lists, device, queue, pass, globals_bg, next);
+}
+
+/// [`draw_ui_layer`] の、 画像を instance buffer の `first_image` 番目から書く版。
+pub fn draw_ui_layer_from(
+    r: &mut UiRenderers<'_>,
+    lists: &UiDrawLists,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::RenderPass<'_>,
+    globals_bg: &wgpu::BindGroup,
+    first_image: u32,
+) {
+    draw_images(r, &lists.images, device, queue, pass, globals_bg, first_image);
     if let Some(ring_r) = r.rings.as_deref_mut() {
         ring_r.render_rings(device, queue, &lists.rings, pass, globals_bg);
     }
@@ -988,6 +1032,32 @@ pub fn draw_ui_layer(
         line_r.render_lines(device, queue, &lists.lines, pass, globals_bg);
     }
     r.text.render_glyphs(device, queue, &lists.glyphs, pass, globals_bg);
+}
+
+fn draw_images(
+    r: &mut UiRenderers<'_>,
+    batches: &[ImageBatch],
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::RenderPass<'_>,
+    globals_bg: &wgpu::BindGroup,
+    first: u32,
+) -> u32 {
+    let Some(img_r) = r.images.as_deref_mut() else { return first };
+    if batches.is_empty() {
+        return first;
+    }
+    for b in batches {
+        img_r.ensure_texture(device, queue, &b.key, &b.data.rgba, b.data.width, b.data.height);
+    }
+    img_r.render_many_from(
+        device,
+        queue,
+        batches.iter().map(|b| (b.key.as_str(), b.instances.as_slice())),
+        pass,
+        globals_bg,
+        first,
+    )
 }
 
 /// Intersect image's destination rect with the clip rect and proportionally
@@ -1544,5 +1614,76 @@ mod hit_layout_tests {
             ..draw()
         };
         assert!(needs_hit_layout(&d));
+    }
+}
+
+#[cfg(test)]
+mod underlay_tests {
+    //! 背景の画像 (`Element::underlay`) は矩形より先に描くので、 ほかの画像とは
+    //! 別に集める ([#126])。
+    //!
+    //! [#126]: https://github.com/Mutafika/sabitori/issues/126
+
+    use super::*;
+    use sabitori_core::render_list::ImageDraw;
+    use sabitori_core::{Corners, ImageData, ObjectFit, Rect};
+
+    fn image_cmd(key: &str, underlay: bool) -> RenderCommand {
+        RenderCommand::Image(ImageDraw {
+            key: key.into(),
+            data: ImageData::new(vec![255, 0, 0, 255], 1, 1),
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            corner_radii: Corners::default(),
+            opacity: 1.0,
+            object_fit: ObjectFit::Cover,
+            underlay,
+        })
+    }
+
+    fn keys(batches: &[ImageBatch]) -> Vec<&str> {
+        batches.iter().map(|b| b.key.as_str()).collect()
+    }
+
+    #[test]
+    fn underlay_images_are_collected_apart_from_the_rest() {
+        let mut list = RenderList::new();
+        list.commands.push(image_cmd("bg", true));
+        list.commands.push(image_cmd("thumb", false));
+        assert_eq!(keys(&extract_image_batches(&list, true)), ["bg"]);
+        assert_eq!(keys(&extract_image_batches(&list, false)), ["thumb"]);
+    }
+
+    #[test]
+    fn a_layer_with_only_a_background_image_is_not_empty() {
+        let mut list = RenderList::new();
+        list.commands.push(image_cmd("bg", true));
+        let lists = UiDrawLists { underlay: extract_image_batches(&list, true), ..UiDrawLists::default() };
+        assert!(!lists.is_empty(), "背景の画像だけの層も描く");
+    }
+
+    #[test]
+    fn the_underlay_flag_reaches_the_draw_command() {
+        use sabitori_core::element::{image, Px};
+        struct App;
+        impl crate::DeclarativeApp for App {
+            fn view(&self, _ctx: &crate::ViewContext) -> crate::Element {
+                crate::div().children([
+                    image("bg", ImageData::new(vec![0; 4], 1, 1)).underlay().w(Px(10.0)).h(Px(10.0)),
+                    image("thumb", ImageData::new(vec![0; 4], 1, 1)).w(Px(10.0)).h(Px(10.0)),
+                ])
+            }
+        }
+        let mut h = crate::testing::Harness::new(App, 100.0, 100.0);
+        let flags: Vec<(String, bool)> = h
+            .frame()
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Image(d) => Some((d.key.clone(), d.underlay)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags, [("bg".to_string(), true), ("thumb".to_string(), false)]);
     }
 }

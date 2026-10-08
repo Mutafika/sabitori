@@ -403,6 +403,24 @@ impl ImageRenderer {
         render_pass: &mut wgpu::RenderPass<'_>,
         globals_bind_group: &wgpu::BindGroup,
     ) {
+        self.render_many_from(device, queue, batches, render_pass, globals_bind_group, 0);
+    }
+
+    /// [`Self::render_many`] を、 instance buffer の `first_instance` 番目から書いて描く。
+    /// 書き終えた次の番号を返す。
+    ///
+    /// `queue.write_buffer` は submit ごとに 1 度しか効かないので、 同じ pass で
+    /// 2 回描く (背景の画像を矩形より先に、 残りを後に — `Element::underlay`) ときは、
+    /// 2 回目を 1 回目の続きから書かないと 1 回目の中身を潰す。
+    pub fn render_many_from<'a>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        batches: impl IntoIterator<Item = (&'a str, &'a [ImageInstance])>,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        first_instance: u32,
+    ) -> u32 {
         // Filter to batches whose textures are uploaded, and flatten their
         // instances into a single Vec with offsets.
         let mut packed: Vec<ImageInstance> = Vec::new();
@@ -420,10 +438,10 @@ impl ImageRenderer {
         }
 
         if draws.is_empty() {
-            return;
+            return first_instance;
         }
 
-        let total = packed.len();
+        let total = first_instance as usize + packed.len();
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
             self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -434,7 +452,8 @@ impl ImageRenderer {
             });
         }
 
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&packed));
+        let byte_offset = first_instance as u64 * std::mem::size_of::<ImageInstance>() as u64;
+        queue.write_buffer(&self.instance_buffer, byte_offset, bytemuck::cast_slice(&packed));
 
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, globals_bind_group, &[]);
@@ -446,8 +465,9 @@ impl ImageRenderer {
                 None => continue,
             };
             render_pass.set_bind_group(1, &cached.bind_group, &[]);
-            let start = *offset;
+            let start = first_instance + *offset;
             render_pass.draw(0..6, start..(start + *count));
         }
+        total as u32
     }
 }

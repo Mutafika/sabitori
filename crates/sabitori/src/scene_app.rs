@@ -22,7 +22,8 @@ use winit::event_loop::{ActiveEventLoop, DeviceEvents, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::bridge::{
-    draw_ui_layer, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers,
+    draw_ui_layer_all, draw_ui_layer_from, draw_underlay, MeasureCache, TextRendererMeasurer, UiDrawLists,
+    UiRenderers,
 };
 use crate::declarative::{DeclarativeApp, UiCapture};
 use crate::input_router::{
@@ -1381,6 +1382,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
                     renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
+                    let mut base_images_used = 0;
                     let _ = renderer.render_scene_then_ui_layered(
                         |scene_ctx| {
                             self.app.render_scene(scene_ctx);
@@ -1390,17 +1392,25 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         // 矩形の数だけでは overlay の有無を判定できない (#44)。
                         !overlay_lists.is_empty(),
                         |phase, pass, globals_bg| {
-                            let lists = match phase {
-                                RenderPhase::BaseText => &base_lists,
-                                RenderPhase::OverlayText => &overlay_lists,
-                            };
                             let mut r = UiRenderers {
                                 images: ir.as_mut(),
                                 rings: rr.as_mut(),
                                 lines: lr.as_mut(),
                                 text: &mut tr,
                             };
-                            draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
+                            match phase {
+                                // 背景の画像は base の矩形より先 (#126)。
+                                RenderPhase::BaseUnderlay => {
+                                    base_images_used =
+                                        draw_underlay(&mut r, &base_lists, &device, &queue, pass, globals_bg);
+                                }
+                                RenderPhase::BaseText => draw_ui_layer_from(
+                                    &mut r, &base_lists, &device, &queue, pass, globals_bg, base_images_used,
+                                ),
+                                RenderPhase::OverlayText => {
+                                    draw_ui_layer_all(&mut r, &overlay_lists, &device, &queue, pass, globals_bg)
+                                }
+                            }
                         },
                     );
                     // フレーム境界。テクスチャ LRU の世代をここで進める —
@@ -1431,7 +1441,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                 lines: lr.as_mut(),
                                 text: &mut tr,
                             };
-                            draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
+                            draw_ui_layer_all(&mut r, &lists, &device, &queue, pass, globals_bg);
                         },
                     );
                     // フレーム境界。テクスチャ LRU の世代をここで進める —
