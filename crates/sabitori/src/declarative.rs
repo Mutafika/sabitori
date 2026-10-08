@@ -2111,6 +2111,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             caret_blinking: self.caret_blinking(),
             atlas_recover_pending: self.atlas_recover_pending,
             images_arrived: !self.image_pending.lock().unwrap().is_empty(),
+            tasks_arrived: self.app.tasks().is_some_and(|t| t.has_ready()),
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         };
@@ -2218,6 +2219,13 @@ pub(crate) struct DrawGate {
     /// **画像が届いても次に画面を触るまで出ない**
     /// ([#114](https://github.com/Mutafika/sabitori/issues/114) の確認で見つけた)。
     pub(crate) images_arrived: bool,
+    /// [`Tasks`](crate::tasks::Tasks) の結果が届いて、当てられるのを待っている。
+    ///
+    /// 結果を当てる (`drain`) のは描くフレームの中なので、これが無いと
+    /// **裏の読み込みが終わっても次に画面を触るまで反映されない** — 入力の無い
+    /// 間に終わったものは全部 (一覧の読み込み、監視からの読み直し)。
+    /// `images_arrived` と同じ形 (lustar のプレビュー欄で見つけた)。
+    pub(crate) tasks_arrived: bool,
     /// 測れたスクロール枠の大きさが `view()` の見た値と違った (#99)。
     /// 前のフレームの寸法で決まる物 (`table` の列、`visible_range`) を正しい
     /// 寸法で組み直すために、もう 1 枚要る。
@@ -2247,6 +2255,7 @@ impl DrawGate {
             || self.caret_blinking
             || self.atlas_recover_pending
             || self.images_arrived
+            || self.tasks_arrived
     }
 
     /// このフレームで redraw を出すべきか。
@@ -7096,11 +7105,11 @@ mod draw_gate_tests {
         assert!(DrawGate { lazy: false, ..DrawGate::default() }.must_draw());
     }
 
-    /// 描く理由は 8 つあり、 **どれ 1 つでも欠けると画面が止まる**。
+    /// 描く理由は 9 つあり、 **どれ 1 つでも欠けると画面が止まる**。
     /// 表にして 1 本ずつ立て、 全部が単独で効くことを見る。
     #[test]
     fn every_reason_draws_on_its_own() {
-        let reasons: [(&str, fn(&mut DrawGate)); 8] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 9] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
@@ -7108,6 +7117,7 @@ mod draw_gate_tests {
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
             ("読んでいた画像が届いた", |g| g.images_arrived = true),
+            ("裏のタスクの結果が届いた", |g| g.tasks_arrived = true),
             ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {
@@ -7123,7 +7133,7 @@ mod draw_gate_tests {
     /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     #[test]
     fn an_occluded_window_draws_for_no_reason_at_all() {
-        let reasons: [(&str, fn(&mut DrawGate)); 8] = [
+        let reasons: [(&str, fn(&mut DrawGate)); 9] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
@@ -7131,6 +7141,7 @@ mod draw_gate_tests {
             ("キャレットが点滅している", |g| g.caret_blinking = true),
             ("アトラスの復帰待ち", |g| g.atlas_recover_pending = true),
             ("読んでいた画像が届いた", |g| g.images_arrived = true),
+            ("裏のタスクの結果が届いた", |g| g.tasks_arrived = true),
             ("測れた大きさが view の見た値と違う", |g| g.relayout_pending = true),
         ];
         for (why, set) in reasons {

@@ -1537,6 +1537,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             atlas_recover_pending: false,
             // 画像の読み込み (`image_url`) をこのランタイムは配線していない。
             images_arrived: false,
+            // `Tasks` もこのランタイムは配線していない。
+            tasks_arrived: false,
             relayout_pending: self.relayout_pending,
             occluded: self.occluded,
         };

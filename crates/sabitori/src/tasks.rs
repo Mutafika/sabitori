@@ -119,6 +119,12 @@ impl<A: 'static> Tasks<A> {
         self.inbox.lock().map(|i| i.pending == 0 && i.ready.is_empty()).unwrap_or(true)
     }
 
+    /// 届いたまま、まだ当てていない結果がある。ランタイムが「描く理由」に数える
+    /// (当てるのは描くフレームの中なので)。
+    pub(crate) fn has_ready(&self) -> bool {
+        self.inbox.lock().is_ok_and(|i| !i.ready.is_empty())
+    }
+
     /// 今走っているタスクの結果を**全部捨てる**。
     ///
     /// タスク自体は止まらない (止められる保証のある形にすると、待ち方に
@@ -221,6 +227,44 @@ impl<A: 'static> Tasks<A> {
             }
         }
     }
+
+    /// **止まる処理** (ファイルを読む、OS の API の返事を待つ) を裏で走らせ、
+    /// 終わったら `on_done` をアプリに当てる。
+    ///
+    /// [`Self::spawn`] の `async` の中で止まる処理を呼ぶと、ランタイムの tokio の
+    /// 作業スレッド (2 本) を握ったままになり、画像の読み込みやほかのタスクが
+    /// 進まなくなる。こちらは tokio の blocking 用のスレッドに載せる。
+    pub fn spawn_blocking<T>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+        on_done: impl FnOnce(&mut A, T) + Send + 'static,
+    ) where
+        T: Send + 'static,
+    {
+        let inbox = Arc::clone(&self.inbox);
+        let generation = {
+            let Ok(mut i) = self.inbox.lock() else { return };
+            i.pending += 1;
+            i.generation
+        };
+        let run = move || {
+            let out = work();
+            Self::deliver(
+                &inbox,
+                generation,
+                Box::new(move |app: &mut A| on_done(app, out)),
+            );
+        };
+        match runtime_handle() {
+            Some(handle) => {
+                // 戻り値の JoinHandle は要らない (結果は inbox に届く)
+                drop(handle.spawn_blocking(run));
+            }
+            None => {
+                std::thread::spawn(run);
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -243,6 +287,21 @@ impl<A: 'static> Tasks<A> {
             let out = fut.await;
             Self::deliver(&inbox, generation, Box::new(move |app: &mut A| on_done(app, out)));
         });
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<A: 'static> Tasks<A> {
+    /// wasm にはスレッドが無いので、`spawn_local` の中でそのまま走らせる
+    /// (止まる処理は止まる。native と同じ書き方ができるようにするための口)。
+    pub fn spawn_blocking<T>(
+        &self,
+        work: impl FnOnce() -> T + 'static,
+        on_done: impl FnOnce(&mut A, T) + 'static,
+    ) where
+        T: 'static,
+    {
+        self.spawn(async move { work() }, on_done);
     }
 }
 
@@ -285,6 +344,41 @@ mod tests {
     }
 
     /// **1 回だけ当たること。** 2 回当たると、一覧が二重に積まれる。
+    /// 止まる処理が作業スレッドを握らない: 作業スレッドの数 (2) より多く
+    /// 同時に止めても、`spawn` のタスクは先に終わる。
+    #[test]
+    fn blocking_work_does_not_starve_async_tasks() {
+        let tasks: Tasks<App> = Tasks::new();
+        let mut app = App::default();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        for _ in 0..4 {
+            let gate = Arc::clone(&gate);
+            tasks.spawn_blocking(
+                move || {
+                    // 放すまで止まる
+                    gate.lock().map(|g| g.recv().ok()).ok();
+                },
+                |app: &mut App, _| app.log.push("blocking".into()),
+            );
+        }
+        tasks.spawn(async { 7 }, |app: &mut App, n: i32| {
+            app.log.push(format!("async {n}"))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !app.log.iter().any(|l| l == "async 7") {
+            assert!(std::time::Instant::now() < deadline, "async が止まった");
+            apply_all(&tasks, &mut app);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        for _ in 0..4 {
+            release.send(()).ok();
+        }
+        settle(&tasks);
+        apply_all(&tasks, &mut app);
+        assert_eq!(app.log.iter().filter(|l| *l == "blocking").count(), 4);
+    }
+
     #[test]
     fn a_result_applies_once() {
         let tasks: Tasks<App> = Tasks::new();
