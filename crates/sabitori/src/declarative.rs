@@ -75,6 +75,24 @@ pub struct ExtraWindow {
     /// composites a 2D overlay on top with `LoadOp::Load`. Default
     /// `false` keeps the 2D-only fast path.
     pub scene_3d: bool,
+    /// 出したときに前に出して焦点を取るか。`false` なら主窓の焦点を奪わない
+    /// (Quick Look のような、主窓のキー操作で開け閉めする板)。
+    pub active: bool,
+    /// ほかの窓より前の層に置く (Quick Look のように主窓の上に浮かせる板)。
+    pub on_top: bool,
+}
+
+/// 別窓 (extra window) で起きた入力のうち、アプリに渡すもの。
+///
+/// キー入力はここに来ない — 別窓に焦点があっても**主窓と同じ道** (`on_input` /
+/// `on_focused_input`) に流す。板を押したら Space や Esc が効かなくなる、を防ぐため。
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExtraInput {
+    /// ホイール / トラックパッドのスクロール (論理 px)。符号は winit と同じで、
+    /// 正は「上へ戻る」(見ている位置 `scroll_y` からは引く)。
+    Wheel { dx: f32, dy: f32 },
+    /// 主ボタンを押した。`id` はその位置にある一番手前の `.id()` (無ければ `None`)。
+    Click { id: Option<String>, x: f32, y: f32 },
 }
 
 impl Default for ExtraWindow {
@@ -90,6 +108,8 @@ impl Default for ExtraWindow {
             backdrop_blur: None,
             backdrop_blur_top_strip_height: None,
             scene_3d: false,
+            active: true,
+            on_top: false,
         }
     }
 }
@@ -872,6 +892,10 @@ pub trait DeclarativeApp: 'static {
     /// window handle (e.g. global event monitor wake-up). Default no-op.
     fn set_extra_window(&mut self, _key: &str, _window: std::sync::Arc<Window>) {}
 
+    /// 別窓でのスクロールとクリック ([`ExtraInput`])。キー入力は主窓と同じ道に来る
+    /// のでここには来ない。既定は何もしない (受けない別窓は今まで通り見るだけ)。
+    fn on_extra_input(&mut self, _key: &str, _input: ExtraInput) {}
+
     /// One-time 3D scene setup for an extra window with `scene_3d = true`.
     /// Mirrors `SceneApp::setup`. Use to create custom pipelines /
     /// buffers / bind groups against the extra's GPU device. Default
@@ -951,6 +975,8 @@ struct ExtraWindowState {
     line_renderer: sabitori_gpu::LineRenderer,
     measure_cache: std::cell::RefCell<crate::bridge::MeasureCache>,
     pub(crate) last_build: Option<BuildResult>,
+    /// その窓の中のポインタ位置 (論理 px)。クリックの当たり判定に使う。
+    mouse: (f32, f32),
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
@@ -2338,6 +2364,12 @@ impl<A: DeclarativeApp> AppState<A> {
         if !spec.decorations {
             attrs = attrs.with_decorations(false);
         }
+        if !spec.active {
+            attrs = attrs.with_active(false);
+        }
+        if spec.on_top {
+            attrs = attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        }
         attrs = sabitori_window::background::apply_background_attrs(attrs);
         let extra_window = Arc::new(event_loop.create_window(attrs).unwrap());
         sabitori_window::background::finish_background_window(&extra_window);
@@ -2377,6 +2409,7 @@ impl<A: DeclarativeApp> AppState<A> {
             line_renderer: extra.lines,
             measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
             last_build: None,
+            mouse: (0.0, 0.0),
             scene_3d: spec.scene_3d,
         });
     }
@@ -4964,7 +4997,59 @@ impl<A: DeclarativeApp> AppState<A> {
             WindowEvent::RedrawRequested => {
                 self.redraw_extra(id);
             }
+            // キーは主窓と同じ道へ。別窓を押して焦点が移っても、主窓のショートカット
+            // (Space / Esc / 矢印) がそのまま効くように。
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::Ime(_) => {
+                if let Some(primary) = self.window.as_ref().map(|w| w.id()) {
+                    self.window_event(event_loop, primary, event);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(extra) = self.extras.get_mut(&id) {
+                    let s = extra.window.scale_factor() as f32;
+                    extra.mouse = (position.x as f32 / s, position.y as f32 / s);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(key) = self.extras.get(&id).map(|e| e.key.clone()) else { return };
+                let (dx, dy, _) = crate::input_router::wheel_delta_px(delta);
+                self.app.on_extra_input(&key, ExtraInput::Wheel { dx, dy });
+                self.dirty = true;
+                self.request_redraw_all();
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(extra) = self.extras.get(&id) else { return };
+                let (x, y) = extra.mouse;
+                let key = extra.key.clone();
+                let hit = extra.last_build.as_ref().and_then(|b| {
+                    // 一番手前 (塗り順で最後) の id 付きの領域
+                    b.hit_regions
+                        .iter()
+                        .filter(|r| r.id.is_some() && r.rect.contains(sabitori_core::Point::new(x, y)))
+                        .max_by_key(|r| r.element_index)
+                        .and_then(|r| r.id.clone())
+                });
+                self.app.on_extra_input(&key, ExtraInput::Click { id: hit, x, y });
+                self.dirty = true;
+                self.request_redraw_all();
+            }
             _ => {}
+        }
+    }
+
+    /// 主窓と別窓をまとめて描き直す (別窓の入力でアプリの状態が変わったとき)。
+    fn request_redraw_all(&self) {
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+        for extra in self.extras.values() {
+            extra.window.request_redraw();
         }
     }
 
