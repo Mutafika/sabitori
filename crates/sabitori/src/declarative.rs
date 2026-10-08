@@ -625,6 +625,22 @@ pub trait DeclarativeApp: 'static {
     /// 閉じるボタン用。毎周回読むので、返したら旗を下ろすこと。
     fn take_close_request(&mut self) -> bool { false }
 
+    /// OS から「このアプリで開いて」と渡されたファイル・フォルダ (macOS: Finder の
+    /// 「このアプリで開く」、`open -a`、Dock のアイコンへのドロップ、既定のアプリに
+    /// なっている種類のダブルクリック)。起動のきっかけになった分も、起動後に来た分も
+    /// ここに届く (起動時の分は最初の窓ができた後)。
+    ///
+    /// LaunchServices を通る経路なので、`.app` として起動されたときだけ届く。
+    /// 受け付ける種類は Info.plist の `CFBundleDocumentTypes` で宣言する。
+    fn on_open_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
+
+    /// OS から「これを見せて」と頼まれたファイル・フォルダ (macOS: 他のアプリの
+    /// 「Finder に表示」)。開くのではなく、入っている場所を開いてそれを選ぶ。
+    ///
+    /// このアプリが既定のファイルビューアのときだけ来る
+    /// (`defaults write -g NSFileViewer -string <bundle id>`)。それ以外は Finder へ行く。
+    fn on_reveal_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
+
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
     fn on_drop(&mut self, _data: &str, _target_id: &str) {}
@@ -1225,12 +1241,30 @@ impl TextSelection {
     }
 }
 
+impl<A: DeclarativeApp> AppState<A> {
+    /// OS から渡されたパスをアプリへ (macOS のみ。[`DeclarativeApp::on_open_paths`] /
+    /// [`DeclarativeApp::on_reveal_paths`])。主窓ができるまでは溜めたまま待つ —
+    /// 起動時の分を窓のない状態で渡さない。
+    fn deliver_open_paths(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.window.is_some() {
+            for req in crate::macos_open::take() {
+                match req {
+                    crate::macos_open::Request::Open(p) => self.app.on_open_paths(p),
+                    crate::macos_open::Request::Reveal(p) => self.app.on_reveal_paths(p),
+                }
+            }
+        }
+    }
+}
+
 impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
     /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
     /// ことがあり、自力ではコードが変わったことに気付けないので、外から起こして
     /// 全ウィンドウを描き直させる。
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.deliver_open_paths();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -1343,6 +1377,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         for spec in extras {
             self.spawn_extra(event_loop, spec);
         }
+        // 窓ができる前に届いていた分 (起動のきっかけになったパス)。
+        self.deliver_open_paths();
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1659,6 +1695,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let frame_t0 = Instant::now();
                 // Ticks moved to `about_to_wait` so they run on a fixed
                 // 16ms cadence independent of redraw decisions. By the time
                 // this handler fires, animator/app state for the current
@@ -1817,6 +1854,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let measurer = crate::bridge::TextRendererMeasurer::new(&mut tr, &cache);
                     self.build_frame(w, h, &measurer)
                 };
+                let frame_built = Instant::now();
 
                 // `tr` was taken out of `self`; every path from here on must put
                 // it back, or the next frame bails at the `take()` above and the
@@ -2007,6 +2045,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 };
 
                 self.commit_build(drawn_build);
+                frame_stats::record(
+                    frame_t0,
+                    frame_built,
+                    self.renderer.as_ref().map(|r| r.last_acquire_ms).unwrap_or(0.0),
+                );
 
                 // If the atlas overflowed this frame (glyphs dropped → blank
                 // text), force one more frame so maybe_recover_atlas can flush +
@@ -2159,6 +2202,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
         if must_draw {
             if let Some(w) = self.window.as_ref() {
+                frame_stats::note_request();
                 w.request_redraw();
             }
             // Extras share the same redraw cadence as the primary —
@@ -5213,6 +5257,16 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         let _ = proxy.send_event(());
     });
 
+    // Finder / `open -a` から渡されたパスの受け口。delegate が張られた後
+    // (= event loop を作った後) で、起動処理が走る前 (= run_app の前) に仕込む。
+    #[cfg(target_os = "macos")]
+    {
+        let proxy = event_loop.create_proxy();
+        crate::macos_open::install(move || {
+            let _ = proxy.send_event(());
+        });
+    }
+
     let mut state = AppState::new(app);
     event_loop.run_app(&mut state).unwrap();
 }
@@ -7537,5 +7591,82 @@ mod scrollbar_tests {
         h.move_to(10.0, 10.0);
         h.frame();
         assert_eq!(paint(&h).to_array(), IDLE.to_array(), "明かりが消えない");
+    }
+}
+
+/// `SABITORI_FRAME_STATS=1` のとき、2 秒ごとに描いたフレームの内訳を stderr に出す
+/// (間隔 = 描画の開始どうしの間、組み = view + レイアウト、描画 = 平坦化〜提出、
+/// 待ち = 描画先 (drawable) を待った分。描画に含まれる)。
+mod frame_stats {
+    use std::cell::RefCell;
+    use web_time::Instant;
+
+    #[derive(Default)]
+    struct Stats {
+        since: Option<Instant>,
+        last_start: Option<Instant>,
+        requested: Option<Instant>,
+        gap: Vec<f32>,
+        delay: Vec<f32>,
+        build: Vec<f32>,
+        render: Vec<f32>,
+        acquire: Vec<f32>,
+    }
+
+    thread_local!(static STATS: RefCell<Stats> = RefCell::new(Stats::default()));
+
+    fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("SABITORI_FRAME_STATS").is_ok_and(|v| v != "0"))
+    }
+
+    /// `request_redraw` を出した時刻 (描き始めるまでの遅れを測る)。
+    pub(super) fn note_request() {
+        if enabled() {
+            STATS.with(|s| {
+                s.borrow_mut().requested.get_or_insert_with(Instant::now);
+            });
+        }
+    }
+
+    pub(super) fn record(start: Instant, built: Instant, acquire_ms: f32) {
+        if !enabled() {
+            return;
+        }
+        let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
+        let now = Instant::now();
+        STATS.with(|s| {
+            let mut s = s.borrow_mut();
+            let since = *s.since.get_or_insert(start);
+            if let Some(prev) = s.last_start.replace(start) {
+                s.gap.push(ms(prev, start));
+            }
+            if let Some(r) = s.requested.take() {
+                s.delay.push(ms(r, start));
+            }
+            s.build.push(ms(start, built));
+            s.render.push(ms(built, now));
+            s.acquire.push(acquire_ms);
+            let secs = (now - since).as_secs_f32();
+            if secs < 2.0 {
+                return;
+            }
+            let q = |v: &mut Vec<f32>| -> String {
+                if v.is_empty() {
+                    return "-".into();
+                }
+                v.sort_by(|a, b| a.total_cmp(b));
+                let n = v.len();
+                format!("{:.1}/{:.1}/{:.1}", v[n / 2], v[n * 95 / 100], v[n - 1])
+            };
+            let n = s.build.len();
+            let (gap, delay, build, render, acquire) =
+                (q(&mut s.gap), q(&mut s.delay), q(&mut s.build), q(&mut s.render), q(&mut s.acquire));
+            eprintln!(
+                "[sabitori] {n} frames / {secs:.1}s ({:.0}fps) p50/p95/max ms: 間隔 {gap} 依頼→開始 {delay} 組み {build} 描画 {render} (うち待ち {acquire})",
+                n as f32 / secs
+            );
+            *s = Stats { last_start: s.last_start, ..Stats::default() };
+        });
     }
 }

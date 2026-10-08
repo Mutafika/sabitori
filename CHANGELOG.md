@@ -15,11 +15,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- **`Harness::ime_disabled()`** — IME が切れたこと (winit の `Ime::Disabled`) を
-  テストから流す。ランタイムと同じ変換を通る。
-
 ### Fixed
 
 - **変換の途中で入力ソースが変わると、変換中の文字が浮いたまま残っていた**

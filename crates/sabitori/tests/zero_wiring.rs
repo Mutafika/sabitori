@@ -225,6 +225,10 @@ fn an_app_side_handler_does_not_double_insert() {
 /// 別アプリで英数に切り替えて戻ってくると、 winit は確定も取り消しも
 /// 送らず `Ime::Disabled` だけを送る。 それを捨てていたので、 欄に
 /// 「にほん」 が浮いたまま残っていた。
+///
+/// ランタイムは `Ime::Disabled` を空の preedit にして届ける
+/// (`sabitori_window::keymap::input_from_ime`、 変換自体はそちらのテストが見る)。
+/// ここではそれを受けた欄が変換中の文字を捨てることを見る。
 #[test]
 fn ime_disabled_mid_conversion_clears_preedit() {
     let mut h = app();
@@ -233,7 +237,7 @@ fn ime_disabled_mid_conversion_clears_preedit() {
     h.ime_preedit("にほん", None);
     assert!(h.app().name.is_composing());
 
-    h.ime_disabled();
+    h.ime_preedit("", None); // = Ime::Disabled
 
     assert!(!h.app().name.is_composing(), "変換中の文字が残っている");
     assert_eq!(h.app().name.display_text_with_preedit(), "a");

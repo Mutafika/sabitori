@@ -195,6 +195,8 @@ struct GooMark {
 }
 
 pub struct GpuRenderer {
+    /// 直近の `get_current_texture` で描画先を待った時間 (ms)。フレームの計測用。
+    pub last_acquire_ms: f32,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
@@ -407,7 +409,18 @@ impl GpuRenderer {
         } else {
             wgpu::PresentMode::AutoVsync
         };
-        tracing::info!("present_mode: {:?}", present_mode);
+        // 調査用の上書き: SABITORI_PRESENT_MODE=fifo|immediate|mailbox|autovsync
+        let present_mode = match std::env::var("SABITORI_PRESENT_MODE").ok().as_deref() {
+            Some("fifo") => wgpu::PresentMode::Fifo,
+            Some("immediate") => wgpu::PresentMode::Immediate,
+            Some("mailbox") => wgpu::PresentMode::Mailbox,
+            Some("autovsync") => wgpu::PresentMode::AutoVsync,
+            _ => present_mode,
+        };
+        // 調査用の上書き: SABITORI_FRAME_LATENCY=n (同時に描きかけでいられるフレーム数)
+        let frame_latency: u32 =
+            std::env::var("SABITORI_FRAME_LATENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        tracing::info!("present_mode: {:?}, frame latency {}", present_mode, frame_latency);
         // 読み戻す予定があるときだけ COPY_SRC を足す (#69)。常に足さないのは、
         // WebGL2 のサーフェスがコピー元になれないため — wasm で無条件に付けると
         // **起動できない環境が出る**。
@@ -421,7 +434,7 @@ impl GpuRenderer {
             width: size.width.max(1).min(max_dim),
             height: size.height.max(1).min(max_dim),
             present_mode,
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: frame_latency,
             alpha_mode: choose_alpha_mode(&surface_caps.alpha_modes, transparent),
             view_formats: vec![],
         };
@@ -528,6 +541,7 @@ impl GpuRenderer {
         let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
 
         Ok(Self {
+            last_acquire_ms: 0.0,
             device,
             queue,
             surface,
@@ -731,6 +745,7 @@ impl GpuRenderer {
         let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
 
         Self {
+            last_acquire_ms: 0.0,
             device,
             queue,
             surface,
@@ -891,6 +906,9 @@ impl GpuRenderer {
     }
 
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+        // wasm には std の Instant が無いので計らない (0 のまま)
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
         let output = match self.surface.get_current_texture() {
             Ok(tex) => tex,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -899,6 +917,10 @@ impl GpuRenderer {
             }
             Err(e) => return Err(e),
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_acquire_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        }
         self.sync_to_drawable(&output);
         Ok(output)
     }
