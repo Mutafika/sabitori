@@ -772,12 +772,17 @@ impl<A: DeclarativeApp> Harness<A> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             // 1 フレーム組むと、届いている結果がアプリに当たる
-            // (`build_frame` が汲む)。
+            // (`build_frame` が汲む)。当たった処理が次のタスクを投げたら
+            // (結果を受けて読み直す、など)、それも待つ。
             self.frame();
-            let pending = self.state.app.tasks().map(|t| t.pending()).unwrap_or(0);
-            if pending == 0 {
+            // `pending() == 0` ではなく `is_idle()`。結果は「届いた (pending が
+            // 減った)」のに「まだ当てていない (次の drain 待ち)」状態を取れるので、
+            // 数だけ見て止まると、その 1 つを取り残したまま戻っていた。
+            let idle = self.state.app.tasks().map(|t| t.is_idle()).unwrap_or(true);
+            if idle {
                 break;
             }
+            let pending = self.state.app.tasks().map(|t| t.pending()).unwrap_or(0);
             assert!(
                 std::time::Instant::now() < deadline,
                 "非同期タスクが 5 秒で終わらない (残り {pending} 件)"

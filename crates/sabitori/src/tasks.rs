@@ -109,6 +109,16 @@ impl<A: 'static> Tasks<A> {
         self.inbox.lock().map(|i| i.pending).unwrap_or(0)
     }
 
+    /// **走っているタスクも、届いたまま当てていない結果も無い。**
+    ///
+    /// [`Self::pending`] だけでは足りない。結果は「届く (`pending` が減る)」と
+    /// 「当たる (次のフレームの drain)」の間に居られるので、`pending == 0` を
+    /// 見て止まると、当てていない結果を 1 つ取り残す。その結果が新しいタスクを
+    /// 投げるものだと (一覧の読み直しなど)、待ったつもりで何も待てていない。
+    pub fn is_idle(&self) -> bool {
+        self.inbox.lock().map(|i| i.pending == 0 && i.ready.is_empty()).unwrap_or(true)
+    }
+
     /// 今走っているタスクの結果を**全部捨てる**。
     ///
     /// タスク自体は止まらない (止められる保証のある形にすると、待ち方に
