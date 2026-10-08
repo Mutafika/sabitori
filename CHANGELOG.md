@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-10-08
+
 ### Fixed
 
 - **変換の途中で入力ソースが変わると、変換中の文字が浮いたまま残っていた**
@@ -4345,7 +4347,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.34.1...HEAD
+[0.34.1]: https://github.com/Mutafika/sabitori/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/Mutafika/sabitori/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Mutafika/sabitori/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Mutafika/sabitori/compare/v0.31.0...v0.32.0
