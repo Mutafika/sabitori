@@ -15,6 +15,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **変換の途中で入力ソースが変わると、変換中の文字が浮いたまま残っていた**
+  ([#124](https://github.com/Mutafika/sabitori/issues/124))。別アプリで英数に
+  切り替えて戻ると、winit は確定も取り消しも送らず `Ime::Disabled` だけを送る。
+  `run_declarative` と `run_scene` はこれを捨てていたので、アプリにも管理下の
+  `TextInputState` にも「変換が終わった」が届かなかった。いまは 3 ランタイムとも
+  空の `ImePreedit` として届ける (アプリ側の変更は不要)。winit の IME イベントの
+  変換は `keymap::input_from_ime` の 1 箇所に寄せた。
+
 ## [0.34.0] - 2026-10-08
 
 ### Changed（破壊的）

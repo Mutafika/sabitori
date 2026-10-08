@@ -1157,20 +1157,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // 変換中の文字がどこにも届かず、 ターミナルのような
                 // 「フォーカス要素は無いが IME 入力は受ける」 アプリが
                 // SceneApp では書けなかった (issue #22)。
-                let event = match &ime_event {
-                    winit::event::Ime::Preedit(text, cursor) => InputEvent::ImePreedit {
-                        text: text.clone(),
-                        cursor: cursor.map(|(s, e)| (s, e)),
-                    },
-                    winit::event::Ime::Commit(text) => InputEvent::ImeCommit {
-                        text: text.clone(),
-                    },
-                    winit::event::Ime::Enabled => InputEvent::ImeEnabled,
-                    // `Ime::Disabled` に対応する InputEvent がまだ無い。
-                    // 受け手 (FocusManager::on_ime_disabled) はいるので、
-                    // variant を足すのは別 issue で。
-                    winit::event::Ime::Disabled => return,
-                };
+                let event = sabitori_window::keymap::input_from_ime(&ime_event);
                 crate::runtime_shared::dispatch(
                     &mut self.app,
                     self.focused_id.as_deref(),
