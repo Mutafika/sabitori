@@ -7246,10 +7246,6 @@ mod draw_gate_tests {
         }
     }
 
-    /// **見えていない窓では、どの理由があっても描かない** (#79)。
-    ///
-    /// 最小化したまま出力を出し続ける端末アプリが、誰も見ていない絵を
-    /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     /// 主窓が別窓に完全に覆われても、別窓は描き直す (lustar の Quick Look が
     /// 主窓より大きいと、中身が替わらず固まって見えた)。
     #[test]
@@ -7267,6 +7263,10 @@ mod draw_gate_tests {
         assert!(!g.extras_only(true), "主窓が見えていれば普段の道 (must_draw) で描く");
     }
 
+    /// **見えていない窓では、どの理由があっても描かない** (#79)。
+    ///
+    /// 最小化したまま出力を出し続ける端末アプリが、誰も見ていない絵を
+    /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     #[test]
     fn an_occluded_window_draws_for_no_reason_at_all() {
         let reasons: [(&str, fn(&mut DrawGate)); 9] = [
