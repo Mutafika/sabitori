@@ -1612,7 +1612,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // （3 ランタイム共通）。対応が無い名前付きキーは Other として
                 // 届ける — 修飾キー単独押下を「何か押された」として観測する
                 // 既存の挙動（選択解除ロジックが Other に依存）を保つため。
-                let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
+                let key = sabitori_window::keymap::key_from_event(&event)
                     .unwrap_or(Key::Other);
                 let pressed = event.state == winit::event::ElementState::Pressed;
                 // テキスト入力として送るべき文字の判定（制御文字の除去、Cmd 押下時の

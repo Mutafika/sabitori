@@ -17,7 +17,7 @@
 
 use sabitori_input::{Key, Modifiers};
 use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key as WinitKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 /// winit の logical key を [`Key`] へ変換する。
 ///
@@ -31,6 +31,45 @@ pub fn key_from_winit(logical: &WinitKey) -> Option<Key> {
         WinitKey::Character(c) => Some(character_key(c)),
         _ => None,
     }
+}
+
+/// [`key_from_winit`] に、物理キーでの補いを足したもの。ランタイムはこちらを使う。
+///
+/// 文字で決まらないとき (⇧ で `!` になった数字、US 以外の配列で記号の位置が
+/// 違うとき) は、物理キーの位置で数字・記号を当てる。⌘1 や ⇧⌘. のような
+/// ショートカットが配列や ⇧ で取りこぼされないように。
+pub fn key_from_event(event: &KeyEvent) -> Option<Key> {
+    let key = key_from_winit(&event.logical_key)?;
+    if key != Key::Other {
+        return Some(key);
+    }
+    Some(match event.physical_key {
+        PhysicalKey::Code(code) => physical_key(code).unwrap_or(Key::Other),
+        PhysicalKey::Unidentified(_) => Key::Other,
+    })
+}
+
+fn physical_key(code: KeyCode) -> Option<Key> {
+    Some(match code {
+        KeyCode::Digit0 => Key::Digit0,
+        KeyCode::Digit1 => Key::Digit1,
+        KeyCode::Digit2 => Key::Digit2,
+        KeyCode::Digit3 => Key::Digit3,
+        KeyCode::Digit4 => Key::Digit4,
+        KeyCode::Digit5 => Key::Digit5,
+        KeyCode::Digit6 => Key::Digit6,
+        KeyCode::Digit7 => Key::Digit7,
+        KeyCode::Digit8 => Key::Digit8,
+        KeyCode::Digit9 => Key::Digit9,
+        KeyCode::Period => Key::Period,
+        KeyCode::Comma => Key::Comma,
+        KeyCode::Slash => Key::Slash,
+        KeyCode::Minus => Key::Minus,
+        KeyCode::Equal => Key::Equal,
+        KeyCode::BracketLeft => Key::BracketLeft,
+        KeyCode::BracketRight => Key::BracketRight,
+        _ => return None,
+    })
 }
 
 fn named_key(named: &NamedKey) -> Option<Key> {
@@ -97,6 +136,24 @@ fn character_key(c: &str) -> Key {
         "x" => Key::X,
         "y" => Key::Y,
         "z" => Key::Z,
+        "0" => Key::Digit0,
+        "1" => Key::Digit1,
+        "2" => Key::Digit2,
+        "3" => Key::Digit3,
+        "4" => Key::Digit4,
+        "5" => Key::Digit5,
+        "6" => Key::Digit6,
+        "7" => Key::Digit7,
+        "8" => Key::Digit8,
+        "9" => Key::Digit9,
+        // ⇧ 付きの形 (US 配列) も同じキー。他の配列は物理キーで補う
+        "." | ">" => Key::Period,
+        "," | "<" => Key::Comma,
+        "/" | "?" => Key::Slash,
+        "-" | "_" => Key::Minus,
+        "=" | "+" => Key::Equal,
+        "[" | "{" => Key::BracketLeft,
+        "]" | "}" => Key::BracketRight,
         _ => Key::Other,
     }
 }
@@ -215,6 +272,23 @@ mod tests {
             Key::X => ch("x"),
             Key::Y => ch("y"),
             Key::Z => ch("z"),
+            Key::Digit0 => ch("0"),
+            Key::Digit1 => ch("1"),
+            Key::Digit2 => ch("2"),
+            Key::Digit3 => ch("3"),
+            Key::Digit4 => ch("4"),
+            Key::Digit5 => ch("5"),
+            Key::Digit6 => ch("6"),
+            Key::Digit7 => ch("7"),
+            Key::Digit8 => ch("8"),
+            Key::Digit9 => ch("9"),
+            Key::Period => ch("."),
+            Key::Comma => ch(","),
+            Key::Slash => ch("/"),
+            Key::Minus => ch("-"),
+            Key::Equal => ch("="),
+            Key::BracketLeft => ch("["),
+            Key::BracketRight => ch("]"),
             // 「対応する winit の入力が無い」ことを意味する受け皿。
             Key::Other => None,
         }
@@ -240,7 +314,29 @@ mod tests {
 
     /// 大文字の文字キーも同じ `Key` に落ちること（Shift 併用時）。
     #[test]
-    fn uppercase_characters_map_to_the_same_key() {
+    fn shifted_symbols_map_to_the_unshifted_key() {
+        // ⇧⌘. は logical が `>` で来ることがある。⌘ のショートカットとして同じキー
+        for (shifted, key) in [
+            (">", Key::Period),
+            ("{", Key::BracketLeft),
+            ("}", Key::BracketRight),
+            ("?", Key::Slash),
+        ] {
+            assert_eq!(key_from_winit(&WinitKey::Character(shifted.into())), Some(key));
+        }
+    }
+
+    #[test]
+    fn physical_digits_cover_shifted_and_foreign_layouts() {
+        // ⇧1 は `!` (US) / JIS でも位置は同じ。文字で決まらない分は物理キーで当てる
+        assert_eq!(key_from_winit(&WinitKey::Character("!".into())), Some(Key::Other));
+        assert_eq!(physical_key(KeyCode::Digit1), Some(Key::Digit1));
+        assert_eq!(physical_key(KeyCode::Period), Some(Key::Period));
+        assert_eq!(physical_key(KeyCode::KeyA), None, "文字キーは文字で決める");
+    }
+
+    #[test]
+        fn uppercase_characters_map_to_the_same_key() {
         assert_eq!(key_from_winit(&WinitKey::Character("A".into())), Some(Key::A));
         assert_eq!(key_from_winit(&WinitKey::Character("Z".into())), Some(Key::Z));
     }

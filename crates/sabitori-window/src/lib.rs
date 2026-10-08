@@ -406,7 +406,7 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                 let modifiers = keymap::modifiers_from_winit(self.winit_modifiers);
 
                 // 対応する Key を持たない名前付きキーはイベントを出さない。
-                if let Some(key) = keymap::key_from_winit(&event.logical_key) {
+                if let Some(key) = keymap::key_from_event(&event) {
                     self.process_event(InputEvent::KeyInput {
                         key,
                         pressed,

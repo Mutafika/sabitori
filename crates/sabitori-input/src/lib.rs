@@ -61,6 +61,13 @@ pub enum Key {
     Space,
     A, B, C, D, E, F, G, H, I, J, K, L, M,
     N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    /// 数字と、ショートカットに使われる記号 (⌘1 / ⌘[ / ⇧⌘. など)。
+    ///
+    /// ⌘ 押下中の文字は `CharInput` に出ない (テキスト欄に漏れないよう落とす)
+    /// ので、これが無いと ⌘ + 数字・記号のショートカットはアプリに届かなかった。
+    /// ⇧ 付きで文字が変わっても (`>` / `{` / `!`) 同じキーとして届く。
+    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+    Period, Comma, Slash, Minus, Equal, BracketLeft, BracketRight,
     /// Shift 修飾キー単独の押下（ゲームのダッシュ等で拾えるよう Other と分離）。
     Shift,
     Other,
@@ -80,6 +87,10 @@ impl Key {
         Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I,
         Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R,
         Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z,
+        Key::Digit0, Key::Digit1, Key::Digit2, Key::Digit3, Key::Digit4,
+        Key::Digit5, Key::Digit6, Key::Digit7, Key::Digit8, Key::Digit9,
+        Key::Period, Key::Comma, Key::Slash, Key::Minus, Key::Equal,
+        Key::BracketLeft, Key::BracketRight,
         Key::Shift, Key::Other,
     ];
 }

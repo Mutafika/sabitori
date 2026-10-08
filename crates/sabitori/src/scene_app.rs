@@ -1094,7 +1094,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 if event.state == winit::event::ElementState::Pressed {
                     // winit → Key の変換は sabitori_window::keymap に集約している
                     // （3 ランタイム共通）。対応が無い名前付きキーは Other として届ける。
-                    let key = sabitori_window::keymap::key_from_winit(&event.logical_key)
+                    let key = sabitori_window::keymap::key_from_event(&event)
                         .unwrap_or(Key::Other);
                     let key_event = InputEvent::KeyInput {
                         key,
