@@ -5027,14 +5027,23 @@ impl<A: DeclarativeApp> AppState<A> {
                 let Some(extra) = self.extras.get(&id) else { return };
                 let (x, y) = extra.mouse;
                 let key = extra.key.clone();
-                let hit = extra.last_build.as_ref().and_then(|b| {
-                    // 一番手前 (塗り順で最後) の id 付きの領域
+                let pt = sabitori_core::Point::new(x, y);
+                // 窓のつかみどころ (`.window_drag()`) の空いた所なら、主窓と同じく
+                // 押下は窓が引き取る (OS に窓を動かさせる)。アプリには渡さない。
+                let grab = extra.last_build.as_ref().is_some_and(|b| {
                     b.hit_regions
                         .iter()
-                        .filter(|r| r.id.is_some() && r.rect.contains(sabitori_core::Point::new(x, y)))
-                        .max_by_key(|r| r.element_index)
-                        .and_then(|r| r.id.clone())
+                        .find(|r| r.is_interactive() && r.rect.contains(pt))
+                        .is_some_and(|r| r.window_drag)
                 });
+                if grab {
+                    extra.window.drag_window().ok();
+                    return;
+                }
+                let hit = extra
+                    .last_build
+                    .as_ref()
+                    .and_then(|b| crate::runtime_shared::hit_id_at(b, x, y));
                 self.app.on_extra_input(&key, ExtraInput::Click { id: hit, x, y });
                 self.dirty = true;
                 self.request_redraw_all();
