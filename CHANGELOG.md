@@ -15,6 +15,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **外から持ち込まれたファイルのドラッグが drop zone に乗る。** Finder など他の
+  アプリからファイルを持ってくると、窓の中の `.draggable()` と同じく `ctx.drag` に
+  `sabitori::FILE_DRAG` として出て、`over_drop_zone` がカーソルの下の `.droppable()` を指す
+  (入れ先を光らせる書き方がそのまま効く)。落とすと新しい
+  `DeclarativeApp::on_file_drop_at(paths, target_id)` に、落とした所の drop zone と
+  一緒に届く (既定は `on_file_drop` へ渡す)。winit はドラッグ中にカーソルの位置を
+  送らないので、位置は macOS だけ OS に聞いて取る (他の OS では drop zone は `None`)。
+- `Harness::hover_files` / `move_file_hover` / `drop_files` / `cancel_file_hover` —
+  外からのファイルのドラッグをテストで流す口。
+
+### Fixed
+
+- **外から複数のファイルを落とすと、`on_file_drop` が 1 ファイルずつ呼ばれていた。**
+  winit が `DroppedFile` を 1 件ずつ送るのをそのまま渡していたので、受けた所で
+  操作を始めるアプリ (lustar) は 2 件目からを取りこぼしていた。いまは 1 回の
+  ドロップ分を溜め、周回の終わりにまとめて 1 回で渡す。
+
 ## [0.35.0] - 2026-10-09
 
 ### Added
