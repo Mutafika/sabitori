@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-09
+
 ### Added
 
 - **外から持ち込まれたファイルのドラッグが drop zone に乗る。** Finder など他の
@@ -4399,7 +4401,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/Mutafika/sabitori/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/Mutafika/sabitori/compare/v0.34.2...v0.35.0
 [0.34.2]: https://github.com/Mutafika/sabitori/compare/v0.34.1...v0.34.2
 [0.34.1]: https://github.com/Mutafika/sabitori/compare/v0.34.0...v0.34.1
