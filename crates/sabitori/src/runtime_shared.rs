@@ -268,8 +268,12 @@ pub(crate) const OVERLAY_INDEX_BASE: usize = 1 << 24;
 ///
 /// [#84]: https://github.com/Mutafika/sabitori/pull/84
 pub(crate) fn absorb_overlay(build: &mut BuildResult, overlay: Option<BuildResult>) {
-    let Some(ext) = overlay else { return };
+    let Some(mut ext) = overlay else { return };
+    // 外付けの木の層 ([`sabitori_core::Element::layer`]) と、その中の `.overlay()` も
+    // 上掛けに積む。上掛けは 1 層で描くので、層は寄せる (中身は消さない)。
+    ext.flatten_layers();
     build.overlay_list.commands.extend(ext.render_list.commands);
+    build.overlay_list.commands.extend(ext.overlay_list.commands);
     let mut hits = ext.hit_regions;
     for hit in &mut hits {
         hit.element_index += OVERLAY_INDEX_BASE;
@@ -289,6 +293,37 @@ mod tests {
 
     fn build(root: &sabitori_core::Element) -> BuildResult {
         sabitori_core::build::build_tree(root, 400.0, 300.0)
+    }
+
+    /// 外付けの上掛けの木で層を上げた中身 ([`sabitori_core::Element::layer`]) と、
+    /// その中の `.overlay()` も描かれる。以前は外付けの木の `render_list` だけを
+    /// 積んでいたので、どちらも黙って消えていた。
+    #[test]
+    fn an_external_overlays_raised_and_overlay_content_is_kept() {
+        use sabitori_core::render_list::RenderCommand;
+        use sabitori_core::Color;
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let green = Color::new(0.0, 1.0, 0.0, 1.0);
+        let blue = Color::new(0.0, 0.0, 1.0, 1.0);
+        let mut base = build(&div().w(Px(400.0)).h(Px(300.0)));
+        let over = build(&div().w(Px(400.0)).h(Px(300.0)).children([
+            div().w(Px(10.0)).h(Px(10.0)).bg(red),
+            div().w(Px(10.0)).h(Px(10.0)).bg(green).layer(1),
+            div().w(Px(10.0)).h(Px(10.0)).bg(blue).overlay(),
+        ]));
+
+        absorb_overlay(&mut base, Some(over));
+
+        let colors: Vec<Color> = base
+            .overlay_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Rect(r) => Some(r.fill_color),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(colors, vec![red, green, blue]);
     }
 
     /// ★**overlay の当たり領域は、地とぶつからない番号を持つ** ([#84])。
