@@ -658,7 +658,7 @@ pub trait DeclarativeApp: 'static {
     /// bundles the bundle's `.icns` still wins, this is a dev nicety.
     fn window_icon(&self) -> Option<Vec<u8>> { None }
 
-    /// Window title.
+    /// Window title. 変われば主窓の題も付け直す (ランタイムが毎周回比べる)。
     fn title(&self) -> &str { "Sabitori" }
 
     /// Initial window size (logical pixels).
@@ -1039,6 +1039,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// redraws unconditionally at 60fps.
     dirty: bool,
     window: Option<Arc<Window>>,
+    /// 主窓に今出している題。`title()` と食い違ったら付け直す ([`Self::sync_title`])。
+    #[cfg(not(target_arch = "wasm32"))]
+    window_title: String,
     /// テスト用: `ctx.safe_area` を窓から読まずにこの値にする（`Harness::set_safe_area`）。
     pub(crate) safe_area_override: Option<sabitori_core::Edges<f32>>,
     renderer: Option<GpuRenderer>,
@@ -1235,6 +1238,21 @@ impl TextSelection {
 }
 
 impl<A: DeclarativeApp> AppState<A> {
+    /// `title()` が主窓の題と食い違っていたら付け直す。
+    ///
+    /// 題は窓を作る時にしか渡していなかったので、開いている物の名前を題に出すアプリ
+    /// (ファイラ・エディタ) で、ミッションコントロールや Dock の窓一覧が起動時の題の
+    /// ままだった。比べるのは文字列 1 本なので毎周回でよい。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_title(&mut self) {
+        let Some(w) = self.window.as_ref() else { return };
+        let title = self.app.title();
+        if title != self.window_title {
+            w.set_title(title);
+            self.window_title = title.to_string();
+        }
+    }
+
     /// OS から渡されたパスをアプリへ (macOS のみ。[`DeclarativeApp::on_open_paths`])。
     /// 主窓ができるまでは溜めたまま待つ — 起動時の分を窓のない状態で渡さない。
     fn deliver_open_paths(&mut self) {
@@ -1267,6 +1285,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
         let mut attrs = WindowAttributes::default().with_title(self.app.title());
+        self.window_title = self.app.title().to_string();
         // iOS は `size()` / `min_size()` を渡さない。winit は iOS で要求サイズを**そのまま
         // 画面の枠**に使うので、渡すと機種に関係なく要求した大きさに固定され、大きい画面では
         // 右と下が黒く抜ける（iPhone 17 Pro Max で 390×844 の枠に描かれていた）。渡さなければ
@@ -2102,6 +2121,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // `desired_focus` の反映は `advance` / `build_frame` の中 (#28)。
         // ここに書くと Harness からは一度も通らない。
         self.advance(dt);
+        // tick やイベントで題が変わっていたら主窓へ。
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_title();
         // Displays can appear, vanish, or be re-arranged between any
         // two frames. Checked right after `advance` so the app has just
         // had the chance to notice and raise the flag, and before the
@@ -2583,6 +2605,8 @@ impl<A: DeclarativeApp> AppState<A> {
             app,
             dirty: true,
             window: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            window_title: String::new(),
             safe_area_override: None,
             renderer: None,
             text_renderer: None,
