@@ -472,6 +472,47 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.release_primary();
     }
 
+    /// 外 (Finder など) からファイルを持ってきて `(x, y)` の上に置く (まだ落とさない)。
+    ///
+    /// 実機と同じく `on_file_hover` が 1 ファイルずつ届き、ドラッグの間は `ctx.drag` に
+    /// [`FILE_DRAG`](sabitori_core::FILE_DRAG) として出る (`over_drop_zone` は `(x, y)` の下の
+    /// `.droppable()`)。実機は OS にカーソルを聞くが、Harness には窓が無いので渡した位置を使う。
+    /// 見た目を確かめるなら続けて [`Self::frame`]。
+    pub fn hover_files(&mut self, paths: &[std::path::PathBuf], x: f32, y: f32) {
+        for p in paths {
+            self.state.file_hovered(p.clone());
+        }
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+    }
+
+    /// 持ってきているファイルを `(x, y)` へ動かす (落とさない)。
+    pub fn move_file_hover(&mut self, x: f32, y: f32) {
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+    }
+
+    /// 外から持ってきたファイルを `(x, y)` で落とす。
+    ///
+    /// 実機と同じく 1 ファイルずつ届け、周回の終わりにまとめて 1 回で
+    /// `on_file_drop_at(paths, 落とした所の drop zone)` を呼ぶ。
+    pub fn drop_files(&mut self, paths: &[std::path::PathBuf], x: f32, y: f32) {
+        for p in paths {
+            self.state.file_dropped(p.clone());
+        }
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+        self.state.flush_file_drop();
+    }
+
+    /// 外から持ってきたファイルを、落とさずに窓の外へ出す。
+    pub fn cancel_file_hover(&mut self) {
+        self.state.file_hover_cancelled();
+    }
+
     /// 窓のつかみどころ (`.window_drag()`) を押して頼まれた窓の操作を取り出す。
     /// 本物の窓ではランタイムがその場で窓へ渡すが、Harness には窓が無いので
     /// ここに残る。取り出すと空になる。
