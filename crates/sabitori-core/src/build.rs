@@ -1498,17 +1498,26 @@ fn emit_commands(
 ) {
     let layer = parent_layer.max(element.layer);
     let clip_into_layer = (!in_overlay && !element.overlay && layer > parent_layer).then_some(parent_clip).flatten();
-    if let Some(c) = clip_into_layer {
-        render_lists.entry(layer).or_default().commands.push(RenderCommand::PushClip(c));
-    }
+    // 切り抜きを積んだ直後の長さ。中身が何も積まなければ (見えない要素) 積んだ切り抜きを
+    // 取り下げる — 空の PushClip / PopClip だけで層ができ、GPU に 1 回余計に出すため。
+    let pushed_len = clip_into_layer.map(|c| {
+        let list = render_lists.entry(layer).or_default();
+        list.commands.push(RenderCommand::PushClip(c));
+        list.commands.len()
+    });
     emit_commands_inner(
         taffy, element, taffy_node, parent_x, parent_y, parent_opacity, render_lists, overlay_list,
         hit_regions, overlay_hit_regions, scroll_measures, element_counter, in_overlay, parent_layer,
         parent_no_select, parent_scale, parent_clip, parent_disabled, probes, probe_positions,
         anchor_positions, parent_scroll, parent_owner,
     );
-    if clip_into_layer.is_some() {
-        render_lists.entry(layer).or_default().commands.push(RenderCommand::PopClip);
+    if let Some(len) = pushed_len {
+        let list = render_lists.entry(layer).or_default();
+        if list.commands.len() == len {
+            list.commands.pop();
+        } else {
+            list.commands.push(RenderCommand::PopClip);
+        }
     }
 }
 
@@ -4703,6 +4712,18 @@ mod layer_tests {
         assert_eq!(*n, 2);
         assert!(matches!(list.commands.first(), Some(RenderCommand::PushClip(r)) if r.size.width <= 50.0 && r.size.height <= 50.0), "{:?}", list.commands.first());
         assert!(matches!(list.commands.last(), Some(RenderCommand::PopClip)));
+    }
+
+    /// 何も描かない要素の層上げは、層を作らない (切り抜きだけの空の層で GPU に余計に出さない)。
+    #[test]
+    fn invisible_raised_element_makes_no_layer() {
+        let root = div().w(Px(200.0)).h(Px(200.0)).overflow(Overflow::Hidden).child(
+            div().w(Px(0.0)).h(Px(0.0)).overflow(Overflow::Hidden).layer(1).child(
+                div().w(Px(50.0)).h(Px(50.0)).bg(GREEN),
+            ),
+        );
+        let b = build_tree(&root, 200.0, 200.0);
+        assert!(b.layer_lists.is_empty(), "{:?}", b.layer_lists);
     }
 
     /// 層 1 以上を寄せると、中身は層 0 の後ろに付く (1 層でしか描かない経路用)。

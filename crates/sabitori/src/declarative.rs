@@ -2058,7 +2058,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let mut ir = self.image_renderer.take();
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
-                    renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
+                    // goo も層ごとに (間の層の goo を落とさない)。
+                    renderer.set_goo_layers(
+                        std::iter::once(base_lists.goo.clone())
+                            .chain(mids.iter().map(|(_, l)| l.goo.clone()))
+                            .chain(std::iter::once(overlay_lists.goo.clone()))
+                            .collect(),
+                    );
                     // 層 0 → 間の層 → 上掛け。矩形の数だけでは層の有無を判定できない。地を
                     // 塗っていない div は矩形を出さないので、画像だけ / 文字だけの層が丸ごと落ちる (#44)。
                     let mut layers: Vec<(&[sabitori_gpu::RectInstance], bool)> = vec![(&base_rects, true)];

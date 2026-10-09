@@ -22,10 +22,18 @@
   (と子孫) は層 0 (`render_list`) を描き終えてから、上掛け (`overlay`) より前に描く。
   `.overlay()` と違って位置は変えず、祖先の切り抜き (`overflow: hidden`) はその層にも効く。
   押す判定も手前の層が先。層ごとに GPU に 1 回出すので、必要なときだけ分けること。
+  層 1 以上の文字は、まだ選択・ページ内検索のハイライト・本文中のリンク・読み上げの
+  対象にならない。
 - `BuildResult::layer_lists` (層 1 以上の描画リスト)、`BuildResult::all_commands()`
   (全部の層の命令を描く順に)、`BuildResult::flatten_layers()` (層 1 以上を層 0 に寄せる)。
-- `GpuRenderer::render_layers` — 層を下から順に描く (層ごとに 1 回出す)。
+- `GpuRenderer::render_layers` — 層を下から順に描く (層ごとに 1 回出す)。goo は
+  `GpuRenderer::set_goo_layers` で層ごとに渡す。
 - `HitRegion::layer`。
+
+### Fixed
+
+- **外付けの上掛けの木 (`DeclarativeApp::overlay_view`) の中に書いた `.overlay()` が描かれていなかった。**
+  外付けの木を上掛けに積むとき、その木の `render_list` だけを取り込んでいた。
 
 ### Changed
 
