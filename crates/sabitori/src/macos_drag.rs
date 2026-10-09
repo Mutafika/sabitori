@@ -6,7 +6,7 @@ use std::path::Path;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, AllocAnyThread, MainThreadOnly, msg_send};
+use objc2::{define_class, AllocAnyThread, DefinedClass, MainThreadOnly, msg_send};
 use objc2_app_kit::*;
 use objc2_foundation::*;
 
@@ -18,6 +18,8 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "SabitoriDragSource"]
+    // 受け側に許す操作 (写す / 移す…)。
+    #[ivars = NSDragOperation]
     struct DragSource;
 
     unsafe impl NSObjectProtocol for DragSource {}
@@ -29,15 +31,30 @@ define_class!(
             _session: &NSDraggingSession,
             _context: NSDraggingContext,
         ) -> NSDragOperation {
-            NSDragOperation::Copy
+            self.operations()
         }
     }
 );
 
 impl DragSource {
-    fn new(mtm: objc2::MainThreadMarker) -> Retained<Self> {
-        unsafe { msg_send![Self::alloc(mtm), init] }
+    fn new(mtm: objc2::MainThreadMarker, operations: NSDragOperation) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(operations);
+        unsafe { msg_send![super(this), init] }
     }
+
+    fn operations(&self) -> NSDragOperation {
+        *self.ivars()
+    }
+}
+
+/// 写すことだけを許す (受け側が Finder でも写す)。
+fn copy_only() -> NSDragOperation {
+    NSDragOperation::Copy
+}
+
+/// 写すか移すかを受け側に任せる (Finder は自分の窓どうしと同じ決め方をする)。
+fn copy_or_move() -> NSDragOperation {
+    NSDragOperation::Copy | NSDragOperation::Move | NSDragOperation::Generic
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +115,21 @@ pub fn copy_paths_to_clipboard(paths: &[&Path]) {
 
 /// Start an OS-level file drag session from a winit window.
 /// The files can be dropped onto any app that accepts file drops.
+///
+/// 受け側には**写すことだけ**を許す — Finder に落としても、同じボリュームでも写す
+/// (元を残したいクリップボードの履歴などに向く)。ファイラのように元の場所から
+/// 持ち出すなら [`start_file_drag_movable`]。
 pub fn start_file_drag(window: &winit::window::Window, paths: &[&Path]) -> bool {
     start_file_drag_with_preview(window, paths, None)
+}
+
+/// 写すか移すかを受け側に任せる OS のファイルドラッグ (ファイラ向け)。
+///
+/// [`start_file_drag`] と違い移すことも許すので、Finder は自分の窓どうしと同じく
+/// 決める: 同じボリュームなら移し、違えば写す (⌥ で写す、⌘ で移す)。移したときは
+/// 受け側が動かすので、こちらで消す物は無い。
+pub fn start_file_drag_movable(window: &winit::window::Window, paths: &[&Path]) -> bool {
+    start_drag(window, paths, None, copy_or_move())
 }
 
 /// Like [`start_file_drag`], but lets the caller supply the drag
@@ -116,6 +146,15 @@ pub fn start_file_drag_with_preview(
     window: &winit::window::Window,
     paths: &[&Path],
     preview: Option<&[u8]>,
+) -> bool {
+    start_drag(window, paths, preview, copy_only())
+}
+
+fn start_drag(
+    window: &winit::window::Window,
+    paths: &[&Path],
+    preview: Option<&[u8]>,
+    operations: NSDragOperation,
 ) -> bool {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -205,7 +244,7 @@ pub fn start_file_drag_with_preview(
         let ns_items: Vec<&NSDraggingItem> = items.iter().map(|i| &**i).collect();
         let ns_array = NSArray::from_slice(&ns_items);
 
-        let source = DragSource::new(mtm);
+        let source = DragSource::new(mtm, operations);
 
         let _session = ns_view.beginDraggingSessionWithItems_event_source(
             &ns_array,
@@ -214,5 +253,22 @@ pub fn start_file_drag_with_preview(
         );
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_drag_source_offers_the_operations_it_was_made_with() {
+        // SAFETY: DragSource は AppKit の UI に触らない NSObject の子。作って ivar を
+        // 読むだけなので、テストのスレッド (main ではない) で作っても害は無い
+        let mtm = unsafe { objc2::MainThreadMarker::new_unchecked() };
+        assert_eq!(DragSource::new(mtm, copy_only()).operations(), NSDragOperation::Copy);
+        let movable = DragSource::new(mtm, copy_or_move()).operations();
+        assert!(movable.contains(NSDragOperation::Copy));
+        assert!(movable.contains(NSDragOperation::Move), "Finder が移せる");
+        assert!(movable.contains(NSDragOperation::Generic), "Finder の既定 (同じボリュームなら移す) を選べる");
     }
 }
