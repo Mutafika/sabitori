@@ -20,7 +20,7 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::bridge::{draw_ui_layer, UiDrawLists, UiRenderers};
+use crate::bridge::{draw_ui_layer_all, draw_ui_layer_from, draw_underlay, UiDrawLists, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
 use sabitori_gpu::RenderPhase;
 
@@ -1983,11 +1983,18 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let has_external_overlay = overlay_build.is_some();
                 let has_internal_overlay = !build_result.overlay_list.commands.is_empty();
                 let has_overlay = has_external_overlay || has_internal_overlay;
+                // 背景の画像 (`Element::underlay`) は矩形より先に描く必要があり、 その
+                // 段階 (`RenderPhase::BaseUnderlay`) は層を分ける描画にしか無い (#126)。
+                let has_underlay = build_result
+                    .render_list
+                    .commands
+                    .iter()
+                    .any(|c| matches!(c, sabitori_core::render_list::RenderCommand::Image(d) if d.underlay));
 
                 // Both branches yield the build the frame was actually drawn
                 // from, so there is exactly one place that stores it — see the
                 // `commit_build` call below.
-                let drawn_build = if has_overlay {
+                let drawn_build = if has_overlay || has_underlay {
                     // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
                     // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
                     crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
@@ -2052,6 +2059,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
                     renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
+                    let mut base_images_used = 0;
                     let _ = renderer.render_layered(
                         &base_rects,
                         &overlay_rects,
@@ -2060,17 +2068,26 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         // overlay が丸ごと落ちる (#44)。
                         !overlay_lists.is_empty(),
                         |phase, pass, globals_bg| {
-                            let lists = match phase {
-                                RenderPhase::BaseText => &base_lists,
-                                RenderPhase::OverlayText => &overlay_lists,
-                            };
                             let mut r = UiRenderers {
                                 images: ir.as_mut(),
                                 rings: rr.as_mut(),
                                 lines: lr.as_mut(),
                                 text: &mut tr,
                             };
-                            draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
+                            match phase {
+                                // 背景の画像は base の矩形より先 (#126)。 使った分の
+                                // 続きから残りの画像を書く。
+                                RenderPhase::BaseUnderlay => {
+                                    base_images_used =
+                                        draw_underlay(&mut r, &base_lists, &device, &queue, pass, globals_bg);
+                                }
+                                RenderPhase::BaseText => draw_ui_layer_from(
+                                    &mut r, &base_lists, &device, &queue, pass, globals_bg, base_images_used,
+                                ),
+                                RenderPhase::OverlayText => {
+                                    draw_ui_layer_all(&mut r, &overlay_lists, &device, &queue, pass, globals_bg)
+                                }
+                            }
                         },
                     );
                     // フレーム境界。テクスチャ LRU の世代をここで進める —
@@ -2138,7 +2155,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                             lines: lr.as_mut(),
                             text: &mut tr,
                         };
-                        draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
+                        draw_ui_layer_all(&mut r, &lists, &device, &queue, pass, globals_bg);
                     });
                     // フレーム境界。テクスチャ LRU の世代をここで進める —
                     // パスごとではなく、全パスを描き終えてから (#43)。
@@ -5343,7 +5360,7 @@ impl<A: DeclarativeApp> AppState<A> {
                         lines: Some(&mut *line_r),
                         text: tr,
                     };
-                    draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
+                    draw_ui_layer_all(&mut r, &lists, &device, &queue, pass, globals_bg);
                 },
             );
             return;
@@ -5355,7 +5372,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 lines: Some(&mut *line_r),
                 text: tr,
             };
-            draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
+            draw_ui_layer_all(&mut r, &lists, &device, &queue, pass, globals_bg);
         });
     }
 }

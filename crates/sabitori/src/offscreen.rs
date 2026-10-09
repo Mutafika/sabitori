@@ -29,7 +29,7 @@ use sabitori_core::element::Element;
 use sabitori_core::Color;
 use sabitori_gpu::wgpu;
 
-use crate::bridge::{draw_ui_layer, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers};
+use crate::bridge::{draw_ui_layer_all, draw_ui_layer_from, draw_underlay, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers};
 
 /// 書き出す紙の指定。
 #[derive(Clone, Copy, Debug)]
@@ -263,14 +263,16 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            ui.draw_base(&mut pass);
             let mut r = UiRenderers {
                 images: Some(&mut images),
                 rings: Some(&mut rings),
                 lines: Some(&mut lines),
                 text: &mut text,
             };
-            draw_ui_layer(&mut r, &base_lists, &device, &queue, &mut pass, ui.globals_bind_group());
+            // 背景の画像は矩形より先 (#126)、 残りの画像はその続きから。
+            let used = draw_underlay(&mut r, &base_lists, &device, &queue, &mut pass, ui.globals_bind_group());
+            ui.draw_base(&mut pass);
+            draw_ui_layer_from(&mut r, &base_lists, &device, &queue, &mut pass, ui.globals_bind_group(), used);
         }
         queue.submit(std::iter::once(encoder.finish()));
     }
@@ -298,7 +300,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
                 lines: Some(&mut lines),
                 text: &mut text,
             };
-            draw_ui_layer(&mut r, &overlay_lists, &device, &queue, &mut pass, ui.globals_bind_group());
+            draw_ui_layer_all(&mut r, &overlay_lists, &device, &queue, &mut pass, ui.globals_bind_group());
         }
         queue.submit(std::iter::once(encoder.finish()));
     }

@@ -321,6 +321,8 @@ pub struct ImageDraw {
     pub opacity: f32,
     /// How the image fills the rect.
     pub object_fit: ObjectFit,
+    /// 同じ層の矩形より先に描く (背景の画像)。
+    pub underlay: bool,
 }
 
 /// A complete render list: the output of building an element tree.

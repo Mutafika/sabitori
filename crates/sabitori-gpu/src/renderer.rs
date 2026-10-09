@@ -171,6 +171,9 @@ pub(crate) fn pick_limits(baseline: wgpu::Limits, available: wgpu::Limits) -> wg
 /// Identifies which phase of layered rendering the draw callback is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderPhase {
+    /// Draw base-layer underlay images (before base rects) — background
+    /// images that rects sit on top of (`Element::underlay`).
+    BaseUnderlay,
     /// Draw base-layer text (after base rects, before overlay rects).
     BaseText,
     /// Draw overlay-layer text (after overlay rects).
@@ -1086,6 +1089,7 @@ impl GpuRenderer {
     /// Render with two layers: base and overlay.
     ///
     /// Draw order within a single render pass:
+    ///   0. caller draws base underlay images (phase `RenderPhase::BaseUnderlay`)
     ///   1. base rects (instanced draw)
     ///   2. caller draws base text (via `draw_fn`, phase `RenderPhase::BaseText`)
     ///   3. overlay rects (instanced draw, same pipeline)
@@ -1171,6 +1175,7 @@ impl GpuRenderer {
                     occlusion_query_set: None,
                 });
 
+                draw_fn(RenderPhase::BaseUnderlay, &mut pass, &self.globals_bind_group);
                 self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
 
                 draw_fn(RenderPhase::BaseText, &mut pass, &self.globals_bind_group);
@@ -1450,6 +1455,7 @@ impl GpuRenderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                draw_fn(RenderPhase::BaseUnderlay, &mut pass, &self.globals_bind_group);
                 self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
                 draw_fn(RenderPhase::BaseText, &mut pass, &self.globals_bind_group);
             }
