@@ -368,7 +368,22 @@ pub trait DeclarativeApp: 'static {
     fn take_clear_text_selection(&mut self) -> bool { false }
 
     /// Called when files are dropped onto the window from another app/window.
+    ///
+    /// 1 回のドロップ分をまとめて 1 回で渡す (winit は 1 ファイルずつ届けるので、
+    /// ランタイムが溜めて周回の終わりに渡す)。落とした所の drop zone も欲しければ
+    /// [`Self::on_file_drop_at`] を書く。
     fn on_file_drop(&mut self, _paths: Vec<std::path::PathBuf>) {}
+
+    /// 外から落とされたファイル (1 回のドロップ分) と、落とした所にあった drop zone
+    /// (`.droppable()` の id。無ければ `None`)。
+    ///
+    /// ドラッグの最中は `ctx.drag` に [`FILE_DRAG`](sabitori_core::FILE_DRAG) として出て、
+    /// `over_drop_zone` がカーソルの下の drop zone を指す — 窓の中のドラッグと同じ書き方で
+    /// 入れ先を光らせられる。winit はドラッグ中にカーソルの位置を送らないので、位置は
+    /// macOS だけ OS に聞いて取る (他の OS では `None`)。既定は [`Self::on_file_drop`] へ渡す。
+    fn on_file_drop_at(&mut self, paths: Vec<std::path::PathBuf>, _target_id: Option<&str>) {
+        self.on_file_drop(paths);
+    }
 
     /// Called when files are hovering over the window (drag from outside).
     fn on_file_hover(&mut self, _path: std::path::PathBuf) {}
@@ -1102,6 +1117,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Drag/scroll state of the primary (first) touch. Extra fingers still emit
     /// `InputEvent::Pointer*` but don't steer this flow.
     touch_drag: Option<TouchDrag>,
+    /// 外から持ち込まれているファイルのドラッグ (`HoveredFile` から、落とされるか外れるまで)。
+    pub(crate) file_drag: Option<FileDrag>,
     /// 選択の両端につまみを描くか。指で選んだ選択だけ (#108)。マウスで選んだ
     /// ときは描かない。
     selection_handles: bool,
@@ -1237,7 +1254,94 @@ impl TextSelection {
     }
 }
 
+/// 外 (Finder など) から持ち込まれているファイルのドラッグ。
+#[derive(Default)]
+pub(crate) struct FileDrag {
+    /// 窓の中のカーソル (論理 px)。winit はドラッグ中に `CursorMoved` を送らないので、
+    /// macOS は OS に聞いて毎周回取り直す。分からなければ `None` (落とし先も無し)。
+    pub(crate) pos: Option<(f32, f32)>,
+    /// 届いた `DroppedFile`。winit は 1 ファイルずつ送るので溜め、周回の終わりにまとめて渡す。
+    pub(crate) dropped: Vec<std::path::PathBuf>,
+}
+
 impl<A: DeclarativeApp> AppState<A> {
+    /// 外からのファイルが窓の上に来た (winit は 1 ファイルずつ送る)。
+    pub(crate) fn file_hovered(&mut self, path: std::path::PathBuf) {
+        if self.file_drag.is_none() {
+            self.file_drag = Some(FileDrag::default());
+            self.poll_file_drag_pos();
+        }
+        self.app.on_file_hover(path);
+        self.dirty = true;
+    }
+
+    /// 外からのファイルが落とされた (1 ファイルずつ)。位置は落とした瞬間のものを使う。
+    pub(crate) fn file_dropped(&mut self, path: std::path::PathBuf) {
+        let first = self.file_drag.as_ref().is_none_or(|d| d.dropped.is_empty());
+        if first {
+            self.file_drag.get_or_insert_with(FileDrag::default);
+            self.poll_file_drag_pos();
+        }
+        if let Some(d) = self.file_drag.as_mut() {
+            d.dropped.push(path);
+        }
+    }
+
+    /// 外からのファイルが窓から出た (落とされずに)。
+    pub(crate) fn file_hover_cancelled(&mut self) {
+        // 落とされた分が渡る前なら、それは残す (渡すのは周回の終わり)
+        if self.file_drag.as_ref().is_some_and(|d| d.dropped.is_empty()) {
+            self.file_drag = None;
+        }
+        self.app.on_file_hover_cancelled();
+        self.dirty = true;
+    }
+
+    /// 溜まった `DroppedFile` を、落とした所の drop zone と一緒にアプリへ (1 回の
+    /// ドロップ分まとめて)。渡したら `true`。
+    pub(crate) fn flush_file_drop(&mut self) -> bool {
+        if self.file_drag.as_ref().is_none_or(|d| d.dropped.is_empty()) {
+            return false;
+        }
+        let target = self.file_drag_zone();
+        let paths = self.file_drag.take().map(|d| d.dropped).unwrap_or_default();
+        self.app.on_file_drop_at(paths, target.as_deref());
+        self.dirty = true;
+        true
+    }
+
+    /// ドラッグ中のカーソルを OS に聞き直す (macOS)。下の drop zone が変われば描き直す
+    /// (入れ先の光を動かす)。
+    fn poll_file_drag_pos(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(w) = self.window.as_ref() else { return };
+            if self.file_drag.is_none() {
+                return;
+            }
+            let pos = crate::macos_drag::get_mouse_position(w);
+            let before = self.file_drag_zone();
+            if let Some(d) = self.file_drag.as_mut() {
+                d.pos = pos;
+            }
+            if self.file_drag_zone() != before {
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// 外からのドラッグのカーソルの下にある drop zone。
+    fn file_drag_zone(&self) -> Option<String> {
+        let (x, y) = self.file_drag.as_ref()?.pos?;
+        let pt = sabitori_core::Point::new(x, y);
+        self.last_build
+            .as_ref()?
+            .hit_regions
+            .iter()
+            .find(|r| r.drop_zone && r.rect.contains(pt))
+            .and_then(|r| r.id.clone())
+    }
+
     /// `title()` が主窓の題と食い違っていたら付け直す。
     ///
     /// 題は窓を作る時にしか渡していなかったので、開いている物の名前を題に出すアプリ
@@ -1660,15 +1764,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let y = touch.location.y as f32 / s;
                 self.handle_touch(touch.phase, touch.id, x, y);
             }
-            WindowEvent::DroppedFile(path) => {
-                self.app.on_file_drop(vec![path]);
-            }
-            WindowEvent::HoveredFile(path) => {
-                self.app.on_file_hover(path);
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.app.on_file_hover_cancelled();
-            }
+            WindowEvent::DroppedFile(path) => self.file_dropped(path),
+            WindowEvent::HoveredFile(path) => self.file_hovered(path),
+            WindowEvent::HoveredFileCancelled => self.file_hover_cancelled(),
             WindowEvent::ModifiersChanged(mods) => {
                 let state = mods.state();
                 self.set_modifiers(Modifiers {
@@ -2124,6 +2222,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // tick やイベントで題が変わっていたら主窓へ。
         #[cfg(not(target_arch = "wasm32"))]
         self.sync_title();
+        // 外からのファイルのドラッグ: 落とされた分をまとめて渡すか、カーソルを追う。
+        if !self.flush_file_drop() {
+            self.poll_file_drag_pos();
+        }
         // Displays can appear, vanish, or be re-arranged between any
         // two frames. Checked right after `advance` so the app has just
         // had the chance to notice and raise the flag, and before the
@@ -2635,6 +2737,7 @@ impl<A: DeclarativeApp> AppState<A> {
             primary_input: PrimaryInput::None,
             active_touches: std::collections::HashMap::new(),
             touch_drag: None,
+            file_drag: None,
             pinch: None,
             trackpad_pinch: None,
             clicks: sabitori_input::ClickCounter::new(),
@@ -2759,6 +2862,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     .and_then(|r| r.id.clone())
             });
             Some(sabitori_core::DragInfo { data, source_id, over_drop_zone: over })
+        } else if self.file_drag.is_some() {
+            Some(sabitori_core::DragInfo {
+                data: sabitori_core::FILE_DRAG.to_string(),
+                source_id: None,
+                over_drop_zone: self.file_drag_zone(),
+            })
         } else {
             None
         };
