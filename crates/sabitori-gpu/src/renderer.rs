@@ -1107,6 +1107,71 @@ impl GpuRenderer {
     /// every other signal, hit regions and callbacks included, still correct.
     /// Tooltips and context menus survived only because both happen to set a
     /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
+    /// 層を下から順に描く (層ごとに 1 回出す: 文字・画像などの書き込みは 1 回の提出に 1 回しか効かないため)。
+    /// `layers[i]` は (その層の矩形, 矩形以外も描くか)。`draw_fn(i, ..)` が層 i の矩形以外を描く。
+    /// 層 0 は必ず描く (画面を消す)。goo は `set_goo` の base が層 0、overlay が最後の層。
+    pub fn render_layers(
+        &mut self,
+        layers: &[(&[RectInstance], bool)],
+        mut draw_fn: impl FnMut(usize, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let total: usize = layers.iter().map(|(r, _)| r.len()).sum();
+        if total > self.instance_capacity {
+            self.instance_capacity = total.max(1).next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_instance_buffer"),
+                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        // 全部の層の矩形を 1 本のバッファに並べる (starts[i] が層 i の先頭)
+        let mut starts = Vec::with_capacity(layers.len());
+        let mut at = 0usize;
+        for (rects, _) in layers {
+            starts.push(at);
+            if !rects.is_empty() {
+                let offset = (at * std::mem::size_of::<RectInstance>()) as u64;
+                self.queue.write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(rects));
+            }
+            at += rects.len();
+        }
+        let last = layers.len().saturating_sub(1);
+        let (goo_base, goo_last) = self.upload_goo(starts.get(last).copied().unwrap_or(0) as u32);
+        let output = self.acquire_drawable()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        for (i, (rects, has_content)) in layers.iter().enumerate() {
+            let goo: &[GooMark] = if i == 0 { &goo_base } else if i == last { &goo_last } else { &[] };
+            if i > 0 && rects.is_empty() && !has_content && goo.is_empty() {
+                continue;
+            }
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("sabitori_layer_encoder"),
+            });
+            {
+                let load = if i == 0 { wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }) } else { wgpu::LoadOp::Load };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("sabitori_layer_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                let s = starts[i] as u32;
+                self.draw_rects(&mut pass, s..s + rects.len() as u32, goo);
+                draw_fn(i, &mut pass, &self.globals_bind_group);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        self.capture_if_requested(&output.texture);
+        output.present();
+        Ok(())
+    }
+
     pub fn render_layered(
         &mut self,
         base_rects: &[RectInstance],
