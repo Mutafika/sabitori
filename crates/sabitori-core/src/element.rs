@@ -1101,6 +1101,9 @@ pub struct Element {
     /// When true, this element (and all its children) renders on the overlay
     /// layer — drawn after all base-layer content so it appears on top.
     pub overlay: bool,
+    /// 描く層 (0 が普通の層、大きいほど手前)。子孫は親の層を下回らない。
+    /// 上掛け (`overlay`) はどの番号よりも手前。[`Element::layer`] を参照。
+    pub layer: u8,
     /// Tooltip text shown on hover after a short delay.
     pub tooltip: Option<String>,
     /// Drag payload data. When set, this element can be dragged.
@@ -1527,6 +1530,7 @@ pub fn div() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1648,6 +1652,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1688,6 +1693,7 @@ pub fn polyline() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1743,6 +1749,7 @@ pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1789,6 +1796,7 @@ pub fn arc() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1819,6 +1827,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1882,6 +1891,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
             kind: TransitionKind::default(),
         }],
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -3466,6 +3476,20 @@ impl Element {
         self.style.position = Position::Absolute;
         self.style.inset_top = Dimension::Px(0.0);
         self.style.inset_left = Dimension::Px(0.0);
+        self
+    }
+
+    /// この要素と子孫を層 `n` に描く (0 が普通の層、大きいほど手前)。
+    ///
+    /// 1 つの層の中は「矩形 → 画像 → … → 文字」の順にまとめて描くので、同じ層で重なると
+    /// **下にある要素の文字が、上にある要素の背景の上に出る**。重なって上に来るもの
+    /// (z-index の高い箱・浮いた札) は番号を上げて別の層にすれば、下の層を描き終えてから
+    /// 描かれる。層ごとに 1 回 GPU に出すので、必要なときだけ分けること。
+    ///
+    /// `.overlay()` と違って位置は変えない。祖先の切り抜き (`overflow: hidden`) はそのまま効く。
+    /// 押す判定も手前の層が先。上掛け (`overlay`) はどの番号よりも手前。
+    pub fn layer(mut self, n: u8) -> Self {
+        self.layer = n;
         self
     }
 

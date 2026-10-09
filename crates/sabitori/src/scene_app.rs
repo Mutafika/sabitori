@@ -1359,6 +1359,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 // single-pass path (cheaper, no extra encoder).
                 // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
                 self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
+                // 3D シーンの経路は 2 層しか描かない: 層 1 以上は層 0 に寄せる (中身は消さない)
+                build_result.flatten_layers();
                 let has_external = overlay_build.is_some();
                 let has_internal = !build_result.overlay_list.commands.is_empty();
                 let has_overlay = has_external || has_internal;

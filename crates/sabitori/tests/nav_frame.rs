@@ -243,7 +243,7 @@ fn admin(app: Admin, width: f32) -> Harness<Admin> {
 /// 描かれた文字のうち、中身がちょうど `s` のもの。
 fn exact_texts(h: &Harness<Admin>, s: &str) -> usize {
     let b = h.build();
-    b.render_list.commands.iter().chain(&b.overlay_list.commands)
+    b.all_commands()
         .filter(|c| matches!(c, RenderCommand::Text(t) if &*t.content == s))
         .count()
 }

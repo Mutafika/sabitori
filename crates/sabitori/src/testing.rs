@@ -610,10 +610,7 @@ impl<A: DeclarativeApp> Harness<A> {
     pub fn text_rect(&self, needle: &str) -> Option<Rect> {
         let build = self.build();
         build
-            .render_list
-            .commands
-            .iter()
-            .chain(build.overlay_list.commands.iter())
+            .all_commands()
             .find_map(|c| match c {
                 RenderCommand::Text(t) if t.content.contains(needle) => Some(Rect::new(
                     t.position.x,
@@ -651,10 +648,7 @@ impl<A: DeclarativeApp> Harness<A> {
     pub fn drawn_text(&self, needle: &str) -> Option<String> {
         let build = self.build();
         let t = build
-            .render_list
-            .commands
-            .iter()
-            .chain(build.overlay_list.commands.iter())
+            .all_commands()
             .find_map(|c| match c {
                 RenderCommand::Text(t) if t.content.contains(needle) => Some(t),
                 _ => None,
