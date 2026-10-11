@@ -1030,3 +1030,90 @@ fn set_safe_area_reaches_the_view() {
     h.frame();
     assert_eq!(h.app().seen.get(), sabitori::Edges::new(62.0, 0.0, 34.0, 0.0));
 }
+
+// ---------------------------------------------------------------------------
+// context menu (`overlay_view` から返す)
+// ---------------------------------------------------------------------------
+
+/// 右クリックした物で `ContextMenuState` を開き、`overlay_view` から返すアプリ
+/// (lustar と同じ形)。
+struct MenuApp {
+    menu: sabitori_widgets::ContextMenuState,
+    right_clicked: Vec<String>,
+    clicked: Vec<String>,
+}
+
+impl sabitori::DeclarativeApp for MenuApp {
+    fn view(&self, _ctx: &ViewContext) -> Element {
+        div()
+            .w_full()
+            .h_full()
+            .child(div().id("a").w(Px(100.0)).h(Px(40.0)))
+            .child(div().h(Px(160.0)))
+            .child(div().id("b").w(Px(400.0)).h(Px(40.0)))
+    }
+
+    fn overlay_view(&self, ctx: &ViewContext) -> Option<Element> {
+        let c = sabitori::Color::from_hex;
+        self.menu.to_overlay(
+            ctx.width,
+            ctx.height,
+            ctx.hovered.as_deref(),
+            c("#202028"),
+            c("#404050"),
+            c("#f0f0f0"),
+            c("#a0a0a0"),
+            c("#303040"),
+        )
+    }
+
+    fn on_right_click(&mut self, id: &str, x: f32, y: f32) {
+        use sabitori_widgets::MenuItemDef as M;
+        self.right_clicked.push(id.to_string());
+        self.menu.show(x, y, vec![M::action("menu:copy", "Copy"), M::action("menu:paste", "Paste")]);
+    }
+
+    fn on_click(&mut self, id: &str) {
+        self.clicked.push(id.to_string());
+        self.menu.dismiss();
+    }
+}
+
+fn menu_app() -> Harness<MenuApp> {
+    let app = MenuApp {
+        menu: sabitori_widgets::ContextMenuState::new(),
+        right_clicked: Vec::new(),
+        clicked: Vec::new(),
+    };
+    let mut h = Harness::new(app, 400.0, 300.0);
+    h.frame();
+    h
+}
+
+/// ★**メニューを開いたまま別の物を右クリックすると、その物に届く** (OS のメニューと同じく
+/// 開き直せる)。幕は窓いっぱいなので、右クリックまで幕が受けていた間は `ctx-backdrop` が
+/// 届き、ファイラなら右クリックしたファイルが選ばれず空白のメニューが出ていた。
+#[test]
+fn right_clicking_another_thing_with_the_menu_open_reaches_it() {
+    let mut h = menu_app();
+    h.right_click("a");
+    h.frame();
+    assert!(h.text_rect("Copy").is_some(), "menu が出ていない");
+
+    let b = h.rect_of("b").unwrap();
+    h.right_click_at(b.origin.x + 200.0, b.origin.y + 20.0);
+    h.frame();
+    assert_eq!(h.app().right_clicked, ["a", "b"], "幕に当たっている");
+}
+
+/// 左クリックは今までどおり幕が受ける (外を押したら閉じるだけで、下の物は押されない)。
+#[test]
+fn a_left_click_outside_the_menu_still_lands_on_the_backdrop() {
+    let mut h = menu_app();
+    h.right_click("a");
+    h.frame();
+
+    let b = h.rect_of("b").unwrap();
+    h.click_at(b.origin.x + 200.0, b.origin.y + 20.0);
+    assert_eq!(h.app().clicked, ["ctx-backdrop"]);
+}

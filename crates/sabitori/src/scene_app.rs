@@ -758,19 +758,9 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     && !consumed
                 {
                     if let Some(ref build) = self.last_build {
-                        let mut found = false;
-                        for region in &build.hit_regions {
-                            if region.clickable && region.rect.contains(pos) {
-                                if let Some(ref id) = region.id {
-                                    self.app.on_right_click(id, self.mouse_x, self.mouse_y);
-                                    found = true;
-                                }
-                                break;
-                            }
-                        }
-                        if !found {
-                            self.app.on_right_click("", self.mouse_x, self.mouse_y);
-                        }
+                        // 宛先は declarative と同じ 1 本 (メニューの幕は飛ばす)。
+                        let id = crate::runtime_shared::right_click_target(build, pos.x, pos.y);
+                        self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
                     }
                 }
             }
