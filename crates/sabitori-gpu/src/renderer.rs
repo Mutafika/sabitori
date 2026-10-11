@@ -215,7 +215,8 @@ pub struct GpuRenderer {
     /// Goo (smooth-union backgrounds) — drawn between rects, see [`GooRenderer`].
     goo_renderer: GooRenderer,
     /// Goo queued by [`GpuRenderer::set_goo`] for the next render call.
-    pending_goo: [Vec<GooSlot>; 2],
+    /// 層ごと (`set_goo` なら [地, 上掛け]、`set_goo_layers` なら描く層の数だけ)。
+    pending_goo: Vec<Vec<GooSlot>>,
     /// 次に描くフレームを読み戻す ([`GpuRenderer::request_capture`])。
     capture_pending: bool,
     /// 読み戻したフレーム ([`GpuRenderer::take_captured`] で取り出す)。
@@ -557,7 +558,7 @@ impl GpuRenderer {
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
             goo_renderer,
-            pending_goo: [Vec::new(), Vec::new()],
+            pending_goo: Vec::new(),
             capture_pending: false,
             captured: None,
         })
@@ -761,7 +762,7 @@ impl GpuRenderer {
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
             goo_renderer,
-            pending_goo: [Vec::new(), Vec::new()],
+            pending_goo: Vec::new(),
             capture_pending: false,
             captured: None,
         }
@@ -952,33 +953,32 @@ impl GpuRenderer {
     /// passed to that call. Consumed by the call; single-layer render
     /// functions (`render_with`, `render_scene_then_ui`) draw only `base`.
     pub fn set_goo(&mut self, base: Vec<GooSlot>, overlay: Vec<GooSlot>) {
-        self.pending_goo = [base, overlay];
+        self.pending_goo = vec![base, overlay];
+    }
+
+    /// [`GpuRenderer::render_layers`] 用: 層ごとの goo (`layers[i]` が層 i)。
+    /// 各 `before_rect` はその層の矩形の並びの中の位置。
+    pub fn set_goo_layers(&mut self, layers: Vec<Vec<GooSlot>>) {
+        self.pending_goo = layers;
     }
 
     /// Upload the queued goo and return each layer's draw marks, with
     /// overlay positions shifted by `overlay_rect_base` into the shared
     /// rect buffer's index space.
     fn upload_goo(&mut self, overlay_rect_base: u32) -> (Vec<GooMark>, Vec<GooMark>) {
-        let [base, overlay] = std::mem::take(&mut self.pending_goo);
-        if base.is_empty() && overlay.is_empty() {
-            return (Vec::new(), Vec::new());
+        let mut marks = self.upload_goo_layers(&[0, overlay_rect_base]).into_iter();
+        (marks.next().unwrap_or_default(), marks.next().unwrap_or_default())
+    }
+
+    /// 積んである goo を上げ、層ごとの描く位置を返す。`rect_bases[i]` が層 i の矩形が
+    /// 共有バッファのどこから始まるか。返す `Vec` は層の数だけ (goo の無い層は空)。
+    fn upload_goo_layers(&mut self, rect_bases: &[u32]) -> Vec<Vec<GooMark>> {
+        let layers = std::mem::take(&mut self.pending_goo);
+        let (instances, marks) = goo_marks(&layers, rect_bases);
+        if !instances.is_empty() {
+            self.goo_renderer.upload(&self.device, &self.queue, &instances);
         }
-        let instances: Vec<GooInstance> =
-            base.iter().chain(overlay.iter()).map(|g| g.instance).collect();
-        self.goo_renderer.upload(&self.device, &self.queue, &instances);
-        let marks = |slots: &[GooSlot], at_base: u32, index_base: u32| {
-            let mut marks: Vec<GooMark> = slots
-                .iter()
-                .enumerate()
-                .map(|(i, g)| GooMark { at: at_base + g.before_rect, index: index_base + i as u32 })
-                .collect();
-            // Stable: goo queued at the same position keeps tree order.
-            marks.sort_by_key(|m| m.at);
-            marks
-        };
-        let base_marks = marks(&base, 0, 0);
-        let overlay_marks = marks(&overlay, overlay_rect_base, base.len() as u32);
-        (base_marks, overlay_marks)
+        marks
     }
 
     /// Draw rect instances `range` from the shared instance buffer,
@@ -1083,33 +1083,10 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// Render with two layers: base and overlay.
-    ///
-    /// Draw order within a single render pass:
-    ///   1. base rects (instanced draw)
-    ///   2. caller draws base text (via `draw_fn`, phase `RenderPhase::BaseText`)
-    ///   3. overlay rects (instanced draw, same pipeline)
-    ///   4. caller draws overlay text (via `draw_fn`, phase `RenderPhase::OverlayText`)
-    ///
-    /// Both rect slices are uploaded to the same instance buffer (overlay
-    /// appended after base) so only one buffer is needed.
-    ///
-    /// The `draw_fn` closure is called twice with different [`RenderPhase`]
-    /// values, so the caller can use a single `&mut TextRenderer` without
-    /// borrow-checker issues.
-    /// `overlay_has_content` says whether the overlay layer draws anything
-    /// *other than* rects — images, rings, lines, glyphs. It cannot be derived
-    /// here: those are drawn by `draw_fn`, which is opaque to the renderer.
-    ///
-    /// Gating the overlay pass on `overlay_rects` alone loses whole layers.
-    /// An undecorated `div` emits no rect, so an overlay holding only an image
-    /// (a drag ghost) or only text never opened its pass and vanished — with
-    /// every other signal, hit regions and callbacks included, still correct.
-    /// Tooltips and context menus survived only because both happen to set a
-    /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
     /// 層を下から順に描く (層ごとに 1 回出す: 文字・画像などの書き込みは 1 回の提出に 1 回しか効かないため)。
     /// `layers[i]` は (その層の矩形, 矩形以外も描くか)。`draw_fn(i, ..)` が層 i の矩形以外を描く。
-    /// 層 0 は必ず描く (画面を消す)。goo は `set_goo` の base が層 0、overlay が最後の層。
+    /// 層 0 は必ず描く (画面を消す)。goo は [`GpuRenderer::set_goo_layers`] で層ごとに渡す
+    /// (`set_goo` で渡すと、上掛けの分は層 1 に描かれる)。
     pub fn render_layers(
         &mut self,
         layers: &[(&[RectInstance], bool)],
@@ -1136,12 +1113,12 @@ impl GpuRenderer {
             }
             at += rects.len();
         }
-        let last = layers.len().saturating_sub(1);
-        let (goo_base, goo_last) = self.upload_goo(starts.get(last).copied().unwrap_or(0) as u32);
+        let bases: Vec<u32> = starts.iter().map(|&s| s as u32).collect();
+        let goo_marks = self.upload_goo_layers(&bases);
         let output = self.acquire_drawable()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         for (i, (rects, has_content)) in layers.iter().enumerate() {
-            let goo: &[GooMark] = if i == 0 { &goo_base } else if i == last { &goo_last } else { &[] };
+            let goo: &[GooMark] = &goo_marks[i];
             if i > 0 && rects.is_empty() && !has_content && goo.is_empty() {
                 continue;
             }
@@ -1172,6 +1149,30 @@ impl GpuRenderer {
         Ok(())
     }
 
+    /// Render with two layers: base and overlay.
+    ///
+    /// Draw order within a single render pass:
+    ///   1. base rects (instanced draw)
+    ///   2. caller draws base text (via `draw_fn`, phase `RenderPhase::BaseText`)
+    ///   3. overlay rects (instanced draw, same pipeline)
+    ///   4. caller draws overlay text (via `draw_fn`, phase `RenderPhase::OverlayText`)
+    ///
+    /// Both rect slices are uploaded to the same instance buffer (overlay
+    /// appended after base) so only one buffer is needed.
+    ///
+    /// The `draw_fn` closure is called twice with different [`RenderPhase`]
+    /// values, so the caller can use a single `&mut TextRenderer` without
+    /// borrow-checker issues.
+    /// `overlay_has_content` says whether the overlay layer draws anything
+    /// *other than* rects — images, rings, lines, glyphs. It cannot be derived
+    /// here: those are drawn by `draw_fn`, which is opaque to the renderer.
+    ///
+    /// Gating the overlay pass on `overlay_rects` alone loses whole layers.
+    /// An undecorated `div` emits no rect, so an overlay holding only an image
+    /// (a drag ghost) or only text never opened its pass and vanished — with
+    /// every other signal, hit regions and callbacks included, still correct.
+    /// Tooltips and context menus survived only because both happen to set a
+    /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
     pub fn render_layered(
         &mut self,
         base_rects: &[RectInstance],
@@ -1555,6 +1556,27 @@ impl GpuRenderer {
     }
 }
 
+/// 層ごとの goo を 1 本の並びにし、層ごとの描く位置を返す。`rect_bases[i]` が層 i の
+/// 矩形の先頭。`layers` が `rect_bases` より短ければ、残りの層は goo 無し。
+fn goo_marks(layers: &[Vec<GooSlot>], rect_bases: &[u32]) -> (Vec<GooInstance>, Vec<Vec<GooMark>>) {
+    let mut instances = Vec::new();
+    let mut out = Vec::with_capacity(rect_bases.len());
+    for (i, &at_base) in rect_bases.iter().enumerate() {
+        let slots = layers.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let index_base = instances.len() as u32;
+        let mut marks: Vec<GooMark> = slots
+            .iter()
+            .enumerate()
+            .map(|(j, g)| GooMark { at: at_base + g.before_rect, index: index_base + j as u32 })
+            .collect();
+        // Stable: goo queued at the same position keeps tree order.
+        marks.sort_by_key(|m| m.at);
+        instances.extend(slots.iter().map(|g| g.instance));
+        out.push(marks);
+    }
+    (instances, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{choose_alpha_mode, first_unmet_minimum, pick_limits, UnmetLimit};
@@ -1671,5 +1693,32 @@ mod tests {
             Some("max_texture_dimension_2d"),
             "グリフアトラスは 2048² を張る"
         );
+    }
+
+    /// 層 0 と上掛けの間の層の goo も描く位置を持つ (以前は層 0 と最後の層だけで、
+    /// 間の層に置いた goo は黙って消えていた)。位置は共有バッファでの通し番号。
+    #[test]
+    fn goo_in_a_middle_layer_is_drawn() {
+        use super::{goo_marks, GooSlot};
+        use bytemuck::Zeroable;
+        let slot = |before_rect| GooSlot { before_rect, instance: crate::GooInstance::zeroed() };
+        let layers = vec![vec![slot(1)], vec![slot(0), slot(2)], vec![], vec![slot(0)]];
+        let (instances, marks) = goo_marks(&layers, &[0, 5, 9, 9]);
+        assert_eq!(instances.len(), 4);
+        let at: Vec<Vec<(u32, u32)>> =
+            marks.iter().map(|l| l.iter().map(|m| (m.at, m.index)).collect()).collect();
+        assert_eq!(at, vec![vec![(1, 0)], vec![(5, 1), (7, 2)], vec![], vec![(9, 3)]]);
+    }
+
+    /// 2 層用の `set_goo` (地・上掛け) で渡した分は、層 0 と層 1 に描かれる。
+    #[test]
+    fn two_layer_goo_keeps_its_old_marks() {
+        use super::{goo_marks, GooSlot};
+        use bytemuck::Zeroable;
+        let slot = |before_rect| GooSlot { before_rect, instance: crate::GooInstance::zeroed() };
+        let (_, marks) = goo_marks(&[vec![slot(0)], vec![slot(1)]], &[0, 4]);
+        let at: Vec<Vec<(u32, u32)>> =
+            marks.iter().map(|l| l.iter().map(|m| (m.at, m.index)).collect()).collect();
+        assert_eq!(at, vec![vec![(0, 0)], vec![(5, 1)]]);
     }
 }
