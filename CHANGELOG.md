@@ -15,6 +15,14 @@
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-11
+
+### Changed（破壊的）
+
+- **`HitRegion` に `layer`、`BuildResult` に `layer_lists` を足した** (`Element::layer` 用)。
+  構造体リテラルで組んでいる所はフィールドが要る。どちらもランタイムが組む物で、
+  外で組む用途は想定していない。
+
 ### Added
 
 - **`Element::layer(n)` — 描く層を増やす。** 1 つの層の中は「矩形 → 画像 → … → 文字」の順に
@@ -4426,7 +4434,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/Mutafika/sabitori/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/Mutafika/sabitori/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/Mutafika/sabitori/compare/v0.34.2...v0.35.0
 [0.34.2]: https://github.com/Mutafika/sabitori/compare/v0.34.1...v0.34.2
