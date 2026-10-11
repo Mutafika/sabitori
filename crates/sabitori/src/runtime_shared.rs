@@ -75,6 +75,22 @@ pub(crate) fn hit_id_at(build: &BuildResult, x: f32, y: f32) -> Option<String> {
         .and_then(|r| r.id.clone())
 }
 
+/// 右クリックの宛先 (`on_right_click` に渡す id)。座標を含む最前面の押せる領域の id、
+/// 無ければ `""` (空白)。
+///
+/// `.right_click_through()` の領域 (コンテキストメニューの幕) は飛ばして下を見る。
+/// 開いたまま別の物を右クリックしたら、幕ではなくその物に届く。**2 ランタイムで
+/// 1 本** — 片方だけ飛ばすと、同じアプリが走らせ方で違う動きになる。
+pub(crate) fn right_click_target(build: &BuildResult, x: f32, y: f32) -> String {
+    let pt = Point::new(x, y);
+    build
+        .hit_regions
+        .iter()
+        .find(|r| r.clickable && !r.right_click_through && r.rect.contains(pt))
+        .and_then(|r| r.id.clone())
+        .unwrap_or_default()
+}
+
 /// `Cursor` を winit の `CursorIcon` へ。
 ///
 /// **マッピング表はここ 1 つだけ**にすること。 variant を足した時に片方の
@@ -370,6 +386,37 @@ mod tests {
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), n, "同じ番号が 2 つ残っている");
+    }
+
+    /// ★**メニューを開いたまま別の物を右クリックしたら、その物に届く。** 幕は窓いっぱいの
+    /// 押せる領域なので、飛ばさないと右クリックは全部幕に当たる (ファイラなら、右クリック
+    /// したファイルが選ばれず空白のメニューが出る)。項目の上は項目、何も無い所は `""`。
+    #[test]
+    fn a_right_click_looks_through_a_menu_backdrop() {
+        let mut base = build(
+            &div()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .child(div().id("file").w(Px(400.0)).h(Px(100.0))),
+        );
+        let menu = build(
+            &div()
+                .id("backdrop")
+                .right_click_through()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .child(div().id("menu:open").w(Px(120.0)).h(Px(30.0))),
+        );
+        absorb_overlay(&mut base, Some(menu));
+
+        assert_eq!(right_click_target(&base, 200.0, 50.0), "file", "幕に当たっている");
+        assert_eq!(right_click_target(&base, 10.0, 10.0), "menu:open");
+        assert_eq!(right_click_target(&base, 200.0, 200.0), "");
+        assert_eq!(
+            hit_id_at(&base, 200.0, 50.0).as_deref(),
+            Some("backdrop"),
+            "左クリックは今までどおり幕が受ける (外を押したら閉じる)"
+        );
     }
 
     /// overlay が無ければ何も動かさない。

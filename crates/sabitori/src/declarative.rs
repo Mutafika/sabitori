@@ -3451,14 +3451,8 @@ impl<A: DeclarativeApp> AppState<A> {
             return;
         }
         let Some(build) = self.last_build.as_ref() else { return };
-        // 空白なら `""`。`clickable` は id 付き要素にしか立たないので、当たった
-        // 領域に id が無いことは無いが、無ければ空白扱いに倒す。
-        let id = build
-            .hit_regions
-            .iter()
-            .find(|r| r.clickable && r.rect.contains(position))
-            .and_then(|r| r.id.clone())
-            .unwrap_or_default();
+        // 空白なら `""`。メニューの幕 (`.right_click_through()`) は飛ばして下を見る。
+        let id = crate::runtime_shared::right_click_target(build, position.x, position.y);
         self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
     }
 

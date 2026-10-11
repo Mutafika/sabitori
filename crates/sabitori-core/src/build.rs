@@ -70,6 +70,9 @@ pub struct HitRegion {
     /// 窓のつかみどころ (`.window_drag()`)。ここが押下の最前面なら、ランタイムは
     /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) を始める。
     pub window_drag: bool,
+    /// 右クリックを下へ通す (`.right_click_through()`)。ランタイムは右クリックの
+    /// 宛先を探すときこの領域を飛ばす (左クリックとホバーは受ける)。
+    pub right_click_through: bool,
     /// Cursor preference (set via `.cursor(...)`). `None` means
     /// "no opinion" — runtime falls back to platform default.
     pub cursor: Option<Cursor>,
@@ -1960,6 +1963,7 @@ fn emit_commands_inner(
                 drag_data: if disabled { None } else { element.drag_data.clone() },
                 drop_zone: element.drop_zone && !disabled,
                 window_drag: element.window_drag && !disabled,
+                right_click_through: element.right_click_through,
                 // 無効なら、明示指定を押しのけて NotAllowed。押せないものに
                 // 手のカーソルが出るのが一番紛らわしい。
                 cursor: if disabled { Some(Cursor::NotAllowed) } else { element.cursor },
@@ -4250,6 +4254,24 @@ mod a11y_tests {
         let tab = b.hit_regions.iter().position(|r| r.id.as_deref() == Some("tab")).unwrap();
         assert!(tab < bar, "タブがつかみどころより奥にいる");
         assert!(!region(&b, "tab").window_drag, "子へ印が移っている");
+    }
+
+    /// 右クリックを下へ通す印 (`.right_click_through()`) は、付けた要素の領域にだけ載る。
+    /// 子 (メニューの項目) に移ると、項目の上の右クリックまで下へ抜けてしまう。
+    #[test]
+    fn right_click_through_marks_only_its_own_region() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div()
+                .id("backdrop")
+                .right_click_through()
+                .w(Px(400.0))
+                .h(Px(300.0))
+                .child(div().id("item").w(Px(100.0)).h(Px(30.0))),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+
+        assert!(region(&b, "backdrop").right_click_through);
+        assert!(!region(&b, "item").right_click_through, "子へ印が移っている");
     }
 
     /// 役割とラベルがビルド結果まで運ばれること。 ここに載らないと、
