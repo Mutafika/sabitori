@@ -213,11 +213,13 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let mut lines = sabitori_gpu::LineRenderer::new(&device, format, ui.globals_bind_group_layout());
 
     // 組む。測り手を渡すので、画面と同じ折り返しになる。
-    let build = {
+    let mut build = {
         let cache = std::cell::RefCell::new(MeasureCache::new());
         let measurer = TextRendererMeasurer::new(&mut text, &cache);
         sabitori_core::build::build_tree_measured(view, sheet.width, sheet.height, &measurer)
     };
+    // 画面外の描画は 2 層: 層 1 以上は層 0 に寄せる (中身は消さない)
+    build.flatten_layers();
 
     let (base_rects, base_lists) = UiDrawLists::extract(&build.render_list, &mut text);
     let (overlay_rects, overlay_lists) = UiDrawLists::extract(&build.overlay_list, &mut text);

@@ -88,6 +88,8 @@ pub struct HitRegion {
     /// 素通りしていた。組み込みの menu / modal / dropdown / toast は全部内側なので、
     /// 代用では**どれ 1 つ止まらなかった**。
     pub overlay: bool,
+    /// 描かれた層 ([`Element::layer`])。押す判定は手前の層が先。
+    pub layer: u8,
 }
 
 impl HitRegion {
@@ -177,6 +179,9 @@ pub struct BuildResult {
     pub render_list: RenderList,
     /// Overlay draw commands — rendered after all base content (rects + text).
     pub overlay_list: RenderList,
+    /// `render_list` (層 0) と `overlay_list` の間に描く層 ([`Element::layer`] が 1 以上)。番号の小さい順。
+    /// 各層は、前の層を描き終えてから描く。
+    pub layer_lists: Vec<(u8, RenderList)>,
     /// Hit-testable regions (front to back order for picking).
     pub hit_regions: Vec<HitRegion>,
     /// Measured scroll containers: id → (content_height, viewport_height).
@@ -195,6 +200,23 @@ pub struct BuildResult {
 }
 
 impl BuildResult {
+    /// 全部の層の描画命令を、描く順に (層 0 → `layer_lists` → 上掛け)。
+    pub fn all_commands(&self) -> impl Iterator<Item = &crate::render_list::RenderCommand> {
+        self.render_list
+            .commands
+            .iter()
+            .chain(self.layer_lists.iter().flat_map(|(_, l)| l.commands.iter()))
+            .chain(self.overlay_list.commands.iter())
+    }
+
+    /// 層 1 以上を層 0 の後ろに寄せる。N 層を描かない経路 (3D シーン・画面外・別窓) 用:
+    /// 中身は消えず、重なりの順 (下の文字が透ける) だけが従来どおりになる。
+    pub fn flatten_layers(&mut self) {
+        for (_, l) in std::mem::take(&mut self.layer_lists) {
+            self.render_list.commands.extend(l.commands);
+        }
+    }
+
     /// 掴める帯 ── `.scrollbar_grab(幅)` を書いた面のうち、**いま中身が
     /// 溢れている**物だけ。
     ///
@@ -593,7 +615,9 @@ fn build_tree_impl(
     );
 
     // Phase 3: walk tree, collect absolute positions, emit render commands
-    let mut render_list = RenderList::new();
+    // 層の番号 → 描画リスト (0 が普通の層 = `render_list`)
+    let mut render_lists: std::collections::BTreeMap<u8, RenderList> = std::collections::BTreeMap::new();
+    render_lists.insert(0, RenderList::new());
     let mut overlay_list = RenderList::new();
     let mut hit_regions: Vec<HitRegion> = Vec::new();
     // Overlay subtrees (.overlay() flag) get their hit regions collected
@@ -613,13 +637,14 @@ fn build_tree_impl(
         0.0,
         0.0,
         1.0,
-        &mut render_list,
+        &mut render_lists,
         &mut overlay_list,
         &mut hit_regions,
         &mut overlay_hit_regions,
         &mut scroll_measures,
         &mut element_counter,
         false,
+        0,
         false,
         1.0,
         None,
@@ -634,6 +659,8 @@ fn build_tree_impl(
     // Reverse each list so front-most (last drawn) comes first for picking,
     // then prepend overlay regions — they always pick before base regions.
     hit_regions.reverse();
+    // 手前の層が先 (同じ層の中は描いた順の逆のまま: 安定な並べ替え)
+    hit_regions.sort_by_key(|r| std::cmp::Reverse(r.layer));
     overlay_hit_regions.reverse();
     let mut combined = Vec::with_capacity(overlay_hit_regions.len() + hit_regions.len());
     combined.extend(overlay_hit_regions);
@@ -657,9 +684,12 @@ fn build_tree_impl(
         &mut overflows,
     );
 
+    let render_list = render_lists.remove(&0).unwrap_or_default();
+    let layer_lists: Vec<(u8, RenderList)> = render_lists.into_iter().filter(|(_, l)| !l.commands.is_empty()).collect();
     BuildResult {
         render_list,
         overlay_list,
+        layer_lists,
         hit_regions,
         scroll_measures,
         probe_positions,
@@ -1438,6 +1468,9 @@ fn record_probes(
     }
 }
 
+/// 層の境目 ([`Element::layer`] で番号が上がる要素) では、祖先の切り抜きをその層にも積む
+/// (切り抜きは祖先の層に積まれているので、そのままだと上の層の中身は切られない)。
+#[allow(clippy::too_many_arguments)]
 fn emit_commands(
     taffy: &TaffyTree<TextNodeContext>,
     element: &Element,
@@ -1445,13 +1478,57 @@ fn emit_commands(
     parent_x: f32,
     parent_y: f32,
     parent_opacity: f32,
-    render_list: &mut RenderList,
+    render_lists: &mut std::collections::BTreeMap<u8, RenderList>,
     overlay_list: &mut RenderList,
     hit_regions: &mut Vec<HitRegion>,
     overlay_hit_regions: &mut Vec<HitRegion>,
     scroll_measures: &mut std::collections::HashMap<String, ScrollMeasure>,
     element_counter: &mut usize,
     in_overlay: bool,
+    parent_layer: u8,
+    parent_no_select: bool,
+    parent_scale: f32,
+    parent_clip: Option<Rect>,
+    parent_disabled: bool,
+    probes: &std::collections::HashSet<String>,
+    probe_positions: &mut std::collections::HashMap<String, f32>,
+    anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
+    parent_scroll: (f32, f32),
+    parent_owner: Option<&std::sync::Arc<str>>,
+) {
+    let layer = parent_layer.max(element.layer);
+    let clip_into_layer = (!in_overlay && !element.overlay && layer > parent_layer).then_some(parent_clip).flatten();
+    if let Some(c) = clip_into_layer {
+        render_lists.entry(layer).or_default().commands.push(RenderCommand::PushClip(c));
+    }
+    emit_commands_inner(
+        taffy, element, taffy_node, parent_x, parent_y, parent_opacity, render_lists, overlay_list,
+        hit_regions, overlay_hit_regions, scroll_measures, element_counter, in_overlay, parent_layer,
+        parent_no_select, parent_scale, parent_clip, parent_disabled, probes, probe_positions,
+        anchor_positions, parent_scroll, parent_owner,
+    );
+    if clip_into_layer.is_some() {
+        render_lists.entry(layer).or_default().commands.push(RenderCommand::PopClip);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_commands_inner(
+    taffy: &TaffyTree<TextNodeContext>,
+    element: &Element,
+    taffy_node: taffy::NodeId,
+    parent_x: f32,
+    parent_y: f32,
+    parent_opacity: f32,
+    render_lists: &mut std::collections::BTreeMap<u8, RenderList>,
+    overlay_list: &mut RenderList,
+    hit_regions: &mut Vec<HitRegion>,
+    overlay_hit_regions: &mut Vec<HitRegion>,
+    scroll_measures: &mut std::collections::HashMap<String, ScrollMeasure>,
+    element_counter: &mut usize,
+    in_overlay: bool,
+    // 祖先が決めた層 ([`Element::layer`])。子は下回らない。
+    parent_layer: u8,
     // `user-select: none` の継承状態。 ある要素で `.no_select()` が立つと、 そこから
     // 下の TextDraw が全部 `no_select` になる (CSS の `user-select` と同じ継承)。
     parent_no_select: bool,
@@ -1538,8 +1615,9 @@ fn emit_commands(
     // Determine which list to write to: if this element or any ancestor is
     // overlay, all commands go to the overlay list.
     let use_overlay = in_overlay || element.overlay;
+    let layer = parent_layer.max(element.layer);
     let no_select = parent_no_select || element.no_select;
-    let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+    let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
 
     // Skip invisible elements.
     //
@@ -1588,8 +1666,8 @@ fn emit_commands(
             if let Some(&child_taffy) = taffy_children.get(i) {
                 emit_commands(
                     taffy, child_elem, child_taffy,
-                    abs_x, abs_y, effective_opacity, render_list, overlay_list,
-                    hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
+                    abs_x, abs_y, effective_opacity, render_lists, overlay_list,
+                    hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay, layer,
                     no_select, scale,
                     parent_clip,
                     disabled,
@@ -1880,6 +1958,7 @@ fn emit_commands(
                 label: element.label.clone(),
                 heading_level: element.heading_level,
                 overlay: use_overlay,
+                layer,
             };
             if use_overlay {
                 overlay_hit_regions.push(region);
@@ -1891,7 +1970,7 @@ fn emit_commands(
 
     // Clip children if overflow is not Visible
     let clips = matches!(style.overflow, Overflow::Hidden | Overflow::Scroll);
-    let target_list = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+    let target_list = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
     let own_clip: Option<Rect> = if clips {
         // Use content box (container minus padding) for clip rect.
         // `rect` は画面 px なので padding も scale してから引く。素の px を引くと、
@@ -2025,8 +2104,8 @@ fn emit_commands(
                 taffy, child_elem, child_taffy,
                 abs_x + child_offset_x * scale, abs_y + child_offset_y * scale,
                 effective_opacity,
-                render_list, overlay_list,
-                hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay,
+                render_lists, overlay_list,
+                hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay, layer,
                 no_select, scale,
                 child_clip,
                 disabled,
@@ -2048,7 +2127,7 @@ fn emit_commands(
     // 閉じたあとは**親のクリップ**が効く。CSS でも帯は枠の装飾で、祖先には
     // 切られるが自分の padding には切られない。
     if clips {
-        let target_list = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+        let target_list = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
         target_list.commands.push(RenderCommand::PopClip);
     }
 
@@ -2089,7 +2168,7 @@ fn emit_commands(
                 let (top, thumb_h) =
                     crate::scrollbar::thumb(h, content_h, style.scroll_y * scale);
                 let ty = rect.origin.y + top;
-                let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+                let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
                 target.commands.push(RenderCommand::Rect(RectDraw {
                     rect: Rect::new(
                         rect.origin.x + w - crate::scrollbar::BAR_INSET,
@@ -2121,7 +2200,7 @@ fn emit_commands(
                 let (left, thumb_w) =
                     crate::scrollbar::thumb(w, content_w, style.scroll_x * scale);
                 let tx = rect.origin.x + left;
-                let target = if use_overlay { &mut *overlay_list } else { &mut *render_list };
+                let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
                 target.commands.push(RenderCommand::Rect(RectDraw {
                     rect: Rect::new(
                         tx,
@@ -4573,6 +4652,71 @@ mod text_style_tests {
             row_w < 400.0,
             "横並びでは中身なりの幅 ({row_w}) — 揃える余白が無い"
         );
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use crate::element::{div, text, Dimension::Px, Overflow};
+    use crate::Color;
+
+    const RED: Color = Color::new(1.0, 0.0, 0.0, 1.0);
+    const GREEN: Color = Color::new(0.0, 1.0, 0.0, 1.0);
+
+    /// 層を上げた要素 (と子孫) は層 0 の後に別のリストで描かれ、先にクリックを取る。
+    #[test]
+    fn raised_layer_draws_after_base_and_picks_first() {
+        let root = div().w(Px(200.0)).h(Px(200.0)).children([
+            div().id("low").w(Px(100.0)).h(Px(100.0)).bg(RED).child(text("下の文字")),
+            div().id("high").pos(0.0, 0.0).w(Px(100.0)).h(Px(100.0)).bg(GREEN).layer(1).child(text("上の文字")),
+        ]);
+        let b = build_tree(&root, 200.0, 200.0);
+        let base_texts: Vec<_> = b.render_list.commands.iter().filter_map(|c| match c {
+            RenderCommand::Text(t) => Some(t.content.to_string()),
+            _ => None,
+        }).collect();
+        assert_eq!(base_texts, vec!["下の文字"]);
+        assert_eq!(b.layer_lists.len(), 1);
+        assert_eq!(b.layer_lists[0].0, 1);
+        assert!(b.layer_lists[0].1.rects().any(|r| r.fill_color == GREEN), "上の層に緑の地");
+        assert!(b.all_commands().any(|c| matches!(c, RenderCommand::Text(t) if &*t.content == "上の文字")));
+        // 書いた順では high が後だが、そもそも層が上なので先に取る。層を上げた要素が先に書かれていても同じ
+        let root2 = div().w(Px(200.0)).h(Px(200.0)).children([
+            div().id("high").pos(0.0, 0.0).w(Px(100.0)).h(Px(100.0)).bg(GREEN).layer(1),
+            div().id("low").pos(0.0, 0.0).w(Px(100.0)).h(Px(100.0)).bg(RED),
+        ]);
+        let b2 = build_tree(&root2, 200.0, 200.0);
+        assert_eq!(b2.hit_regions[0].id.as_deref(), Some("high"), "上の層が先にクリックを取る");
+    }
+
+    /// 切り抜く祖先の中で層を上げても、祖先の切り抜きはその層にも効く。
+    #[test]
+    fn ancestor_clip_carries_into_the_raised_layer() {
+        let root = div().w(Px(200.0)).h(Px(200.0)).child(
+            div().w(Px(50.0)).h(Px(50.0)).overflow(Overflow::Hidden).child(
+                div().w(Px(150.0)).h(Px(150.0)).bg(GREEN).layer(2),
+            ),
+        );
+        let b = build_tree(&root, 200.0, 200.0);
+        let (n, list) = &b.layer_lists[0];
+        assert_eq!(*n, 2);
+        assert!(matches!(list.commands.first(), Some(RenderCommand::PushClip(r)) if r.size.width <= 50.0 && r.size.height <= 50.0), "{:?}", list.commands.first());
+        assert!(matches!(list.commands.last(), Some(RenderCommand::PopClip)));
+    }
+
+    /// 層 1 以上を寄せると、中身は層 0 の後ろに付く (1 層でしか描かない経路用)。
+    #[test]
+    fn flatten_keeps_content() {
+        let root = div().w(Px(100.0)).h(Px(100.0)).children([
+            div().w(Px(50.0)).h(Px(50.0)).bg(RED),
+            div().w(Px(50.0)).h(Px(50.0)).bg(GREEN).layer(3),
+        ]);
+        let mut b = build_tree(&root, 100.0, 100.0);
+        b.flatten_layers();
+        assert!(b.layer_lists.is_empty());
+        let colors: Vec<_> = b.render_list.rects().map(|r| r.fill_color).collect();
+        assert_eq!(colors, vec![RED, GREEN]);
     }
 }
 

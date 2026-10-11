@@ -1982,7 +1982,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
                 let has_external_overlay = overlay_build.is_some();
                 let has_internal_overlay = !build_result.overlay_list.commands.is_empty();
-                let has_overlay = has_external_overlay || has_internal_overlay;
+                // 層 1 以上 (`Element::layer`) があるときも層ごとに描く経路へ
+                let has_overlay = has_external_overlay || has_internal_overlay || !build_result.layer_lists.is_empty();
 
                 // Both branches yield the build the frame was actually drawn
                 // from, so there is exactly one place that stores it — see the
@@ -1993,6 +1994,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
                     let (mut base_rects, mut base_lists, text_layouts) =
                         UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
+                    // 層 0 と上掛けの間の層 (文字の選択は層 0 だけ)
+                    let mids: Vec<(Vec<sabitori_gpu::RectInstance>, UiDrawLists)> = build_result
+                        .layer_lists
+                        .iter()
+                        .map(|(_, l)| UiDrawLists::extract(l, &mut tr))
+                        .collect();
                     let (overlay_rects, overlay_lists) =
                         UiDrawLists::extract(&build_result.overlay_list, &mut tr);
                     // text_layouts は次フレームの mouse 入力 / Cmd+C で使うので保存。
@@ -2052,17 +2059,21 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let mut rr = self.ring_renderer.take();
                     let mut lr = self.line_renderer.take();
                     renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
-                    let _ = renderer.render_layered(
-                        &base_rects,
-                        &overlay_rects,
-                        // 矩形の数だけでは overlay の有無を判定できない。地を塗って
-                        // いない div は矩形を出さないので、画像だけ / 文字だけの
-                        // overlay が丸ごと落ちる (#44)。
-                        !overlay_lists.is_empty(),
-                        |phase, pass, globals_bg| {
-                            let lists = match phase {
-                                RenderPhase::BaseText => &base_lists,
-                                RenderPhase::OverlayText => &overlay_lists,
+                    // 層 0 → 間の層 → 上掛け。矩形の数だけでは層の有無を判定できない。地を
+                    // 塗っていない div は矩形を出さないので、画像だけ / 文字だけの層が丸ごと落ちる (#44)。
+                    let mut layers: Vec<(&[sabitori_gpu::RectInstance], bool)> = vec![(&base_rects, true)];
+                    layers.extend(mids.iter().map(|(r, l)| (r.as_slice(), !l.is_empty())));
+                    layers.push((&overlay_rects, !overlay_lists.is_empty()));
+                    let n_mids = mids.len();
+                    let _ = renderer.render_layers(
+                        &layers,
+                        |i, pass, globals_bg| {
+                            let lists = if i == 0 {
+                                &base_lists
+                            } else if i <= n_mids {
+                                &mids[i - 1].1
+                            } else {
+                                &overlay_lists
                             };
                             let mut r = UiRenderers {
                                 images: ir.as_mut(),
@@ -5292,6 +5303,8 @@ impl<A: DeclarativeApp> AppState<A> {
         };
         let _ = &root;
         let mut build_result = build_result;
+        // 別窓は 1 層で描く: 層 1 以上は層 0 に寄せる (中身は消さない)
+        build_result.flatten_layers();
         // はみ出しの目印 (#95)。別窓は overlay を描かないので地の上に積む。
         self.overflow_debug.flag_on_top(&mut build_result);
 

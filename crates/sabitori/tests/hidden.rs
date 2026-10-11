@@ -103,7 +103,7 @@ fn a_hidden_button_takes_no_space_and_cannot_be_pressed() {
 
 fn polylines(h: &Harness<Revenue>) -> usize {
     let b = h.build();
-    b.render_list.commands.iter().chain(&b.overlay_list.commands)
+    b.all_commands()
         .filter(|c| matches!(c, RenderCommand::Polyline(_)))
         .count()
 }

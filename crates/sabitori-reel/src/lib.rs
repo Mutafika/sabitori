@@ -756,10 +756,12 @@ impl Gpu {
         let (w, h) = self.logical;
 
         // Layout (needs a text measurer over the persistent TextRenderer).
-        let build = {
+        let mut build = {
             let measurer = TextRendererMeasurer::new(&mut self.text, &self.measure_cache);
             build_tree_measured(root, w, h, &measurer)
         };
+        // 1 枚に描く: 層 1 以上は層 0 に寄せる
+        build.flatten_layers();
         // RenderList -> GPU instance vecs (also shapes text into the glyph atlas).
         let (rects, glyphs, rings, lines) =
             render_list_to_gpu_with_rings(&build.render_list, &mut self.text);

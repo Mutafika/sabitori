@@ -15,6 +15,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Element::layer(n)` — 描く層を増やす。** 1 つの層の中は「矩形 → 画像 → … → 文字」の順に
+  まとめて描くので、重なると**下の要素の文字が上の要素の地の上に出ていた**。層を上げた要素
+  (と子孫) は層 0 (`render_list`) を描き終えてから、上掛け (`overlay`) より前に描く。
+  `.overlay()` と違って位置は変えず、祖先の切り抜き (`overflow: hidden`) はその層にも効く。
+  押す判定も手前の層が先。層ごとに GPU に 1 回出すので、必要なときだけ分けること。
+- `BuildResult::layer_lists` (層 1 以上の描画リスト)、`BuildResult::all_commands()`
+  (全部の層の命令を描く順に)、`BuildResult::flatten_layers()` (層 1 以上を層 0 に寄せる)。
+- `GpuRenderer::render_layers` — 層を下から順に描く (層ごとに 1 回出す)。
+- `HitRegion::layer`。
+
+### Changed
+
+- 3D シーン (`run_scene`)・画面外の描画・別窓・reel は N 層を描かないので、層 1 以上は
+  層 0 に寄せて描く (中身は消えず、重なりの順だけが従来どおり)。
+
 ## [0.36.0] - 2026-10-09
 
 ### Added
