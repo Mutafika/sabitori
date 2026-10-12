@@ -15,6 +15,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **別窓 (`ExtraWindow`) でもホバーと管理スクロールが効く。** 今までの別窓は見るだけで、
+  押した所とホイールを `on_extra_input` で受け取れるだけだった (Quick Look のような板は
+  スクロールを自前で書き、✕ は指が乗っても変わらない)。主窓と同じ判断を窓ごとの状態で
+  回す:
+  - ホバー — `view_for` の `ctx.hovered`、`.hover()` / `.active()` の見た目、`.cursor()`。
+    窓の外へ出たら外れる。
+  - 管理スクロール — `.scroll(id)` をホイールで動かす (ばね、トラックパッドの 1 ジェスチャの
+    間は届け先を固定、Shift + 刻みホイールは横)。`.scrollbar_grab()` の帯も掴める。
+    位置は `ctx.scroll_states` に入る。id は窓ごとで、主窓のものとは別。
+  - `ctx` の `mouse_x` / `mouse_y` / `shift_held` / `cmd_held`。
+
+  `.scroll(id)` の枠が受けたホイールは `ExtraInput::Wheel` に来ない (主窓の `on_scroll_xy`
+  と同じ)。別窓にまだ無いもの: hover のばね (`transition`)、tooltip、ドラッグ、文字の選択。
+
 ## [0.38.0] - 2026-10-12
 
 ### Changed（破壊的）

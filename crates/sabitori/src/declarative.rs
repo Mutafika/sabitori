@@ -48,10 +48,14 @@ fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
 /// Simplified app trait using the declarative Element API.
 /// Just implement `view()` to describe your UI.
 /// Declarative descriptor for a secondary window the app wants open in
-/// addition to the primary `view()` window. v1 extras are render-only —
-/// they get their own GPU surface and their own `view_for(key, ctx)`
-/// build pass, but receive no input (intended for click-through
-/// overlays, HUDs, per-display panels). Phase 2 will route events.
+/// addition to the primary `view()` window. Extras get their own GPU
+/// surface and their own `view_for(key, ctx)` build pass.
+///
+/// 別窓の中でも、ポインタは主窓と同じ判断で効く: ホバー (`ctx.hovered` と
+/// `.hover()` / `.active()` の見た目、`.cursor()`)、管理スクロール (`.scroll(id)` を
+/// ホイールで動かす、`.scrollbar_grab()` の帯を掴む)。キーは主窓と同じ道に来る。
+/// 押した所とカーソルの下で受けなかったホイールは [`ExtraInput`] でアプリへ。
+/// まだ無いもの: hover の ばね (`transition`)、tooltip、ドラッグ、テキスト選択。
 #[derive(Clone, Debug)]
 pub struct ExtraWindow {
     /// Stable identifier passed back to `view_for` / `set_extra_window` /
@@ -90,6 +94,9 @@ pub struct ExtraWindow {
 pub enum ExtraInput {
     /// ホイール / トラックパッドのスクロール (論理 px)。符号は winit と同じで、
     /// 正は「上へ戻る」(見ている位置 `scroll_y` からは引く)。
+    ///
+    /// カーソルの下の管理スクロール (`.scroll(id)`) が受けた分は来ない (主窓の
+    /// `on_scroll_xy` と同じ)。
     Wheel { dx: f32, dy: f32 },
     /// 主ボタンを押した。`id` はその位置にある一番手前の `.id()` (無ければ `None`)。
     Click { id: Option<String>, x: f32, y: f32 },
@@ -879,9 +886,12 @@ pub trait DeclarativeApp: 'static {
     /// window for `view_for` / `set_extra_window` / `macos_configure_extra_window`
     /// routing. Default: empty (single-window app, fully backward compatible).
     ///
-    /// v1 extras are render-only — they get their own GPU surface and view
-    /// build, but no input events. Intended for click-through overlays
-    /// (`setIgnoresMouseEvents:YES`), HUDs, per-display panels.
+    /// Each extra gets its own GPU surface and view build. Hover and managed
+    /// scroll work inside it the same way as in the primary (see
+    /// [`ExtraWindow`]); clicks and unconsumed wheel reach the app through
+    /// [`DeclarativeApp::on_extra_input`]. Click-through overlays
+    /// (`setIgnoresMouseEvents:YES`), HUDs and per-display panels simply
+    /// never receive pointer events.
     fn extra_windows(&self) -> Vec<ExtraWindow> { Vec::new() }
 
     /// Consume a pending request to rebuild the extra-window set.
@@ -916,8 +926,9 @@ pub trait DeclarativeApp: 'static {
     /// window handle (e.g. global event monitor wake-up). Default no-op.
     fn set_extra_window(&mut self, _key: &str, _window: std::sync::Arc<Window>) {}
 
-    /// 別窓でのスクロールとクリック ([`ExtraInput`])。キー入力は主窓と同じ道に来る
-    /// のでここには来ない。既定は何もしない (受けない別窓は今まで通り見るだけ)。
+    /// 別窓でのクリックと、管理スクロールが受けなかったホイール ([`ExtraInput`])。
+    /// キー入力は主窓と同じ道に来るのでここには来ない。ホバーと `.scroll(id)` は
+    /// ランタイムが持つので、ここで受けなくても効く。既定は何もしない。
     fn on_extra_input(&mut self, _key: &str, _input: ExtraInput) {}
 
     /// One-time 3D scene setup for an extra window with `scene_3d = true`.
@@ -986,9 +997,10 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
 }
 
 /// Per-extra-window resources. Each extra has its own GPU surface and
-/// renderer set; v1 keeps them passive (no input, no managed scroll /
-/// hover / drag) so the data they need is just the render pipeline plus
-/// last-frame layout for any future hit-testing extension.
+/// renderer set, the last frame's layout (for hit-testing), and its own
+/// pointer state — hover, press, managed scroll ([`ExtraPointer`]).
+///
+/// [`ExtraPointer`]: crate::extra_pointer::ExtraPointer
 struct ExtraWindowState {
     key: String,
     window: Arc<Window>,
@@ -999,8 +1011,10 @@ struct ExtraWindowState {
     line_renderer: sabitori_gpu::LineRenderer,
     measure_cache: std::cell::RefCell<crate::bridge::MeasureCache>,
     pub(crate) last_build: Option<BuildResult>,
-    /// その窓の中のポインタ位置 (論理 px)。クリックの当たり判定に使う。
-    mouse: (f32, f32),
+    /// ポインタの位置・ホバー・押下・管理スクロール。窓ごとに別。
+    pointer: crate::extra_pointer::ExtraPointer,
+    /// 最後に OS へ送ったカーソル (同じものを送り直さない)。
+    last_cursor: Option<sabitori_core::Cursor>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
@@ -2338,12 +2352,19 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             // Extras share the same redraw cadence as the primary —
             // particle bursts, animated overlays etc. need every-frame
-            // updates while is_animating() is true. They don't have
-            // their own dirty flag (no input → no per-window dirty
-            // signal), so piggybacking on the primary's decision keeps
-            // the bookkeeping minimal.
+            // updates while is_animating() is true. Their own pointer
+            // changes (hover, wheel) request a redraw of that window
+            // directly, so piggybacking here covers the app-driven rest.
             for extra in self.extras.values() {
                 extra.window.request_redraw();
+            }
+        } else {
+            // 別窓の管理スクロールがばねで動いている間は、その窓だけ描き直す
+            // (主窓まで組み直すことはない)。
+            for extra in self.extras.values() {
+                if extra.pointer.animating() {
+                    extra.window.request_redraw();
+                }
             }
         }
 
@@ -2575,7 +2596,8 @@ impl<A: DeclarativeApp> AppState<A> {
             line_renderer: extra.lines,
             measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
             last_build: None,
-            mouse: (0.0, 0.0),
+            pointer: Default::default(),
+            last_cursor: None,
             scene_3d: spec.scene_3d,
         });
     }
@@ -3373,6 +3395,10 @@ impl<A: DeclarativeApp> AppState<A> {
             &mut self.presence_animator,
             dt,
         );
+        // 別窓の管理スクロールのばね。描き直しは `about_to_wait` がその窓にだけ頼む。
+        for extra in self.extras.values_mut() {
+            extra.pointer.advance(dt);
+        }
     }
 
     /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
@@ -5119,11 +5145,11 @@ impl<A: DeclarativeApp> AppState<A> {
         crate::runtime_shared::apply_cursor(self.window.as_ref(), &mut self.last_cursor, cursor);
     }
 
-    /// Dispatch winit events for an extra window. v1 only acts on the
-    /// three events that affect render correctness — everything else
-    /// (mouse, key, focus, IME, etc.) is silently dropped because the
-    /// extra is expected to be click-through. Phase 2 will widen this
-    /// when extras need real input.
+    /// Dispatch winit events for an extra window: resize / redraw, keys
+    /// (forwarded to the primary), and the pointer — hover, managed
+    /// scroll and grabbed bars run through the extra's own
+    /// [`ExtraPointer`](crate::extra_pointer::ExtraPointer); clicks and
+    /// unconsumed wheel reach the app as [`ExtraInput`].
     fn handle_extra_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -5178,12 +5204,37 @@ impl<A: DeclarativeApp> AppState<A> {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(extra) = self.extras.get_mut(&id) {
                     let s = extra.window.scale_factor() as f32;
-                    extra.mouse = (position.x as f32 / s, position.y as f32 / s);
+                    let (x, y) = (position.x as f32 / s, position.y as f32 / s);
+                    if extra.pointer.moved(extra.last_build.as_ref(), x, y) {
+                        extra.window.request_redraw();
+                    }
+                    crate::runtime_shared::apply_cursor(
+                        Some(&extra.window),
+                        &mut extra.last_cursor,
+                        extra.pointer.cursor,
+                    );
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let Some(key) = self.extras.get(&id).map(|e| e.key.clone()) else { return };
-                let (dx, dy, _) = crate::input_router::wheel_delta_px(delta);
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(extra) = self.extras.get_mut(&id) {
+                    if extra.pointer.left() {
+                        extra.window.request_redraw();
+                    }
+                    // 外では OS がカーソルを持つ。戻ってきたら送り直す。
+                    extra.last_cursor = None;
+                }
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let shift = self.modifiers.shift;
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                let (dx, dy, precise) = crate::input_router::wheel_delta_px(delta);
+                let phase = crate::input_router::wheel_phase(phase);
+                // カーソルの下の管理スクロールが先 (主窓と同じ)。受けなければアプリへ。
+                if extra.pointer.wheel(extra.last_build.as_ref(), (dx, dy), precise, phase, shift) {
+                    extra.window.request_redraw();
+                    return;
+                }
+                let key = extra.key.clone();
                 self.app.on_extra_input(&key, ExtraInput::Wheel { dx, dy });
                 self.dirty = true;
                 self.request_redraw_all();
@@ -5193,8 +5244,13 @@ impl<A: DeclarativeApp> AppState<A> {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let Some(extra) = self.extras.get(&id) else { return };
-                let (x, y) = extra.mouse;
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                // 帯が一番先 (主窓と同じ — 帯は中身の上に重なっている)。
+                if extra.pointer.grab_bar(extra.last_build.as_ref()) {
+                    extra.window.request_redraw();
+                    return;
+                }
+                let (x, y) = extra.pointer.mouse;
                 let key = extra.key.clone();
                 let pt = sabitori_core::Point::new(x, y);
                 // 窓のつかみどころ (`.window_drag()`) の空いた所なら、主窓と同じく
@@ -5213,9 +5269,21 @@ impl<A: DeclarativeApp> AppState<A> {
                     .last_build
                     .as_ref()
                     .and_then(|b| crate::runtime_shared::hit_id_at(b, x, y));
+                // 離すまで `.active()` の見た目にする。
+                extra.pointer.pressed = hit.clone();
                 self.app.on_extra_input(&key, ExtraInput::Click { id: hit, x, y });
                 self.dirty = true;
                 self.request_redraw_all();
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                if extra.pointer.release() {
+                    extra.window.request_redraw();
+                }
             }
             _ => {}
         }
@@ -5232,9 +5300,9 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     /// Build + draw a single extra window. Mirrors the non-overlay
-    /// branch of the primary's RedrawRequested handler with a stripped
-    /// `ViewContext` (no hover / focus / scroll / drag — extras are
-    /// passive in v1).
+    /// branch of the primary's RedrawRequested handler. The `ViewContext`
+    /// carries the extra's own hover / pointer / managed scroll; focus,
+    /// tooltip and drag stay with the primary.
     fn redraw_extra(&mut self, id: WindowId) {
         // We need both `&mut extra` and `&self.app` simultaneously.
         // Pull the extra out by detaching pieces we own (renderers
@@ -5263,7 +5331,9 @@ impl<A: DeclarativeApp> AppState<A> {
         // view のあとで作っていたが、 それだとアプリが実フォント計測に触れない
         // (issue #15)。 `extra.text_renderer` の可変借用を後段の
         // `UiDrawLists::extract` に返すため、 ブロックで閉じる。
-        let (root, build_result) = {
+        // `view_for` が見る管理スクロールの寸法。組んだ後に測れた寸法と比べる (#99)。
+        let seen = extra.pointer.scroll_info();
+        let (root, build_result, relayout) = {
             let measurer = crate::bridge::TextRendererMeasurer::new(
                 &mut extra.text_renderer,
                 &extra.measure_cache,
@@ -5274,13 +5344,14 @@ impl<A: DeclarativeApp> AppState<A> {
                 safe_area: sabitori_window::safe_area(&extra.window),
                 // 別窓は標準のタイトルバーのまま (`titlebar()` は主窓だけ)。
                 window_controls: None,
-                hovered: None,
+                hovered: extra.pointer.hovered.clone(),
+                // 焦点は主窓が持つ (キーは主窓の道へ流れる)。
                 focused: None,
-                mouse_x: 0.0,
-                mouse_y: 0.0,
-                shift_held: false,
-                cmd_held: false,
-                scroll_states: std::collections::HashMap::new(),
+                mouse_x: extra.pointer.mouse.0,
+                mouse_y: extra.pointer.mouse.1,
+                shift_held: self.modifiers.shift,
+                cmd_held: self.modifiers.meta,
+                scroll_states: seen.clone(),
                 tooltip: None,
                 drag: None,
                 textures: Default::default(),
@@ -5298,10 +5369,17 @@ impl<A: DeclarativeApp> AppState<A> {
             let mut root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
             // 区分はその窓の幅で決める (#97)。
             sabitori_core::element::apply_size_rules(&mut root, w);
+            // hover / active の見た目、管理スクロールの位置、帯の色 (主窓と同じ並び)。
+            extra.pointer.before_build(&mut root, &ctx.theme);
             let built = build_tree_measured(&root, w, h, &measurer);
-            (root, built)
+            let relayout = extra.pointer.after_build(&built, &seen);
+            (root, built, relayout)
         };
         let _ = &root;
+        // 測れた寸法が `view_for` の見たものと違えば、もう 1 枚 (主窓の #99 と同じ)。
+        if relayout {
+            extra.window.request_redraw();
+        }
         let mut build_result = build_result;
         // 別窓は 1 層で描く: 層 1 以上は層 0 に寄せる (中身は消さない)
         build_result.flatten_layers();
