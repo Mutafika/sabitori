@@ -27,6 +27,8 @@
     間は届け先を固定、Shift + 刻みホイールは横)。`.scrollbar_grab()` の帯も掴める。
     位置は `ctx.scroll_states` に入る。id は窓ごとで、主窓のものとは別。
   - `ctx` の `mouse_x` / `mouse_y` / `shift_held` / `cmd_held`。
+  - macOS: 焦点を取らない別窓 (`active: false`) にも指の動きが届く。AppKit は `mouseMoved:` を
+    キーの窓にだけ送るので、窓の view に `NSTrackingActiveAlways` の tracking area を貼る。
 
   `.scroll(id)` の枠が受けたホイールは `ExtraInput::Wheel` に来ない (主窓の `on_scroll_xy`
   と同じ)。別窓にまだ無いもの: hover のばね (`transition`)、tooltip、ドラッグ、文字の選択。

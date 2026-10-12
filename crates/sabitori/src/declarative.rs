@@ -2571,6 +2571,8 @@ impl<A: DeclarativeApp> AppState<A> {
                 );
             }
             self.app.macos_configure_extra_window(&spec.key, &extra_window);
+            // 焦点を取らない別窓 (Quick Look の板) にも指の動きを届ける — 無いとホバーが効かない。
+            crate::macos_track::track_mouse_moved(&extra_window);
         }
 
         let mut extra_gpu = GpuRenderer::new_with_alpha(extra_window.clone(), spec.transparent);

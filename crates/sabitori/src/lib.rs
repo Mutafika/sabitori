@@ -70,6 +70,9 @@ pub mod macos_drag;
 pub mod macos_blur;
 #[cfg(target_os = "macos")]
 mod macos_ime;
+/// 焦点の無い別窓にも指の動きを届ける (ホバー)。
+#[cfg(target_os = "macos")]
+mod macos_track;
 #[cfg(target_os = "macos")]
 mod macos_open;
 #[cfg(target_os = "ios")]
