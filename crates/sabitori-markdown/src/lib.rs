@@ -9,7 +9,7 @@
 //! is currently flattened to plain text with a best-effort marker substitution,
 //! because Sabitori's `text()` element doesn't yet support mixed inline styles
 //! within a single paragraph. Block-level distinctions (headings, code blocks,
-//! blockquotes) are preserved.
+//! blockquotes, tables) are preserved.
 //!
 //! # Example
 //! ```no_run
@@ -18,8 +18,11 @@
 //! let element = render_markdown("# Hello\n\nWorld", &opts);
 //! ```
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use sabitori_core::element::{div, image as img_element, text, Dimension, Element, ImageData, ObjectFit, Px};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use sabitori_core::element::{
+    div, image as img_element, text, AlignItems, AlignSelf, Dimension, Element, GridPlacement,
+    ImageData, ObjectFit, Px, TextAlign, Track,
+};
 use sabitori_core::Color;
 
 pub use toc::TocEntry;
@@ -158,6 +161,17 @@ struct Builder<'a> {
     // "reused forever". We prefer no caption over a wrong one.
     in_image: u32,
     saved_inline: Vec<String>,
+    // 組みかけの表 (表の中なら Some)。
+    table: Option<TableState>,
+}
+
+/// 組みかけの表。セルの文字は段落と同じく平たい文字にして溜める。
+struct TableState {
+    aligns: Vec<Alignment>,
+    head: Vec<String>,
+    rows: Vec<Vec<String>>,
+    // 組みかけの行 (見出しの行も)。
+    row: Vec<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -197,6 +211,7 @@ impl<'a> Builder<'a> {
             link_dest: None,
             in_image: 0,
             saved_inline: Vec::new(),
+            table: None,
         }
     }
 
@@ -269,9 +284,17 @@ impl<'a> Builder<'a> {
                 self.saved_inline.push(std::mem::take(&mut self.inline));
                 self.in_image += 1;
             }
-            Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {
-                // tables: flatten to inline for now
+            Tag::Table(aligns) => {
+                // 表の前に溜まっていた文字はセルに混ぜない (表のあとで戻す)。
+                self.saved_inline.push(std::mem::take(&mut self.inline));
+                self.table = Some(TableState {
+                    aligns,
+                    head: Vec::new(),
+                    rows: Vec::new(),
+                    row: Vec::new(),
+                });
             }
+            Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
             _ => {}
         }
     }
@@ -334,6 +357,29 @@ impl<'a> Builder<'a> {
                 if self.in_image > 0 {
                     self.in_image -= 1;
                 }
+            }
+            TagEnd::TableCell => {
+                let cell = strip_orphan_markers(&std::mem::take(&mut self.inline));
+                if let Some(table) = self.table.as_mut() {
+                    table.row.push(cell.trim().to_string());
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(table) = self.table.as_mut() {
+                    table.head = std::mem::take(&mut table.row);
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(table) = self.table.as_mut() {
+                    let row = std::mem::take(&mut table.row);
+                    table.rows.push(row);
+                }
+            }
+            TagEnd::Table => {
+                if let Some(table) = self.table.take() {
+                    self.blocks.push(table_block(&self.theme, &table));
+                }
+                self.inline = self.saved_inline.pop().unwrap_or_default();
             }
             TagEnd::Link => {
                 let url = self.link_dest.take().unwrap_or_default();
@@ -481,6 +527,61 @@ fn code_block(theme: &MarkdownTheme, code: &str) -> Element {
         )
 }
 
+/// GFM の表。列は中身を 1 行に並べた幅まで広がり、入りきらなければ親の幅を
+/// 分け合ってセルの中で折り返す。表そのものも中身の幅で、横いっぱいには伸ばさない。
+fn table_block(theme: &MarkdownTheme, table: &TableState) -> Element {
+    let cols = table
+        .aligns
+        .len()
+        .max(table.head.len())
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    if cols == 0 {
+        return div();
+    }
+    let cell = |s: &str, col: usize, head: bool| -> Element {
+        // 揃えは列ごと (区切り行の `:-:` / `--:`)。折り返した 2 行目からも揃える。
+        let (items, align) = match table.aligns.get(col) {
+            Some(Alignment::Center) => (AlignItems::Center, TextAlign::Center),
+            Some(Alignment::Right) => (AlignItems::End, TextAlign::End),
+            _ => (AlignItems::Stretch, TextAlign::Start),
+        };
+        let label = text(s)
+            .font_size(theme.base_font_size)
+            .color(if head { theme.heading } else { theme.body })
+            .text_align(align);
+        let cell = div()
+            .flex_col()
+            .align_items(items)
+            .px_pad(Px(10.0))
+            .py(Px(6.0))
+            .child(if head { label.bold() } else { label });
+        if head { cell.bg(theme.code_bg) } else { cell }
+    };
+    // 行の間の罫線。全部の列をまたぐ 1 本。
+    let rule = || {
+        div()
+            .h(Px(1.0))
+            .bg(theme.rule)
+            .col(GridPlacement::Line(1), GridPlacement::Line(-1))
+    };
+    // 足りないセル (見出しより短い行) は空で埋める
+    fn at(row: &[String], col: usize) -> &str {
+        row.get(col).map_or("", String::as_str)
+    }
+    let mut cells = Vec::with_capacity((table.rows.len() + 1) * (cols + 1));
+    cells.extend((0..cols).map(|c| cell(at(&table.head, c), c, true)));
+    for row in &table.rows {
+        cells.push(rule());
+        cells.extend((0..cols).map(|c| cell(at(row, c), c, false)));
+    }
+    div()
+        // 下限 0・上限は中身の幅。入るなら中身の幅、入らなければ余りを分け合う
+        .grid_cols(Track::repeat(cols, Track::minmax(Track::px(0.0), Track::max_content())))
+        .align_self(AlignSelf::Start)
+        .border(1.0, theme.rule)
+        .children(cells)
+}
+
 fn list_item(theme: &MarkdownTheme, marker: &str, content: &str) -> Element {
     div().flex_row().gap(6.0).children([
         text(marker)
@@ -612,5 +713,175 @@ mod tests {
     fn slug_keeps_japanese() {
         assert_eq!(slugify("Hello World"), "hello-world");
         assert_eq!(slugify("見出し テスト"), "見出し-テスト");
+    }
+
+    use sabitori_core::build::{
+        approx_caret, build_tree_measured, BuildResult, CaretPos, TextMeasure, TextShape,
+    };
+    use sabitori_core::element::ElementKind;
+    use sabitori_core::render_list::{RenderCommand, TextDraw};
+    use sabitori_core::{Rect, Size, TextMetrics, Typography};
+
+    /// 木の中の文字を、書いた順に。
+    fn texts(el: &Element) -> Vec<String> {
+        fn walk(el: &Element, out: &mut Vec<String>) {
+            if let ElementKind::Text { content } = &el.kind {
+                out.push(content.to_string());
+            }
+            for child in &el.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(el, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_table_keeps_its_cells_apart_and_out_of_the_next_paragraph() {
+        // 前は表を平たい文字のまま流していて、セルが区切り無しで次の段落の頭に付いた
+        let el = render_markdown(
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\nafter\n",
+            &MarkdownOptions::default(),
+        );
+        assert_eq!(el.children.len(), 2, "表と段落の 2 つ");
+        assert_eq!(texts(&el.children[0]), ["a", "b", "1", "2"]);
+        assert_eq!(texts(&el.children[1]), ["after"]);
+    }
+
+    #[test]
+    fn a_table_at_the_end_of_the_document_is_not_lost() {
+        // 前は流れ込む次の段落が無いので、文書の最後の表は丸ごと消えていた
+        let el = render_markdown("| a |\n|---|\n| 1 |\n", &MarkdownOptions::default());
+        assert_eq!(texts(&el), ["a", "1"]);
+    }
+
+    #[test]
+    fn a_short_row_gets_empty_cells() {
+        let el = render_markdown("| a | b |\n|---|---|\n| 1 |\n", &MarkdownOptions::default());
+        assert_eq!(texts(&el), ["a", "b", "1", ""]);
+    }
+
+    #[test]
+    fn text_before_a_table_stays_out_of_its_cells() {
+        let el = render_markdown(
+            "- item\n\n| a |\n|---|\n| 1 |\n",
+            &MarkdownOptions::default(),
+        );
+        let table = el.children.last().expect("表がある");
+        assert_eq!(texts(table), ["a", "1"]);
+    }
+
+    /// 1 文字 = 字の大きさの半分の幅。渡された幅で折り返し、行の数だけ高くなる。
+    struct Wrapping;
+
+    impl TextMeasure for Wrapping {
+        fn measure(
+            &self,
+            content: &str,
+            font_size: f32,
+            _bold: bool,
+            _monospace: bool,
+            _font_family: Option<&str>,
+            max_width: Option<f32>,
+            _max_lines: Option<u32>,
+            _typo: Typography,
+        ) -> TextMetrics {
+            let natural = content.chars().count() as f32 * font_size * 0.5;
+            let width = match max_width {
+                Some(w) if w > 0.0 && w < natural => w,
+                _ => natural,
+            };
+            let lines = (natural / width.max(1.0)).ceil().max(1.0);
+            TextMetrics {
+                size: Size { width, height: lines * font_size },
+                baseline: font_size * 0.8,
+            }
+        }
+
+        fn caret_pos(&self, content: &str, byte_offset: usize, shape: TextShape<'_>) -> CaretPos {
+            approx_caret::caret_pos(content, byte_offset, shape.font_size * 0.5, shape.font_size)
+        }
+
+        fn offset_at(&self, content: &str, point: (f32, f32), shape: TextShape<'_>) -> usize {
+            approx_caret::offset_at(content, point, shape.font_size * 0.5, shape.font_size)
+        }
+
+        fn range_rects(&self, content: &str, range: (usize, usize), shape: TextShape<'_>) -> Vec<Rect> {
+            approx_caret::range_rects(content, range, shape.font_size * 0.5, shape.font_size)
+        }
+    }
+
+    fn drawn<'a>(build: &'a BuildResult, s: &str) -> &'a TextDraw {
+        build
+            .render_list
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::Text(t) if &*t.content == s => Some(t),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{s:?} が描かれていない"))
+    }
+
+    /// 表の外枠 (枠線だけの矩形) の幅。
+    fn frame_width(build: &BuildResult) -> f32 {
+        build
+            .render_list
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                RenderCommand::Rect(r) if r.border_width == 1.0 => Some(r.rect.size.width),
+                _ => None,
+            })
+            .expect("表の枠がある")
+    }
+
+    #[test]
+    fn columns_line_up_and_the_table_is_only_as_wide_as_its_content() {
+        let el = render_markdown(
+            "| name | size |\n|---|--:|\n| a.txt | 12 |\n| longer-name.md | 3456 |\n",
+            &MarkdownOptions::default(),
+        );
+        let build = build_tree_measured(&el, 600.0, 400.0, &Wrapping);
+        let (name, a, long) = (drawn(&build, "name"), drawn(&build, "a.txt"), drawn(&build, "longer-name.md"));
+        assert_eq!(name.position.x, a.position.x, "同じ列は同じ左端");
+        assert_eq!(a.position.x, long.position.x, "同じ列は同じ左端");
+        let size = drawn(&build, "size");
+        assert!(
+            size.position.x >= long.position.x + long.max_width,
+            "2 列目は 1 列目の一番長いセルより右: {} < {}",
+            size.position.x,
+            long.position.x + long.max_width
+        );
+        // `--:` の列は右で揃う
+        let (n12, n3456) = (drawn(&build, "12"), drawn(&build, "3456"));
+        assert_eq!(n12.position.x + n12.max_width, n3456.position.x + n3456.max_width);
+        assert!(frame_width(&build) < 300.0, "横いっぱいに伸ばさない: {}", frame_width(&build));
+    }
+
+    #[test]
+    fn a_table_wider_than_its_box_wraps_inside_the_cells() {
+        let long = "word ".repeat(40);
+        let long = long.trim();
+        let el = render_markdown(
+            &format!("| key | value |\n|---|---|\n| k | {long} |\n"),
+            &MarkdownOptions::default(),
+        );
+        let build = build_tree_measured(&el, 300.0, 2000.0, &Wrapping);
+        let (key, value) = (drawn(&build, "key"), drawn(&build, long));
+        assert!(
+            value.position.x >= key.position.x + key.max_width,
+            "列は重ならない: {} < {}",
+            value.position.x,
+            key.position.x + key.max_width
+        );
+        assert!(
+            value.position.x + value.max_width <= 300.0,
+            "箱からはみ出さない: {}",
+            value.position.x + value.max_width
+        );
+        assert!(value.max_height > 15.0 * 2.0, "折り返して何行にもなる: {}", value.max_height);
+        assert!(frame_width(&build) <= 300.0, "表も箱の幅まで: {}", frame_width(&build));
     }
 }
