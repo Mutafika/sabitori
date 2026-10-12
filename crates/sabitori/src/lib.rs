@@ -36,6 +36,8 @@ pub mod declarative;
 pub mod scroll_sync;
 // 2 ランタイム (declarative / scene) が共有するポインタ解決。 crate 内部専用。
 mod runtime_shared;
+// 別窓 1 枚ぶんのポインタの状態 (ホバー・管理スクロール)。 crate 内部専用。
+mod extra_pointer;
 mod overflow_debug;
 pub mod slider_sync;
 pub mod image_runtime;
@@ -68,6 +70,9 @@ pub mod macos_drag;
 pub mod macos_blur;
 #[cfg(target_os = "macos")]
 mod macos_ime;
+/// 焦点の無い別窓にも指の動きを届ける (ホバー)。
+#[cfg(target_os = "macos")]
+mod macos_track;
 #[cfg(target_os = "macos")]
 mod macos_open;
 #[cfg(target_os = "ios")]
