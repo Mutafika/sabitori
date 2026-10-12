@@ -24,6 +24,12 @@ use crate::bridge::{draw_ui_layer, UiDrawLists, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
 use sabitori_gpu::RenderPhase;
 
+/// 主窓を複数持つ ([`DeclarativeApp::take_new_windows`])。
+#[cfg(not(target_arch = "wasm32"))]
+mod host;
+#[cfg(not(target_arch = "wasm32"))]
+use host::Host;
+
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
     let decoded = match image::load_from_memory(png) {
@@ -643,14 +649,37 @@ pub trait DeclarativeApp: 'static {
     fn on_url_changed(&mut self, _fragment: &str) {}
 
     /// 主窓を閉じたい。`true` を返すと、OS の閉じるボタン (`CloseRequested`) と同じく
-    /// アプリを終える — アプリの `Drop` も走る。[`Titlebar::Custom`] の帯に自分で描いた
+    /// この窓を閉じる — アプリの `Drop` も走る。最後の窓ならアプリが終わる
+    /// ([`Self::take_new_windows`])。[`Titlebar::Custom`] の帯に自分で描いた
     /// 閉じるボタン用。毎周回読むので、返したら旗を下ろすこと。
     fn take_close_request(&mut self) -> bool { false }
+
+    /// 同じプロセスで**主窓をもう 1 つ**開く。返したアプリはそれぞれ自分の主窓を持ち、
+    /// 入力 (キー・文字・IME・ドラッグ・メニュー・ホバー・スクロール)・描画・別窓・
+    /// `Drop` まで、最初の窓と同じに扱われる。ファイラの「新しいウインドウ」のような、
+    /// 同じ画面をもう 1 枚開く用。毎周回読むので、返したら空にすること。
+    ///
+    /// アプリどうしはランタイムがつながない。窓をまたいで分け合う物 (設定・切り取った
+    /// 物など) は、アプリが `Rc` などで新しいアプリに持たせて渡す。窓は頼んだ窓から
+    /// 少しずらして出る ([`Self::position`] が `Some` ならそちら)。閉じるのは窓ごとで
+    /// ([`Self::take_close_request`] / OS の閉じるボタン)、最後の窓が閉じるとアプリが
+    /// 終わる。OS から渡されたパス ([`Self::on_open_paths`]) は、最後に焦点を持った窓の
+    /// アプリへ届く。
+    ///
+    /// web は窓を増やせないので読まない。テストでは
+    /// [`Harness::take_new_windows`](crate::testing::Harness::take_new_windows) が受け取る。
+    fn take_new_windows(&mut self) -> Vec<Self>
+    where
+        Self: Sized,
+    {
+        Vec::new()
+    }
 
     /// OS から「このアプリで開いて」と渡されたファイル・フォルダ (macOS: Finder の
     /// 「このアプリで開く」、`open -a`、Dock のアイコンへのドロップ、既定のアプリに
     /// なっている種類のダブルクリック)。起動のきっかけになった分も、起動後に来た分も
-    /// ここに届く (起動時の分は最初の窓ができた後)。
+    /// ここに届く (起動時の分は最初の窓ができた後)。主窓が複数あるときは、最後に焦点を
+    /// 持った窓のアプリへ ([`Self::take_new_windows`])。
     ///
     /// LaunchServices を通る経路なので、`.app` として起動されたときだけ届く。
     /// 受け付ける種類は Info.plist の `CFBundleDocumentTypes` で宣言する。
@@ -1231,6 +1260,14 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Last [`UiCapture`] snapshot pushed to the app. Used to dedup
     /// `on_ui_capture` calls to actual state transitions.
     pub(crate) last_capture: UiCapture,
+    /// この窓を閉じる (OS の閉じるボタン・`take_close_request`・別窓の閉じる)。
+    /// 終わらせるのは持ち主 ([`Host`] / web の handler) — 窓が他にも残っていれば
+    /// この窓だけ落とす。
+    pub(crate) closed: bool,
+    /// 窓を作る場所 ([`Host`] が、頼んだ窓から少しずらして置く)。アプリの
+    /// `position()` があればそちら。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) position_hint: Option<winit::dpi::Position>,
 }
 
 /// 文字選択 state。 `(text_idx, byte_offset)` のペアを anchor / head で持つ。
@@ -1371,16 +1408,10 @@ impl<A: DeclarativeApp> AppState<A> {
         }
     }
 
-    /// OS から渡されたパスをアプリへ (macOS のみ。[`DeclarativeApp::on_open_paths`])。
-    /// 主窓ができるまでは溜めたまま待つ — 起動時の分を窓のない状態で渡さない。
-    fn deliver_open_paths(&mut self) {
-        #[cfg(target_os = "macos")]
-        if self.window.is_some() {
-            let paths = crate::macos_open::take();
-            if !paths.is_empty() {
-                self.app.on_open_paths(paths);
-            }
-        }
+    /// この窓の物か (主窓か、その別窓)。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn owns(&self, id: WindowId) -> bool {
+        self.window.as_ref().is_some_and(|w| w.id() == id) || self.extras.contains_key(&id)
     }
 }
 
@@ -1388,9 +1419,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
     /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
     /// ことがあり、自力ではコードが変わったことに気付けないので、外から起こして
-    /// 全ウィンドウを描き直させる。
+    /// 全ウィンドウを描き直させる。OS から渡されたパスもこの道で起こすが、
+    /// 届け先の窓を選ぶのは [`Host`]。
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        self.deliver_open_paths();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -1418,6 +1449,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         }
         if let Some((x, y)) = self.app.position() {
             attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
+        } else if let Some(p) = self.position_hint {
+            attrs = attrs.with_position(p);
         }
         if self.app.transparent() {
             attrs = attrs.with_transparent(true);
@@ -1504,8 +1537,6 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         for spec in extras {
             self.spawn_extra(event_loop, spec);
         }
-        // 窓ができる前に届いていた分 (起動のきっかけになったパス)。
-        self.deliver_open_paths();
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1540,7 +1571,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             self.dirty = true;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.closed = true,
             // 最小化 / 完全に覆われた (#79)。**描くのを止めるだけ**で、溜まった
             // `dirty` は消さない — 見えた瞬間に 1 枚描き直して追いつく。
             WindowEvent::Occluded(occluded) => {
@@ -2219,7 +2250,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // 帯に描いた閉じるボタン。フレームの間引きより前に見る (間引かれた周回でも閉じる)。
         if self.app.take_close_request() {
-            event_loop.exit();
+            self.closed = true;
             return;
         }
         let elapsed = self.last_frame.elapsed();
@@ -2815,6 +2846,9 @@ impl<A: DeclarativeApp> AppState<A> {
             deferred_click: None,
             window_gesture: None,
             last_capture: UiCapture::default(),
+            closed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            position_hint: None,
         }
     }
 
@@ -5159,7 +5193,9 @@ impl<A: DeclarativeApp> AppState<A> {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // 別窓はアプリが `extra_windows()` で宣言している物なので、ランタイムが勝手に
+            // 1 枚だけ消すと食い違う。持ち主の主窓ごと閉じる (窓が 1 つなら今までどおり終わる)。
+            WindowEvent::CloseRequested => self.closed = true,
             WindowEvent::Resized(size) => {
                 if let Some(extra) = self.extras.get_mut(&id) {
                     let scale = extra.window.scale_factor();
@@ -5483,8 +5519,8 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         });
     }
 
-    let mut state = AppState::new(app);
-    event_loop.run_app(&mut state).unwrap();
+    let mut host = Host::new(app);
+    event_loop.run_app(&mut host).unwrap();
 }
 
 /// Run a declarative app (WASM).
@@ -5580,6 +5616,10 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
 
         fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
             self.inner.borrow_mut().window_event(event_loop, id, event);
+            // web の窓は 1 枚きり。閉じたら終わる (native の `Host` の、窓が 1 つの時と同じ)。
+            if self.inner.borrow().closed {
+                event_loop.exit();
+            }
         }
 
         fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -5588,6 +5628,9 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.inner.borrow_mut().about_to_wait(event_loop);
+            if self.inner.borrow().closed {
+                event_loop.exit();
+            }
         }
     }
 

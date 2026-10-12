@@ -392,6 +392,28 @@ impl<A: DeclarativeApp> Harness<A> {
         &mut self.state.app
     }
 
+    /// アプリが [`DeclarativeApp::take_new_windows`] で頼んだ主窓を、 それぞれ
+    /// 同じ大きさ・同じ字の測り方の `Harness` にして受け取る。 本物のランタイムが
+    /// 窓を作るのと同じく、 頼まれた分はここで空になる。
+    ///
+    /// 窓ごとに入力も描画も別なので、 開いた窓は返った `Harness` で操作する。
+    pub fn take_new_windows(&mut self) -> Vec<Harness<A>> {
+        let (width, height) = (self.width, self.height);
+        let real_text = self.real_text.is_some();
+        self.state
+            .app
+            .take_new_windows()
+            .into_iter()
+            .map(|app| {
+                if real_text {
+                    Harness::with_real_text(app, width, height)
+                } else {
+                    Harness::new(app, width, height)
+                }
+            })
+            .collect()
+    }
+
     /// ランタイムがアプリへ最後に渡した [`UiCapture`]。
     ///
     /// 中身は「ポインタ / キーボードを UI が掴んでいるか」の 2 つだけ。
