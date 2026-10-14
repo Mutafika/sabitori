@@ -5,8 +5,8 @@
 //! 3D pass writes straight into the frame texture and the Element tree is
 //! composited on top of it. No readback, no image round-trip.
 //!
-//! The subject is the obvious one for EnchuDB: a glass 円柱 with data stacked
-//! inside it, on a slow turntable. Everything below is still a pure function of
+//! The subject: a glass cylinder with flat chips stacked inside it, on a slow
+//! turntable. Everything below is still a pure function of
 //! the frame number, so scrubbing backwards lands on the identical image.
 //!
 //!   cargo run -p sabitori-reel --example stage3d --features three-d --release
@@ -30,9 +30,9 @@ fn hex(s: &str) -> Color {
     Color::from_hex(s)
 }
 
-struct EnchuStage;
+struct GlassStage;
 
-impl Scene for EnchuStage {
+impl Scene for GlassStage {
     // ---- 3D -------------------------------------------------------------
 
     fn setup_stage(&self, r: &mut Renderer) {
@@ -139,8 +139,8 @@ impl Scene for EnchuStage {
             camera,
             instances,
             opaque_count: Some(opaque_count),
-            // No free-standing 3D lines in this scene — the 紐 arrived with
-            // `enchu_opener`, which is where `Stage::lines` came from.
+            // No free-standing 3D lines in this scene (`Stage::lines` draws
+            // strings between points in 3D).
             lines: Vec::new(),
         })
     }
@@ -164,14 +164,14 @@ impl Scene for EnchuStage {
             .justify_end()
             .p_px(96.0)
             .child(
-                text("EnchuDB")
+                text("sabitori-reel")
                     .font_size(112.0)
                     .color(hex("#f8fafc"))
                     .opacity(title_a)
                     .mb(Px(title_dy + 8.0)),
             )
             .child(
-                text("A cylinder you can see into.")
+                text("A 3D stage under the Element tree.")
                     .font_size(38.0)
                     .color(hex("#94a3b8"))
                     .opacity(sub_a)
@@ -188,6 +188,6 @@ fn main() {
         clear: [0.062, 0.068, 0.082, 1.0],
         ..Reel::new(1920, 1080, FPS, FPS * SECS)
     };
-    let paths = reel.render_pngs(&EnchuStage, &dir).expect("render failed");
+    let paths = reel.render_pngs(&GlassStage, &dir).expect("render failed");
     println!("{} frames -> {}", paths.len(), dir.display());
 }

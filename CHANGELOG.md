@@ -15,6 +15,12 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`sabitori-reel` の作例から、別の製品の紹介映像 4 本 (`demo` / `preview` / `video` /
+  `enchu_opener`) を外した。** reel の使い方の見本は `bga` / `iidx` / `stage3d` が持つ。
+  README の reel の案内は `--example bga` を指す。
+
 ## [0.41.1] - 2026-10-15
 
 ### Fixed

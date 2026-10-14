@@ -373,7 +373,7 @@ sabitori (umbrella)
 └── sabitori-net       HTTP fetch（reqwest / wasm fetch）
 ```
 
-`sabitori-reel` は umbrella の外にある別のクレート。フレーム番号を受け取って `Element` のツリーを返す関数を「場面」として、窓を開かずに 1 コマずつ描き、PNG の連番か MP4 (`ffmpeg` を使う) に書き出す。コードで作るモーショングラフィックス動画用。`cargo run -p sabitori-reel --example demo --release`。
+`sabitori-reel` は umbrella の外にある別のクレート。フレーム番号を受け取って `Element` のツリーを返す関数を「場面」として、窓を開かずに 1 コマずつ描き、PNG の連番か MP4 (`ffmpeg` を使う) に書き出す。コードで作るモーショングラフィックス動画用。`cargo run -p sabitori-reel --example bga --release`。
 
 ## WASM ターゲット
 

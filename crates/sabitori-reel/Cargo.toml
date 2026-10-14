@@ -28,7 +28,3 @@ seimei = { git = "https://github.com/Mutafika/seimei", tag = "v0.4.1", default-f
 [[example]]
 name = "stage3d"
 required-features = ["three-d"]
-
-[[example]]
-name = "enchu_opener"
-required-features = ["three-d"]

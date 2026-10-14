@@ -19,8 +19,8 @@
 //!         .w(Px(ctx.width)).h(Px(ctx.height))
 //!         .flex_col().items_center().justify_center().gap(16.0)
 //!         .bg(Color::from_hex("#070910"))
-//!         .child(text("EnchuDB").font_size(96.0).bold().color(Color::from_hex("#5eead4")))
-//!         .child(text("円柱 database").font_size(30.0).color(Color::from_hex("#818da6")))
+//!         .child(text("sabitori-reel").font_size(96.0).bold().color(Color::from_hex("#5eead4")))
+//!         .child(text("frames from an Element tree").font_size(30.0).color(Color::from_hex("#818da6")))
 //! };
 //! reel.render_pngs(&scene, std::path::Path::new("/tmp/out")).unwrap();
 //! ```
