@@ -31,7 +31,7 @@
 - **例 `tui_gallery` を今の書き方にそろえ、v0.13 より後の機能のデモを足した** (37 部品)。
   - 足したデモ: Text Selection (`ctx.text_selection()` / `on_selection_changed` と
     `HighlightSpec` のマーカー)、Goo (`goo` の首と `goo_gradient` / `goo_border` /
-    `goo_shadow`)、Layers (`.layer(1)` の有る無しで重なった文字の出方を並べる)、
+    `goo_shadow`)、Overlap (重なりは書いた順で決まり、先に書いた物だけ `.layer(1)` で上げる)、
     Drag & Drop (`draggable` / `droppable` / `on_drop` の 3 列のボードと、Finder から
     持ち込むファイルの `on_file_drop_at`)。Matrix Rain は `cell_grid` 1 要素に、
     Gradient Text は `color_spans` 1 要素にした。どれも TUI / Modern の両方の見た目で出る。

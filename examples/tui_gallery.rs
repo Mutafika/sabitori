@@ -162,7 +162,7 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::SmoothMotion, "Smooth Motion", Section::Gpu),
     (Demo::Carousel, "Carousel", Section::Gpu),
     (Demo::Goo, "Goo", Section::Gpu),
-    (Demo::Layers, "Layers", Section::Gpu),
+    (Demo::Layers, "Overlap", Section::Gpu),
     (Demo::ThemeGallery, "Theme Gallery", Section::Themes),
     (Demo::SplashPresets, "Splash Presets", Section::Splash),
     (Demo::FormControls, "Form Controls", Section::Forms),
@@ -2059,43 +2059,55 @@ impl Gallery {
         ])
     }
 
-    /// 重なった箱と `.layer(n)`。
+    /// 重なった箱。重なりは**書いた順**で決まる (主窓は木の順に描く)。先に書いた物を
+    /// 手前に出したいときだけ `.layer(n)` で上げる。
     fn layers_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
         let elapsed = self.elapsed();
         let slide = (elapsed * 0.9).sin() * 18.0;
 
-        // 下のカード (文字を持つ) と、 その上に半分かぶせる不透明なカード。
-        let scene = |layered: bool, caption: &str| -> Element {
-            let under = div().pos(16.0, 18.0).w(Px(200.0)).h(Px(96.0))
+        // 文字を持つカードと、 半分かぶさる不透明なカード。 `card_first` なら文字のカードを
+        // 後に書く。 `raise` なら先に書いた方を `.layer(1)` で上げる。
+        let scene = |card_first: bool, raise: bool, caption: &str| -> Element {
+            let mut card = div().pos(16.0, 18.0).w(Px(200.0)).h(Px(96.0))
                 .bg(t.surface_elevated).border(1.0, t.border).rounded_px(self.round(10.0, 3.0))
                 .p(Px(12.0)).flex_col().gap(4.0)
                 .children([
-                    self.lbl("Underneath", 13.5, 700, t.text_primary),
-                    self.lbl("This text belongs to the card below.", 12.5, 400, t.text_secondary),
+                    self.lbl("Card", 13.5, 700, t.text_primary),
+                    self.lbl("This text belongs to the card.", 12.5, 400, t.text_secondary),
                 ]);
-            let mut over = div().pos(96.0 + slide, 64.0).w(Px(170.0)).h(Px(80.0))
+            let mut over = div().pos(90.0 + slide, 64.0).w(Px(120.0)).h(Px(80.0))
                 .bg(a.magenta.lerp(t.surface, 0.55)).border(1.0, a.magenta).rounded_px(self.round(10.0, 3.0))
                 .shadow_md(Color::new(0.0, 0.0, 0.0, 0.45))
                 .p(Px(12.0))
-                .children([self.lbl("On top", 13.5, 700, Color::WHITE)]);
-            if layered {
-                over = over.layer(1);
-            }
+                .children([self.lbl("Box", 13.5, 700, Color::WHITE)]);
+            let kids = if card_first {
+                if raise {
+                    over = over.layer(1);
+                }
+                [over, card]
+            } else {
+                if raise {
+                    card = card.layer(1);
+                }
+                [card, over]
+            };
             div().flex_1().flex_col().gap(6.0).children([
                 div().w_full().h(Px(170.0))
                     .bg(t.surface).rounded_px(self.round(12.0, 4.0)).overflow_hidden()
-                    .children([under, over]),
-                text(caption).mono().font_size(12.5).color(if layered { a.green } else { a.yellow }),
+                    .children(kids),
+                text(caption).mono().font_size(12.5).color(if raise { a.green } else { a.yellow }),
             ])
         };
 
         div().w_full().flex_col().gap(10.0).children([
-            self.lbl("Layers — Element::layer", 15.0, 700, t.primary).shrink(0.0),
+            self.lbl("Overlap — written order", 15.0, 700, t.primary).shrink(0.0),
             div().w_full().flex_row().gap(12.0).children([
-                scene(false, "layer 0: text of the lower card shows through"),
-                scene(true, ".layer(1): drawn after layer 0, nothing leaks"),
+                scene(false, false, "card, box: the box covers the card"),
+                scene(true, false, "box, card: the card covers the box"),
+                scene(true, true, "box.layer(1), card: the box comes back on top"),
             ]),
-            self.lbl("Inside one layer every rect is drawn before any text. Raise the box that has to cover text.", 12.5, 400, t.text_disabled).shrink(0.0),
+            self.lbl("Later siblings draw on top, text and images included.", 12.5, 400, t.text_disabled).shrink(0.0),
+            self.lbl(".layer(n) lifts something above siblings written after it.", 12.5, 400, t.text_disabled).shrink(0.0),
         ])
     }
 
