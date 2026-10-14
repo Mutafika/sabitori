@@ -86,19 +86,12 @@ impl RingRenderer {
         }
     }
 
-    /// Draw a batch of rings into the given render pass. Uploads
-    /// `instances` to the internal vertex buffer first; safe to call
-    /// once per pass (subsequent calls in the same pass would clobber
-    /// each other via `queue.write_buffer`, same caveat as
-    /// `ImageRenderer::render_images`).
-    pub fn render_rings(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[RingInstance],
-        render_pass: &mut wgpu::RenderPass<'_>,
-        globals_bind_group: &wgpu::BindGroup,
-    ) {
+    /// 全部の instance を 1 回で上げる。続く [`Self::draw`] は、この並びの中の範囲を描く。
+    ///
+    /// `queue.write_buffer` は 1 回の提出につき最後の書き込みしか効かない
+    /// (コマンドより先にまとめて当たる)。描く順に何度も上げると前の分が上書きされるので、
+    /// 1 枚ぶんを先に全部上げ、描くときは範囲で指す。
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[RingInstance]) {
         if instances.is_empty() {
             return;
         }
@@ -112,10 +105,34 @@ impl RingRenderer {
             });
         }
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+    }
 
+    /// [`Self::upload`] で上げた並びの `range` を描く。
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        range: std::ops::Range<u32>,
+    ) {
+        if range.is_empty() {
+            return;
+        }
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, globals_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..6, 0..instances.len() as u32);
+        render_pass.draw(0..6, range);
+    }
+
+    /// 上げて全部描く ([`Self::upload`] + [`Self::draw`])。1 回の提出で 1 度だけ呼べる。
+    pub fn render_rings(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[RingInstance],
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+    ) {
+        self.upload(device, queue, instances);
+        self.draw(render_pass, globals_bind_group, 0..instances.len() as u32);
     }
 }

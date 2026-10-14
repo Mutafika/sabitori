@@ -20,7 +20,7 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::bridge::{draw_ui_layer, UiDrawLists, UiRenderers};
+use crate::bridge::{draw_ui_layer, OrderedFrame, UiDrawLists, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
 use sabitori_gpu::RenderPhase;
 
@@ -2016,202 +2016,89 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     return;
                 };
 
-                // Layered path applies when EITHER:
-                // * external overlay_view returned content
-                // * the main tree contained `.overlay()` subtrees (build_result.overlay_list)
-                // The previous version only used the layered path for external
-                // overlays, so context menus placed in `view()` with `.overlay()`
-                // had their commands emitted to overlay_list and then silently
-                // dropped (never drawn). This fixes auto-hoist rendering.
-                // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
+                // はみ出しの目印は overlay_list に積むので、描く物を起こす前に (#95)。
                 self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
-                let has_external_overlay = overlay_build.is_some();
-                let has_internal_overlay = !build_result.overlay_list.commands.is_empty();
-                // 層 1 以上 (`Element::layer`) があるときも層ごとに描く経路へ
-                let has_overlay = has_external_overlay || has_internal_overlay || !build_result.layer_lists.is_empty();
+                // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
+                // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
 
-                // Both branches yield the build the frame was actually drawn
-                // from, so there is exactly one place that stores it — see the
-                // `commit_build` call below.
-                let drawn_build = if has_overlay {
-                    // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
-                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
-                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
-                    let (mut base_rects, mut base_lists, text_layouts) =
-                        UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
-                    // 層 0 と上掛けの間の層 (文字の選択は層 0 だけ)
-                    let mids: Vec<(Vec<sabitori_gpu::RectInstance>, UiDrawLists)> = build_result
-                        .layer_lists
-                        .iter()
-                        .map(|(_, l)| UiDrawLists::extract(l, &mut tr))
-                        .collect();
-                    let (overlay_rects, overlay_lists) =
-                        UiDrawLists::extract(&build_result.overlay_list, &mut tr);
-                    // text_layouts は次フレームの mouse 入力 / Cmd+C で使うので保存。
-                    self.text_layouts = text_layouts;
-                    // View 切替で selection が無効になる場合に clear。
-                    Self::invalidate_stale_selection(
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                    );
-                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
-                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
-                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
-                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
-                    self.selection_redraw |= Self::sync_selection(
-                        &mut self.app,
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                        &mut self.selection_snapshot,
-                    );
-                    // Selection highlight rects を base_rects の末尾に append (=
-                    // 他の base rects の上、 glyph の下に painter order で挟まる)。
-                    // renderer の mutable borrow 中なので self.selection_rects() が
-                    // borrow checker に怒られる。 selection + text_layouts は self が
-                    // 持ってる field なので、 直接 field アクセスで rect 列を組む。
-                    let (sel_bg, sel_fg) = match self.app.selection_style() {
-                        Some((bg, fg)) => (bg, Some(fg.to_array())),
-                        None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
-                    };
-                    // find-in-page ハイライトは selection の下に敷く (append 順 =
-                    // painter order。 selection が上、 highlight が下、 両方 glyph の下)。
-                    base_rects.extend(Self::compute_highlight_rects(&self.text_layouts));
-                    base_rects.extend(Self::compute_link_rects(&self.text_layouts));
-                    let sel_rects = Self::compute_selection_rects(
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    );
-                    if let Some(fg) = sel_fg {
-                        Self::recolor_selected_glyphs(&mut base_lists.glyphs, &sel_rects, fg);
-                    }
-                    base_rects.extend(sel_rects);
-                    base_rects.extend(Self::selection_handle_rects(
-                        self.selection_handles,
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    ));
-
-                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
-                    let merged = build_result;
-
-                    let device = renderer.device.clone();
-                    let queue = renderer.queue.clone();
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    // goo も層ごとに (間の層の goo を落とさない)。
-                    renderer.set_goo_layers(
-                        std::iter::once(base_lists.goo.clone())
-                            .chain(mids.iter().map(|(_, l)| l.goo.clone()))
-                            .chain(std::iter::once(overlay_lists.goo.clone()))
-                            .collect(),
-                    );
-                    // 層 0 → 間の層 → 上掛け。矩形の数だけでは層の有無を判定できない。地を
-                    // 塗っていない div は矩形を出さないので、画像だけ / 文字だけの層が丸ごと落ちる (#44)。
-                    let mut layers: Vec<(&[sabitori_gpu::RectInstance], bool)> = vec![(&base_rects, true)];
-                    layers.extend(mids.iter().map(|(r, l)| (r.as_slice(), !l.is_empty())));
-                    layers.push((&overlay_rects, !overlay_lists.is_empty()));
-                    let n_mids = mids.len();
-                    let _ = renderer.render_layers(
-                        &layers,
-                        |i, pass, globals_bg| {
-                            let lists = if i == 0 {
-                                &base_lists
-                            } else if i <= n_mids {
-                                &mids[i - 1].1
-                            } else {
-                                &overlay_lists
-                            };
-                            let mut r = UiRenderers {
-                                images: ir.as_mut(),
-                                rings: rr.as_mut(),
-                                lines: lr.as_mut(),
-                                text: &mut tr,
-                            };
-                            draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
-                        },
-                    );
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
-                    merged
-                } else {
-                    let (mut rects, mut lists, text_layouts) =
-                        UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
-                    self.text_layouts = text_layouts;
-                    Self::invalidate_stale_selection(
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                    );
-                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
-                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
-                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
-                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
-                    self.selection_redraw |= Self::sync_selection(
-                        &mut self.app,
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                        &mut self.selection_snapshot,
-                    );
-                    let (sel_bg, sel_fg) = match self.app.selection_style() {
-                        Some((bg, fg)) => (bg, Some(fg.to_array())),
-                        None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
-                    };
-                    // find-in-page ハイライトは selection の下に敷く (glyph の下)。
-                    rects.extend(Self::compute_highlight_rects(&self.text_layouts));
-                    rects.extend(Self::compute_link_rects(&self.text_layouts));
-                    let sel_rects = Self::compute_selection_rects(
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    );
-                    if let Some(fg) = sel_fg {
-                        Self::recolor_selected_glyphs(&mut lists.glyphs, &sel_rects, fg);
-                    }
-                    rects.extend(sel_rects);
-                    rects.extend(Self::selection_handle_rects(
-                        self.selection_handles,
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    ));
-
-                    let device = renderer.device.clone();
-                    let queue = renderer.queue.clone();
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    renderer.set_goo(lists.goo.clone(), Vec::new());
-                    let _ = renderer.render_with(&rects, |pass, globals_bg| {
-                        let mut r = UiRenderers {
-                            images: ir.as_mut(),
-                            rings: rr.as_mut(),
-                            lines: lr.as_mut(),
-                            text: &mut tr,
-                        };
-                        draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-                    });
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
-                    build_result
+                // 層 0 → 上げた層 → 上掛け を、**木の順に** 1 つのパスで描く。
+                // 以前は層ごとに「矩形 → 画像 → … → 文字」と種類でまとめて描いていたので、
+                // 同じ層で重なると下の要素の文字や画像が上の箱に透けた (#126)。
+                // 選択などの対象にするのは上掛け以外 (上掛けは前から対象外)。
+                let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+                    vec![(&build_result.render_list, true)];
+                lists.extend(build_result.layer_lists.iter().map(|(_, l)| (l, true)));
+                lists.push((&build_result.overlay_list, false));
+                let mut frame = OrderedFrame::extract(&lists, &mut tr);
+                // text_layouts は次フレームの mouse 入力 / Cmd+C で使うので保存。
+                self.text_layouts = std::mem::take(&mut frame.text_layouts);
+                // View 切替で selection が無効になる場合に clear。
+                Self::invalidate_stale_selection(
+                    &mut self.selection,
+                    &mut self.selecting,
+                    &self.text_layouts,
+                );
+                // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
+                // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
+                // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
+                // 理由が無いまま止まり、選択の近くのメニューが出ない。
+                self.selection_redraw |= Self::sync_selection(
+                    &mut self.app,
+                    &mut self.selection,
+                    &mut self.selecting,
+                    &self.text_layouts,
+                    &mut self.selection_snapshot,
+                );
+                let (sel_bg, sel_fg) = match self.app.selection_style() {
+                    Some((bg, fg)) => (bg, Some(fg.to_array())),
+                    None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
                 };
+                // 文字の下に敷く物は、**その文字のグリフの直前**に描く (木の順で描くので、
+                // 末尾に足すと後ろの箱の上に出る)。敷く順 = 塗る順: 検索のハイライト →
+                // リンクの下線 → 選択 → つまみ。
+                for layout in &self.text_layouts {
+                    let one = std::slice::from_ref(layout);
+                    let mut under = Self::compute_highlight_rects(one);
+                    under.extend(Self::compute_link_rects(one));
+                    let sel_rects = Self::compute_selection_rects(self.selection.as_ref(), one, sel_bg);
+                    if let (Some(fg), Some(range)) = (sel_fg, frame.text_glyphs.get(&layout.text_idx)) {
+                        let range = range.start as usize..range.end as usize;
+                        Self::recolor_selected_glyphs(&mut frame.glyphs[range], &sel_rects, fg);
+                    }
+                    under.extend(sel_rects);
+                    under.extend(Self::selection_handle_rects(
+                        self.selection_handles,
+                        self.selection.as_ref(),
+                        one,
+                        sel_bg,
+                    ));
+                    frame.under_text(layout.text_idx, under);
+                }
+
+                let device = renderer.device.clone();
+                let queue = renderer.queue.clone();
+                let mut ir = self.image_renderer.take();
+                let mut rr = self.ring_renderer.take();
+                let mut lr = self.line_renderer.take();
+                {
+                    let mut r = UiRenderers {
+                        images: ir.as_mut(),
+                        rings: rr.as_mut(),
+                        lines: lr.as_mut(),
+                        text: &mut tr,
+                    };
+                    frame.upload(renderer, &mut r, &device, &queue);
+                    let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
+                }
+                // フレーム境界。テクスチャ LRU の世代をここで進める (#43)。
+                if let Some(ir) = ir.as_mut() {
+                    ir.end_frame();
+                }
+                self.image_renderer = ir;
+                self.ring_renderer = rr;
+                self.line_renderer = lr;
+                let drawn_build = build_result;
 
                 self.commit_build(drawn_build);
                 frame_stats::record(
