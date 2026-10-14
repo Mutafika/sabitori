@@ -1008,6 +1008,79 @@ impl GpuRenderer {
     pub fn render(&mut self, rects: &[RectInstance]) -> Result<(), wgpu::SurfaceError> {
         self.render_with(rects, |_, _| {})
     }
+    /// 1 枚ぶんの矩形を上げる。続く [`Self::draw_rect_range`] はこの並びの範囲を描く。
+    ///
+    /// [`Self::render_frame`] で木の順に描く経路用。`queue.write_buffer` は 1 回の提出に
+    /// つき最後の書き込みしか効かないので、1 枚ぶんを先に全部上げ、描くときは範囲で指す。
+    pub fn upload_rects(&mut self, rects: &[RectInstance]) {
+        if rects.is_empty() {
+            return;
+        }
+        if rects.len() > self.instance_capacity {
+            self.instance_capacity = rects.len().next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_instance_buffer"),
+                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+    }
+
+    /// 1 枚ぶんの goo を上げる。続く [`Self::draw_goo_range`] はこの並びの範囲を描く。
+    pub fn upload_goo_instances(&mut self, goo: &[GooInstance]) {
+        self.goo_renderer.upload(&self.device, &self.queue, goo);
+    }
+
+    /// [`Self::upload_rects`] で上げた矩形の `range` を描く。
+    pub fn draw_rect_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        self.draw_rect_run(pass, range);
+    }
+
+    /// [`Self::upload_goo_instances`] で上げた goo の `range` を描く。
+    pub fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if !range.is_empty() {
+            self.goo_renderer.draw(pass, &self.globals_bind_group, range);
+        }
+    }
+
+    /// 1 枚を 1 つのパスで描く。画面を消してから `draw` を呼び、出して見せる。
+    ///
+    /// 何をどの順で描くかは `draw` が決める。上げるもの ([`Self::upload_rects`] など) は
+    /// 呼ぶ前に上げておくこと。`draw` には自分 (`&Self`) が渡るので、矩形や goo の範囲は
+    /// [`Self::draw_rect_range`] / [`Self::draw_goo_range`] で描ける。
+    pub fn render_frame(
+        &mut self,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let output = self.acquire_drawable()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("sabitori_frame_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sabitori_frame_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            draw(&mut pass, self);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.capture_if_requested(&output.texture);
+        output.present();
+        Ok(())
+    }
 
     /// Render rectangles, then call `extra_draw` with the render pass for additional drawing
     /// (e.g., text glyphs).

@@ -807,6 +807,34 @@ fn compute_object_fit_uv(
     }
 }
 
+/// 画像 1 枚の instance。切り抜きの外なら `None`、一部だけなら見える所だけに縮めて
+/// UV も合わせて削る (スクロールの縁で隣の領域へはみ出さない)。
+fn image_instance(d: &ImageDraw, clip: Option<&sabitori_core::Rect>) -> Option<ImageInstance> {
+    let base_uv = compute_object_fit_uv(
+        d.data.width, d.data.height,
+        d.rect.size.width, d.rect.size.height,
+        d.object_fit,
+    );
+    let (rect, uv) = match clip {
+        Some(clip) => {
+            if is_clipped(clip, &d.rect) {
+                return None;
+            }
+            clip_image(&d.rect, base_uv, clip)
+        }
+        None => (
+            [d.rect.origin.x, d.rect.origin.y, d.rect.size.width, d.rect.size.height],
+            base_uv,
+        ),
+    };
+    Some(ImageInstance {
+        rect,
+        uv_rect: uv,
+        corner_radii: d.corner_radii.to_array(),
+        params: [d.opacity, 0.0, 0.0, 0.0],
+    })
+}
+
 /// Extract image batches from a RenderList, grouped by key.
 ///
 /// Images are clipped against the active scroll/overflow clip rect: when a
@@ -828,32 +856,7 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
                 clip_stack.pop();
             }
             RenderCommand::Image(d) => {
-                let base_uv = compute_object_fit_uv(
-                    d.data.width, d.data.height,
-                    d.rect.size.width, d.rect.size.height,
-                    d.object_fit,
-                );
-
-                // Fully-outside → skip; partial → shrink rect + sub-sample
-                // UV so the image is clipped at scroll container edges and
-                // does not bleed over neighbouring regions (toolbars, headers).
-                let (rect, uv) = if let Some(clip) = clip_stack.last() {
-                    if is_clipped(clip, &d.rect) { continue; }
-                    clip_image(&d.rect, base_uv, clip)
-                } else {
-                    (
-                        [d.rect.origin.x, d.rect.origin.y, d.rect.size.width, d.rect.size.height],
-                        base_uv,
-                    )
-                };
-
-                let inst = ImageInstance {
-                    rect,
-                    uv_rect: uv,
-                    corner_radii: d.corner_radii.to_array(),
-                    params: [d.opacity, 0.0, 0.0, 0.0],
-                };
-
+                let Some(inst) = image_instance(d, clip_stack.last()) else { continue };
                 if let Some(batch) = batches.iter_mut().find(|b| b.key == d.key) {
                     batch.instances.push(inst);
                 } else {
@@ -988,6 +991,400 @@ pub fn draw_ui_layer(
         line_r.render_lines(device, queue, &lists.lines, pass, globals_bg);
     }
     r.text.render_glyphs(device, queue, &lists.glyphs, pass, globals_bg);
+}
+
+// ---------------------------------------------------------------------------
+// 木の順に描く
+// ---------------------------------------------------------------------------
+
+/// 1 枚の中で続けて描くまとまり。種類ごとの instance の並びの範囲を指す。
+///
+/// 描画命令を**木の順**に並べ、同じ種類が続く所だけをまとめる。種類ごとに全部まとめて
+/// 描くと、下の要素の文字や画像が上の要素の地の上に出る (#126)。
+#[derive(Clone, Debug, PartialEq)]
+pub enum DrawRun {
+    Rects(std::ops::Range<u32>),
+    Goo(std::ops::Range<u32>),
+    /// 同じテクスチャ (`key`) の画像。
+    Images { key: String, range: std::ops::Range<u32> },
+    Rings(std::ops::Range<u32>),
+    Lines(std::ops::Range<u32>),
+    Glyphs(std::ops::Range<u32>),
+}
+
+impl DrawRun {
+    fn span_mut(&mut self) -> &mut std::ops::Range<u32> {
+        match self {
+            DrawRun::Rects(r)
+            | DrawRun::Goo(r)
+            | DrawRun::Images { range: r, .. }
+            | DrawRun::Rings(r)
+            | DrawRun::Lines(r)
+            | DrawRun::Glyphs(r) => r,
+        }
+    }
+}
+
+/// `run` を並びの末尾に足す。直前と同じ種類 (画像は同じテクスチャ) で続いていれば
+/// 1 つにまとめる。空の範囲は足さない。
+fn push_run(runs: &mut Vec<DrawRun>, mut run: DrawRun) {
+    let span = run.span_mut();
+    if span.start >= span.end {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        let same_kind = match (&*last, &run) {
+            (DrawRun::Images { key: a, .. }, DrawRun::Images { key: b, .. }) => a == b,
+            (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
+        };
+        if same_kind && last.span_mut().end == run.span_mut().start {
+            last.span_mut().end = run.span_mut().end;
+            return;
+        }
+    }
+    runs.push(run);
+}
+
+/// 文字の下に敷く矩形 (選択・検索のハイライト・リンクの下線) を、その文字のグリフの
+/// 直前に差し込む。`under` は (グリフの通し番号, 敷く矩形の範囲)。
+///
+/// 以前はこれらを矩形の並びの末尾に足していた。種類ごとにまとめて描くので「全部の
+/// 矩形の後、全部の文字の前」に来ていたが、木の順で描くと、その文字より後に描く
+/// 箱の上に出てしまう。
+fn splice_under_glyphs(runs: Vec<DrawRun>, mut under: Vec<(u32, std::ops::Range<u32>)>) -> Vec<DrawRun> {
+    if under.is_empty() {
+        return runs;
+    }
+    under.sort_by_key(|(at, _)| *at);
+    let mut out = Vec::with_capacity(runs.len() + under.len() * 2);
+    let mut pending = under.into_iter().peekable();
+    for run in runs {
+        let DrawRun::Glyphs(range) = run else {
+            out.push(run);
+            continue;
+        };
+        let mut cur = range.start;
+        while let Some((at, _)) = pending.peek() {
+            if *at < range.start || *at >= range.end {
+                break;
+            }
+            let (at, rects) = pending.next().expect("peeked");
+            push_run(&mut out, DrawRun::Glyphs(cur..at));
+            push_run(&mut out, DrawRun::Rects(rects));
+            cur = at;
+        }
+        push_run(&mut out, DrawRun::Glyphs(cur..range.end));
+    }
+    out
+}
+
+/// 1 枚ぶんの描画を、木の順のまとまり ([`DrawRun`]) と種類ごとの instance に起こした物。
+///
+/// 使い方: [`OrderedFrame::extract`] で起こし、文字の下に敷く物があれば
+/// [`OrderedFrame::under_text`] で足し、[`OrderedFrame::upload`] で上げてから
+/// [`GpuRenderer::render_frame`](sabitori_gpu::GpuRenderer::render_frame) の中で
+/// [`OrderedFrame::draw`] を呼ぶ。
+#[derive(Default)]
+pub struct OrderedFrame {
+    pub rects: Vec<RectInstance>,
+    pub goo: Vec<GooInstance>,
+    pub images: Vec<ImageInstance>,
+    /// 描く画像のテクスチャ (key ごとに 1 つ)。上げる前に `ensure_texture` する。
+    pub image_data: Vec<(String, ImageData)>,
+    pub rings: Vec<RingInstance>,
+    pub lines: Vec<LineInstance>,
+    pub glyphs: Vec<GlyphInstance>,
+    pub runs: Vec<DrawRun>,
+    /// 選択・検索・リンクに使う文字の配置 (読む順)。
+    pub text_layouts: Vec<TextHitLayout>,
+    /// `text_layouts` の各文字が `glyphs` のどこからどこまでか (`text_idx` → 範囲)。
+    pub text_glyphs: HashMap<usize, std::ops::Range<u32>>,
+    /// 文字の下に敷く矩形 (グリフの通し番号, 矩形の範囲)。`draw` の前に差し込む。
+    under: Vec<(u32, std::ops::Range<u32>)>,
+}
+
+impl OrderedFrame {
+    /// 描画命令の並びを、描く順に起こす。`lists` は (並び, 選択などの対象にするか) を
+    /// 下から順に。対象にする並びの文字には `text_idx` を通し番号で振る (読む順)。
+    pub fn extract(lists: &[(&RenderList, bool)], tr: &mut TextRenderer) -> Self {
+        // 先に atlas を立て直す (前の枚で溢れていたら、見える字だけで描き直す)。
+        tr.maybe_recover_atlas();
+        let mut f = OrderedFrame::default();
+        let mut text_idx: usize = 0;
+        for (list, with_hits) in lists {
+            f.extract_one(list, *with_hits, &mut text_idx, tr);
+        }
+        f
+    }
+
+    fn extract_one(&mut self, list: &RenderList, with_hits: bool, text_idx: &mut usize, tr: &mut TextRenderer) {
+        let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
+        for cmd in &list.commands {
+            let clip = clip_stack.last().copied();
+            match cmd {
+                RenderCommand::PushClip(clip_rect) => push_intersected_clip(&mut clip_stack, *clip_rect),
+                RenderCommand::PopClip => {
+                    clip_stack.pop();
+                }
+                RenderCommand::Rect(d) => {
+                    if clip.is_some_and(|c| is_clipped(&c, &d.rect)) {
+                        continue;
+                    }
+                    let mut inst = rect_to_instance(d);
+                    if let Some(c) = clip {
+                        inst.clip_rect = clip_to_array(&c);
+                    }
+                    let at = self.rects.len() as u32;
+                    self.rects.push(inst);
+                    push_run(&mut self.runs, DrawRun::Rects(at..at + 1));
+                }
+                RenderCommand::Goo(d) => {
+                    if clip.is_some_and(|c| is_clipped(&c, &d.bounds())) {
+                        continue;
+                    }
+                    let mut inst = goo_to_instance(d);
+                    if let Some(c) = clip {
+                        inst.clip_rect = clip_to_array(&c);
+                    }
+                    let at = self.goo.len() as u32;
+                    self.goo.push(inst);
+                    push_run(&mut self.runs, DrawRun::Goo(at..at + 1));
+                }
+                RenderCommand::Image(d) => {
+                    let Some(inst) = image_instance(d, clip.as_ref()) else { continue };
+                    if !self.image_data.iter().any(|(k, _)| *k == d.key) {
+                        self.image_data.push((d.key.clone(), d.data.clone()));
+                    }
+                    let at = self.images.len() as u32;
+                    self.images.push(inst);
+                    push_run(&mut self.runs, DrawRun::Images { key: d.key.clone(), range: at..at + 1 });
+                }
+                RenderCommand::Ring(d) => {
+                    let r = d.outer_radius;
+                    let bbox = sabitori_core::Rect::new(d.center.x - r, d.center.y - r, 2.0 * r, 2.0 * r);
+                    if clip.is_some_and(|c| is_clipped(&c, &bbox)) {
+                        continue;
+                    }
+                    let mut inst = ring_to_instance(d);
+                    if let Some(c) = clip {
+                        inst.clip_rect = clip_to_array(&c);
+                    }
+                    let at = self.rings.len() as u32;
+                    self.rings.push(inst);
+                    push_run(&mut self.runs, DrawRun::Rings(at..at + 1));
+                }
+                RenderCommand::Polyline(d) => {
+                    if clip.is_some_and(|c| polyline_clipped(&c, &d.points)) {
+                        continue;
+                    }
+                    let mut insts = polyline_to_instances(d);
+                    if let Some(c) = clip {
+                        let arr = clip_to_array(&c);
+                        for i in insts.iter_mut() {
+                            i.clip_rect = arr;
+                        }
+                    }
+                    let at = self.lines.len() as u32;
+                    self.lines.extend(insts);
+                    push_run(&mut self.runs, DrawRun::Lines(at..self.lines.len() as u32));
+                }
+                RenderCommand::CellGrid(d) => {
+                    if clip.is_some_and(|c| is_clipped(&c, &d.rect())) {
+                        continue;
+                    }
+                    let at = self.glyphs.len() as u32;
+                    self.glyphs.extend(cell_grid_to_glyphs(d, tr, clip));
+                    push_run(&mut self.runs, DrawRun::Glyphs(at..self.glyphs.len() as u32));
+                }
+                RenderCommand::Text(d) => {
+                    // 切り抜きで飛ばした文字も番号は進める (スクロールで出入りしても、
+                    // 選択が別の文字を指さないように)。
+                    let cur_idx = *text_idx;
+                    if with_hits {
+                        *text_idx += 1;
+                    }
+                    if clip.is_some_and(|c| is_clipped(&c, &text_cull_rect(d))) {
+                        continue;
+                    }
+                    let max_width = (d.max_width > 0.0 && d.max_width < f32::MAX).then_some(d.max_width);
+                    let (mut produced, hits) = if with_hits && needs_hit_layout(d) {
+                        let (g, h) = tr.prepare_text_with_hits_spans(
+                            &d.content, d.position.x, d.position.y,
+                            d.font_size, d.color, &color_spans(d), max_width,
+                            d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
+                            d.typo,
+                        );
+                        (g, Some(h))
+                    } else {
+                        let g = tr.prepare_text_spans(
+                            &d.content, d.position.x, d.position.y,
+                            d.font_size, d.color, &color_spans(d), max_width,
+                            d.bold, d.monospace, d.font_family.as_deref(), d.max_lines,
+                            d.typo,
+                        );
+                        (g, None)
+                    };
+                    // 回すのはグリフだけ。当たりの箱は回さない (render_list_to_gpu_with_hits と同じ)。
+                    sabitori_text::rotate_glyphs(&mut produced, (d.position.x, d.position.y), d.rotation);
+                    if let Some(c) = clip {
+                        let arr = clip_to_array(&c);
+                        for g in produced.iter_mut() {
+                            g.clip_rect = arr;
+                        }
+                    }
+                    let at = self.glyphs.len() as u32;
+                    self.glyphs.extend(produced);
+                    let end = self.glyphs.len() as u32;
+                    push_run(&mut self.runs, DrawRun::Glyphs(at..end));
+                    if let Some(hits) = hits {
+                        self.text_glyphs.insert(cur_idx, at..end);
+                        self.text_layouts.push(TextHitLayout {
+                            text_idx: cur_idx,
+                            content: d.content.clone(),
+                            hits,
+                            clip_rect: clip,
+                            highlight: d.highlight.clone(),
+                            link_ranges: d.link_ranges.clone(),
+                            no_select: d.no_select,
+                            owner: d.owner.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// 文字 `text_idx` の下に矩形を敷く (選択・検索のハイライト・リンクの下線)。
+    /// その文字のグリフの直前に描かれる。文字が描かれていなければ (切り抜きの外) 何もしない。
+    pub fn under_text(&mut self, text_idx: usize, rects: Vec<RectInstance>) {
+        if rects.is_empty() {
+            return;
+        }
+        let Some(glyphs) = self.text_glyphs.get(&text_idx) else { return };
+        let at = glyphs.start;
+        let start = self.rects.len() as u32;
+        self.rects.extend(rects);
+        self.under.push((at, start..self.rects.len() as u32));
+    }
+
+    /// 最後に (全部の上に) 矩形を描く。
+    pub fn on_top(&mut self, rects: Vec<RectInstance>) {
+        let start = self.rects.len() as u32;
+        self.rects.extend(rects);
+        push_run(&mut self.runs, DrawRun::Rects(start..self.rects.len() as u32));
+    }
+
+    /// 何も描かないか。
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    /// 描く物を全部上げる。[`OrderedFrame::draw`] の前に、パスの外で呼ぶ。
+    pub fn upload(
+        &mut self,
+        gpu: &mut sabitori_gpu::GpuRenderer,
+        r: &mut UiRenderers<'_>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        self.runs = splice_under_glyphs(std::mem::take(&mut self.runs), std::mem::take(&mut self.under));
+        gpu.upload_rects(&self.rects);
+        gpu.upload_goo_instances(&self.goo);
+        if let Some(img_r) = r.images.as_deref_mut() {
+            for (key, data) in &self.image_data {
+                img_r.ensure_texture(device, queue, key, &data.rgba, data.width, data.height);
+            }
+            img_r.upload(device, queue, &self.images);
+        }
+        if let Some(ring_r) = r.rings.as_deref_mut() {
+            ring_r.upload(device, queue, &self.rings);
+        }
+        if let Some(line_r) = r.lines.as_deref_mut() {
+            line_r.upload(device, queue, &self.lines);
+        }
+        r.text.upload_glyphs(device, queue, &self.glyphs);
+    }
+
+    /// 木の順に描く。[`OrderedFrame::upload`] の後、開いたパスの中で呼ぶ。
+    pub fn draw(
+        &self,
+        gpu: &sabitori_gpu::GpuRenderer,
+        r: &UiRenderers<'_>,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) {
+        let globals = &gpu.globals_bind_group;
+        for run in &self.runs {
+            match run {
+                DrawRun::Rects(range) => gpu.draw_rect_range(pass, range.clone()),
+                DrawRun::Goo(range) => gpu.draw_goo_range(pass, range.clone()),
+                DrawRun::Images { key, range } => {
+                    if let Some(img_r) = r.images.as_deref() {
+                        img_r.draw(pass, globals, key, range.clone());
+                    }
+                }
+                DrawRun::Rings(range) => {
+                    if let Some(ring_r) = r.rings.as_deref() {
+                        ring_r.draw(pass, globals, range.clone());
+                    }
+                }
+                DrawRun::Lines(range) => {
+                    if let Some(line_r) = r.lines.as_deref() {
+                        line_r.draw(pass, globals, range.clone());
+                    }
+                }
+                DrawRun::Glyphs(range) => r.text.draw_glyphs(pass, globals, range.clone()),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ordered_tests {
+    use super::{push_run, splice_under_glyphs, DrawRun};
+
+    /// 同じ種類が続けば 1 つにまとめ、種類が変われば分ける (木の順を崩さない)。
+    #[test]
+    fn runs_merge_only_while_the_kind_continues() {
+        let mut runs = Vec::new();
+        push_run(&mut runs, DrawRun::Rects(0..1));
+        push_run(&mut runs, DrawRun::Rects(1..2));
+        push_run(&mut runs, DrawRun::Glyphs(0..5));
+        push_run(&mut runs, DrawRun::Rects(2..3));
+        push_run(&mut runs, DrawRun::Images { key: "a".into(), range: 0..1 });
+        push_run(&mut runs, DrawRun::Images { key: "b".into(), range: 1..2 });
+        push_run(&mut runs, DrawRun::Glyphs(5..5)); // 空は足さない
+        assert_eq!(
+            runs,
+            vec![
+                DrawRun::Rects(0..2),
+                DrawRun::Glyphs(0..5),
+                DrawRun::Rects(2..3),
+                DrawRun::Images { key: "a".into(), range: 0..1 },
+                DrawRun::Images { key: "b".into(), range: 1..2 },
+            ]
+        );
+    }
+
+    /// 文字の下に敷く矩形は、その文字のグリフの直前に入る。同じまとまりの中の
+    /// 別の文字の前には入らない。
+    #[test]
+    fn under_text_rects_go_right_before_their_glyphs() {
+        let runs = vec![DrawRun::Rects(0..1), DrawRun::Glyphs(0..10), DrawRun::Rects(1..2), DrawRun::Glyphs(10..12)];
+        // 2 番目の文字 (グリフ 4..) と、後ろのまとまりの先頭 (10) に敷く。
+        let out = splice_under_glyphs(runs, vec![(10, 5..6), (4, 2..4)]);
+        assert_eq!(
+            out,
+            vec![
+                DrawRun::Rects(0..1),
+                DrawRun::Glyphs(0..4),
+                DrawRun::Rects(2..4),
+                DrawRun::Glyphs(4..10),
+                DrawRun::Rects(1..2),
+                DrawRun::Rects(5..6),
+                DrawRun::Glyphs(10..12),
+            ]
+        );
+    }
 }
 
 /// Intersect image's destination rect with the clip rect and proportionally
