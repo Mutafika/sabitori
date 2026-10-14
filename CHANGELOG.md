@@ -18,7 +18,8 @@
 ### Removed
 
 - **`sabitori-reel` の作例から、別の製品の紹介映像 4 本 (`demo` / `preview` / `video` /
-  `enchu_opener`) を外した。** reel の使い方の見本は `bga` / `iidx` / `stage3d` が持つ。
+  `enchu_opener`) と、他社のゲームに寄せた音ゲーの譜面 (`iidx`) を外した。** reel の
+  使い方の見本は `bga` / `stage3d` が持つ。
   README の reel の案内は `--example bga` を指す。
 
 ## [0.41.1] - 2026-10-15
