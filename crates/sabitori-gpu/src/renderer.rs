@@ -952,12 +952,14 @@ impl GpuRenderer {
     /// slot's `before_rect` indexes into the rect slice of its own layer as
     /// passed to that call. Consumed by the call; single-layer render
     /// functions (`render_with`, `render_scene_then_ui`) draw only `base`.
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn set_goo(&mut self, base: Vec<GooSlot>, overlay: Vec<GooSlot>) {
         self.pending_goo = vec![base, overlay];
     }
 
     /// [`GpuRenderer::render_layers`] 用: 層ごとの goo (`layers[i]` が層 i)。
     /// 各 `before_rect` はその層の矩形の並びの中の位置。
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn set_goo_layers(&mut self, layers: Vec<Vec<GooSlot>>) {
         self.pending_goo = layers;
     }
@@ -1123,6 +1125,7 @@ impl GpuRenderer {
     /// `layers[i]` は (その層の矩形, 矩形以外も描くか)。`draw_fn(i, ..)` が層 i の矩形以外を描く。
     /// 層 0 は必ず描く (画面を消す)。goo は [`GpuRenderer::set_goo_layers`] で層ごとに渡す
     /// (`set_goo` で渡すと、上掛けの分は層 1 に描かれる)。
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn render_layers(
         &mut self,
         layers: &[(&[RectInstance], bool)],
@@ -1209,6 +1212,7 @@ impl GpuRenderer {
     /// every other signal, hit regions and callbacks included, still correct.
     /// Tooltips and context menus survived only because both happen to set a
     /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn render_layered(
         &mut self,
         base_rects: &[RectInstance],
@@ -1522,6 +1526,7 @@ impl GpuRenderer {
     /// [`render_layered`](Self::render_layered): whether the overlay layer
     /// draws anything other than rects. Same trap, same reason it cannot be
     /// derived here.
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn render_scene_then_ui_layered(
         &mut self,
         scene_fn: impl FnOnce(&mut SceneRenderContext),
