@@ -167,7 +167,7 @@
 
 - **コンテキストメニューを開いたまま別の物を右クリックすると、幕に当たっていた。**
   `on_right_click` に届くのは `ctx-backdrop` で、右クリックした物ではなかった。ファイラ
-  (lustar) なら、右クリックしたファイルが選ばれないまま空白のメニューが出る。いまは幕を
+  なら、右クリックしたファイルが選ばれないまま空白のメニューが出る。いまは幕を
   飛ばして下の物に届くので、OS のメニューと同じくその場で開き直せる。宛先の決め方は
   declarative と scene_app で 1 本 (`runtime_shared::right_click_target`)。
 
@@ -222,7 +222,7 @@
 
 - **外から複数のファイルを落とすと、`on_file_drop` が 1 ファイルずつ呼ばれていた。**
   winit が `DroppedFile` を 1 件ずつ送るのをそのまま渡していたので、受けた所で
-  操作を始めるアプリ (lustar) は 2 件目からを取りこぼしていた。いまは 1 回の
+  操作を始めるアプリは 2 件目からを取りこぼしていた。いまは 1 回の
   ドロップ分を溜め、周回の終わりにまとめて 1 回で渡す。
 
 ## [0.35.0] - 2026-10-09
@@ -317,7 +317,7 @@
   フレームの drain)」の間に居られるので、`pending() == 0` だけを見て止まると、
   当てていない結果を 1 つ取り残す。その結果が新しいタスクを投げるもの
   (ファイル操作の Job が終わったら一覧を読み直す、など) だと、待ったつもりで
-  何も待てておらず、テストが古い一覧を見ていた (lustar で発覚)。
+  何も待てておらず、テストが古い一覧を見ていた (利用側のファイラで発覚)。
   `Tasks::is_idle()` (走っているものも当てていない結果も無い) を足し、
   それを見て止まるようにした。回帰テストは `tests/tasks_chain.rs`。
 
@@ -1823,7 +1823,7 @@ headless Chromium に実際に描かせて確認している (`e2e/web/`)。
   (`style: Box<ElementStyle>`、`hover_style`/`active_style: Option<Box<StateStyle>>`)。
   読み手は auto-deref でそのまま、書き手も builder API 経由なら変更なし。
   フィールドを直接組む消費者だけ `Box::new` が要る (実質 API 変更なし扱いの patch)。
-  bamiri-plateau の実 view (起動即死していたもの) が既定 1MB スタックで
+  利用側のアプリの実 view (起動即死していたもの) が既定 1MB スタックで
   全操作 (picker/text_input 打鍵込み) 動作することを headless Chrome で確認。
   `size_probe` テストで上限 320B を張り、無音の再肥大を止める。
 
@@ -3558,7 +3558,7 @@ v0.3.15 で入れた `scale` の取りこぼしを 2 件塞いだ版。どちら
 `DeclarativeApp` の上で書けるようになった版。値は runtime が既に握っていたのに、
 façade が落としていた 2 箇所を塞ぐ。
 
-同じ組織の別アプリ（bamiri）は winit のイベントループを自前で持っているので同じことが
+winit のイベントループを自前で持つ利用側のアプリでは、同じことが
 できていた。差は「情報が無い」ことではなく「`DeclarativeApp` に乗ると届かない」ことだった。
 
 ### Fixed
@@ -3987,7 +3987,7 @@ CAD/DXF のようにベースライン基準で座標を持つ利用側が、画
 - **グリフアトラスが 1 グリフ追加でも全面 16 MiB を再アップロードしていた**
   ([#48](https://github.com/Mutafika/sabitori/issues/48))。`upload_atlas` は
   `dirty` が立つたびに 2048 × 2048 × 4 = **16 MiB** のテクスチャ全体を
-  `write_texture` していた。実測（mearie に計測器を入れたもの）で **6 フレームに
+  `write_texture` していた。実測（利用側のターミナルに計測器を入れたもの）で **6 フレームに
   3 回**発火し、同フレームの実グリフデータ約 52 KB に対して **約 320 倍**を
   GPU に送っていた。日本語のように文字種が多いテキストは新しいグリフが延々と
   現れるため、`dirty` は落ち着かず立ち続ける。
@@ -4311,7 +4311,7 @@ v0.3.0 と v0.2.24 は `v0.2.23` から分岐した兄弟で互いの修正を�
   リサイズし、ペイン間の継ぎ目をドラッグ可能なスプリッタにする純幾何ウィジェット。
   `WindowDragState` と同じく id・ヒットテスト・描画を知らない。`pane_rect`/
   `splitter_rect`/`drag_splitter`(最小幅クランプ)/`move_by`/`set_size`/
-  `split_pane`/`remove`/`drop_split`。ユニットテスト18件。bamiri のパネル合体
+  `split_pane`/`remove`/`drop_split`。ユニットテスト18件。パネル合体
   =分割ドッキングの基盤。
 - `window_drag::set_rect` — タイル配置用に位置＋寸法を上書き。
 - **FocusManager** (`sabitori-widgets::FocusManager` / `FocusChange` /
@@ -4324,7 +4324,7 @@ v0.3.0 と v0.2.24 は `v0.2.23` から分岐した兄弟で互いの修正を�
   カーソル点滅（`tick`/`cursor_visible_for`）を提供。Enter は
   `FocusKeyResult::Submit(id)`、Escape は `Escape(id)` で**ホストに委ねる**
   （勝手に確定/blur しない）。IME 変換中の Enter/Tab は解釈しない。
-  埋め込みホスト（bamiri 等）のダイアログ入力・検索ボックス・rename 向け。
+  埋め込みホストのダイアログ入力・検索ボックス・rename 向け。
   ユニットテスト 11 件。
 - **ColorPicker** (`sabitori-widgets::ColorPickerState` / `ColorPickerStyle`) —
   プリセットパレット格子 + RGB 微調整（`NumericInputState` を 3 ch 内蔵
@@ -4372,7 +4372,7 @@ v0.3.0 と v0.2.24 は `v0.2.23` から分岐した兄弟で互いの修正を�
   ColorPicker、DropdownState（inline モード）、DatePicker、
   SliderState + `labeled_slider`、`labeled_progress_bar`。
 - **scroll_sync** (`sabitori::scroll_sync`) — declarative ランナーを使わず
-  build→GPU パイプラインを直接駆動する埋め込みホスト（bamiri 等）向けの
+  build→GPU パイプラインを直接駆動する埋め込みホスト向けの
   ScrollView 状態同期ヘルパー。`patch_scroll_offsets`（overflow_scroll
   要素への id 合成 + 状態登録 + オフセット注入）/ `apply_scroll_measures`
   （レイアウト実測の content/viewport を状態へ反映）/ `route_wheel`
@@ -4384,7 +4384,7 @@ v0.3.0 と v0.2.24 は `v0.2.23` から分岐した兄弟で互いの修正を�
   テストと肥大診断用。
 - **UiOverlayRenderer** (`sabitori-gpu::UiOverlayRenderer`) — surface /
   device を所有しない軽量 UI レンダラー。自前の winit ループ + wgpu
-  パイプラインを持つホストアプリ（bamiri 等）が、既存 device と surface
+  パイプラインを持つホストアプリが、既存 device と surface
   texture への render pass に sabitori UI（rect 群 + glyph）を重ね描き
   するための埋め込み口。base / overlay の 2 層を 1 つの instance buffer に
   同居させ `draw_base()` / `draw_overlay()` で範囲描画する。
@@ -4429,7 +4429,7 @@ v0.3.0 と v0.2.24 は `v0.2.23` から分岐した兄弟で互いの修正を�
 - **高さ 0 に潰れた scroll/hidden コンテナが子を clip 無しで漏らす件** —
   `flex_1().overflow_scroll()` リストが兄弟に高さを食い潰されて 0 になると、
   `emit_commands` の zero-size 早期 return が PushClip を積まずに子へ再帰し、
-  数百行が画面全体とウィンドウ下端を越えて描画されていた（bamiri の
+  数百行が画面全体とウィンドウ下端を越えて描画されていた（利用側の
   ドックパネルで観測）。零サイズの clip コンテナはサブツリーごと cull する
   ように修正。padding が content box を零面積にするケースも同様に cull。
   併せて bridge の `is_clipped` が退化 clip（幅/高さ 0 — 重ならない入れ子
