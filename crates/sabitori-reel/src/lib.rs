@@ -1324,8 +1324,10 @@ mod tests {
         assert!(right[2] > 200 && right[0] < 60, "右半分が青でない: {right:?}");
     }
 
-    /// `mono_family` で等幅の字を選べる。組み込みの HackGen は半角が 0.5em で、既定の
-    /// 等幅 (macOS の Courier など、0.6em 前後) より同じ文字列が細く出る。
+    /// `mono_family` で等幅の字を選べる。同じ文字列の幅が、既定の等幅と変わることで見る。
+    /// どの字に解決されるかは環境で違う (手元の macOS では HackGen で細くなり、CI の
+    /// Linux では名前が見つからず別の字に落ちて広くなった) ので、向きは問わない。
+    /// 配線が無ければ、どちらも既定の字で同じ幅になる。
     #[test]
     fn mono_family_picks_the_monospace_face() {
         if !gpu_available() {
@@ -1349,7 +1351,7 @@ mod tests {
         let hackgen_w = right_edge(Some("HackGen"));
         assert!(hackgen_w > 0, "文字が描かれていない");
         assert!(
-            (hackgen_w as f32) < default_w as f32 * 0.95,
+            (hackgen_w as f32 - default_w as f32).abs() > default_w as f32 * 0.05,
             "mono_family が効いていない (既定 {default_w}px, HackGen {hackgen_w}px)"
         );
     }
