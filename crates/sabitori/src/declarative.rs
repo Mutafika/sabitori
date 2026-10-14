@@ -2054,12 +2054,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
                 };
                 // 文字の下に敷く物は、**その文字のグリフの直前**に描く (木の順で描くので、
-                // 末尾に足すと後ろの箱の上に出る)。敷く順 = 塗る順: 検索のハイライト →
-                // リンクの下線 → 選択 → つまみ。
+                // 末尾に足すと後ろの箱の上に出る)。検索のハイライトとリンクの下線は
+                // `OrderedFrame::extract` が敷いた。ここでは選択 → つまみ を重ねる。
                 for layout in &self.text_layouts {
                     let one = std::slice::from_ref(layout);
-                    let mut under = Self::compute_highlight_rects(one);
-                    under.extend(Self::compute_link_rects(one));
+                    let mut under = Vec::new();
                     let sel_rects = Self::compute_selection_rects(self.selection.as_ref(), one, sel_bg);
                     if let (Some(fg), Some(range)) = (sel_fg, frame.text_glyphs.get(&layout.text_idx)) {
                         let range = range.start as usize..range.end as usize;
@@ -4837,116 +4836,6 @@ impl<A: DeclarativeApp> AppState<A> {
         }
         out
     }
-
-    /// Find-in-page ハイライト rect を全 text layout から集める。 各 `TextHitLayout`
-    /// が持つ `HighlightSpec` の byte 範囲を、 selection と同じ per-line union で背景
-    /// rect に変換する。 `current` の範囲だけ `current_color` で塗る。 呼び出し側で
-    /// base_rects の末尾に append され、 glyph の下・要素背景の上に挟まる。
-    fn compute_highlight_rects(
-        text_layouts: &[crate::bridge::TextHitLayout],
-    ) -> Vec<sabitori_gpu::RectInstance> {
-        let mut out: Vec<sabitori_gpu::RectInstance> = Vec::new();
-        for layout in text_layouts {
-            // Specs paint in order, so a later one covers an earlier one where
-            // their ranges overlap — the app decides precedence by call order.
-            for hl in &layout.highlight {
-                for (ri, &(b0, b1)) in hl.ranges.iter().enumerate() {
-                    if b1 <= b0 {
-                        continue;
-                    }
-                    let color = if hl.current == Some(ri) { hl.current_color } else { hl.color };
-                    // 同じ line_index の hit をまとめて 1 rect にする (selection と同じ)。
-                    use std::collections::BTreeMap;
-                    let mut by_line: BTreeMap<u32, (f32, f32, f32, f32)> = BTreeMap::new();
-                    for hit in &layout.hits {
-                        if hit.byte_end <= b0 || hit.byte_start >= b1 {
-                            continue;
-                        }
-                        let entry = by_line
-                            .entry(hit.line_index)
-                            .or_insert((hit.x, hit.y, hit.x + hit.w, hit.y + hit.h));
-                        entry.0 = entry.0.min(hit.x);
-                        entry.1 = entry.1.min(hit.y);
-                        entry.2 = entry.2.max(hit.x + hit.w);
-                        entry.3 = entry.3.max(hit.y + hit.h);
-                    }
-                    for (_, (x0, y0, x1, y1)) in by_line {
-                        out.push(sabitori_gpu::RectInstance {
-                            rect: [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)],
-                            corner_radii: [2.0; 4],
-                            fill_color: color.to_array(),
-                            border_color: [0.0; 4],
-                            border_width: 0.0,
-                            gradient_angle: 0.0,
-                            rotation: 0.0,
-                            _pad0: 0.0,
-                            shadow_color: [0.0; 4],
-                            shadow_offset: [0.0; 2],
-                            shadow_params: [0.0; 2],
-                            gradient_end_color: [0.0; 4],
-                            clip_rect: layout
-                                .clip_rect
-                                .map(|c| [c.origin.x, c.origin.y, c.size.width, c.size.height])
-                                .unwrap_or([0.0; 4]),
-                        });
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// in-body リンク範囲の下線 rect (compute_highlight_rects の下線版)。各範囲を
-    /// line ごとにまとめ、行の下端に細い下線を link color で敷く。glyph の下に描く。
-    fn compute_link_rects(
-        text_layouts: &[crate::bridge::TextHitLayout],
-    ) -> Vec<sabitori_gpu::RectInstance> {
-        let mut out: Vec<sabitori_gpu::RectInstance> = Vec::new();
-        for layout in text_layouts {
-            let Some(ranges) = layout.link_ranges.as_ref() else { continue };
-            for r in ranges {
-                if r.end <= r.start {
-                    continue;
-                }
-                use std::collections::BTreeMap;
-                // line_index -> (x0, x1, bottom_y)
-                let mut by_line: BTreeMap<u32, (f32, f32, f32)> = BTreeMap::new();
-                for hit in &layout.hits {
-                    if hit.byte_end <= r.start || hit.byte_start >= r.end {
-                        continue;
-                    }
-                    let entry = by_line
-                        .entry(hit.line_index)
-                        .or_insert((hit.x, hit.x + hit.w, hit.y + hit.h));
-                    entry.0 = entry.0.min(hit.x);
-                    entry.1 = entry.1.max(hit.x + hit.w);
-                    entry.2 = entry.2.max(hit.y + hit.h);
-                }
-                for (_, (x0, x1, bottom)) in by_line {
-                    out.push(sabitori_gpu::RectInstance {
-                        rect: [x0, bottom - 1.5, (x1 - x0).max(1.0), 1.5],
-                        corner_radii: [0.0; 4],
-                        fill_color: r.color.to_array(),
-                        border_color: [0.0; 4],
-                        border_width: 0.0,
-                        gradient_angle: 0.0,
-                        rotation: 0.0,
-                        _pad0: 0.0,
-                        shadow_color: [0.0; 4],
-                        shadow_offset: [0.0; 2],
-                        shadow_params: [0.0; 2],
-                        gradient_end_color: [0.0; 4],
-                        clip_rect: layout
-                            .clip_rect
-                            .map(|c| [c.origin.x, c.origin.y, c.size.width, c.size.height])
-                            .unwrap_or([0.0; 4]),
-                    });
-                }
-            }
-        }
-        out
-    }
-
     /// カーソル (x,y) が in-body リンク範囲上なら `(id, tooltip)` を返す。glyph の
     /// 実 hitbox への厳密内包判定 (hit_test_text の snap と違い、範囲外の近接では None)。
     fn link_at(&self, x: f32, y: f32) -> Option<(String, Option<String>)> {
@@ -6282,7 +6171,7 @@ mod highlight_tests {
                 HighlightSpec { ranges: vec![(5, 8)], color: ADD, ..Default::default() },
             ],
         )];
-        let rects = AppState::<TestApp>::compute_highlight_rects(&layouts);
+        let rects = crate::bridge::highlight_rects(&layouts);
 
         assert_eq!(rects.len(), 2, "one rect per range, both specs");
         assert_eq!(rects[0].fill_color, DEL.to_array());
@@ -6304,7 +6193,7 @@ mod highlight_tests {
                 HighlightSpec { ranges: vec![(2, 4)], color: ADD, ..Default::default() },
             ],
         )];
-        let rects = AppState::<TestApp>::compute_highlight_rects(&layouts);
+        let rects = crate::bridge::highlight_rects(&layouts);
 
         assert_eq!(rects.len(), 2);
         // Painter order is append order, so the narrow ADD rect is emitted last.
@@ -6325,7 +6214,7 @@ mod highlight_tests {
                 current_color: ADD,
             }],
         )];
-        let rects = AppState::<TestApp>::compute_highlight_rects(&layouts);
+        let rects = crate::bridge::highlight_rects(&layouts);
 
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].fill_color, DEL.to_array());
@@ -6335,7 +6224,7 @@ mod highlight_tests {
     /// No specs, no rects — the default stays a no-op.
     #[test]
     fn no_specs_paints_nothing() {
-        let rects = AppState::<TestApp>::compute_highlight_rects(&[layout(10, Vec::new())]);
+        let rects = crate::bridge::highlight_rects(&[layout(10, Vec::new())]);
         assert!(rects.is_empty());
     }
 
