@@ -1081,9 +1081,11 @@ fn splice_under_glyphs(runs: Vec<DrawRun>, mut under: Vec<(u32, std::ops::Range<
 /// 1 枚ぶんの描画を、木の順のまとまり ([`DrawRun`]) と種類ごとの instance に起こした物。
 ///
 /// 使い方: [`OrderedFrame::extract`] で起こし、文字の下に敷く物があれば
-/// [`OrderedFrame::under_text`] で足し、[`OrderedFrame::upload`] で上げてから
-/// [`GpuRenderer::render_frame`](sabitori_gpu::GpuRenderer::render_frame) の中で
-/// [`OrderedFrame::draw`] を呼ぶ。
+/// [`OrderedFrame::under_text`] で足し、[`OrderedFrame::upload`] で上げてから、
+/// 開いたパスの中で [`OrderedFrame::draw`] を呼ぶ (窓なら
+/// [`GpuRenderer::render_frame`](sabitori_gpu::GpuRenderer::render_frame) の中)。
+/// 矩形と goo は [`RectTarget`](sabitori_gpu::RectTarget) (窓の描画器か、窓を持たない
+/// 描画器) が描く。
 #[derive(Default)]
 pub struct OrderedFrame {
     pub rects: Vec<RectInstance>,
@@ -1282,14 +1284,14 @@ impl OrderedFrame {
     /// 描く物を全部上げる。[`OrderedFrame::draw`] の前に、パスの外で呼ぶ。
     pub fn upload(
         &mut self,
-        gpu: &mut sabitori_gpu::GpuRenderer,
+        rt: &mut impl sabitori_gpu::RectTarget,
         r: &mut UiRenderers<'_>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
         self.runs = splice_under_glyphs(std::mem::take(&mut self.runs), std::mem::take(&mut self.under));
-        gpu.upload_rects(&self.rects);
-        gpu.upload_goo_instances(&self.goo);
+        rt.upload_rect_instances(device, queue, &self.rects);
+        rt.upload_goo_instances(device, queue, &self.goo);
         if let Some(img_r) = r.images.as_deref_mut() {
             for (key, data) in &self.image_data {
                 img_r.ensure_texture(device, queue, key, &data.rgba, data.width, data.height);
@@ -1308,15 +1310,15 @@ impl OrderedFrame {
     /// 木の順に描く。[`OrderedFrame::upload`] の後、開いたパスの中で呼ぶ。
     pub fn draw(
         &self,
-        gpu: &sabitori_gpu::GpuRenderer,
+        rt: &impl sabitori_gpu::RectTarget,
         r: &UiRenderers<'_>,
         pass: &mut wgpu::RenderPass<'_>,
     ) {
-        let globals = &gpu.globals_bind_group;
+        let globals = rt.globals();
         for run in &self.runs {
             match run {
-                DrawRun::Rects(range) => gpu.draw_rect_range(pass, range.clone()),
-                DrawRun::Goo(range) => gpu.draw_goo_range(pass, range.clone()),
+                DrawRun::Rects(range) => rt.draw_rect_range(pass, range.clone()),
+                DrawRun::Goo(range) => rt.draw_goo_range(pass, range.clone()),
                 DrawRun::Images { key, range } => {
                     if let Some(img_r) = r.images.as_deref() {
                         img_r.draw(pass, globals, key, range.clone());

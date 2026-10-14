@@ -11,7 +11,7 @@ use sabitori_input::{
 };
 use sabitori_scene::{NodeId, NodeTree};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, Ime, TouchPhase, WindowEvent};
+use winit::event::{ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 #[cfg(target_arch = "wasm32")]
 use winit::event_loop::EventLoop;

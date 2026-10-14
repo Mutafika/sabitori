@@ -20,9 +20,8 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::bridge::{draw_ui_layer, OrderedFrame, UiDrawLists, UiRenderers};
+use crate::bridge::{OrderedFrame, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
-use sabitori_gpu::RenderPhase;
 
 /// 主窓を複数持つ ([`DeclarativeApp::take_new_windows`])。
 #[cfg(not(target_arch = "wasm32"))]
@@ -5255,7 +5254,7 @@ impl<A: DeclarativeApp> AppState<A> {
         // 計測器を先に作り、 `ViewContext` に差してから view を呼ぶ。 以前は
         // view のあとで作っていたが、 それだとアプリが実フォント計測に触れない
         // (issue #15)。 `extra.text_renderer` の可変借用を後段の
-        // `UiDrawLists::extract` に返すため、 ブロックで閉じる。
+        // `OrderedFrame::extract` に返すため、 ブロックで閉じる。
         // `view_for` が見る管理スクロールの寸法。組んだ後に測れた寸法と比べる (#99)。
         let seen = extra.pointer.scroll_info();
         let (root, build_result, relayout) = {
@@ -5306,73 +5305,41 @@ impl<A: DeclarativeApp> AppState<A> {
             extra.window.request_redraw();
         }
         let mut build_result = build_result;
-        // 別窓は 1 層で描く: 層 1 以上は層 0 に寄せる (中身は消さない)
-        build_result.flatten_layers();
-        // はみ出しの目印 (#95)。別窓は overlay を描かないので地の上に積む。
+        // はみ出しの目印 (#95)。地の上 (= 書いた物の後ろ) に積む。
         self.overflow_debug.flag_on_top(&mut build_result);
 
-        let (rects, lists) =
-            UiDrawLists::extract(&build_result.render_list, &mut extra.text_renderer);
+        // 主窓と同じく**木の順に** 1 つのパスで描く (層 0 → 上げた層 → 上掛け)。
+        // 以前は層を寄せて種類ごとにまとめて描き、上掛け (`.overlay()`) は描いていなかった。
+        let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+            vec![(&build_result.render_list, false)];
+        lists.extend(build_result.layer_lists.iter().map(|(_, l)| (l, false)));
+        lists.push((&build_result.overlay_list, false));
+        let mut frame = OrderedFrame::extract(&lists, &mut extra.text_renderer);
         extra.last_build = Some(build_result);
 
         let device = extra.renderer.device.clone();
         let queue = extra.renderer.queue.clone();
-
-        // Split self so the scene closure can access `self.app`
-        // mutably while `extra.renderer` is also borrowed mutably —
-        // both are disjoint fields once we destructure. This is the
-        // same disentangling SceneAppState does for the primary
-        // window's render_scene_then_ui call site.
-        #[cfg(not(target_arch = "wasm32"))]
-        let scene_3d = extra.scene_3d;
-        #[cfg(not(target_arch = "wasm32"))]
-        let key = extra.key.clone();
-        let img_r = &mut extra.image_renderer;
-        let ring_r = &mut extra.ring_renderer;
-        let line_r = &mut extra.line_renderer;
-        let tr = &mut extra.text_renderer;
+        let mut r = UiRenderers {
+            images: Some(&mut extra.image_renderer),
+            rings: Some(&mut extra.ring_renderer),
+            lines: Some(&mut extra.line_renderer),
+            text: &mut extra.text_renderer,
+        };
         let renderer = &mut extra.renderer;
-        renderer.set_goo(lists.goo.clone(), Vec::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        let app = &mut self.app;
+        frame.upload(renderer, &mut r, &device, &queue);
 
-        // The 2D UI overlay closure body is duplicated between the
-        // 3D and 2D branches because higher-rank lifetimes on
-        // wgpu::RenderPass<'_> make the inferred closure type
-        // monomorphic when factored out — the borrow checker rejects
-        // it as "not general enough" for the FnOnce signature both
-        // render_with and render_scene_then_ui expect.
-        // 3D scene rendering is native-only (wgpu scene pipeline); on
-        // wasm `scene_3d` extras can't be set up, so we always fall
-        // through to the 2D path below.
+        // 3D シーンは native だけ (wasm では scene_3d の別窓を作れない)。
         #[cfg(not(target_arch = "wasm32"))]
-        if scene_3d {
-            let _ = renderer.render_scene_then_ui(
-                |scene_ctx| {
-                    app.render_extra_scene(&key, scene_ctx);
-                },
-                &rects,
-                |pass, globals_bg| {
-                    let mut r = UiRenderers {
-                        images: Some(&mut *img_r),
-                        rings: Some(&mut *ring_r),
-                        lines: Some(&mut *line_r),
-                        text: tr,
-                    };
-                    draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-                },
+        if extra.scene_3d {
+            let key = extra.key.clone();
+            let app = &mut self.app;
+            let _ = renderer.render_scene_then_frame(
+                |scene_ctx| app.render_extra_scene(&key, scene_ctx),
+                |pass, gpu| frame.draw(gpu, &r, pass),
             );
             return;
         }
-        let _ = renderer.render_with(&rects, |pass, globals_bg| {
-            let mut r = UiRenderers {
-                images: Some(&mut *img_r),
-                rings: Some(&mut *ring_r),
-                lines: Some(&mut *line_r),
-                text: tr,
-            };
-            draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-        });
+        let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
     }
 }
 

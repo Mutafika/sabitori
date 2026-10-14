@@ -17,7 +17,7 @@
 
 ### Changed
 
-- **主窓 (`run_declarative`) は木の順に描く。** 今までは層ごとに「矩形 → 画像 → リング → 線 →
+- **木の順に描く。** 今までは層ごとに「矩形 → 画像 → リング → 線 →
   文字」と種類でまとめて描いていたので、重なると**下の要素の文字や画像が、上の要素の地の
   上に出ていた** ([#126](https://github.com/Mutafika/sabitori/issues/126))。いまは書いた
   順に、同じ種類が続く所だけをまとめて 1 つのパスで描く。画像の上に地やボタンを置く、
@@ -25,7 +25,8 @@
   - 選択・ページ内検索のハイライト・本文中のリンクの下線は、**その文字のすぐ下**に敷く
     (後から置いた箱の上には出ない)。
   - `Element::layer` で上げた層の文字も、選択・検索・リンクの対象になった。
-  - 3D シーン・画面外の描画・別窓・reel は、まだ種類ごとにまとめて描く。
+  - 3D シーン (`run_scene`)・画面外の描画 (`offscreen::render`)・別窓・reel も同じく
+    木の順に描く。層を層 0 に寄せる (`flatten_layers`) 必要も無くなった。
   - 種類が入れ替わるたびに描く呼び出しが分かれるので、地と文字が交互に並ぶ画面では
     GPU への呼び出しが増える。
 - **例 `tui_gallery` を今の書き方にそろえ、v0.13 より後の機能のデモを足した** (37 部品)。
@@ -55,6 +56,10 @@
 
 ### Added
 
+- `sabitori_gpu::RectTarget` — 矩形と goo を「1 枚ぶん上げて、範囲で描く」描画先。
+  `GpuRenderer` と `UiOverlayRenderer` が持つ。`bridge::OrderedFrame` はこれを通して描く。
+- `GpuRenderer::render_scene_then_frame` — 3D シーンの上に、1 つのパスで UI を描く。
+
 - **描画器を「上げる」と「範囲を描く」に分けた。** `TextRenderer::upload_glyphs` /
   `draw_glyphs`、`ImageRenderer::upload` / `draw`、`RingRenderer::upload` / `draw`、
   `LineRenderer::upload` / `draw`。`queue.write_buffer` は 1 回の提出につき最後の書き込み
@@ -62,6 +67,12 @@
   まとめて描くしかなかった (下の要素の文字や画像が上の箱に透ける、#126)。1 枚ぶんを先に
   全部上げて範囲で描けば、種類をまたいで木の順に描ける。今までの `render_*` はこの 2 つを
   続けて呼ぶだけで、描き方は変わらない。
+
+### Fixed
+
+- **画面外の描画 (`offscreen::render`) と reel で goo が描かれていなかった。** 窓を持たない
+  描画器 (`UiOverlayRenderer`) に goo の描画器が無かった。
+- **別窓と reel で `.overlay()` が描かれていなかった。** どちらも層 0 しか描いていなかった。
 
 ## [0.40.0] - 2026-10-12
 

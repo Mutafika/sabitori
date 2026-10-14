@@ -8,6 +8,7 @@ mod renderer;
 mod ring_renderer;
 mod texture_budget;
 mod ui_overlay;
+mod rect_target;
 
 /// Re-exported so downstream crates can name wgpu types in their own signatures
 /// without taking a second `wgpu` dependency (which could drift to a different
@@ -24,3 +25,4 @@ pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, Ren
 pub use ring_renderer::RingRenderer;
 pub use texture_budget::TextureBudget;
 pub use ui_overlay::UiOverlayRenderer;
+pub use rect_target::RectTarget;

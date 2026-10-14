@@ -29,7 +29,7 @@ use sabitori_core::element::Element;
 use sabitori_core::Color;
 use sabitori_gpu::wgpu;
 
-use crate::bridge::{draw_ui_layer, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers};
+use crate::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
 
 /// 書き出す紙の指定。
 #[derive(Clone, Copy, Debug)]
@@ -213,19 +213,26 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let mut lines = sabitori_gpu::LineRenderer::new(&device, format, ui.globals_bind_group_layout());
 
     // 組む。測り手を渡すので、画面と同じ折り返しになる。
-    let mut build = {
+    let build = {
         let cache = std::cell::RefCell::new(MeasureCache::new());
         let measurer = TextRendererMeasurer::new(&mut text, &cache);
         sabitori_core::build::build_tree_measured(view, sheet.width, sheet.height, &measurer)
     };
-    // 画面外の描画は 2 層: 層 1 以上は層 0 に寄せる (中身は消さない)
-    build.flatten_layers();
 
-    let (base_rects, base_lists) = UiDrawLists::extract(&build.render_list, &mut text);
-    let (overlay_rects, overlay_lists) = UiDrawLists::extract(&build.overlay_list, &mut text);
+    // 画面と同じく**木の順に** 1 つのパスで描く (層 0 → 上げた層 → 上掛け)。
+    let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> = vec![(&build.render_list, false)];
+    lists.extend(build.layer_lists.iter().map(|(_, l)| (l, false)));
+    lists.push((&build.overlay_list, false));
+    let mut frame = OrderedFrame::extract(&lists, &mut text);
 
     ui.update_globals(&queue, sheet.width, sheet.height, scale);
-    ui.upload_rects(&device, &queue, &base_rects, &overlay_rects);
+    let mut r = UiRenderers {
+        images: Some(&mut images),
+        rings: Some(&mut rings),
+        lines: Some(&mut lines),
+        text: &mut text,
+    };
+    frame.upload(&mut ui, &mut r, &device, &queue);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("sabitori_offscreen_target"),
@@ -238,72 +245,31 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
         view_formats: &[],
     });
     let view_tex = texture.create_view(&Default::default());
-
-    // base と overlay は**別の submit**にする。TextRenderer の glyph buffer は
-    // submit ごとに 1 回しか書けないので、同じ submit に 2 層入れると
-    // 片方の文字が消える (`UiOverlayRenderer` の doc)。
     let clear = wgpu::Color {
         r: sheet.background.r as f64,
         g: sheet.background.g as f64,
         b: sheet.background.b as f64,
         a: sheet.background.a as f64,
     };
+    let mut encoder = device.create_command_encoder(&Default::default());
     {
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("sabitori_offscreen_base"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_tex,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            ui.draw_base(&mut pass);
-            let mut r = UiRenderers {
-                images: Some(&mut images),
-                rings: Some(&mut rings),
-                lines: Some(&mut lines),
-                text: &mut text,
-            };
-            draw_ui_layer(&mut r, &base_lists, &device, &queue, &mut pass, ui.globals_bind_group());
-        }
-        queue.submit(std::iter::once(encoder.finish()));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sabitori_offscreen"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view_tex,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        frame.draw(&ui, &r, &mut pass);
     }
-    if !overlay_rects.is_empty() || !overlay_lists.is_empty() {
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("sabitori_offscreen_overlay"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_tex,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            ui.draw_overlay(&mut pass);
-            let mut r = UiRenderers {
-                images: Some(&mut images),
-                rings: Some(&mut rings),
-                lines: Some(&mut lines),
-                text: &mut text,
-            };
-            draw_ui_layer(&mut r, &overlay_lists, &device, &queue, &mut pass, ui.globals_bind_group());
-        }
-        queue.submit(std::iter::once(encoder.finish()));
-    }
+    queue.submit(std::iter::once(encoder.finish()));
 
     read_back(&device, &queue, &texture, px_w, px_h)
 }
@@ -417,6 +383,55 @@ mod tests {
         assert!(inside[0] > 200 && inside[1] < 60, "赤い箱が出ていない: {inside:?}");
         let outside = out.pixel(150, 80).unwrap();
         assert!(outside[0] > 200 && outside[1] > 200, "地が白くない: {outside:?}");
+    }
+
+    /// **重なりは書いた順。** 画像の上に後から置いた箱は画像を隠し、下の文字の上に
+    /// 後から置いた箱は文字を隠す (#126)。以前は「矩形 → 画像 → … → 文字」と種類ごとに
+    /// まとめて描いていたので、画像が箱を覆い、文字が箱の上に透けていた。
+    #[test]
+    fn later_siblings_cover_images_and_text() {
+        gpu_or_skip!();
+        let green = sabitori_core::element::ImageData::new([0u8, 200, 0, 255].repeat(16), 4, 4);
+        let view = div().w(Px(200.0)).h(Px(100.0)).children([
+            // 画像の上に青い箱
+            sabitori_core::element::image("bg", green).pos(0.0, 0.0).w(Px(100.0)).h(Px(100.0)),
+            div().pos(20.0, 20.0).w(Px(60.0)).h(Px(60.0)).bg(Color::from_hex("#0000ff")),
+            // 大きな黒い文字の上に白い箱
+            sabitori_core::element::text("■■").pos(110.0, 10.0).font_size(60.0).color(Color::BLACK),
+            div().pos(105.0, 0.0).w(Px(95.0)).h(Px(100.0)).bg(Color::WHITE),
+        ]);
+        let out = render(&view, Sheet::px(200.0, 100.0)).expect("描けなかった");
+
+        let on_image = out.pixel(50, 50).unwrap();
+        assert!(on_image[2] > 200 && on_image[1] < 60, "画像が上の箱を覆っている: {on_image:?}");
+        let beside = out.pixel(10, 90).unwrap();
+        assert!(beside[1] > 150, "前提: 箱の外には画像が出ている: {beside:?}");
+        // 箱の範囲に黒が 1 画素も無い (文字が透けていない)
+        for y in (5..95).step_by(3) {
+            for x in (110..195).step_by(3) {
+                let p = out.pixel(x, y).unwrap();
+                assert!(p[0] > 200, "({x}, {y}) に下の文字が透けている: {p:?}");
+            }
+        }
+    }
+
+    /// **goo も描く。** 画面外の描画器には goo の描画器が無く、黙って消えていた。
+    #[test]
+    fn goo_lands_in_the_image() {
+        gpu_or_skip!();
+        let view = div().w(Px(200.0)).h(Px(100.0)).child(
+            sabitori_core::element::goo(
+                sabitori_core::Rect::new(10.0, 10.0, 60.0, 30.0),
+                sabitori_core::Rect::new(10.0, 50.0, 120.0, 40.0),
+            )
+            .pos(0.0, 0.0)
+            .goo_radii(8.0, 8.0)
+            .goo_smooth(16.0)
+            .goo_color(Color::from_hex("#ff0000")),
+        );
+        let out = render(&view, Sheet::px(200.0, 100.0)).expect("描けなかった");
+        let inside = out.pixel(70, 70).unwrap();
+        assert!(inside[0] > 200 && inside[1] < 60, "goo が出ていない: {inside:?}");
     }
 
     /// **地の色は既定で白。** 透明のまま印刷に回すと紙が黒くなる。
