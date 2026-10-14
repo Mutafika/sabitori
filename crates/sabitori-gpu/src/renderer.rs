@@ -195,6 +195,8 @@ struct GooMark {
 }
 
 pub struct GpuRenderer {
+    /// 直近の `get_current_texture` で描画先を待った時間 (ms)。フレームの計測用。
+    pub last_acquire_ms: f32,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
@@ -213,7 +215,8 @@ pub struct GpuRenderer {
     /// Goo (smooth-union backgrounds) — drawn between rects, see [`GooRenderer`].
     goo_renderer: GooRenderer,
     /// Goo queued by [`GpuRenderer::set_goo`] for the next render call.
-    pending_goo: [Vec<GooSlot>; 2],
+    /// 層ごと (`set_goo` なら [地, 上掛け]、`set_goo_layers` なら描く層の数だけ)。
+    pending_goo: Vec<Vec<GooSlot>>,
     /// 次に描くフレームを読み戻す ([`GpuRenderer::request_capture`])。
     capture_pending: bool,
     /// 読み戻したフレーム ([`GpuRenderer::take_captured`] で取り出す)。
@@ -407,7 +410,18 @@ impl GpuRenderer {
         } else {
             wgpu::PresentMode::AutoVsync
         };
-        tracing::info!("present_mode: {:?}", present_mode);
+        // 調査用の上書き: SABITORI_PRESENT_MODE=fifo|immediate|mailbox|autovsync
+        let present_mode = match std::env::var("SABITORI_PRESENT_MODE").ok().as_deref() {
+            Some("fifo") => wgpu::PresentMode::Fifo,
+            Some("immediate") => wgpu::PresentMode::Immediate,
+            Some("mailbox") => wgpu::PresentMode::Mailbox,
+            Some("autovsync") => wgpu::PresentMode::AutoVsync,
+            _ => present_mode,
+        };
+        // 調査用の上書き: SABITORI_FRAME_LATENCY=n (同時に描きかけでいられるフレーム数)
+        let frame_latency: u32 =
+            std::env::var("SABITORI_FRAME_LATENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        tracing::info!("present_mode: {:?}, frame latency {}", present_mode, frame_latency);
         // 読み戻す予定があるときだけ COPY_SRC を足す (#69)。常に足さないのは、
         // WebGL2 のサーフェスがコピー元になれないため — wasm で無条件に付けると
         // **起動できない環境が出る**。
@@ -421,7 +435,7 @@ impl GpuRenderer {
             width: size.width.max(1).min(max_dim),
             height: size.height.max(1).min(max_dim),
             present_mode,
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: frame_latency,
             alpha_mode: choose_alpha_mode(&surface_caps.alpha_modes, transparent),
             view_formats: vec![],
         };
@@ -528,6 +542,7 @@ impl GpuRenderer {
         let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
 
         Ok(Self {
+            last_acquire_ms: 0.0,
             device,
             queue,
             surface,
@@ -543,7 +558,7 @@ impl GpuRenderer {
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
             goo_renderer,
-            pending_goo: [Vec::new(), Vec::new()],
+            pending_goo: Vec::new(),
             capture_pending: false,
             captured: None,
         })
@@ -731,6 +746,7 @@ impl GpuRenderer {
         let goo_renderer = GooRenderer::new(&device, surface_config.format, &globals_bind_group_layout);
 
         Self {
+            last_acquire_ms: 0.0,
             device,
             queue,
             surface,
@@ -746,7 +762,7 @@ impl GpuRenderer {
             depth_view: None,
             depth_format: wgpu::TextureFormat::Depth32Float,
             goo_renderer,
-            pending_goo: [Vec::new(), Vec::new()],
+            pending_goo: Vec::new(),
             capture_pending: false,
             captured: None,
         }
@@ -891,6 +907,9 @@ impl GpuRenderer {
     }
 
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+        // wasm には std の Instant が無いので計らない (0 のまま)
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
         let output = match self.surface.get_current_texture() {
             Ok(tex) => tex,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -899,6 +918,10 @@ impl GpuRenderer {
             }
             Err(e) => return Err(e),
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_acquire_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        }
         self.sync_to_drawable(&output);
         Ok(output)
     }
@@ -929,34 +952,35 @@ impl GpuRenderer {
     /// slot's `before_rect` indexes into the rect slice of its own layer as
     /// passed to that call. Consumed by the call; single-layer render
     /// functions (`render_with`, `render_scene_then_ui`) draw only `base`.
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn set_goo(&mut self, base: Vec<GooSlot>, overlay: Vec<GooSlot>) {
-        self.pending_goo = [base, overlay];
+        self.pending_goo = vec![base, overlay];
+    }
+
+    /// [`GpuRenderer::render_layers`] 用: 層ごとの goo (`layers[i]` が層 i)。
+    /// 各 `before_rect` はその層の矩形の並びの中の位置。
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
+    pub fn set_goo_layers(&mut self, layers: Vec<Vec<GooSlot>>) {
+        self.pending_goo = layers;
     }
 
     /// Upload the queued goo and return each layer's draw marks, with
     /// overlay positions shifted by `overlay_rect_base` into the shared
     /// rect buffer's index space.
     fn upload_goo(&mut self, overlay_rect_base: u32) -> (Vec<GooMark>, Vec<GooMark>) {
-        let [base, overlay] = std::mem::take(&mut self.pending_goo);
-        if base.is_empty() && overlay.is_empty() {
-            return (Vec::new(), Vec::new());
+        let mut marks = self.upload_goo_layers(&[0, overlay_rect_base]).into_iter();
+        (marks.next().unwrap_or_default(), marks.next().unwrap_or_default())
+    }
+
+    /// 積んである goo を上げ、層ごとの描く位置を返す。`rect_bases[i]` が層 i の矩形が
+    /// 共有バッファのどこから始まるか。返す `Vec` は層の数だけ (goo の無い層は空)。
+    fn upload_goo_layers(&mut self, rect_bases: &[u32]) -> Vec<Vec<GooMark>> {
+        let layers = std::mem::take(&mut self.pending_goo);
+        let (instances, marks) = goo_marks(&layers, rect_bases);
+        if !instances.is_empty() {
+            self.goo_renderer.upload(&self.device, &self.queue, &instances);
         }
-        let instances: Vec<GooInstance> =
-            base.iter().chain(overlay.iter()).map(|g| g.instance).collect();
-        self.goo_renderer.upload(&self.device, &self.queue, &instances);
-        let marks = |slots: &[GooSlot], at_base: u32, index_base: u32| {
-            let mut marks: Vec<GooMark> = slots
-                .iter()
-                .enumerate()
-                .map(|(i, g)| GooMark { at: at_base + g.before_rect, index: index_base + i as u32 })
-                .collect();
-            // Stable: goo queued at the same position keeps tree order.
-            marks.sort_by_key(|m| m.at);
-            marks
-        };
-        let base_marks = marks(&base, 0, 0);
-        let overlay_marks = marks(&overlay, overlay_rect_base, base.len() as u32);
-        (base_marks, overlay_marks)
+        marks
     }
 
     /// Draw rect instances `range` from the shared instance buffer,
@@ -985,6 +1009,42 @@ impl GpuRenderer {
 
     pub fn render(&mut self, rects: &[RectInstance]) -> Result<(), wgpu::SurfaceError> {
         self.render_with(rects, |_, _| {})
+    }
+    /// 1 枚を 1 つのパスで描く。画面を消してから `draw` を呼び、出して見せる。
+    ///
+    /// 何をどの順で描くかは `draw` が決める。上げる物 ([`RectTarget`](crate::RectTarget) の
+    /// `upload_*` など) は呼ぶ前に上げておくこと。`draw` には自分 (`&Self`) が渡るので、
+    /// 矩形や goo の範囲は [`RectTarget`](crate::RectTarget) の `draw_*_range` で描ける。
+    pub fn render_frame(
+        &mut self,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let output = self.acquire_drawable()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("sabitori_frame_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sabitori_frame_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            draw(&mut pass, self);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.capture_if_requested(&output.texture);
+        output.present();
+        Ok(())
     }
 
     /// Render rectangles, then call `extra_draw` with the render pass for additional drawing
@@ -1061,6 +1121,73 @@ impl GpuRenderer {
         Ok(())
     }
 
+    /// 層を下から順に描く (層ごとに 1 回出す: 文字・画像などの書き込みは 1 回の提出に 1 回しか効かないため)。
+    /// `layers[i]` は (その層の矩形, 矩形以外も描くか)。`draw_fn(i, ..)` が層 i の矩形以外を描く。
+    /// 層 0 は必ず描く (画面を消す)。goo は [`GpuRenderer::set_goo_layers`] で層ごとに渡す
+    /// (`set_goo` で渡すと、上掛けの分は層 1 に描かれる)。
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
+    pub fn render_layers(
+        &mut self,
+        layers: &[(&[RectInstance], bool)],
+        mut draw_fn: impl FnMut(usize, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let total: usize = layers.iter().map(|(r, _)| r.len()).sum();
+        if total > self.instance_capacity {
+            self.instance_capacity = total.max(1).next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_instance_buffer"),
+                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        // 全部の層の矩形を 1 本のバッファに並べる (starts[i] が層 i の先頭)
+        let mut starts = Vec::with_capacity(layers.len());
+        let mut at = 0usize;
+        for (rects, _) in layers {
+            starts.push(at);
+            if !rects.is_empty() {
+                let offset = (at * std::mem::size_of::<RectInstance>()) as u64;
+                self.queue.write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(rects));
+            }
+            at += rects.len();
+        }
+        let bases: Vec<u32> = starts.iter().map(|&s| s as u32).collect();
+        let goo_marks = self.upload_goo_layers(&bases);
+        let output = self.acquire_drawable()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        for (i, (rects, has_content)) in layers.iter().enumerate() {
+            let goo: &[GooMark] = &goo_marks[i];
+            if i > 0 && rects.is_empty() && !has_content && goo.is_empty() {
+                continue;
+            }
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("sabitori_layer_encoder"),
+            });
+            {
+                let load = if i == 0 { wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }) } else { wgpu::LoadOp::Load };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("sabitori_layer_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                let s = starts[i] as u32;
+                self.draw_rects(&mut pass, s..s + rects.len() as u32, goo);
+                draw_fn(i, &mut pass, &self.globals_bind_group);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        self.capture_if_requested(&output.texture);
+        output.present();
+        Ok(())
+    }
+
     /// Render with two layers: base and overlay.
     ///
     /// Draw order within a single render pass:
@@ -1085,6 +1212,7 @@ impl GpuRenderer {
     /// every other signal, hit regions and callbacks included, still correct.
     /// Tooltips and context menus survived only because both happen to set a
     /// background ([#44](https://github.com/Mutafika/sabitori/issues/44)).
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn render_layered(
         &mut self,
         base_rects: &[RectInstance],
@@ -1223,6 +1351,62 @@ impl GpuRenderer {
             scale_factor: self.scale_factor,
         }
     }
+    /// 3D シーンを描いてから、その上に UI を 1 つのパスで描く ([`Self::render_frame`] の
+    /// シーン付き)。UI のパスは画面を消さない (`LoadOp::Load`) ので、シーンの上に重なる。
+    /// 上げる物は呼ぶ前に上げておくこと (シーンの提出より前に上げても中身は残る)。
+    pub fn render_scene_then_frame(
+        &mut self,
+        scene_fn: impl FnOnce(&mut SceneRenderContext),
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let output = self.acquire_drawable()?;
+        let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("sabitori_scene_encoder"),
+            });
+            let depth_view = self.depth_view.as_ref()
+                .expect("depth texture must be created before render_scene_then_frame");
+            let mut scene_ctx = SceneRenderContext {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: &mut encoder,
+                surface_view: &surface_view,
+                depth_view,
+                surface_format: self.surface_config.format,
+                depth_format: self.depth_format,
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                scale_factor: self.scale_factor,
+            };
+            scene_fn(&mut scene_ctx);
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("sabitori_scene_ui_encoder"),
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("sabitori_scene_ui_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &surface_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                draw(&mut pass, self);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        self.capture_if_requested(&output.texture);
+        output.present();
+        Ok(())
+    }
+
 
     /// Render with a custom scene pass followed by a UI overlay pass.
     ///
@@ -1342,6 +1526,7 @@ impl GpuRenderer {
     /// [`render_layered`](Self::render_layered): whether the overlay layer
     /// draws anything other than rects. Same trap, same reason it cannot be
     /// derived here.
+    #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。`render_frame` / `render_scene_then_frame` と `RectTarget` で木の順に描く")]
     pub fn render_scene_then_ui_layered(
         &mut self,
         scene_fn: impl FnOnce(&mut SceneRenderContext),
@@ -1468,6 +1653,27 @@ impl GpuRenderer {
     }
 }
 
+/// 層ごとの goo を 1 本の並びにし、層ごとの描く位置を返す。`rect_bases[i]` が層 i の
+/// 矩形の先頭。`layers` が `rect_bases` より短ければ、残りの層は goo 無し。
+fn goo_marks(layers: &[Vec<GooSlot>], rect_bases: &[u32]) -> (Vec<GooInstance>, Vec<Vec<GooMark>>) {
+    let mut instances = Vec::new();
+    let mut out = Vec::with_capacity(rect_bases.len());
+    for (i, &at_base) in rect_bases.iter().enumerate() {
+        let slots = layers.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let index_base = instances.len() as u32;
+        let mut marks: Vec<GooMark> = slots
+            .iter()
+            .enumerate()
+            .map(|(j, g)| GooMark { at: at_base + g.before_rect, index: index_base + j as u32 })
+            .collect();
+        // Stable: goo queued at the same position keeps tree order.
+        marks.sort_by_key(|m| m.at);
+        instances.extend(slots.iter().map(|g| g.instance));
+        out.push(marks);
+    }
+    (instances, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{choose_alpha_mode, first_unmet_minimum, pick_limits, UnmetLimit};
@@ -1584,5 +1790,68 @@ mod tests {
             Some("max_texture_dimension_2d"),
             "グリフアトラスは 2048² を張る"
         );
+    }
+
+    /// 層 0 と上掛けの間の層の goo も描く位置を持つ (以前は層 0 と最後の層だけで、
+    /// 間の層に置いた goo は黙って消えていた)。位置は共有バッファでの通し番号。
+    #[test]
+    fn goo_in_a_middle_layer_is_drawn() {
+        use super::{goo_marks, GooSlot};
+        use bytemuck::Zeroable;
+        let slot = |before_rect| GooSlot { before_rect, instance: crate::GooInstance::zeroed() };
+        let layers = vec![vec![slot(1)], vec![slot(0), slot(2)], vec![], vec![slot(0)]];
+        let (instances, marks) = goo_marks(&layers, &[0, 5, 9, 9]);
+        assert_eq!(instances.len(), 4);
+        let at: Vec<Vec<(u32, u32)>> =
+            marks.iter().map(|l| l.iter().map(|m| (m.at, m.index)).collect()).collect();
+        assert_eq!(at, vec![vec![(1, 0)], vec![(5, 1), (7, 2)], vec![], vec![(9, 3)]]);
+    }
+
+    /// 2 層用の `set_goo` (地・上掛け) で渡した分は、層 0 と層 1 に描かれる。
+    #[test]
+    fn two_layer_goo_keeps_its_old_marks() {
+        use super::{goo_marks, GooSlot};
+        use bytemuck::Zeroable;
+        let slot = |before_rect| GooSlot { before_rect, instance: crate::GooInstance::zeroed() };
+        let (_, marks) = goo_marks(&[vec![slot(0)], vec![slot(1)]], &[0, 4]);
+        let at: Vec<Vec<(u32, u32)>> =
+            marks.iter().map(|l| l.iter().map(|m| (m.at, m.index)).collect()).collect();
+        assert_eq!(at, vec![vec![(0, 0)], vec![(5, 1)]]);
+    }
+}
+
+impl crate::RectTarget for GpuRenderer {
+    fn upload_rect_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, rects: &[RectInstance]) {
+        if rects.is_empty() {
+            return;
+        }
+        if rects.len() > self.instance_capacity {
+            self.instance_capacity = rects.len().next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_instance_buffer"),
+                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+    }
+
+    fn upload_goo_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, goo: &[GooInstance]) {
+        self.goo_renderer.upload(&self.device, &self.queue, goo);
+    }
+
+    fn draw_rect_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        self.draw_rect_run(pass, range);
+    }
+
+    fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if !range.is_empty() {
+            self.goo_renderer.draw(pass, &self.globals_bind_group, range);
+        }
+    }
+
+    fn globals(&self) -> &wgpu::BindGroup {
+        &self.globals_bind_group
     }
 }

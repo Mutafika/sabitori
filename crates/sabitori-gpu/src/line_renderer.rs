@@ -86,18 +86,12 @@ impl LineRenderer {
         }
     }
 
-    /// Draw a batch of line segments into the given render pass. Uploads
-    /// `instances` to the internal vertex buffer first; safe to call once
-    /// per pass (subsequent calls in the same pass would clobber each
-    /// other via `queue.write_buffer`, same caveat as `render_rings`).
-    pub fn render_lines(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[LineInstance],
-        render_pass: &mut wgpu::RenderPass<'_>,
-        globals_bind_group: &wgpu::BindGroup,
-    ) {
+    /// 全部の instance を 1 回で上げる。続く [`Self::draw`] は、この並びの中の範囲を描く。
+    ///
+    /// `queue.write_buffer` は 1 回の提出につき最後の書き込みしか効かない
+    /// (コマンドより先にまとめて当たる)。描く順に何度も上げると前の分が上書きされるので、
+    /// 1 枚ぶんを先に全部上げ、描くときは範囲で指す。
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[LineInstance]) {
         if instances.is_empty() {
             return;
         }
@@ -111,11 +105,35 @@ impl LineRenderer {
             });
         }
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+    }
 
+    /// [`Self::upload`] で上げた並びの `range` を描く。
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        range: std::ops::Range<u32>,
+    ) {
+        if range.is_empty() {
+            return;
+        }
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, globals_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..6, 0..instances.len() as u32);
+        render_pass.draw(0..6, range);
+    }
+
+    /// 上げて全部描く ([`Self::upload`] + [`Self::draw`])。1 回の提出で 1 度だけ呼べる。
+    pub fn render_lines(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[LineInstance],
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+    ) {
+        self.upload(device, queue, instances);
+        self.draw(render_pass, globals_bind_group, 0..instances.len() as u32);
     }
 }
 
@@ -267,5 +285,123 @@ mod verify {
         let out = std::env::temp_dir().join("polyline_verify.png");
         image::save_buffer(&out, &data[..], w, h, image::ExtendedColorType::Rgba8).unwrap();
         eprintln!("WROTE {}", out.display());
+    }
+
+    /// 1 回上げた並びを、範囲で分けて描ける (描画の順を木の順にするための土台)。
+    /// 範囲の外の線は描かれず、同じパスで 2 回描いても前の分が上書きされない。
+    #[test]
+    fn draws_ranges_of_one_upload() {
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("skip: no GPU");
+            return;
+        };
+        let (w, h): (u32, u32) = (64, 64); // 64*4 = 256, 行の詰め物が要らない
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&globals_buf, 0, bytemuck::cast_slice(&[w as f32, h as f32, 1.0, 0.0]));
+        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
+        });
+        let mut lr = LineRenderer::new(&device, format, &globals_layout);
+        let line = |y: f32, color: [f32; 4]| LineInstance {
+            endpoints: [4.0, y, 60.0, y],
+            params: [4.0, 1.0, 0.0, 0.0],
+            color,
+            clip_rect: [0.0; 4],
+        };
+        let lines = [
+            line(16.0, [1.0, 0.0, 0.0, 1.0]),
+            line(32.0, [0.0, 1.0, 0.0, 1.0]),
+            line(48.0, [0.0, 0.0, 1.0, 1.0]),
+        ];
+
+        // 上げるのは 1 回。描くのは 2 番目と 1 番目を別々に (3 番目は描かない)。
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        lr.upload(&device, &queue, &lines);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            lr.draw(&mut pass, &globals_bg, 1..2);
+            lr.draw(&mut pass, &globals_bg, 0..1);
+        }
+        let bpr = w * 4;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (bpr * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let px = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [data[i], data[i + 1], data[i + 2]]
+        };
+        assert!(px(32, 16)[0] > 200, "1 番目 (赤) が描かれていない: {:?}", px(32, 16));
+        assert!(px(32, 32)[1] > 200, "2 番目 (緑) が描かれていない: {:?}", px(32, 32));
+        assert_eq!(px(32, 48), [0, 0, 0], "範囲の外の 3 番目 (青) が描かれた");
     }
 }

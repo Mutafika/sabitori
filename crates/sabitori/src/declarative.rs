@@ -20,9 +20,14 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::bridge::{draw_ui_layer, UiDrawLists, UiRenderers};
+use crate::bridge::{OrderedFrame, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
-use sabitori_gpu::RenderPhase;
+
+/// 主窓を複数持つ ([`DeclarativeApp::take_new_windows`])。
+#[cfg(not(target_arch = "wasm32"))]
+mod host;
+#[cfg(not(target_arch = "wasm32"))]
+use host::Host;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
@@ -48,10 +53,14 @@ fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
 /// Simplified app trait using the declarative Element API.
 /// Just implement `view()` to describe your UI.
 /// Declarative descriptor for a secondary window the app wants open in
-/// addition to the primary `view()` window. v1 extras are render-only —
-/// they get their own GPU surface and their own `view_for(key, ctx)`
-/// build pass, but receive no input (intended for click-through
-/// overlays, HUDs, per-display panels). Phase 2 will route events.
+/// addition to the primary `view()` window. Extras get their own GPU
+/// surface and their own `view_for(key, ctx)` build pass.
+///
+/// 別窓の中でも、ポインタは主窓と同じ判断で効く: ホバー (`ctx.hovered` と
+/// `.hover()` / `.active()` の見た目、`.cursor()`)、管理スクロール (`.scroll(id)` を
+/// ホイールで動かす、`.scrollbar_grab()` の帯を掴む)。キーは主窓と同じ道に来る。
+/// 押した所とカーソルの下で受けなかったホイールは [`ExtraInput`] でアプリへ。
+/// まだ無いもの: hover の ばね (`transition`)、tooltip、ドラッグ、テキスト選択。
 #[derive(Clone, Debug)]
 pub struct ExtraWindow {
     /// Stable identifier passed back to `view_for` / `set_extra_window` /
@@ -90,6 +99,9 @@ pub struct ExtraWindow {
 pub enum ExtraInput {
     /// ホイール / トラックパッドのスクロール (論理 px)。符号は winit と同じで、
     /// 正は「上へ戻る」(見ている位置 `scroll_y` からは引く)。
+    ///
+    /// カーソルの下の管理スクロール (`.scroll(id)`) が受けた分は来ない (主窓の
+    /// `on_scroll_xy` と同じ)。
     Wheel { dx: f32, dy: f32 },
     /// 主ボタンを押した。`id` はその位置にある一番手前の `.id()` (無ければ `None`)。
     Click { id: Option<String>, x: f32, y: f32 },
@@ -368,7 +380,22 @@ pub trait DeclarativeApp: 'static {
     fn take_clear_text_selection(&mut self) -> bool { false }
 
     /// Called when files are dropped onto the window from another app/window.
+    ///
+    /// 1 回のドロップ分をまとめて 1 回で渡す (winit は 1 ファイルずつ届けるので、
+    /// ランタイムが溜めて周回の終わりに渡す)。落とした所の drop zone も欲しければ
+    /// [`Self::on_file_drop_at`] を書く。
     fn on_file_drop(&mut self, _paths: Vec<std::path::PathBuf>) {}
+
+    /// 外から落とされたファイル (1 回のドロップ分) と、落とした所にあった drop zone
+    /// (`.droppable()` の id。無ければ `None`)。
+    ///
+    /// ドラッグの最中は `ctx.drag` に [`FILE_DRAG`](sabitori_core::FILE_DRAG) として出て、
+    /// `over_drop_zone` がカーソルの下の drop zone を指す — 窓の中のドラッグと同じ書き方で
+    /// 入れ先を光らせられる。winit はドラッグ中にカーソルの位置を送らないので、位置は
+    /// macOS だけ OS に聞いて取る (他の OS では `None`)。既定は [`Self::on_file_drop`] へ渡す。
+    fn on_file_drop_at(&mut self, paths: Vec<std::path::PathBuf>, _target_id: Option<&str>) {
+        self.on_file_drop(paths);
+    }
 
     /// Called when files are hovering over the window (drag from outside).
     fn on_file_hover(&mut self, _path: std::path::PathBuf) {}
@@ -621,9 +648,41 @@ pub trait DeclarativeApp: 'static {
     fn on_url_changed(&mut self, _fragment: &str) {}
 
     /// 主窓を閉じたい。`true` を返すと、OS の閉じるボタン (`CloseRequested`) と同じく
-    /// アプリを終える — アプリの `Drop` も走る。[`Titlebar::Custom`] の帯に自分で描いた
+    /// この窓を閉じる — アプリの `Drop` も走る。最後の窓ならアプリが終わる
+    /// ([`Self::take_new_windows`])。[`Titlebar::Custom`] の帯に自分で描いた
     /// 閉じるボタン用。毎周回読むので、返したら旗を下ろすこと。
     fn take_close_request(&mut self) -> bool { false }
+
+    /// 同じプロセスで**主窓をもう 1 つ**開く。返したアプリはそれぞれ自分の主窓を持ち、
+    /// 入力 (キー・文字・IME・ドラッグ・メニュー・ホバー・スクロール)・描画・別窓・
+    /// `Drop` まで、最初の窓と同じに扱われる。ファイラの「新しいウインドウ」のような、
+    /// 同じ画面をもう 1 枚開く用。毎周回読むので、返したら空にすること。
+    ///
+    /// アプリどうしはランタイムがつながない。窓をまたいで分け合う物 (設定・切り取った
+    /// 物など) は、アプリが `Rc` などで新しいアプリに持たせて渡す。窓は頼んだ窓から
+    /// 少しずらして出る ([`Self::position`] が `Some` ならそちら)。閉じるのは窓ごとで
+    /// ([`Self::take_close_request`] / OS の閉じるボタン)、最後の窓が閉じるとアプリが
+    /// 終わる。OS から渡されたパス ([`Self::on_open_paths`]) は、最後に焦点を持った窓の
+    /// アプリへ届く。
+    ///
+    /// web は窓を増やせないので読まない。テストでは
+    /// [`Harness::take_new_windows`](crate::testing::Harness::take_new_windows) が受け取る。
+    fn take_new_windows(&mut self) -> Vec<Self>
+    where
+        Self: Sized,
+    {
+        Vec::new()
+    }
+
+    /// OS から「このアプリで開いて」と渡されたファイル・フォルダ (macOS: Finder の
+    /// 「このアプリで開く」、`open -a`、Dock のアイコンへのドロップ、既定のアプリに
+    /// なっている種類のダブルクリック)。起動のきっかけになった分も、起動後に来た分も
+    /// ここに届く (起動時の分は最初の窓ができた後)。主窓が複数あるときは、最後に焦点を
+    /// 持った窓のアプリへ ([`Self::take_new_windows`])。
+    ///
+    /// LaunchServices を通る経路なので、`.app` として起動されたときだけ届く。
+    /// 受け付ける種類は Info.plist の `CFBundleDocumentTypes` で宣言する。
+    fn on_open_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
 
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
@@ -649,7 +708,7 @@ pub trait DeclarativeApp: 'static {
     /// bundles the bundle's `.icns` still wins, this is a dev nicety.
     fn window_icon(&self) -> Option<Vec<u8>> { None }
 
-    /// Window title.
+    /// Window title. 変われば主窓の題も付け直す (ランタイムが毎周回比べる)。
     fn title(&self) -> &str { "Sabitori" }
 
     /// Initial window size (logical pixels).
@@ -855,9 +914,12 @@ pub trait DeclarativeApp: 'static {
     /// window for `view_for` / `set_extra_window` / `macos_configure_extra_window`
     /// routing. Default: empty (single-window app, fully backward compatible).
     ///
-    /// v1 extras are render-only — they get their own GPU surface and view
-    /// build, but no input events. Intended for click-through overlays
-    /// (`setIgnoresMouseEvents:YES`), HUDs, per-display panels.
+    /// Each extra gets its own GPU surface and view build. Hover and managed
+    /// scroll work inside it the same way as in the primary (see
+    /// [`ExtraWindow`]); clicks and unconsumed wheel reach the app through
+    /// [`DeclarativeApp::on_extra_input`]. Click-through overlays
+    /// (`setIgnoresMouseEvents:YES`), HUDs and per-display panels simply
+    /// never receive pointer events.
     fn extra_windows(&self) -> Vec<ExtraWindow> { Vec::new() }
 
     /// Consume a pending request to rebuild the extra-window set.
@@ -892,8 +954,9 @@ pub trait DeclarativeApp: 'static {
     /// window handle (e.g. global event monitor wake-up). Default no-op.
     fn set_extra_window(&mut self, _key: &str, _window: std::sync::Arc<Window>) {}
 
-    /// 別窓でのスクロールとクリック ([`ExtraInput`])。キー入力は主窓と同じ道に来る
-    /// のでここには来ない。既定は何もしない (受けない別窓は今まで通り見るだけ)。
+    /// 別窓でのクリックと、管理スクロールが受けなかったホイール ([`ExtraInput`])。
+    /// キー入力は主窓と同じ道に来るのでここには来ない。ホバーと `.scroll(id)` は
+    /// ランタイムが持つので、ここで受けなくても効く。既定は何もしない。
     fn on_extra_input(&mut self, _key: &str, _input: ExtraInput) {}
 
     /// One-time 3D scene setup for an extra window with `scene_3d = true`.
@@ -962,9 +1025,10 @@ pub fn input_delivery(kind: InputEventKind) -> Delivery {
 }
 
 /// Per-extra-window resources. Each extra has its own GPU surface and
-/// renderer set; v1 keeps them passive (no input, no managed scroll /
-/// hover / drag) so the data they need is just the render pipeline plus
-/// last-frame layout for any future hit-testing extension.
+/// renderer set, the last frame's layout (for hit-testing), and its own
+/// pointer state — hover, press, managed scroll ([`ExtraPointer`]).
+///
+/// [`ExtraPointer`]: crate::extra_pointer::ExtraPointer
 struct ExtraWindowState {
     key: String,
     window: Arc<Window>,
@@ -975,8 +1039,10 @@ struct ExtraWindowState {
     line_renderer: sabitori_gpu::LineRenderer,
     measure_cache: std::cell::RefCell<crate::bridge::MeasureCache>,
     pub(crate) last_build: Option<BuildResult>,
-    /// その窓の中のポインタ位置 (論理 px)。クリックの当たり判定に使う。
-    mouse: (f32, f32),
+    /// ポインタの位置・ホバー・押下・管理スクロール。窓ごとに別。
+    pointer: crate::extra_pointer::ExtraPointer,
+    /// 最後に OS へ送ったカーソル (同じものを送り直さない)。
+    last_cursor: Option<sabitori_core::Cursor>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
@@ -1030,6 +1096,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// redraws unconditionally at 60fps.
     dirty: bool,
     window: Option<Arc<Window>>,
+    /// 主窓に今出している題。`title()` と食い違ったら付け直す ([`Self::sync_title`])。
+    #[cfg(not(target_arch = "wasm32"))]
+    window_title: String,
     /// テスト用: `ctx.safe_area` を窓から読まずにこの値にする（`Harness::set_safe_area`）。
     pub(crate) safe_area_override: Option<sabitori_core::Edges<f32>>,
     renderer: Option<GpuRenderer>,
@@ -1090,6 +1159,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Drag/scroll state of the primary (first) touch. Extra fingers still emit
     /// `InputEvent::Pointer*` but don't steer this flow.
     touch_drag: Option<TouchDrag>,
+    /// 外から持ち込まれているファイルのドラッグ (`HoveredFile` から、落とされるか外れるまで)。
+    pub(crate) file_drag: Option<FileDrag>,
     /// 選択の両端につまみを描くか。指で選んだ選択だけ (#108)。マウスで選んだ
     /// ときは描かない。
     selection_handles: bool,
@@ -1188,6 +1259,14 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// Last [`UiCapture`] snapshot pushed to the app. Used to dedup
     /// `on_ui_capture` calls to actual state transitions.
     pub(crate) last_capture: UiCapture,
+    /// この窓を閉じる (OS の閉じるボタン・`take_close_request`・別窓の閉じる)。
+    /// 終わらせるのは持ち主 ([`Host`] / web の handler) — 窓が他にも残っていれば
+    /// この窓だけ落とす。
+    pub(crate) closed: bool,
+    /// 窓を作る場所 ([`Host`] が、頼んだ窓から少しずらして置く)。アプリの
+    /// `position()` があればそちら。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) position_hint: Option<winit::dpi::Position>,
 }
 
 /// 文字選択 state。 `(text_idx, byte_offset)` のペアを anchor / head で持つ。
@@ -1225,11 +1304,122 @@ impl TextSelection {
     }
 }
 
+/// 外 (Finder など) から持ち込まれているファイルのドラッグ。
+#[derive(Default)]
+pub(crate) struct FileDrag {
+    /// 窓の中のカーソル (論理 px)。winit はドラッグ中に `CursorMoved` を送らないので、
+    /// macOS は OS に聞いて毎周回取り直す。分からなければ `None` (落とし先も無し)。
+    pub(crate) pos: Option<(f32, f32)>,
+    /// 届いた `DroppedFile`。winit は 1 ファイルずつ送るので溜め、周回の終わりにまとめて渡す。
+    pub(crate) dropped: Vec<std::path::PathBuf>,
+}
+
+impl<A: DeclarativeApp> AppState<A> {
+    /// 外からのファイルが窓の上に来た (winit は 1 ファイルずつ送る)。
+    pub(crate) fn file_hovered(&mut self, path: std::path::PathBuf) {
+        if self.file_drag.is_none() {
+            self.file_drag = Some(FileDrag::default());
+            self.poll_file_drag_pos();
+        }
+        self.app.on_file_hover(path);
+        self.dirty = true;
+    }
+
+    /// 外からのファイルが落とされた (1 ファイルずつ)。位置は落とした瞬間のものを使う。
+    pub(crate) fn file_dropped(&mut self, path: std::path::PathBuf) {
+        let first = self.file_drag.as_ref().is_none_or(|d| d.dropped.is_empty());
+        if first {
+            self.file_drag.get_or_insert_with(FileDrag::default);
+            self.poll_file_drag_pos();
+        }
+        if let Some(d) = self.file_drag.as_mut() {
+            d.dropped.push(path);
+        }
+    }
+
+    /// 外からのファイルが窓から出た (落とされずに)。
+    pub(crate) fn file_hover_cancelled(&mut self) {
+        // 落とされた分が渡る前なら、それは残す (渡すのは周回の終わり)
+        if self.file_drag.as_ref().is_some_and(|d| d.dropped.is_empty()) {
+            self.file_drag = None;
+        }
+        self.app.on_file_hover_cancelled();
+        self.dirty = true;
+    }
+
+    /// 溜まった `DroppedFile` を、落とした所の drop zone と一緒にアプリへ (1 回の
+    /// ドロップ分まとめて)。渡したら `true`。
+    pub(crate) fn flush_file_drop(&mut self) -> bool {
+        if self.file_drag.as_ref().is_none_or(|d| d.dropped.is_empty()) {
+            return false;
+        }
+        let target = self.file_drag_zone();
+        let paths = self.file_drag.take().map(|d| d.dropped).unwrap_or_default();
+        self.app.on_file_drop_at(paths, target.as_deref());
+        self.dirty = true;
+        true
+    }
+
+    /// ドラッグ中のカーソルを OS に聞き直す (macOS)。下の drop zone が変われば描き直す
+    /// (入れ先の光を動かす)。
+    fn poll_file_drag_pos(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(w) = self.window.as_ref() else { return };
+            if self.file_drag.is_none() {
+                return;
+            }
+            let pos = crate::macos_drag::get_mouse_position(w);
+            let before = self.file_drag_zone();
+            if let Some(d) = self.file_drag.as_mut() {
+                d.pos = pos;
+            }
+            if self.file_drag_zone() != before {
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// 外からのドラッグのカーソルの下にある drop zone。
+    fn file_drag_zone(&self) -> Option<String> {
+        let (x, y) = self.file_drag.as_ref()?.pos?;
+        let pt = sabitori_core::Point::new(x, y);
+        self.last_build
+            .as_ref()?
+            .hit_regions
+            .iter()
+            .find(|r| r.drop_zone && r.rect.contains(pt))
+            .and_then(|r| r.id.clone())
+    }
+
+    /// `title()` が主窓の題と食い違っていたら付け直す。
+    ///
+    /// 題は窓を作る時にしか渡していなかったので、開いている物の名前を題に出すアプリ
+    /// (ファイラ・エディタ) で、ミッションコントロールや Dock の窓一覧が起動時の題の
+    /// ままだった。比べるのは文字列 1 本なので毎周回でよい。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_title(&mut self) {
+        let Some(w) = self.window.as_ref() else { return };
+        let title = self.app.title();
+        if title != self.window_title {
+            w.set_title(title);
+            self.window_title = title.to_string();
+        }
+    }
+
+    /// この窓の物か (主窓か、その別窓)。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn owns(&self, id: WindowId) -> bool {
+        self.window.as_ref().is_some_and(|w| w.id() == id) || self.extras.contains_key(&id)
+    }
+}
+
 impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
     /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
     /// ことがあり、自力ではコードが変わったことに気付けないので、外から起こして
-    /// 全ウィンドウを描き直させる。
+    /// 全ウィンドウを描き直させる。OS から渡されたパスもこの道で起こすが、
+    /// 届け先の窓を選ぶのは [`Host`]。
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -1243,6 +1433,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
         let mut attrs = WindowAttributes::default().with_title(self.app.title());
+        self.window_title = self.app.title().to_string();
         // iOS は `size()` / `min_size()` を渡さない。winit は iOS で要求サイズを**そのまま
         // 画面の枠**に使うので、渡すと機種に関係なく要求した大きさに固定され、大きい画面では
         // 右と下が黒く抜ける（iPhone 17 Pro Max で 390×844 の枠に描かれていた）。渡さなければ
@@ -1257,6 +1448,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         }
         if let Some((x, y)) = self.app.position() {
             attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
+        } else if let Some(p) = self.position_hint {
+            attrs = attrs.with_position(p);
         }
         if self.app.transparent() {
             attrs = attrs.with_transparent(true);
@@ -1377,7 +1570,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             self.dirty = true;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.closed = true,
             // 最小化 / 完全に覆われた (#79)。**描くのを止めるだけ**で、溜まった
             // `dirty` は消さない — 見えた瞬間に 1 枚描き直して追いつく。
             WindowEvent::Occluded(occluded) => {
@@ -1615,15 +1808,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let y = touch.location.y as f32 / s;
                 self.handle_touch(touch.phase, touch.id, x, y);
             }
-            WindowEvent::DroppedFile(path) => {
-                self.app.on_file_drop(vec![path]);
-            }
-            WindowEvent::HoveredFile(path) => {
-                self.app.on_file_hover(path);
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.app.on_file_hover_cancelled();
-            }
+            WindowEvent::DroppedFile(path) => self.file_dropped(path),
+            WindowEvent::HoveredFile(path) => self.file_hovered(path),
+            WindowEvent::HoveredFileCancelled => self.file_hover_cancelled(),
             WindowEvent::ModifiersChanged(mods) => {
                 let state = mods.state();
                 self.set_modifiers(Modifiers {
@@ -1648,16 +1835,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 self.handle_key_input(key, pressed, chars);
             }
             WindowEvent::Ime(ime_event) => {
-                let event = match &ime_event {
-                    winit::event::Ime::Preedit(text_str, cursor) => {
-                        InputEvent::ImePreedit { text: text_str.clone(), cursor: cursor.map(|(s, e)| (s, e)) }
-                    }
-                    winit::event::Ime::Commit(text_str) => {
-                        InputEvent::ImeCommit { text: text_str.clone() }
-                    }
-                    winit::event::Ime::Enabled => InputEvent::ImeEnabled,
-                    winit::event::Ime::Disabled => { return; }
-                };
+                let event = sabitori_window::keymap::input_from_ime(&ime_event);
                 let handled = self.route_to_managed(&event)
                     || match self.focused_id {
                         Some(ref id) => self.app.on_focused_input(id, &event),
@@ -1668,6 +1846,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let frame_t0 = Instant::now();
                 // Ticks moved to `about_to_wait` so they run on a fixed
                 // 16ms cadence independent of redraw decisions. By the time
                 // this handler fires, animator/app state for the current
@@ -1826,6 +2005,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     let measurer = crate::bridge::TextRendererMeasurer::new(&mut tr, &cache);
                     self.build_frame(w, h, &measurer)
                 };
+                let frame_built = Instant::now();
 
                 // `tr` was taken out of `self`; every path from here on must put
                 // it back, or the next frame bails at the `take()` above and the
@@ -1835,187 +2015,96 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     return;
                 };
 
-                // Layered path applies when EITHER:
-                // * external overlay_view returned content
-                // * the main tree contained `.overlay()` subtrees (build_result.overlay_list)
-                // The previous version only used the layered path for external
-                // overlays, so context menus placed in `view()` with `.overlay()`
-                // had their commands emitted to overlay_list and then silently
-                // dropped (never drawn). This fixes auto-hoist rendering.
-                // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
+                // はみ出しの目印は overlay_list に積むので、描く物を起こす前に (#95)。
                 self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
-                let has_external_overlay = overlay_build.is_some();
-                let has_internal_overlay = !build_result.overlay_list.commands.is_empty();
-                let has_overlay = has_external_overlay || has_internal_overlay;
+                // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
+                // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
 
-                // Both branches yield the build the frame was actually drawn
-                // from, so there is exactly one place that stores it — see the
-                // `commit_build` call below.
-                let drawn_build = if has_overlay {
-                    // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
-                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
-                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
-                    let (mut base_rects, mut base_lists, text_layouts) =
-                        UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
-                    let (overlay_rects, overlay_lists) =
-                        UiDrawLists::extract(&build_result.overlay_list, &mut tr);
-                    // text_layouts は次フレームの mouse 入力 / Cmd+C で使うので保存。
-                    self.text_layouts = text_layouts;
-                    // View 切替で selection が無効になる場合に clear。
-                    Self::invalidate_stale_selection(
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                    );
-                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
-                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
-                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
-                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
-                    self.selection_redraw |= Self::sync_selection(
-                        &mut self.app,
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                        &mut self.selection_snapshot,
-                    );
-                    // Selection highlight rects を base_rects の末尾に append (=
-                    // 他の base rects の上、 glyph の下に painter order で挟まる)。
-                    // renderer の mutable borrow 中なので self.selection_rects() が
-                    // borrow checker に怒られる。 selection + text_layouts は self が
-                    // 持ってる field なので、 直接 field アクセスで rect 列を組む。
-                    let (sel_bg, sel_fg) = match self.app.selection_style() {
-                        Some((bg, fg)) => (bg, Some(fg.to_array())),
-                        None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
-                    };
-                    // find-in-page ハイライトは selection の下に敷く (append 順 =
-                    // painter order。 selection が上、 highlight が下、 両方 glyph の下)。
-                    base_rects.extend(Self::compute_highlight_rects(&self.text_layouts));
-                    base_rects.extend(Self::compute_link_rects(&self.text_layouts));
-                    let sel_rects = Self::compute_selection_rects(
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    );
-                    if let Some(fg) = sel_fg {
-                        Self::recolor_selected_glyphs(&mut base_lists.glyphs, &sel_rects, fg);
-                    }
-                    base_rects.extend(sel_rects);
-                    base_rects.extend(Self::selection_handle_rects(
-                        self.selection_handles,
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    ));
-
-                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
-                    let merged = build_result;
-
-                    let device = renderer.device.clone();
-                    let queue = renderer.queue.clone();
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
-                    let _ = renderer.render_layered(
-                        &base_rects,
-                        &overlay_rects,
-                        // 矩形の数だけでは overlay の有無を判定できない。地を塗って
-                        // いない div は矩形を出さないので、画像だけ / 文字だけの
-                        // overlay が丸ごと落ちる (#44)。
-                        !overlay_lists.is_empty(),
-                        |phase, pass, globals_bg| {
-                            let lists = match phase {
-                                RenderPhase::BaseText => &base_lists,
-                                RenderPhase::OverlayText => &overlay_lists,
-                            };
-                            let mut r = UiRenderers {
-                                images: ir.as_mut(),
-                                rings: rr.as_mut(),
-                                lines: lr.as_mut(),
-                                text: &mut tr,
-                            };
-                            draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
-                        },
-                    );
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
-                    merged
-                } else {
-                    let (mut rects, mut lists, text_layouts) =
-                        UiDrawLists::extract_with_hits(&build_result.render_list, &mut tr);
-                    self.text_layouts = text_layouts;
-                    Self::invalidate_stale_selection(
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                    );
-                    // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
-                    // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
-                    // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
-                    // 理由が無いまま止まり、選択の近くのメニューが出ない。
-                    self.selection_redraw |= Self::sync_selection(
-                        &mut self.app,
-                        &mut self.selection,
-                        &mut self.selecting,
-                        &self.text_layouts,
-                        &mut self.selection_snapshot,
-                    );
-                    let (sel_bg, sel_fg) = match self.app.selection_style() {
-                        Some((bg, fg)) => (bg, Some(fg.to_array())),
-                        None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
-                    };
-                    // find-in-page ハイライトは selection の下に敷く (glyph の下)。
-                    rects.extend(Self::compute_highlight_rects(&self.text_layouts));
-                    rects.extend(Self::compute_link_rects(&self.text_layouts));
-                    let sel_rects = Self::compute_selection_rects(
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    );
-                    if let Some(fg) = sel_fg {
-                        Self::recolor_selected_glyphs(&mut lists.glyphs, &sel_rects, fg);
-                    }
-                    rects.extend(sel_rects);
-                    rects.extend(Self::selection_handle_rects(
-                        self.selection_handles,
-                        self.selection.as_ref(),
-                        &self.text_layouts,
-                        sel_bg,
-                    ));
-
-                    let device = renderer.device.clone();
-                    let queue = renderer.queue.clone();
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    renderer.set_goo(lists.goo.clone(), Vec::new());
-                    let _ = renderer.render_with(&rects, |pass, globals_bg| {
-                        let mut r = UiRenderers {
-                            images: ir.as_mut(),
-                            rings: rr.as_mut(),
-                            lines: lr.as_mut(),
-                            text: &mut tr,
-                        };
-                        draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-                    });
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
-                    build_result
+                // 層 0 → 上げた層 → 上掛け を、**木の順に** 1 つのパスで描く。
+                // 以前は層ごとに「矩形 → 画像 → … → 文字」と種類でまとめて描いていたので、
+                // 同じ層で重なると下の要素の文字や画像が上の箱に透けた (#126)。
+                // 選択などの対象にするのは上掛け以外 (上掛けは前から対象外)。
+                let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+                    vec![(&build_result.render_list, true)];
+                lists.extend(build_result.layer_lists.iter().map(|(_, l)| (l, true)));
+                lists.push((&build_result.overlay_list, false));
+                let mut frame = OrderedFrame::extract(&lists, &mut tr);
+                // text_layouts は次フレームの mouse 入力 / Cmd+C で使うので保存。
+                self.text_layouts = std::mem::take(&mut frame.text_layouts);
+                // View 切替で selection が無効になる場合に clear。
+                Self::invalidate_stale_selection(
+                    &mut self.selection,
+                    &mut self.selecting,
+                    &self.text_layouts,
+                );
+                // 変わったら、もう 1 枚描く。この枚の view は古い範囲で組んで
+                // いる (`ctx.text_selection()` も、アプリが `on_selection_changed`
+                // で変えた状態も、次の枚から効く)。lazy_render だと、描き直す
+                // 理由が無いまま止まり、選択の近くのメニューが出ない。
+                self.selection_redraw |= Self::sync_selection(
+                    &mut self.app,
+                    &mut self.selection,
+                    &mut self.selecting,
+                    &self.text_layouts,
+                    &mut self.selection_snapshot,
+                );
+                let (sel_bg, sel_fg) = match self.app.selection_style() {
+                    Some((bg, fg)) => (bg, Some(fg.to_array())),
+                    None => (sabitori_core::Color::new(0.31, 0.55, 0.95, 0.35), None),
                 };
+                // 文字の下に敷く物は、**その文字のグリフの直前**に描く (木の順で描くので、
+                // 末尾に足すと後ろの箱の上に出る)。敷く順 = 塗る順: 検索のハイライト →
+                // リンクの下線 → 選択 → つまみ。
+                for layout in &self.text_layouts {
+                    let one = std::slice::from_ref(layout);
+                    let mut under = Self::compute_highlight_rects(one);
+                    under.extend(Self::compute_link_rects(one));
+                    let sel_rects = Self::compute_selection_rects(self.selection.as_ref(), one, sel_bg);
+                    if let (Some(fg), Some(range)) = (sel_fg, frame.text_glyphs.get(&layout.text_idx)) {
+                        let range = range.start as usize..range.end as usize;
+                        Self::recolor_selected_glyphs(&mut frame.glyphs[range], &sel_rects, fg);
+                    }
+                    under.extend(sel_rects);
+                    under.extend(Self::selection_handle_rects(
+                        self.selection_handles,
+                        self.selection.as_ref(),
+                        one,
+                        sel_bg,
+                    ));
+                    frame.under_text(layout.text_idx, under);
+                }
+
+                let device = renderer.device.clone();
+                let queue = renderer.queue.clone();
+                let mut ir = self.image_renderer.take();
+                let mut rr = self.ring_renderer.take();
+                let mut lr = self.line_renderer.take();
+                {
+                    let mut r = UiRenderers {
+                        images: ir.as_mut(),
+                        rings: rr.as_mut(),
+                        lines: lr.as_mut(),
+                        text: &mut tr,
+                    };
+                    frame.upload(renderer, &mut r, &device, &queue);
+                    let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
+                }
+                // フレーム境界。テクスチャ LRU の世代をここで進める (#43)。
+                if let Some(ir) = ir.as_mut() {
+                    ir.end_frame();
+                }
+                self.image_renderer = ir;
+                self.ring_renderer = rr;
+                self.line_renderer = lr;
+                let drawn_build = build_result;
 
                 self.commit_build(drawn_build);
+                frame_stats::record(
+                    frame_t0,
+                    frame_built,
+                    self.renderer.as_ref().map(|r| r.last_acquire_ms).unwrap_or(0.0),
+                );
 
                 // If the atlas overflowed this frame (glyphs dropped → blank
                 // text), force one more frame so maybe_recover_atlas can flush +
@@ -2047,7 +2136,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // 帯に描いた閉じるボタン。フレームの間引きより前に見る (間引かれた周回でも閉じる)。
         if self.app.take_close_request() {
-            event_loop.exit();
+            self.closed = true;
             return;
         }
         let elapsed = self.last_frame.elapsed();
@@ -2078,6 +2167,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // `desired_focus` の反映は `advance` / `build_frame` の中 (#28)。
         // ここに書くと Harness からは一度も通らない。
         self.advance(dt);
+        // tick やイベントで題が変わっていたら主窓へ。
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sync_title();
+        // 外からのファイルのドラッグ: 落とされた分をまとめて渡すか、カーソルを追う。
+        if !self.flush_file_drop() {
+            self.poll_file_drag_pos();
+        }
         // Displays can appear, vanish, or be re-arranged between any
         // two frames. Checked right after `advance` so the app has just
         // had the chance to notice and raise the flag, and before the
@@ -2145,7 +2241,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         let must_draw = gate.must_draw();
 
         // 主窓が隠れていても、別窓は見えていることがある — 主窓より大きな板
-        // (lustar の Quick Look) を前に浮かせると、主窓は**完全に覆われて**
+        // (ファイラの Quick Look) を前に浮かせると、主窓は**完全に覆われて**
         // occluded になる。そのとき主窓の描画と一緒に、タスクの結果を当てるのも
         // 別窓の描き直しも止まり、板が固まって見えた。主窓は描かないまま、
         // 結果を当てて別窓だけ描き直す。主窓は見えた瞬間に描き直す (Occluded の
@@ -2187,16 +2283,24 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
         if must_draw {
             if let Some(w) = self.window.as_ref() {
+                frame_stats::note_request();
                 w.request_redraw();
             }
             // Extras share the same redraw cadence as the primary —
             // particle bursts, animated overlays etc. need every-frame
-            // updates while is_animating() is true. They don't have
-            // their own dirty flag (no input → no per-window dirty
-            // signal), so piggybacking on the primary's decision keeps
-            // the bookkeeping minimal.
+            // updates while is_animating() is true. Their own pointer
+            // changes (hover, wheel) request a redraw of that window
+            // directly, so piggybacking here covers the app-driven rest.
             for extra in self.extras.values() {
                 extra.window.request_redraw();
+            }
+        } else {
+            // 別窓の管理スクロールがばねで動いている間は、その窓だけ描き直す
+            // (主窓まで組み直すことはない)。
+            for extra in self.extras.values() {
+                if extra.pointer.animating() {
+                    extra.window.request_redraw();
+                }
             }
         }
 
@@ -2409,6 +2513,8 @@ impl<A: DeclarativeApp> AppState<A> {
                 );
             }
             self.app.macos_configure_extra_window(&spec.key, &extra_window);
+            // 焦点を取らない別窓 (Quick Look の板) にも指の動きを届ける — 無いとホバーが効かない。
+            crate::macos_track::track_mouse_moved(&extra_window);
         }
 
         let mut extra_gpu = GpuRenderer::new_with_alpha(extra_window.clone(), spec.transparent);
@@ -2434,7 +2540,8 @@ impl<A: DeclarativeApp> AppState<A> {
             line_renderer: extra.lines,
             measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
             last_build: None,
-            mouse: (0.0, 0.0),
+            pointer: Default::default(),
+            last_cursor: None,
             scene_3d: spec.scene_3d,
         });
     }
@@ -2583,6 +2690,8 @@ impl<A: DeclarativeApp> AppState<A> {
             app,
             dirty: true,
             window: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            window_title: String::new(),
             safe_area_override: None,
             renderer: None,
             text_renderer: None,
@@ -2611,6 +2720,7 @@ impl<A: DeclarativeApp> AppState<A> {
             primary_input: PrimaryInput::None,
             active_touches: std::collections::HashMap::new(),
             touch_drag: None,
+            file_drag: None,
             pinch: None,
             trackpad_pinch: None,
             clicks: sabitori_input::ClickCounter::new(),
@@ -2647,6 +2757,9 @@ impl<A: DeclarativeApp> AppState<A> {
             deferred_click: None,
             window_gesture: None,
             last_capture: UiCapture::default(),
+            closed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            position_hint: None,
         }
     }
 
@@ -2735,6 +2848,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     .and_then(|r| r.id.clone())
             });
             Some(sabitori_core::DragInfo { data, source_id, over_drop_zone: over })
+        } else if self.file_drag.is_some() {
+            Some(sabitori_core::DragInfo {
+                data: sabitori_core::FILE_DRAG.to_string(),
+                source_id: None,
+                over_drop_zone: self.file_drag_zone(),
+            })
         } else {
             None
         };
@@ -3223,6 +3342,10 @@ impl<A: DeclarativeApp> AppState<A> {
             &mut self.presence_animator,
             dt,
         );
+        // 別窓の管理スクロールのばね。描き直しは `about_to_wait` がその窓にだけ頼む。
+        for extra in self.extras.values_mut() {
+            extra.pointer.advance(dt);
+        }
     }
 
     /// ランタイムかアプリのどこかがまだ動いているか。 [`Self::advance`] を
@@ -3301,14 +3424,8 @@ impl<A: DeclarativeApp> AppState<A> {
             return;
         }
         let Some(build) = self.last_build.as_ref() else { return };
-        // 空白なら `""`。`clickable` は id 付き要素にしか立たないので、当たった
-        // 領域に id が無いことは無いが、無ければ空白扱いに倒す。
-        let id = build
-            .hit_regions
-            .iter()
-            .find(|r| r.clickable && r.rect.contains(position))
-            .and_then(|r| r.id.clone())
-            .unwrap_or_default();
+        // 空白なら `""`。メニューの幕 (`.right_click_through()`) は飛ばして下を見る。
+        let id = crate::runtime_shared::right_click_target(build, position.x, position.y);
         self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
     }
 
@@ -4975,11 +5092,11 @@ impl<A: DeclarativeApp> AppState<A> {
         crate::runtime_shared::apply_cursor(self.window.as_ref(), &mut self.last_cursor, cursor);
     }
 
-    /// Dispatch winit events for an extra window. v1 only acts on the
-    /// three events that affect render correctness — everything else
-    /// (mouse, key, focus, IME, etc.) is silently dropped because the
-    /// extra is expected to be click-through. Phase 2 will widen this
-    /// when extras need real input.
+    /// Dispatch winit events for an extra window: resize / redraw, keys
+    /// (forwarded to the primary), and the pointer — hover, managed
+    /// scroll and grabbed bars run through the extra's own
+    /// [`ExtraPointer`](crate::extra_pointer::ExtraPointer); clicks and
+    /// unconsumed wheel reach the app as [`ExtraInput`].
     fn handle_extra_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -4987,7 +5104,9 @@ impl<A: DeclarativeApp> AppState<A> {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // 別窓はアプリが `extra_windows()` で宣言している物なので、ランタイムが勝手に
+            // 1 枚だけ消すと食い違う。持ち主の主窓ごと閉じる (窓が 1 つなら今までどおり終わる)。
+            WindowEvent::CloseRequested => self.closed = true,
             WindowEvent::Resized(size) => {
                 if let Some(extra) = self.extras.get_mut(&id) {
                     let scale = extra.window.scale_factor();
@@ -5034,12 +5153,37 @@ impl<A: DeclarativeApp> AppState<A> {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(extra) = self.extras.get_mut(&id) {
                     let s = extra.window.scale_factor() as f32;
-                    extra.mouse = (position.x as f32 / s, position.y as f32 / s);
+                    let (x, y) = (position.x as f32 / s, position.y as f32 / s);
+                    if extra.pointer.moved(extra.last_build.as_ref(), x, y) {
+                        extra.window.request_redraw();
+                    }
+                    crate::runtime_shared::apply_cursor(
+                        Some(&extra.window),
+                        &mut extra.last_cursor,
+                        extra.pointer.cursor,
+                    );
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let Some(key) = self.extras.get(&id).map(|e| e.key.clone()) else { return };
-                let (dx, dy, _) = crate::input_router::wheel_delta_px(delta);
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(extra) = self.extras.get_mut(&id) {
+                    if extra.pointer.left() {
+                        extra.window.request_redraw();
+                    }
+                    // 外では OS がカーソルを持つ。戻ってきたら送り直す。
+                    extra.last_cursor = None;
+                }
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let shift = self.modifiers.shift;
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                let (dx, dy, precise) = crate::input_router::wheel_delta_px(delta);
+                let phase = crate::input_router::wheel_phase(phase);
+                // カーソルの下の管理スクロールが先 (主窓と同じ)。受けなければアプリへ。
+                if extra.pointer.wheel(extra.last_build.as_ref(), (dx, dy), precise, phase, shift) {
+                    extra.window.request_redraw();
+                    return;
+                }
+                let key = extra.key.clone();
                 self.app.on_extra_input(&key, ExtraInput::Wheel { dx, dy });
                 self.dirty = true;
                 self.request_redraw_all();
@@ -5049,8 +5193,13 @@ impl<A: DeclarativeApp> AppState<A> {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let Some(extra) = self.extras.get(&id) else { return };
-                let (x, y) = extra.mouse;
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                // 帯が一番先 (主窓と同じ — 帯は中身の上に重なっている)。
+                if extra.pointer.grab_bar(extra.last_build.as_ref()) {
+                    extra.window.request_redraw();
+                    return;
+                }
+                let (x, y) = extra.pointer.mouse;
                 let key = extra.key.clone();
                 let pt = sabitori_core::Point::new(x, y);
                 // 窓のつかみどころ (`.window_drag()`) の空いた所なら、主窓と同じく
@@ -5069,9 +5218,21 @@ impl<A: DeclarativeApp> AppState<A> {
                     .last_build
                     .as_ref()
                     .and_then(|b| crate::runtime_shared::hit_id_at(b, x, y));
+                // 離すまで `.active()` の見た目にする。
+                extra.pointer.pressed = hit.clone();
                 self.app.on_extra_input(&key, ExtraInput::Click { id: hit, x, y });
                 self.dirty = true;
                 self.request_redraw_all();
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                if extra.pointer.release() {
+                    extra.window.request_redraw();
+                }
             }
             _ => {}
         }
@@ -5088,9 +5249,9 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     /// Build + draw a single extra window. Mirrors the non-overlay
-    /// branch of the primary's RedrawRequested handler with a stripped
-    /// `ViewContext` (no hover / focus / scroll / drag — extras are
-    /// passive in v1).
+    /// branch of the primary's RedrawRequested handler. The `ViewContext`
+    /// carries the extra's own hover / pointer / managed scroll; focus,
+    /// tooltip and drag stay with the primary.
     fn redraw_extra(&mut self, id: WindowId) {
         // We need both `&mut extra` and `&self.app` simultaneously.
         // Pull the extra out by detaching pieces we own (renderers
@@ -5118,8 +5279,10 @@ impl<A: DeclarativeApp> AppState<A> {
         // 計測器を先に作り、 `ViewContext` に差してから view を呼ぶ。 以前は
         // view のあとで作っていたが、 それだとアプリが実フォント計測に触れない
         // (issue #15)。 `extra.text_renderer` の可変借用を後段の
-        // `UiDrawLists::extract` に返すため、 ブロックで閉じる。
-        let (root, build_result) = {
+        // `OrderedFrame::extract` に返すため、 ブロックで閉じる。
+        // `view_for` が見る管理スクロールの寸法。組んだ後に測れた寸法と比べる (#99)。
+        let seen = extra.pointer.scroll_info();
+        let (root, build_result, relayout) = {
             let measurer = crate::bridge::TextRendererMeasurer::new(
                 &mut extra.text_renderer,
                 &extra.measure_cache,
@@ -5130,13 +5293,14 @@ impl<A: DeclarativeApp> AppState<A> {
                 safe_area: sabitori_window::safe_area(&extra.window),
                 // 別窓は標準のタイトルバーのまま (`titlebar()` は主窓だけ)。
                 window_controls: None,
-                hovered: None,
+                hovered: extra.pointer.hovered.clone(),
+                // 焦点は主窓が持つ (キーは主窓の道へ流れる)。
                 focused: None,
-                mouse_x: 0.0,
-                mouse_y: 0.0,
-                shift_held: false,
-                cmd_held: false,
-                scroll_states: std::collections::HashMap::new(),
+                mouse_x: extra.pointer.mouse.0,
+                mouse_y: extra.pointer.mouse.1,
+                shift_held: self.modifiers.shift,
+                cmd_held: self.modifiers.meta,
+                scroll_states: seen.clone(),
                 tooltip: None,
                 drag: None,
                 textures: Default::default(),
@@ -5154,76 +5318,53 @@ impl<A: DeclarativeApp> AppState<A> {
             let mut root = crate::hot_reload::call(|| self.app.view_for(&extra.key, &ctx));
             // 区分はその窓の幅で決める (#97)。
             sabitori_core::element::apply_size_rules(&mut root, w);
+            // hover / active の見た目、管理スクロールの位置、帯の色 (主窓と同じ並び)。
+            extra.pointer.before_build(&mut root, &ctx.theme);
             let built = build_tree_measured(&root, w, h, &measurer);
-            (root, built)
+            let relayout = extra.pointer.after_build(&built, &seen);
+            (root, built, relayout)
         };
         let _ = &root;
+        // 測れた寸法が `view_for` の見たものと違えば、もう 1 枚 (主窓の #99 と同じ)。
+        if relayout {
+            extra.window.request_redraw();
+        }
         let mut build_result = build_result;
-        // はみ出しの目印 (#95)。別窓は overlay を描かないので地の上に積む。
+        // はみ出しの目印 (#95)。地の上 (= 書いた物の後ろ) に積む。
         self.overflow_debug.flag_on_top(&mut build_result);
 
-        let (rects, lists) =
-            UiDrawLists::extract(&build_result.render_list, &mut extra.text_renderer);
+        // 主窓と同じく**木の順に** 1 つのパスで描く (層 0 → 上げた層 → 上掛け)。
+        // 以前は層を寄せて種類ごとにまとめて描き、上掛け (`.overlay()`) は描いていなかった。
+        let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+            vec![(&build_result.render_list, false)];
+        lists.extend(build_result.layer_lists.iter().map(|(_, l)| (l, false)));
+        lists.push((&build_result.overlay_list, false));
+        let mut frame = OrderedFrame::extract(&lists, &mut extra.text_renderer);
         extra.last_build = Some(build_result);
 
         let device = extra.renderer.device.clone();
         let queue = extra.renderer.queue.clone();
-
-        // Split self so the scene closure can access `self.app`
-        // mutably while `extra.renderer` is also borrowed mutably —
-        // both are disjoint fields once we destructure. This is the
-        // same disentangling SceneAppState does for the primary
-        // window's render_scene_then_ui call site.
-        #[cfg(not(target_arch = "wasm32"))]
-        let scene_3d = extra.scene_3d;
-        #[cfg(not(target_arch = "wasm32"))]
-        let key = extra.key.clone();
-        let img_r = &mut extra.image_renderer;
-        let ring_r = &mut extra.ring_renderer;
-        let line_r = &mut extra.line_renderer;
-        let tr = &mut extra.text_renderer;
+        let mut r = UiRenderers {
+            images: Some(&mut extra.image_renderer),
+            rings: Some(&mut extra.ring_renderer),
+            lines: Some(&mut extra.line_renderer),
+            text: &mut extra.text_renderer,
+        };
         let renderer = &mut extra.renderer;
-        renderer.set_goo(lists.goo.clone(), Vec::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        let app = &mut self.app;
+        frame.upload(renderer, &mut r, &device, &queue);
 
-        // The 2D UI overlay closure body is duplicated between the
-        // 3D and 2D branches because higher-rank lifetimes on
-        // wgpu::RenderPass<'_> make the inferred closure type
-        // monomorphic when factored out — the borrow checker rejects
-        // it as "not general enough" for the FnOnce signature both
-        // render_with and render_scene_then_ui expect.
-        // 3D scene rendering is native-only (wgpu scene pipeline); on
-        // wasm `scene_3d` extras can't be set up, so we always fall
-        // through to the 2D path below.
+        // 3D シーンは native だけ (wasm では scene_3d の別窓を作れない)。
         #[cfg(not(target_arch = "wasm32"))]
-        if scene_3d {
-            let _ = renderer.render_scene_then_ui(
-                |scene_ctx| {
-                    app.render_extra_scene(&key, scene_ctx);
-                },
-                &rects,
-                |pass, globals_bg| {
-                    let mut r = UiRenderers {
-                        images: Some(&mut *img_r),
-                        rings: Some(&mut *ring_r),
-                        lines: Some(&mut *line_r),
-                        text: tr,
-                    };
-                    draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-                },
+        if extra.scene_3d {
+            let key = extra.key.clone();
+            let app = &mut self.app;
+            let _ = renderer.render_scene_then_frame(
+                |scene_ctx| app.render_extra_scene(&key, scene_ctx),
+                |pass, gpu| frame.draw(gpu, &r, pass),
             );
             return;
         }
-        let _ = renderer.render_with(&rects, |pass, globals_bg| {
-            let mut r = UiRenderers {
-                images: Some(&mut *img_r),
-                rings: Some(&mut *ring_r),
-                lines: Some(&mut *line_r),
-                text: tr,
-            };
-            draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-        });
+        let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
     }
 }
 
@@ -5247,8 +5388,18 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         let _ = proxy.send_event(());
     });
 
-    let mut state = AppState::new(app);
-    event_loop.run_app(&mut state).unwrap();
+    // Finder / `open -a` から渡されたパスの受け口。delegate が張られた後
+    // (= event loop を作った後) で、起動処理が走る前 (= run_app の前) に仕込む。
+    #[cfg(target_os = "macos")]
+    {
+        let proxy = event_loop.create_proxy();
+        crate::macos_open::install(move || {
+            let _ = proxy.send_event(());
+        });
+    }
+
+    let mut host = Host::new(app);
+    event_loop.run_app(&mut host).unwrap();
 }
 
 /// Run a declarative app (WASM).
@@ -5344,6 +5495,10 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
 
         fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
             self.inner.borrow_mut().window_event(event_loop, id, event);
+            // web の窓は 1 枚きり。閉じたら終わる (native の `Host` の、窓が 1 つの時と同じ)。
+            if self.inner.borrow().closed {
+                event_loop.exit();
+            }
         }
 
         fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -5352,6 +5507,9 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.inner.borrow_mut().about_to_wait(event_loop);
+            if self.inner.borrow().closed {
+                event_loop.exit();
+            }
         }
     }
 
@@ -7246,7 +7404,7 @@ mod draw_gate_tests {
         }
     }
 
-    /// 主窓が別窓に完全に覆われても、別窓は描き直す (lustar の Quick Look が
+    /// 主窓が別窓に完全に覆われても、別窓は描き直す (ファイラの Quick Look が
     /// 主窓より大きいと、中身が替わらず固まって見えた)。
     #[test]
     fn an_occluded_main_still_lets_extras_redraw() {
@@ -7588,5 +7746,82 @@ mod scrollbar_tests {
         h.move_to(10.0, 10.0);
         h.frame();
         assert_eq!(paint(&h).to_array(), IDLE.to_array(), "明かりが消えない");
+    }
+}
+
+/// `SABITORI_FRAME_STATS=1` のとき、2 秒ごとに描いたフレームの内訳を stderr に出す
+/// (間隔 = 描画の開始どうしの間、組み = view + レイアウト、描画 = 平坦化〜提出、
+/// 待ち = 描画先 (drawable) を待った分。描画に含まれる)。
+mod frame_stats {
+    use std::cell::RefCell;
+    use web_time::Instant;
+
+    #[derive(Default)]
+    struct Stats {
+        since: Option<Instant>,
+        last_start: Option<Instant>,
+        requested: Option<Instant>,
+        gap: Vec<f32>,
+        delay: Vec<f32>,
+        build: Vec<f32>,
+        render: Vec<f32>,
+        acquire: Vec<f32>,
+    }
+
+    thread_local!(static STATS: RefCell<Stats> = RefCell::new(Stats::default()));
+
+    fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("SABITORI_FRAME_STATS").is_ok_and(|v| v != "0"))
+    }
+
+    /// `request_redraw` を出した時刻 (描き始めるまでの遅れを測る)。
+    pub(super) fn note_request() {
+        if enabled() {
+            STATS.with(|s| {
+                s.borrow_mut().requested.get_or_insert_with(Instant::now);
+            });
+        }
+    }
+
+    pub(super) fn record(start: Instant, built: Instant, acquire_ms: f32) {
+        if !enabled() {
+            return;
+        }
+        let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
+        let now = Instant::now();
+        STATS.with(|s| {
+            let mut s = s.borrow_mut();
+            let since = *s.since.get_or_insert(start);
+            if let Some(prev) = s.last_start.replace(start) {
+                s.gap.push(ms(prev, start));
+            }
+            if let Some(r) = s.requested.take() {
+                s.delay.push(ms(r, start));
+            }
+            s.build.push(ms(start, built));
+            s.render.push(ms(built, now));
+            s.acquire.push(acquire_ms);
+            let secs = (now - since).as_secs_f32();
+            if secs < 2.0 {
+                return;
+            }
+            let q = |v: &mut Vec<f32>| -> String {
+                if v.is_empty() {
+                    return "-".into();
+                }
+                v.sort_by(|a, b| a.total_cmp(b));
+                let n = v.len();
+                format!("{:.1}/{:.1}/{:.1}", v[n / 2], v[n * 95 / 100], v[n - 1])
+            };
+            let n = s.build.len();
+            let (gap, delay, build, render, acquire) =
+                (q(&mut s.gap), q(&mut s.delay), q(&mut s.build), q(&mut s.render), q(&mut s.acquire));
+            eprintln!(
+                "[sabitori] {n} frames / {secs:.1}s ({:.0}fps) p50/p95/max ms: 間隔 {gap} 依頼→開始 {delay} 組み {build} 描画 {render} (うち待ち {acquire})",
+                n as f32 / secs
+            );
+            *s = Stats { last_start: s.last_start, ..Stats::default() };
+        });
     }
 }

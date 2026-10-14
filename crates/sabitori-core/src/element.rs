@@ -1101,6 +1101,9 @@ pub struct Element {
     /// When true, this element (and all its children) renders on the overlay
     /// layer — drawn after all base-layer content so it appears on top.
     pub overlay: bool,
+    /// 描く層 (0 が普通の層、大きいほど手前)。子孫は親の層を下回らない。
+    /// 上掛け (`overlay`) はどの番号よりも手前。[`Element::layer`] を参照。
+    pub layer: u8,
     /// Tooltip text shown on hover after a short delay.
     pub tooltip: Option<String>,
     /// Drag payload data. When set, this element can be dragged.
@@ -1134,6 +1137,8 @@ pub struct Element {
     /// 窓のつかみどころ ([`Element::window_drag`])。ここの空いた所を押すと、
     /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) が始まる。
     pub window_drag: bool,
+    /// 右クリックを下へ通す ([`Element::right_click_through`])。コンテキストメニューの幕。
+    pub right_click_through: bool,
     /// 窓の幅の区分ごとの上書き ([`Element::at`])。ランタイムが `view()` の直後に
     /// [`apply_size_rules`] で畳む。
     pub size_rules: Vec<SizeRule>,
@@ -1527,6 +1532,7 @@ pub fn div() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1534,6 +1540,7 @@ pub fn div() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1648,6 +1655,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1655,6 +1663,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1688,6 +1697,7 @@ pub fn polyline() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1695,6 +1705,7 @@ pub fn polyline() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1743,6 +1754,7 @@ pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1750,6 +1762,7 @@ pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1789,6 +1802,7 @@ pub fn arc() -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1796,6 +1810,7 @@ pub fn arc() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1819,6 +1834,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         active_style: None,
         transitions: Vec::new(),
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1826,6 +1842,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -1882,6 +1899,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
             kind: TransitionKind::default(),
         }],
         overlay: false,
+        layer: 0,
         tooltip: None,
         drag_data: None,
         drop_zone: false,
@@ -1889,6 +1907,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        right_click_through: false,
         size_rules: Vec::new(),
     }
 }
@@ -3469,6 +3488,21 @@ impl Element {
         self
     }
 
+    /// この要素と子孫を層 `n` に描く (0 が普通の層、大きいほど手前)。
+    ///
+    /// 描画は**木の順**なので、重なりは書いた順で決まり、ふつうはこれは要らない。
+    /// 後ろに書いた兄弟より手前に出したいときだけ使う。
+    ///
+    /// `.overlay()` と違って位置は変えない。祖先の切り抜き (`overflow: hidden`) はそのまま効く。
+    /// 押す判定も手前の層が先。上掛け (`overlay`) はどの番号よりも手前。
+    ///
+    /// 層 1 以上に置いた文字は、読み上げでは領域の名前にならない (選択・ページ内検索の
+    /// ハイライト・本文中のリンクは主窓で効く)。
+    pub fn layer(mut self, n: u8) -> Self {
+        self.layer = n;
+        self
+    }
+
     // -- Tooltip --
 
     /// Set tooltip text shown on hover after a short delay.
@@ -3508,6 +3542,22 @@ impl Element {
     /// 効くのは宣言的ランタイム (`run_declarative`) の主窓。
     pub fn window_drag(mut self) -> Self {
         self.window_drag = true;
+        self
+    }
+
+    /// 右クリックをこの要素で止めず、**下の要素へ通す**。
+    ///
+    /// コンテキストメニューの幕 (sabitori-widgets の `ContextMenuState` は付けてある) のための印。
+    /// メニューを開いたまま別の物を右クリックすると、幕ではなくその物に
+    /// `on_right_click` が届くので、OS のメニューと同じくその場で開き直せる。
+    /// 幕のままだと、ファイラなら「右クリックしたファイルが選ばれず、空白の
+    /// メニューが出る」になる。
+    ///
+    /// 通すのは右クリックだけ。左クリックとホバーは今までどおりこの要素が受ける
+    /// (外を押したら閉じる、幕の下には触らせない)。印はこの要素の領域だけで、
+    /// 子には移らない — メニューの項目の上の右クリックは項目に当たる。
+    pub fn right_click_through(mut self) -> Self {
+        self.right_click_through = true;
         self
     }
 

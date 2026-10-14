@@ -392,6 +392,28 @@ impl<A: DeclarativeApp> Harness<A> {
         &mut self.state.app
     }
 
+    /// アプリが [`DeclarativeApp::take_new_windows`] で頼んだ主窓を、 それぞれ
+    /// 同じ大きさ・同じ字の測り方の `Harness` にして受け取る。 本物のランタイムが
+    /// 窓を作るのと同じく、 頼まれた分はここで空になる。
+    ///
+    /// 窓ごとに入力も描画も別なので、 開いた窓は返った `Harness` で操作する。
+    pub fn take_new_windows(&mut self) -> Vec<Harness<A>> {
+        let (width, height) = (self.width, self.height);
+        let real_text = self.real_text.is_some();
+        self.state
+            .app
+            .take_new_windows()
+            .into_iter()
+            .map(|app| {
+                if real_text {
+                    Harness::with_real_text(app, width, height)
+                } else {
+                    Harness::new(app, width, height)
+                }
+            })
+            .collect()
+    }
+
     /// ランタイムがアプリへ最後に渡した [`UiCapture`]。
     ///
     /// 中身は「ポインタ / キーボードを UI が掴んでいるか」の 2 つだけ。
@@ -470,6 +492,47 @@ impl<A: DeclarativeApp> Harness<A> {
     /// 押していたボタンを離す。
     pub fn release(&mut self) {
         self.state.release_primary();
+    }
+
+    /// 外 (Finder など) からファイルを持ってきて `(x, y)` の上に置く (まだ落とさない)。
+    ///
+    /// 実機と同じく `on_file_hover` が 1 ファイルずつ届き、ドラッグの間は `ctx.drag` に
+    /// [`FILE_DRAG`](sabitori_core::FILE_DRAG) として出る (`over_drop_zone` は `(x, y)` の下の
+    /// `.droppable()`)。実機は OS にカーソルを聞くが、Harness には窓が無いので渡した位置を使う。
+    /// 見た目を確かめるなら続けて [`Self::frame`]。
+    pub fn hover_files(&mut self, paths: &[std::path::PathBuf], x: f32, y: f32) {
+        for p in paths {
+            self.state.file_hovered(p.clone());
+        }
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+    }
+
+    /// 持ってきているファイルを `(x, y)` へ動かす (落とさない)。
+    pub fn move_file_hover(&mut self, x: f32, y: f32) {
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+    }
+
+    /// 外から持ってきたファイルを `(x, y)` で落とす。
+    ///
+    /// 実機と同じく 1 ファイルずつ届け、周回の終わりにまとめて 1 回で
+    /// `on_file_drop_at(paths, 落とした所の drop zone)` を呼ぶ。
+    pub fn drop_files(&mut self, paths: &[std::path::PathBuf], x: f32, y: f32) {
+        for p in paths {
+            self.state.file_dropped(p.clone());
+        }
+        if let Some(d) = self.state.file_drag.as_mut() {
+            d.pos = Some((x, y));
+        }
+        self.state.flush_file_drop();
+    }
+
+    /// 外から持ってきたファイルを、落とさずに窓の外へ出す。
+    pub fn cancel_file_hover(&mut self) {
+        self.state.file_hover_cancelled();
     }
 
     /// 窓のつかみどころ (`.window_drag()`) を押して頼まれた窓の操作を取り出す。
@@ -569,10 +632,7 @@ impl<A: DeclarativeApp> Harness<A> {
     pub fn text_rect(&self, needle: &str) -> Option<Rect> {
         let build = self.build();
         build
-            .render_list
-            .commands
-            .iter()
-            .chain(build.overlay_list.commands.iter())
+            .all_commands()
             .find_map(|c| match c {
                 RenderCommand::Text(t) if t.content.contains(needle) => Some(Rect::new(
                     t.position.x,
@@ -610,10 +670,7 @@ impl<A: DeclarativeApp> Harness<A> {
     pub fn drawn_text(&self, needle: &str) -> Option<String> {
         let build = self.build();
         let t = build
-            .render_list
-            .commands
-            .iter()
-            .chain(build.overlay_list.commands.iter())
+            .all_commands()
             .find_map(|c| match c {
                 RenderCommand::Text(t) if t.content.contains(needle) => Some(t),
                 _ => None,

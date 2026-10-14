@@ -106,10 +106,17 @@ pub struct TextureStats {
     pub evicted_last_frame: usize,
 }
 
+/// 外 (Finder など他のアプリ) から持ち込まれているファイルのドラッグの [`DragInfo::data`]。
+///
+/// 窓の中の `.draggable()` から始めたドラッグと同じく、ドラッグ中は `ctx.drag` に出て
+/// `over_drop_zone` がカーソルの下の `.droppable()` を指す。落とされると
+/// `DeclarativeApp::on_file_drop_at` に、その drop zone と一緒に届く。
+pub const FILE_DRAG: &str = "sabitori:files";
+
 /// Information about an active drag operation.
 #[derive(Clone, Debug)]
 pub struct DragInfo {
-    /// The drag payload ID (from `.draggable("id")`).
+    /// The drag payload ID (from `.draggable("id")`). 外からのファイルなら [`FILE_DRAG`]。
     pub data: String,
     /// ID of the source element being dragged.
     pub source_id: Option<String>,

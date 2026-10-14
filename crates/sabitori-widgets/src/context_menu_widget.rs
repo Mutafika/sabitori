@@ -222,8 +222,11 @@ impl ContextMenuState {
             .children(menu_children);
 
         // Full viewport backdrop + menu
+        // 幕は左クリック (外を押したら閉じる) とホバーを受けるが、右クリックは下へ
+        // 通す — 開いたまま別の物を右クリックしたら、その物でメニューを開き直せる。
         let overlay = div()
             .id("ctx-backdrop")
+            .right_click_through()
             .w(Px(viewport_w))
             .h(Px(viewport_h))
             .pos(0.0, 0.0)

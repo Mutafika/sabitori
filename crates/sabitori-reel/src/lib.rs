@@ -31,9 +31,7 @@ use std::cell::RefCell;
 use std::process::Command;
 use std::sync::Arc;
 
-use sabitori::bridge::{
-    extract_image_batches, render_list_to_gpu_with_rings, MeasureCache, TextRendererMeasurer,
-};
+use sabitori::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
 use sabitori::{DeclarativeApp, InputEvent, Key};
 #[cfg(not(feature = "three-d"))]
 use sabitori::run_declarative;
@@ -760,24 +758,19 @@ impl Gpu {
             let measurer = TextRendererMeasurer::new(&mut self.text, &self.measure_cache);
             build_tree_measured(root, w, h, &measurer)
         };
-        // RenderList -> GPU instance vecs (also shapes text into the glyph atlas).
-        let (rects, glyphs, rings, lines) =
-            render_list_to_gpu_with_rings(&build.render_list, &mut self.text);
-        // Images live on a separate command path; group them into per-key
-        // batches and upload their pixels to GPU textures (cached by key).
-        let image_batches = extract_image_batches(&build.render_list);
-
-        self.ui.upload_rects(&self.device, &self.queue, &rects, &[]);
-        for batch in &image_batches {
-            self.image.ensure_texture(
-                &self.device,
-                &self.queue,
-                &batch.key,
-                &batch.data.rgba,
-                batch.data.width,
-                batch.data.height,
-            );
-        }
+        // 画面と同じく**木の順に**描く (層 0 → 上げた層 → 上掛け)。種類ごとにまとめて
+        // 描くと、重なった下の要素の文字や画像が上の箱に透ける。
+        let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> = vec![(&build.render_list, false)];
+        lists.extend(build.layer_lists.iter().map(|(_, l)| (l, false)));
+        lists.push((&build.overlay_list, false));
+        let mut frame = OrderedFrame::extract(&lists, &mut self.text);
+        let mut r = UiRenderers {
+            images: Some(&mut self.image),
+            rings: Some(&mut self.ring),
+            lines: Some(&mut self.line),
+            text: &mut self.text,
+        };
+        frame.upload(&mut self.ui, &mut r, &self.device, &self.queue);
 
         let view = self
             .texture
@@ -844,25 +837,7 @@ impl Gpu {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // Painter order (all share ui's globals): rects, images, rings,
-            // lines, text — text last so it sits on top.
-            let globals = self.ui.globals_bind_group();
-            self.ui.draw_base(&mut pass);
-            self.image.render_many(
-                &self.device,
-                &self.queue,
-                image_batches
-                    .iter()
-                    .map(|b| (b.key.as_str(), b.instances.as_slice())),
-                &mut pass,
-                globals,
-            );
-            self.ring
-                .render_rings(&self.device, &self.queue, &rings, &mut pass, globals);
-            self.line
-                .render_lines(&self.device, &self.queue, &lines, &mut pass, globals);
-            self.text
-                .render_glyphs(&self.device, &self.queue, &glyphs, &mut pass, globals);
+            frame.draw(&self.ui, &r, &mut pass);
         }
 
         encoder.copy_texture_to_buffer(

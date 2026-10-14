@@ -16,7 +16,7 @@
 //! あちらは意図的に winit 非依存で、その純粋さが iOS / wasm の別経路を成立させている。
 
 use sabitori_input::{Key, Modifiers};
-use winit::event::{ElementState, KeyEvent};
+use winit::event::{ElementState, Ime, KeyEvent};
 use winit::keyboard::{Key as WinitKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 /// winit の logical key を [`Key`] へ変換する。
@@ -204,6 +204,30 @@ pub fn char_inputs(event: &KeyEvent, modifiers: Modifiers) -> Vec<char> {
     text.chars().filter(|ch| !ch.is_control()).collect()
 }
 
+/// winit の IME イベントを [`InputEvent`](sabitori_input::InputEvent) へ変換する。
+///
+/// **`Ime::Disabled` は空の `ImePreedit` にする。** 変換中に入力ソースが
+/// 変わると（別アプリで英数に切り替えて戻ってきた等）、winit は最初の
+/// `keyDown:` で `Ime::Disabled` を送るだけで、marked text の確定も取り消しも
+/// 知らせない。ここで捨てるとアプリは「変換が終わった」ことを一度も受け取らず、
+/// 自前で描いている preedit が浮いたまま残る (#124)。空の preedit は既存の
+/// アプリがすでに「変換を消す」として扱っている形なので、アプリ側の変更は要らない。
+pub fn input_from_ime(ime: &Ime) -> sabitori_input::InputEvent {
+    use sabitori_input::InputEvent;
+    match ime {
+        Ime::Enabled => InputEvent::ImeEnabled,
+        Ime::Preedit(text, cursor) => InputEvent::ImePreedit {
+            text: text.clone(),
+            cursor: *cursor,
+        },
+        Ime::Commit(text) => InputEvent::ImeCommit { text: text.clone() },
+        Ime::Disabled => InputEvent::ImePreedit {
+            text: String::new(),
+            cursor: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +382,15 @@ mod tests {
         let m = modifiers_from_winit(ModifiersState::SHIFT | ModifiersState::CONTROL);
         assert!(m.shift && m.ctrl);
         assert!(!m.alt && !m.meta);
+    }
+
+    /// 変換中に入力ソースが変わったときの `Ime::Disabled` を捨てず、
+    /// 「変換が消えた」として届ける (#124)。
+    #[test]
+    fn ime_disabled_becomes_empty_preedit() {
+        assert!(matches!(
+            input_from_ime(&Ime::Disabled),
+            sabitori_input::InputEvent::ImePreedit { text, cursor: None } if text.is_empty()
+        ));
     }
 }

@@ -23,6 +23,251 @@
   乗っていたので一緒に止まり、板の中身が替わらず固まって見えた。主窓は描かない
   まま、描く理由があれば結果を当てて別窓だけ描き直す。
 
+## [0.41.0] - 2026-10-15
+
+### Changed
+
+- **木の順に描く。** 今までは層ごとに「矩形 → 画像 → リング → 線 →
+  文字」と種類でまとめて描いていたので、重なると**下の要素の文字や画像が、上の要素の地の
+  上に出ていた** ([#126](https://github.com/Mutafika/sabitori/issues/126))。いまは書いた
+  順に、同じ種類が続く所だけをまとめて 1 つのパスで描く。画像の上に地やボタンを置く、
+  後から置いた箱で下の文字を隠す、が `.layer` 無しでそのまま効く。
+  - 選択・ページ内検索のハイライト・本文中のリンクの下線は、**その文字のすぐ下**に敷く
+    (後から置いた箱の上には出ない)。
+  - `Element::layer` で上げた層の文字も、選択・検索・リンクの対象になった。
+  - 3D シーン (`run_scene`)・画面外の描画 (`offscreen::render`)・別窓・reel も同じく
+    木の順に描く。層を層 0 に寄せる (`flatten_layers`) 必要も無くなった。
+  - 種類が入れ替わるたびに描く呼び出しが分かれるので、地と文字が交互に並ぶ画面では
+    GPU への呼び出しが増える。
+- **例 `tui_gallery` を今の書き方にそろえ、v0.13 より後の機能のデモを足した** (37 部品)。
+  - 足したデモ: Text Selection (`ctx.text_selection()` / `on_selection_changed` と
+    `HighlightSpec` のマーカー)、Goo (`goo` の首と `goo_gradient` / `goo_border` /
+    `goo_shadow`)、Overlap (重なりは書いた順で決まり、先に書いた物だけ `.layer(1)` で上げる)、
+    Drag & Drop (`draggable` / `droppable` / `on_drop` の 3 列のボードと、Finder から
+    持ち込むファイルの `on_file_drop_at`)。Matrix Rain は `cell_grid` 1 要素に、
+    Gradient Text は `color_spans` 1 要素にした。どれも TUI / Modern の両方の見た目で出る。
+  - `on_click` の文字列の突き合わせを `.click(ctx, ..)` に移した (`DropdownState` の
+    `handle_click` と、浮いたメニューを閉じる後始末だけが `on_click` に残る)。
+  - 本文のスクロールをランタイムに任せた (`.scroll("stage")`)。自前の `on_scroll` と
+    部品ごとの高さの見積り表を外した。
+  - 壊れていた所: Context Menu の右クリックが別の項目の番号を見ていてメニューが
+    開かなかった、スライダーの溝の位置を決め打ちしていてつまみが指からずれた、
+    ドロップダウンがマウスの位置に出ていた (`DropdownState::menu` の `anchor_to` に)、
+    モーダルの開くボタンと閉じるボタンが同じ id だった、Clock のカードが横に
+    はみ出していた。
+  - `cargo test` で回る Harness のテストを付けた (クリック・カードのドラッグ・
+    ファイルのドロップ・フォーム・モーダル、全部品の id の重複とはみ出し)。
+  - `TUI_GALLERY_ITEM` / `TUI_GALLERY_SKIN` で起動時の部品と見た目を決められる
+    (`SABITORI_SCREENSHOT` で撮るため)。
+- **例 `sabitori_home` の Widgets の欄に打てるようにした。** 見た目だけの `div` で、
+  v0.4.0 で `on_input` の配線を外して以来、打っても何も入らなかった。`text_input` に
+  置き換えた。背景の光の芯は v0.17.0 の不透明度の直しでくっきりした円に見えて
+  いたので、以前の見た目に戻した。
+
+### Added
+
+- `sabitori_gpu::RectTarget` — 矩形と goo を「1 枚ぶん上げて、範囲で描く」描画先。
+  `GpuRenderer` と `UiOverlayRenderer` が持つ。`bridge::OrderedFrame` はこれを通して描く。
+- `GpuRenderer::render_scene_then_frame` — 3D シーンの上に、1 つのパスで UI を描く。
+
+- **描画器を「上げる」と「範囲を描く」に分けた。** `TextRenderer::upload_glyphs` /
+  `draw_glyphs`、`ImageRenderer::upload` / `draw`、`RingRenderer::upload` / `draw`、
+  `LineRenderer::upload` / `draw`。`queue.write_buffer` は 1 回の提出につき最後の書き込み
+  しか効かないので、今までの `render_*` は 1 回の提出で 1 度しか呼べず、層の中は種類ごとに
+  まとめて描くしかなかった (下の要素の文字や画像が上の箱に透ける、#126)。1 枚ぶんを先に
+  全部上げて範囲で描けば、種類をまたいで木の順に描ける。今までの `render_*` はこの 2 つを
+  続けて呼ぶだけで、描き方は変わらない。
+
+### Deprecated
+
+- **種類ごとにまとめて描く古い経路。** `bridge::render_list_to_gpu` / `_with_hits` /
+  `_with_rings` / `_layered`、`bridge::extract_image_batches`、`bridge::UiDrawLists`、
+  `bridge::draw_ui_layer`、`GpuRenderer::render_layered` / `render_layers` /
+  `render_scene_then_ui_layered` / `set_goo` / `set_goo_layers`。重なると下の要素の
+  文字や画像が上の箱に透ける (#126)。自前の描画ループに組み込んでいる所は
+  `bridge::OrderedFrame` (+ `RectTarget`) に移す。ランタイムの中はもう使っていない。
+  `Element::layer` は残す (後ろに書いた兄弟より手前に出す用途がある)。
+
+### Fixed
+
+- **画面外の描画 (`offscreen::render`) と reel で goo が描かれていなかった。** 窓を持たない
+  描画器 (`UiOverlayRenderer`) に goo の描画器が無かった。
+- **別窓と reel で `.overlay()` が描かれていなかった。** どちらも層 0 しか描いていなかった。
+
+## [0.40.0] - 2026-10-12
+
+### Added
+
+- **主窓を同じプロセスで増やせる (`DeclarativeApp::take_new_windows`)。** 返したアプリは
+  それぞれ自分の主窓を持ち、入力 (キー・文字・IME・ドラッグ・メニュー・ホバー・スクロール)・
+  描画・別窓・`Drop` まで、最初の窓と同じに扱われる。ファイラの「新しいウインドウ」のように、
+  同じ画面をもう 1 枚開く用。今までは別のプロセスを起こすしかなく、Dock に窓の数だけアイコンが
+  並び、窓をまたいで物を分け合えなかった。
+  - アプリどうしはランタイムがつながない。窓をまたいで分け合う物 (設定・切り取った物など) は、
+    アプリが `Rc` などで新しいアプリに持たせて渡す。
+  - 新しい窓は、頼んだ窓から少しずらして出る (`position()` が `Some` ならそちら)。
+  - OS から渡されたパス (`on_open_paths`) は、最後に焦点を持った窓のアプリへ届く。
+  - テストは `Harness::take_new_windows` で、開いた窓をそれぞれ `Harness` として受け取る。
+  - web は窓を増やせないので読まない。
+
+### Changed
+
+- **窓を閉じても、ほかの主窓が残っていればアプリは終わらない。** OS の閉じるボタン・
+  `take_close_request`・別窓の閉じるボタンは、その主窓 (と別窓) だけを閉じる。最後の窓が
+  閉じたときに終わるので、窓が 1 つのアプリは今までと同じ。
+
+## [0.39.0] - 2026-10-12
+
+### Added
+
+- **別窓 (`ExtraWindow`) でもホバーと管理スクロールが効く。** 今までの別窓は見るだけで、
+  押した所とホイールを `on_extra_input` で受け取れるだけだった (Quick Look のような板は
+  スクロールを自前で書き、✕ は指が乗っても変わらない)。主窓と同じ判断を窓ごとの状態で
+  回す:
+  - ホバー — `view_for` の `ctx.hovered`、`.hover()` / `.active()` の見た目、`.cursor()`。
+    窓の外へ出たら外れる。
+  - 管理スクロール — `.scroll(id)` をホイールで動かす (ばね、トラックパッドの 1 ジェスチャの
+    間は届け先を固定、Shift + 刻みホイールは横)。`.scrollbar_grab()` の帯も掴める。
+    位置は `ctx.scroll_states` に入る。id は窓ごとで、主窓のものとは別。
+  - `ctx` の `mouse_x` / `mouse_y` / `shift_held` / `cmd_held`。
+  - macOS: 焦点を取らない別窓 (`active: false`) にも指の動きが届く。AppKit は `mouseMoved:` を
+    キーの窓にだけ送るので、窓の view に `NSTrackingActiveAlways` の tracking area を貼る。
+
+  `.scroll(id)` の枠が受けたホイールは `ExtraInput::Wheel` に来ない (主窓の `on_scroll_xy`
+  と同じ)。別窓にまだ無いもの: hover のばね (`transition`)、tooltip、ドラッグ、文字の選択。
+
+- **sabitori-markdown: GFM の表を表として描く。** 見出しの行 (太字・地の色)、行の間の罫線、
+  外枠。列は中身を 1 行に並べた幅まで広がり、入りきらなければ幅を分け合ってセルの中で
+  折り返す。表も中身の幅で、横いっぱいには伸ばさない。区切り行の `:-:` / `--:` で、列ごとに
+  中央・右へ揃える。見出しより短い行は空のセルで埋める。
+
+### Fixed
+
+- **sabitori-markdown: 表のセルの文字が、区切り無しで次の段落の頭に付いていた。** 表を
+  平たい文字のまま流していたため (`| a | b |` の表と次の段落 `after` が `ab12after` の
+  1 段落になる)。流れ込む先の無い文書の最後の表は、丸ごと消えていた。
+
+## [0.38.0] - 2026-10-12
+
+### Changed（破壊的）
+
+- **`Element` と `HitRegion` に `right_click_through` を足した。** 構造体リテラルで組んでいる
+  所はフィールドが要る (どちらもふつうはビルダーとランタイムが組む)。
+
+### Added
+
+- **`Element::right_click_through()` — 右クリックを下の要素へ通す。** コンテキストメニューの
+  幕のための印で、`ContextMenuState` の幕には付けてある。通すのは右クリックだけで、左クリック
+  とホバーは今までどおり幕が受ける (外を押したら閉じる、幕の下には触らせない)。印は付けた
+  要素の領域だけで、子には移らない (メニューの項目の上の右クリックは項目に当たる)。
+
+### Fixed
+
+- **コンテキストメニューを開いたまま別の物を右クリックすると、幕に当たっていた。**
+  `on_right_click` に届くのは `ctx-backdrop` で、右クリックした物ではなかった。ファイラ
+  (lustar) なら、右クリックしたファイルが選ばれないまま空白のメニューが出る。いまは幕を
+  飛ばして下の物に届くので、OS のメニューと同じくその場で開き直せる。宛先の決め方は
+  declarative と scene_app で 1 本 (`runtime_shared::right_click_target`)。
+
+## [0.37.0] - 2026-10-11
+
+### Changed（破壊的）
+
+- **`HitRegion` に `layer`、`BuildResult` に `layer_lists` を足した** (`Element::layer` 用)。
+  構造体リテラルで組んでいる所はフィールドが要る。どちらもランタイムが組む物で、
+  外で組む用途は想定していない。
+
+### Added
+
+- **`Element::layer(n)` — 描く層を増やす。** 1 つの層の中は「矩形 → 画像 → … → 文字」の順に
+  まとめて描くので、重なると**下の要素の文字が上の要素の地の上に出ていた**。層を上げた要素
+  (と子孫) は層 0 (`render_list`) を描き終えてから、上掛け (`overlay`) より前に描く。
+  `.overlay()` と違って位置は変えず、祖先の切り抜き (`overflow: hidden`) はその層にも効く。
+  押す判定も手前の層が先。層ごとに GPU に 1 回出すので、必要なときだけ分けること。
+  層 1 以上の文字は、まだ選択・ページ内検索のハイライト・本文中のリンク・読み上げの
+  対象にならない。
+- `BuildResult::layer_lists` (層 1 以上の描画リスト)、`BuildResult::all_commands()`
+  (全部の層の命令を描く順に)、`BuildResult::flatten_layers()` (層 1 以上を層 0 に寄せる)。
+- `GpuRenderer::render_layers` — 層を下から順に描く (層ごとに 1 回出す)。goo は
+  `GpuRenderer::set_goo_layers` で層ごとに渡す。
+- `HitRegion::layer`。
+
+### Fixed
+
+- **外付けの上掛けの木 (`DeclarativeApp::overlay_view`) の中に書いた `.overlay()` が描かれていなかった。**
+  外付けの木を上掛けに積むとき、その木の `render_list` だけを取り込んでいた。
+
+### Changed
+
+- 3D シーン (`run_scene`)・画面外の描画・別窓・reel は N 層を描かないので、層 1 以上は
+  層 0 に寄せて描く (中身は消えず、重なりの順だけが従来どおり)。
+
+## [0.36.0] - 2026-10-09
+
+### Added
+
+- **外から持ち込まれたファイルのドラッグが drop zone に乗る。** Finder など他の
+  アプリからファイルを持ってくると、窓の中の `.draggable()` と同じく `ctx.drag` に
+  `sabitori::FILE_DRAG` として出て、`over_drop_zone` がカーソルの下の `.droppable()` を指す
+  (入れ先を光らせる書き方がそのまま効く)。落とすと新しい
+  `DeclarativeApp::on_file_drop_at(paths, target_id)` に、落とした所の drop zone と
+  一緒に届く (既定は `on_file_drop` へ渡す)。winit はドラッグ中にカーソルの位置を
+  送らないので、位置は macOS だけ OS に聞いて取る (他の OS では drop zone は `None`)。
+- `Harness::hover_files` / `move_file_hover` / `drop_files` / `cancel_file_hover` —
+  外からのファイルのドラッグをテストで流す口。
+
+### Fixed
+
+- **外から複数のファイルを落とすと、`on_file_drop` が 1 ファイルずつ呼ばれていた。**
+  winit が `DroppedFile` を 1 件ずつ送るのをそのまま渡していたので、受けた所で
+  操作を始めるアプリ (lustar) は 2 件目からを取りこぼしていた。いまは 1 回の
+  ドロップ分を溜め、周回の終わりにまとめて 1 回で渡す。
+
+## [0.35.0] - 2026-10-09
+
+### Added
+
+- **`macos_drag::start_file_drag_movable`** — 写すか移すかを受け側に任せる OS の
+  ファイルドラッグ (ファイラ向け)。`start_file_drag` は受け側に写すことしか許さない
+  ので、Finder に落とすと同じボリュームでも写っていた。こちらは移すことも許すので、
+  Finder は自分の窓どうしと同じく決める (同じボリュームなら移し、違えば写す。⌥ で写す、
+  ⌘ で移す)。`start_file_drag` / `start_file_drag_with_preview` はこれまで通り写すだけ。
+
+### Fixed
+
+- **主窓の題が、窓を作った時の `title()` のまま変わらなかった。** 題は窓を作る時に
+  しか渡していなかったので、開いている物の名前を題に出すアプリで、ミッション
+  コントロールや Dock の窓一覧が起動時の題のままだった。いまは `title()` が変われば
+  付け直す (ランタイムが毎周回比べる。アプリ側の変更は不要)。
+
+## [0.34.2] - 2026-10-08
+
+### Fixed
+
+- **v0.34.1 が macOS でビルドできなかった。** `mod macos_open;` と
+  `DeclarativeApp::on_open_paths` の呼び出しだけが入り、`macos_open.rs` 本体が
+  抜けていた。本体を足した: Finder の「このアプリで開く」・`open -a` / `open -b`・
+  Dock へのドロップで渡されたファイル・フォルダが `on_open_paths` に届く
+  (`.app` として起動されたときだけ。受け付ける種類は Info.plist の
+  `CFBundleDocumentTypes` で宣言する)。winit 0.30 の delegate に
+  `application:openURLs:` を実行時に足しているので、起動のきっかけになった分も
+  取りこぼさない。
+- **`on_reveal_paths` を外した。** v0.34.1 で一緒に入ったが、どのプラットフォーム
+  でも呼ばれることが無かった (他のアプリの「Finder に表示」は、`NSFileViewer` を
+  向けても macOS 26 ではパスが届かなかった)。上書きしていた所はその実装を消す。
+
+## [0.34.1] - 2026-10-08
+
+### Fixed
+
+- **変換の途中で入力ソースが変わると、変換中の文字が浮いたまま残っていた**
+  ([#124](https://github.com/Mutafika/sabitori/issues/124))。別アプリで英数に
+  切り替えて戻ると、winit は確定も取り消しも送らず `Ime::Disabled` だけを送る。
+  `run_declarative` と `run_scene` はこれを捨てていたので、アプリにも管理下の
+  `TextInputState` にも「変換が終わった」が届かなかった。いまは 3 ランタイムとも
+  空の `ImePreedit` として届ける (アプリ側の変更は不要)。winit の IME イベントの
+  変換は `keymap::input_from_ime` の 1 箇所に寄せた。
+
 ## [0.34.0] - 2026-10-08
 
 ### Changed（破壊的）
@@ -4343,7 +4588,16 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/Mutafika/sabitori/compare/v0.40.0...v0.41.0
+[0.40.0]: https://github.com/Mutafika/sabitori/compare/v0.39.0...v0.40.0
+[0.39.0]: https://github.com/Mutafika/sabitori/compare/v0.38.0...v0.39.0
+[0.38.0]: https://github.com/Mutafika/sabitori/compare/v0.37.0...v0.38.0
+[0.37.0]: https://github.com/Mutafika/sabitori/compare/v0.36.0...v0.37.0
+[0.36.0]: https://github.com/Mutafika/sabitori/compare/v0.35.0...v0.36.0
+[0.35.0]: https://github.com/Mutafika/sabitori/compare/v0.34.2...v0.35.0
+[0.34.2]: https://github.com/Mutafika/sabitori/compare/v0.34.1...v0.34.2
+[0.34.1]: https://github.com/Mutafika/sabitori/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/Mutafika/sabitori/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Mutafika/sabitori/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Mutafika/sabitori/compare/v0.31.0...v0.32.0
