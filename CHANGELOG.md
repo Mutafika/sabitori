@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-10-15
+
 ### Fixed
 
 - **主窓が別窓に完全に覆われると、タスクの結果も別窓の描き直しも止まっていた。**
@@ -4588,7 +4590,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.41.1...HEAD
+[0.41.1]: https://github.com/Mutafika/sabitori/compare/v0.41.0...v0.41.1
 [0.41.0]: https://github.com/Mutafika/sabitori/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/Mutafika/sabitori/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/Mutafika/sabitori/compare/v0.38.0...v0.39.0
