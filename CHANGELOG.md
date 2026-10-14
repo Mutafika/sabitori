@@ -15,6 +15,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **描画器を「上げる」と「範囲を描く」に分けた。** `TextRenderer::upload_glyphs` /
+  `draw_glyphs`、`ImageRenderer::upload` / `draw`、`RingRenderer::upload` / `draw`、
+  `LineRenderer::upload` / `draw`。`queue.write_buffer` は 1 回の提出につき最後の書き込み
+  しか効かないので、今までの `render_*` は 1 回の提出で 1 度しか呼べず、層の中は種類ごとに
+  まとめて描くしかなかった (下の要素の文字や画像が上の箱に透ける、#126)。1 枚ぶんを先に
+  全部上げて範囲で描けば、種類をまたいで木の順に描ける。今までの `render_*` はこの 2 つを
+  続けて呼ぶだけで、描き方は変わらない。
+
 ## [0.40.0] - 2026-10-12
 
 ### Added
