@@ -360,14 +360,23 @@ impl ImageRenderer {
         render_pass: &mut wgpu::RenderPass<'_>,
         globals_bind_group: &wgpu::BindGroup,
     ) {
+        if instances.is_empty() || !self.textures.contains_key(key) {
+            return;
+        }
+        self.upload(device, queue, instances);
+        self.draw(render_pass, globals_bind_group, key, 0..instances.len() as u32);
+    }
+
+    /// 全部の画像の instance を 1 回で上げる。続く [`Self::draw`] は、この並びの中の範囲を
+    /// テクスチャ `key` で描く。
+    ///
+    /// `queue.write_buffer` は 1 回の提出につき最後の書き込みしか効かない
+    /// (コマンドより先にまとめて当たる)。描く順に何度も上げると前の分が上書きされるので、
+    /// 1 枚ぶんを先に全部上げ、描くときは範囲で指す。
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[ImageInstance]) {
         if instances.is_empty() {
             return;
         }
-        if !self.textures.contains_key(key) {
-            return;
-        }
-        let cached = self.textures.get(key).unwrap();
-
         if instances.len() > self.instance_capacity {
             self.instance_capacity = instances.len().next_power_of_two();
             self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -377,19 +386,33 @@ impl ImageRenderer {
                 mapped_at_creation: false,
             });
         }
-
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+    }
 
+    /// [`Self::upload`] で上げた並びの `range` を、テクスチャ `key` で描く。
+    /// テクスチャがまだ無ければ (`ensure_texture` 前・追い出し後) 何もしない。
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        key: &str,
+        range: std::ops::Range<u32>,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        let Some(cached) = self.textures.get(key) else { return };
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, globals_bind_group, &[]);
         render_pass.set_bind_group(1, &cached.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..6, 0..instances.len() as u32);
+        render_pass.draw(0..6, range);
     }
 
     /// Render multiple image batches in one render pass. Packs every batch's
     /// instances into the shared instance buffer with per-batch offsets, then
-    /// draws each batch with the correct offset slice and bind group.
+    /// draws each batch with the correct offset slice and bind group
+    /// ([`Self::upload`] + [`Self::draw`]).
     ///
     /// This is the correct path when multiple different-keyed images appear
     /// in the same frame; using [`render_images`] in a loop silently produces
@@ -406,48 +429,21 @@ impl ImageRenderer {
         // Filter to batches whose textures are uploaded, and flatten their
         // instances into a single Vec with offsets.
         let mut packed: Vec<ImageInstance> = Vec::new();
-        let mut draws: Vec<(String, u32, u32)> = Vec::new(); // (key, offset_instances, count)
+        let mut draws: Vec<(&str, std::ops::Range<u32>)> = Vec::new();
         for (key, instances) in batches {
-            if instances.is_empty() {
+            if instances.is_empty() || !self.textures.contains_key(key) {
                 continue;
             }
-            if !self.textures.contains_key(key) {
-                continue;
-            }
-            let offset = packed.len() as u32;
+            let start = packed.len() as u32;
             packed.extend_from_slice(instances);
-            draws.push((key.to_string(), offset, instances.len() as u32));
+            draws.push((key, start..packed.len() as u32));
         }
-
         if draws.is_empty() {
             return;
         }
-
-        let total = packed.len();
-        if total > self.instance_capacity {
-            self.instance_capacity = total.next_power_of_two();
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("image_instance_buffer"),
-                size: (self.instance_capacity * std::mem::size_of::<ImageInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&packed));
-
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, globals_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-
-        for (key, offset, count) in &draws {
-            let cached = match self.textures.get(key) {
-                Some(c) => c,
-                None => continue,
-            };
-            render_pass.set_bind_group(1, &cached.bind_group, &[]);
-            let start = *offset;
-            render_pass.draw(0..6, start..(start + *count));
+        self.upload(device, queue, &packed);
+        for (key, range) in draws {
+            self.draw(render_pass, globals_bind_group, key, range);
         }
     }
 }

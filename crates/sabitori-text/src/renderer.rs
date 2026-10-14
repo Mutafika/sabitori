@@ -1247,14 +1247,17 @@ impl TextRenderer {
         self.atlas.mark_uploaded();
     }
 
-    /// Upload glyph instances and render them.
-    pub fn render_glyphs(
+    /// 全部の文字の instance と、グリフの atlas を 1 回で上げる。続く
+    /// [`Self::draw_glyphs`] は、この並びの中の範囲を描く。
+    ///
+    /// `queue.write_buffer` は 1 回の提出につき最後の書き込みしか効かない
+    /// (コマンドより先にまとめて当たる)。描く順に何度も上げると前の分が上書きされるので、
+    /// 1 枚ぶんを先に全部上げ、描くときは範囲で指す。
+    pub fn upload_glyphs(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         instances: &[GlyphInstance],
-        render_pass: &mut wgpu::RenderPass<'_>,
-        globals_bind_group: &wgpu::BindGroup,
     ) {
         if instances.is_empty() {
             return;
@@ -1273,12 +1276,37 @@ impl TextRenderer {
 
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         self.upload_atlas(queue);
+    }
 
+    /// [`Self::upload_glyphs`] で上げた並びの `range` を描く。
+    pub fn draw_glyphs(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        range: std::ops::Range<u32>,
+    ) {
+        if range.is_empty() {
+            return;
+        }
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, globals_bind_group, &[]);
         render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..6, 0..instances.len() as u32);
+        render_pass.draw(0..6, range);
+    }
+
+    /// Upload glyph instances and render them ([`Self::upload_glyphs`] +
+    /// [`Self::draw_glyphs`])。1 回の提出で 1 度だけ呼べる。
+    pub fn render_glyphs(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[GlyphInstance],
+        render_pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+    ) {
+        self.upload_glyphs(device, queue, instances);
+        self.draw_glyphs(render_pass, globals_bind_group, 0..instances.len() as u32);
     }
 }
 
