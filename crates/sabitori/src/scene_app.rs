@@ -10,7 +10,7 @@ use web_time::Instant;
 
 use sabitori_core::build::build_tree_measured;
 use sabitori_core::ViewContext;
-use sabitori_gpu::{GpuContext, GpuRenderer, RenderPhase, SceneRenderContext};
+use sabitori_gpu::{GpuContext, GpuRenderer, SceneRenderContext};
 use sabitori_input::{
     Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as SabiMouseButton,
     PointerKind, MOUSE_POINTER_ID,
@@ -21,9 +21,7 @@ use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, DeviceEvents, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::bridge::{
-    draw_ui_layer, MeasureCache, TextRendererMeasurer, UiDrawLists, UiRenderers,
-};
+use crate::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
 use crate::declarative::{DeclarativeApp, UiCapture};
 use crate::input_router::{
     pinch_metrics, PinchGesture, PrimaryInput, TouchDrag, TrackpadPinch, TOUCH_SLOP,
@@ -1344,97 +1342,48 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     build_tree_measured(&el, w, h, &measurer)
                 });
 
-                // Layered path when there's either an external overlay or an
-                // internal `.overlay()` command stream — otherwise the flat
-                // single-pass path (cheaper, no extra encoder).
-                // はみ出しの目印は overlay_list に積むので、層の判定より先に (#95)。
+                // はみ出しの目印は overlay_list に積むので、描く物を起こす前に (#95)。
                 self.overflow_debug.flag(&mut build_result, overlay_build.as_ref());
-                // 3D シーンの経路は 2 層しか描かない: 層 1 以上は層 0 に寄せる (中身は消さない)
-                build_result.flatten_layers();
-                let has_external = overlay_build.is_some();
-                let has_internal = !build_result.overlay_list.commands.is_empty();
-                let has_overlay = has_external || has_internal;
+                // 外付け overlay の描画と当たり領域を畳み込む。**declarative と
+                // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
+                crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
+
+                // 3D シーンの上に、UI を**木の順に** 1 つのパスで描く (層 0 → 上げた層 →
+                // 上掛け)。以前は層を寄せて種類ごとにまとめて描いていたので、重なると下の
+                // 要素の文字や画像が上の箱に透けた (#126)。
+                let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+                    vec![(&build_result.render_list, false)];
+                lists.extend(build_result.layer_lists.iter().map(|(_, l)| (l, false)));
+                lists.push((&build_result.overlay_list, false));
+                let mut frame = OrderedFrame::extract(&lists, &mut tr);
+                self.last_build = Some(build_result);
 
                 let device = renderer.device.clone();
                 let queue = renderer.queue.clone();
-
-                if has_overlay {
-                    // 外付け overlay の描画と当たり領域を畳み込む。**declarative と
-                    // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
-                    crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
-                    let (base_rects, base_lists) =
-                        UiDrawLists::extract(&build_result.render_list, &mut tr);
-                    let (overlay_rects, overlay_lists) =
-                        UiDrawLists::extract(&build_result.overlay_list, &mut tr);
-                    // 当たり領域の差し込みは `absorb_overlay` が済ませている。
-                    let merged = build_result;
-                    self.last_build = Some(merged);
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    renderer.set_goo(base_lists.goo.clone(), overlay_lists.goo.clone());
-                    let _ = renderer.render_scene_then_ui_layered(
-                        |scene_ctx| {
-                            self.app.render_scene(scene_ctx);
-                        },
-                        &base_rects,
-                        &overlay_rects,
-                        // 矩形の数だけでは overlay の有無を判定できない (#44)。
-                        !overlay_lists.is_empty(),
-                        |phase, pass, globals_bg| {
-                            let lists = match phase {
-                                RenderPhase::BaseText => &base_lists,
-                                RenderPhase::OverlayText => &overlay_lists,
-                            };
-                            let mut r = UiRenderers {
-                                images: ir.as_mut(),
-                                rings: rr.as_mut(),
-                                lines: lr.as_mut(),
-                                text: &mut tr,
-                            };
-                            draw_ui_layer(&mut r, lists, &device, &queue, pass, globals_bg);
-                        },
+                let mut ir = self.image_renderer.take();
+                let mut rr = self.ring_renderer.take();
+                let mut lr = self.line_renderer.take();
+                {
+                    let mut r = UiRenderers {
+                        images: ir.as_mut(),
+                        rings: rr.as_mut(),
+                        lines: lr.as_mut(),
+                        text: &mut tr,
+                    };
+                    frame.upload(renderer, &mut r, &device, &queue);
+                    let app = &mut self.app;
+                    let _ = renderer.render_scene_then_frame(
+                        |scene_ctx| app.render_scene(scene_ctx),
+                        |pass, gpu| frame.draw(gpu, &r, pass),
                     );
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
-                } else {
-                    let (rects, lists) =
-                        UiDrawLists::extract(&build_result.render_list, &mut tr);
-                    self.last_build = Some(build_result);
-                    let mut ir = self.image_renderer.take();
-                    let mut rr = self.ring_renderer.take();
-                    let mut lr = self.line_renderer.take();
-                    renderer.set_goo(lists.goo.clone(), Vec::new());
-                    let _ = renderer.render_scene_then_ui(
-                        |scene_ctx| {
-                            self.app.render_scene(scene_ctx);
-                        },
-                        &rects,
-                        |pass, globals_bg| {
-                            let mut r = UiRenderers {
-                                images: ir.as_mut(),
-                                rings: rr.as_mut(),
-                                lines: lr.as_mut(),
-                                text: &mut tr,
-                            };
-                            draw_ui_layer(&mut r, &lists, &device, &queue, pass, globals_bg);
-                        },
-                    );
-                    // フレーム境界。テクスチャ LRU の世代をここで進める —
-                    // パスごとではなく、全パスを描き終えてから (#43)。
-                    if let Some(ir) = ir.as_mut() {
-                        ir.end_frame();
-                    }
-                    self.image_renderer = ir;
-                    self.ring_renderer = rr;
-                    self.line_renderer = lr;
                 }
+                // フレーム境界。テクスチャ LRU の世代をここで進める (#43)。
+                if let Some(ir) = ir.as_mut() {
+                    ir.end_frame();
+                }
+                self.image_renderer = ir;
+                self.ring_renderer = rr;
+                self.line_renderer = lr;
 
                 // Notify the app of this frame's build (hit-region rects by
                 // id) so floating panels etc. can look themselves up. Set in

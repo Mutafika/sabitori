@@ -28,7 +28,8 @@
 
 use wgpu::util::DeviceExt;
 
-use crate::instance::RectInstance;
+use crate::goo_renderer::GooRenderer;
+use crate::instance::{GooInstance, RectInstance};
 
 /// rect.wgsl の `Globals` uniform と同レイアウト（renderer.rs と同一）。
 #[repr(C)]
@@ -54,6 +55,8 @@ pub struct UiOverlayRenderer {
     instance_capacity: usize,
     base_count: u32,
     overlay_count: u32,
+    /// goo (2 つの角丸の融合)。木の順に描く経路 ([`RectTarget`](crate::RectTarget)) 用。
+    goo_renderer: GooRenderer,
 }
 
 impl UiOverlayRenderer {
@@ -150,6 +153,8 @@ impl UiOverlayRenderer {
             mapped_at_creation: false,
         });
 
+        let goo_renderer = GooRenderer::new(device, target_format, &globals_bind_group_layout);
+
         Self {
             rect_pipeline,
             globals_buffer,
@@ -159,6 +164,7 @@ impl UiOverlayRenderer {
             instance_capacity,
             base_count: 0,
             overlay_count: 0,
+            goo_renderer,
         }
     }
 
@@ -540,5 +546,35 @@ mod tests {
         let data = slice.get_mapped_range().to_vec();
         drop(buf);
         data
+    }
+}
+
+impl crate::RectTarget for UiOverlayRenderer {
+    fn upload_rect_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rects: &[RectInstance]) {
+        self.upload_rects(device, queue, rects, &[]);
+    }
+
+    fn upload_goo_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, goo: &[GooInstance]) {
+        self.goo_renderer.upload(device, queue, goo);
+    }
+
+    fn draw_rect_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
+        pass.set_pipeline(&self.rect_pipeline);
+        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        pass.draw(0..6, range);
+    }
+
+    fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if !range.is_empty() {
+            self.goo_renderer.draw(pass, &self.globals_bind_group, range);
+        }
+    }
+
+    fn globals(&self) -> &wgpu::BindGroup {
+        &self.globals_bind_group
     }
 }
