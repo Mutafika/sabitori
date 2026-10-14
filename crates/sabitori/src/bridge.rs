@@ -454,6 +454,8 @@ fn cell_grid_to_glyphs(
 }
 
 /// Convert an entire RenderList into GPU-ready data, applying clip rects.
+#[allow(deprecated)]
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn render_list_to_gpu(
     list: &RenderList,
     tr: &mut TextRenderer,
@@ -465,6 +467,7 @@ pub fn render_list_to_gpu(
 /// `render_list_to_gpu_with_rings` の selection 拡張版。 通常の rects/glyphs/rings
 /// に加えて、 各 TextDraw の `TextHitLayout` を reading-order で返す。 declarative
 /// runtime が selection の hit-test / 描画 / clipboard 抽出に使う。
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn render_list_to_gpu_with_hits(
     list: &RenderList,
     tr: &mut TextRenderer,
@@ -639,6 +642,7 @@ fn render_list_to_gpu_with_hits_impl(
 /// declarative event loop passes the ring vec to
 /// [`sabitori_gpu::RingRenderer::render_rings`] inside the
 /// `extra_draw` callback.
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn render_list_to_gpu_with_rings(
     list: &RenderList,
     tr: &mut TextRenderer,
@@ -761,6 +765,8 @@ fn render_list_to_gpu_with_rings_impl(
 /// Returns `(base_rects, base_glyphs, overlay_rects, overlay_glyphs)`.
 /// The caller must draw in order: base_rects -> base_glyphs -> overlay_rects -> overlay_glyphs
 /// to ensure overlay content renders on top of all base content.
+#[allow(deprecated)]
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn render_list_to_gpu_layered(
     base: &RenderList,
     overlay: &RenderList,
@@ -843,6 +849,7 @@ fn image_instance(d: &ImageDraw, clip: Option<&sabitori_core::Rect>) -> Option<I
 /// sub-sampled so only the visible portion renders. Without this, images
 /// inside scroll containers bleed out of their bounds (e.g. onto a fixed
 /// toolbar or into neighbouring regions).
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
     let mut batches: Vec<ImageBatch> = Vec::new();
     let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
@@ -878,6 +885,7 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
 ///
 /// Built once per render list so the draw site does not have to remember which
 /// extraction call yields which kind — see [`draw_ui_layer`].
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 #[derive(Default)]
 pub struct UiDrawLists {
     pub images: Vec<ImageBatch>,
@@ -891,6 +899,7 @@ pub struct UiDrawLists {
     pub goo: Vec<GooSlot>,
 }
 
+#[allow(deprecated)]
 impl UiDrawLists {
     /// Whether this layer has nothing to draw.
     ///
@@ -959,6 +968,8 @@ pub struct UiRenderers<'a> {
 /// - 種別ごとに 1 pass 1 回しか描画呼び出しをしない。 `queue.write_buffer` は
 ///   submit ごとに 1 度しか効かないので、 バッチ単位でループして描くと共有の
 ///   instance buffer を後続の書き込みが潰してしまう。
+#[allow(deprecated)]
+#[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
 pub fn draw_ui_layer(
     r: &mut UiRenderers<'_>,
     lists: &UiDrawLists,
@@ -1433,6 +1444,7 @@ fn clip_image(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use sabitori_core::Rect;
@@ -1586,6 +1598,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod fullpath_verify {
     use super::*;
     use sabitori_core::{build_tree, Color, Px};
@@ -1734,6 +1747,7 @@ mod fullpath_verify {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod overlay_emptiness_tests {
     //! `UiDrawLists::is_empty` は、レンダラに「この層を開くべきか」を伝えるための
     //! 判定。矩形はレンダラ自身が描き、それ以外は callback 越しなので、

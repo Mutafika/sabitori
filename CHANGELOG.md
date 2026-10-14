@@ -68,6 +68,16 @@
   全部上げて範囲で描けば、種類をまたいで木の順に描ける。今までの `render_*` はこの 2 つを
   続けて呼ぶだけで、描き方は変わらない。
 
+### Deprecated
+
+- **種類ごとにまとめて描く古い経路。** `bridge::render_list_to_gpu` / `_with_hits` /
+  `_with_rings` / `_layered`、`bridge::extract_image_batches`、`bridge::UiDrawLists`、
+  `bridge::draw_ui_layer`、`GpuRenderer::render_layered` / `render_layers` /
+  `render_scene_then_ui_layered` / `set_goo` / `set_goo_layers`。重なると下の要素の
+  文字や画像が上の箱に透ける (#126)。自前の描画ループに組み込んでいる所は
+  `bridge::OrderedFrame` (+ `RectTarget`) に移す。ランタイムの中はもう使っていない。
+  `Element::layer` は残す (後ろに書いた兄弟より手前に出す用途がある)。
+
 ### Fixed
 
 - **画面外の描画 (`offscreen::render`) と reel で goo が描かれていなかった。** 窓を持たない
