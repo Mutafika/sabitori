@@ -256,7 +256,7 @@ Three of these have a precondition worth knowing before you decide they are brok
 - **`.text_center()` needs a width.** A text element sizes to its content, and content-sized boxes have no slack to align within. Inside a `flex_col` it stretches to the parent and just works; inside a `flex_row` it will not.
 - **`.z()` does not escape the parent**, exactly like a CSS stacking context. It reorders siblings — paint order *and* click order together. To lift something above the whole tree (popups, context menus) use `.overlay()`.
 
-`display: none` has no equivalent on purpose: don't emit the element. That removes its layout cost too.
+The cheapest hidden element is one you don't emit — that removes its layout cost too. To show or hide by window width, `display: none` is `.hidden()` / `.shown()`, combined with `.at(..)` (`.at(SizeClass::Compact, |e| e.hidden())`).
 
 ## Widgets
 
@@ -304,11 +304,11 @@ cargo run --example declarative   # Declarative API + hover + click
 cargo run --example anim          # Spring animation + mouse follow
 cargo run --example effects       # 4 GPU effects (spotlight / magnetic / gravity / fluid)
 cargo run --example gpu_flex      # 10,000-particle physics simulation
-cargo run --example showcase      # 30-demo grid + modal zoom
+cargo run --example showcase      # 30-demo grid + modal zoom (low-level: drives GpuRenderer directly)
 cargo run --example layout        # Taffy Flexbox layout
 cargo run --example text          # cosmic-text integration
 cargo run --example tui_demo      # ANSI-based TUI dashboard
-cargo run --example tui_gallery   # Animation gallery
+cargo run --example tui_gallery   # Component gallery, 37 demos, TUI / Modern skins (drag & drop, goo, layers, text selection…)
 cargo run --example filer         # File manager — runtime-managed scroll, virtualized rows
 cargo run --example hello         # Low-level API (`SabitoriApp` trait)
 cargo run --example hot_reload    # Hot-reload demo (below)

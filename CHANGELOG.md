@@ -15,6 +15,33 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **例 `tui_gallery` を今の書き方にそろえ、v0.13 より後の機能のデモを足した** (37 部品)。
+  - 足したデモ: Text Selection (`ctx.text_selection()` / `on_selection_changed` と
+    `HighlightSpec` のマーカー)、Goo (`goo` の首と `goo_gradient` / `goo_border` /
+    `goo_shadow`)、Layers (`.layer(1)` の有る無しで重なった文字の出方を並べる)、
+    Drag & Drop (`draggable` / `droppable` / `on_drop` の 3 列のボードと、Finder から
+    持ち込むファイルの `on_file_drop_at`)。Matrix Rain は `cell_grid` 1 要素に、
+    Gradient Text は `color_spans` 1 要素にした。どれも TUI / Modern の両方の見た目で出る。
+  - `on_click` の文字列の突き合わせを `.click(ctx, ..)` に移した (`DropdownState` の
+    `handle_click` と、浮いたメニューを閉じる後始末だけが `on_click` に残る)。
+  - 本文のスクロールをランタイムに任せた (`.scroll("stage")`)。自前の `on_scroll` と
+    部品ごとの高さの見積り表を外した。
+  - 壊れていた所: Context Menu の右クリックが別の項目の番号を見ていてメニューが
+    開かなかった、スライダーの溝の位置を決め打ちしていてつまみが指からずれた、
+    ドロップダウンがマウスの位置に出ていた (`DropdownState::menu` の `anchor_to` に)、
+    モーダルの開くボタンと閉じるボタンが同じ id だった、Clock のカードが横に
+    はみ出していた。
+  - `cargo test` で回る Harness のテストを付けた (クリック・カードのドラッグ・
+    ファイルのドロップ・フォーム・モーダル、全部品の id の重複とはみ出し)。
+  - `TUI_GALLERY_ITEM` / `TUI_GALLERY_SKIN` で起動時の部品と見た目を決められる
+    (`SABITORI_SCREENSHOT` で撮るため)。
+- **例 `sabitori_home` の Widgets の欄に打てるようにした。** 見た目だけの `div` で、
+  v0.4.0 で `on_input` の配線を外して以来、打っても何も入らなかった。`text_input` に
+  置き換えた。背景の光の芯は v0.17.0 の不透明度の直しでくっきりした円に見えて
+  いたので、以前の見た目に戻した。
+
 ## [0.40.0] - 2026-10-12
 
 ### Added
