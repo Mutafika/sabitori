@@ -373,7 +373,7 @@ sabitori (umbrella)
 └── sabitori-net       HTTP fetch (reqwest / wasm fetch)
 ```
 
-`sabitori-reel` sits outside the umbrella: it renders a scene — an `Element` tree as a pure function of the frame — offscreen to a PNG sequence or an MP4 (via `ffmpeg`), for programmatic motion-graphics video. `cargo run -p sabitori-reel --example bga --release`.
+`sabitori-reel` sits outside the umbrella: it renders a scene — an `Element` tree as a pure function of the frame — offscreen to a PNG sequence or an MP4 (via `ffmpeg`), for programmatic motion-graphics video. Examples: `intro` (an app-promo opener — cards and a goo panel over an image), `terminal` (a terminal session recorded with `cell_grid`, for README demos), `chart` (a self-drawing line chart with rings and counters), and `bga` (a loopable abstract background) — e.g. `cargo run -p sabitori-reel --example intro --release`.
 
 ## WASM Target
 
