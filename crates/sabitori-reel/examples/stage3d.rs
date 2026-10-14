@@ -11,8 +11,12 @@
 //!
 //!   cargo run -p sabitori-reel --example stage3d --features three-d --release
 //!
-//! Output: `$TMPDIR/sabitori-reel-stage3d/frame_00000.png` …
+//! Output: `target/reel/stage3d/frame_00000.png` … (`--out <dir>` to change)
 
+#[path = "common/out.rs"]
+mod out;
+
+use out::Args;
 use sabitori_reel::three::{
     procedural, Camera, InstanceData, Light, Point3, Renderer, Stage, Vec3D, MODEL_GLASS,
     MODEL_STANDARD,
@@ -181,7 +185,7 @@ impl Scene for GlassStage {
 }
 
 fn main() {
-    let dir = std::env::temp_dir().join("sabitori-reel-stage3d");
+    let dir = Args::parse().frames_dir("stage3d");
     let reel = Reel {
         // Matched to the floor's tone at the horizon so the sky/floor seam
         // doesn't read as a letterbox bar across the top of the frame.

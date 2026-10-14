@@ -30,6 +30,12 @@
   - `chart` — 左から引かれる折れ線 (`polyline`)、輪 (`arc`) と数え上がる数字、
     句の下を伸びる蛍光ペン、グラフに重なる吹き出し。
 
+### Changed
+
+- **`sabitori-reel` の作例の書き出し先を、一時フォルダからビルドの `target/reel/` に移した。**
+  一時フォルダは Finder から辿りにくかった。`--out <dir>` で好きな所に変えられる。
+  動画は `target/reel/<作例名>.mp4`、コマの PNG は `target/reel/<作例名>/` に出る。
+
 ### Changed（破壊的）
 
 - **`Reel` に `mono_family` を足した。** 構造体リテラルで全フィールドを書いている所は

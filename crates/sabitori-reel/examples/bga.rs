@@ -11,8 +11,12 @@
 //!
 //!   cargo run -p sabitori-reel --example bga --release
 //!
-//! Output: `$TMPDIR/sabitori-bga.mp4`
+//! Output: `target/reel/bga.mp4` (`--out <dir>` to change)
 
+#[path = "common/out.rs"]
+mod out;
+
+use out::Args;
 use std::f32::consts::TAU;
 
 use sabitori_reel::{
@@ -199,10 +203,11 @@ fn scene(ctx: FrameCtx) -> Element {
 }
 
 fn main() {
+    let args = Args::parse();
     let beat = 60.0 / BPM;
     let frames = (LOOPS * LOOP_BEATS * beat * FPS as f32).round() as u32;
     let reel = Reel::new(W as u32, H as u32, FPS, frames);
-    let out = std::env::temp_dir().join("sabitori-bga.mp4");
+    let out = args.mp4("bga");
 
     println!(
         "rendering + encoding {} frames ({}x{} @ {FPS}fps, {:.1}s seamless loop ×{}) …",
@@ -216,7 +221,7 @@ fn main() {
         Ok(path) => println!("wrote {}", path.display()),
         Err(e) => {
             eprintln!("encode failed: {e}");
-            let dir = std::env::temp_dir().join("sabitori-bga");
+            let dir = args.frames_dir("bga");
             let paths = reel.render_pngs(&scene, &dir).expect("render failed");
             eprintln!("wrote {} PNGs instead -> {}", paths.len(), dir.display());
         }
