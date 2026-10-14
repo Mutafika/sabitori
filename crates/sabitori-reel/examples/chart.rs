@@ -16,9 +16,13 @@
 //!
 //!   cargo run -p sabitori-reel --example chart --release
 //!
-//! Output: `$TMPDIR/sabitori-chart.mp4`. Pass frame numbers
+//! Output: `target/reel/chart.mp4` (`--out <dir>` to change). Pass frame numbers
 //! (`-- 0 60 120`) to write just those frames as PNGs instead.
 
+#[path = "common/out.rs"]
+mod out;
+
+use out::Args;
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use sabitori_core::element::HighlightSpec;
@@ -332,13 +336,14 @@ fn y_at(pts: &[(f32, f32)], x: f32) -> f32 {
 
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
-    let stills: Vec<u32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
+    let args = Args::parse();
+    let stills = &args.stills;
 
     if !stills.is_empty() {
         // 指定のコマだけ PNG に書く (見た目の確認用)。
         let reel = Reel::new(W as u32, H as u32, FPS, stills.len() as u32);
         let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx });
-        let dir = std::env::temp_dir().join("sabitori-chart");
+        let dir = args.frames_dir("chart");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
         for (f, p) in stills.iter().zip(&paths) {
             println!("frame {f} -> {}", p.display());
@@ -347,7 +352,7 @@ fn main() {
     }
 
     let reel = Reel::new(W as u32, H as u32, FPS, frames);
-    let out = std::env::temp_dir().join("sabitori-chart.mp4");
+    let out = args.mp4("chart");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
     match reel.render_mp4(&scene, &out) {
         Ok(path) => println!("wrote {}", path.display()),

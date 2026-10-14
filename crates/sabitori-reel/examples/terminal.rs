@@ -16,9 +16,13 @@
 //!
 //!   cargo run -p sabitori-reel --example terminal --release
 //!
-//! Output: `$TMPDIR/sabitori-terminal.mp4`. Pass frame numbers
+//! Output: `target/reel/terminal.mp4` (`--out <dir>` to change). Pass frame numbers
 //! (`-- 0 60 120`) to write just those frames as PNGs instead.
 
+#[path = "common/out.rs"]
+mod out;
+
+use out::Args;
 use std::sync::Arc;
 
 use sabitori_core::{cell_grid, BoxShadow, CellFlags, CellGrid, Corners, GridCell, Point};
@@ -387,13 +391,14 @@ fn mono() -> Option<String> {
 fn main() {
     let evs = script();
     let frames = (SECS * FPS as f32).round() as u32;
-    let stills: Vec<u32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
+    let args = Args::parse();
+    let stills = &args.stills;
 
     if !stills.is_empty() {
         // 指定のコマだけ PNG に書く (見た目の確認用)。
         let reel = Reel { mono_family: mono(), ..Reel::new(W as u32, H as u32, FPS, stills.len() as u32) };
         let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx }, &evs);
-        let dir = std::env::temp_dir().join("sabitori-terminal");
+        let dir = args.frames_dir("terminal");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
         for (f, p) in stills.iter().zip(&paths) {
             println!("frame {f} -> {}", p.display());
@@ -402,7 +407,7 @@ fn main() {
     }
 
     let reel = Reel { mono_family: mono(), ..Reel::new(W as u32, H as u32, FPS, frames) };
-    let out = std::env::temp_dir().join("sabitori-terminal.mp4");
+    let out = args.mp4("terminal");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
     match reel.render_mp4(&|ctx| scene(ctx, &evs), &out) {
         Ok(path) => println!("wrote {}", path.display()),
