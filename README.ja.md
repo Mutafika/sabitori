@@ -80,7 +80,7 @@ div().click(ctx, format!("row-{i}"), move |app: &mut App| app.selected = Some(i)
 
 ## よく間違える 5 つ
 
-この 4 つが他の全部を合わせたより多いです。それぞれ正解は 1 つだけ。
+この 5 つが他の全部を合わせたより多いです。それぞれ正解は 1 つだけ。
 
 ### 1. スクロール
 
@@ -256,7 +256,7 @@ let sheet = grid()
 - **`.text_center()` には幅が要ります。** テキスト要素は中身なりの大きさなので、揃える余白がそもそもありません。`flex_col` の中では親幅まで伸びるのでそのまま効きますが、`flex_row` の中では効きません。
 - **`.z()` は親を飛び越えません。** CSS の重なり文脈と同じです。効くのは兄弟の中だけで、描画順とクリック順が一緒に動きます。木を飛び越えて最前面に出したいなら (ポップアップ、コンテキストメニュー) `.overlay()` を使ってください。
 
-`display: none` は意図的に入れていません。要素を出さなければいいので、そちらの方がレイアウト計算ごと消えます。
+出さない要素は、まず木に入れないのが一番安上がりです（レイアウト計算ごと消えます）。窓の幅で出し分けるときは `display: none` にあたる `.hidden()` / `.shown()` を `.at(..)` と組みます（`.at(SizeClass::Compact, |e| e.hidden())`）。
 
 ## ウィジェット
 
@@ -304,11 +304,11 @@ cargo run --example declarative   # 宣言的 API + hover + click
 cargo run --example anim          # Spring アニメーション + マウス追従
 cargo run --example effects       # GPU エフェクト 4 種（spotlight / magnetic / gravity / fluid）
 cargo run --example gpu_flex      # 1 万パーティクルの物理シミュレーション
-cargo run --example showcase      # 30 デモのグリッド + モーダルズーム
+cargo run --example showcase      # 30 デモのグリッド + モーダルズーム（低レベル: GpuRenderer を直に叩く）
 cargo run --example layout        # Taffy Flexbox レイアウト
 cargo run --example text          # cosmic-text 統合
 cargo run --example tui_demo      # ANSI ベースの TUI ダッシュボード
-cargo run --example tui_gallery   # アニメーションギャラリー
+cargo run --example tui_gallery   # 部品ギャラリー 37 種、TUI / Modern の 2 つの見た目（ドラッグ&ドロップ・goo・層・文字の選択など）
 cargo run --example filer         # ファイラ — ランタイム管理スクロール + 行の仮想化
 cargo run --example hello         # 低レベル API（`SabitoriApp` トレイト）
 cargo run --example hot_reload    # ホットリロードのデモ（下記）

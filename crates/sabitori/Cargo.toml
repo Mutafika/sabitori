@@ -163,6 +163,8 @@ path = "../../examples/tui_demo.rs"
 [[example]]
 name = "tui_gallery"
 path = "../../examples/tui_gallery.rs"
+# 押す・引きずる・選ぶの通しを Harness で回す (`cargo test` に入る)。
+test = true
 
 [[example]]
 name = "cad_widgets"
@@ -187,6 +189,7 @@ path = "../../examples/landing_site.rs"
 [[example]]
 name = "sabitori_home"
 path = "../../examples/sabitori_home.rs"
+test = true
 
 [[example]]
 name = "landing_particles"

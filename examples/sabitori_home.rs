@@ -63,6 +63,9 @@ fn hash01(n: u32) -> f32 {
 // ── Aurora backdrop ───────────────────────────────────────────────────────
 // A soft radial light is a *small* core with a *large* glow radius — NOT a big
 // filled ellipse (that reads as a solid "lemon"). Glow is an SDF blur.
+//
+// v0.17 で `.opacity()` が二重に掛からなくなり (塗りは op² だった)、 同じ値のままだと
+// 芯がくっきりした円に見える。 値の表はそのままに、 以前の見た目 (op²) で渡す。
 fn glow_blob(cx: f32, cy: f32, r: f32, col: Color, op: f32, glow_r: f32) -> Element {
     div()
         .absolute()
@@ -71,7 +74,7 @@ fn glow_blob(cx: f32, cy: f32, r: f32, col: Color, op: f32, glow_r: f32) -> Elem
         .h(Px(r * 2.0))
         .rounded_px(r)
         .bg(col)
-        .opacity(op)
+        .opacity(op * op)
         .glow(col, glow_r)
 }
 
@@ -388,7 +391,7 @@ fn home(accent: Color, t: f32, fps: f32) -> Element {
     let divider = || div().w(Px(1.0)).h(Px(30.0)).bg(hex(BORDER));
 
     div().flex_col().items_center().gap(24.0).children([
-        eyebrow("V0.2.8 · GPU-NATIVE UI FRAMEWORK FOR RUST"),
+        eyebrow("GPU-NATIVE UI FRAMEWORK FOR RUST"),
         div().flex_col().items_center().gap(0.0).children([
             text("The UI framework that")
                 .font_size(58.0)
@@ -1214,32 +1217,28 @@ fn wg_montage(theme: &DropdownState, hovered: Option<&str>, anim_on: bool, table
 }
 
 /// A *real* editable text field backed by `TextInputState`. Click to focus,
-/// then type — ASCII and Japanese IME both route through it (`on_char` /
-/// `on_key` / `on_ime_preedit` / `on_ime_commit`). The OS draws its own IME
-/// candidate window; the preedit shows inline.
-fn ime_panel(input: &TextInputState, focused: bool, t: f32) -> Element {
-    let composed = input.display_text_with_preedit();
-    let (content, dim) = if composed.is_empty() {
-        ("Click here, then type…  日本語 IME もOK".to_string(), true)
-    } else {
-        (composed, false)
+/// then type — ASCII and Japanese IME both route through it. The OS draws its
+/// own IME candidate window; the preedit shows inline.
+///
+/// `text_input` を置くだけで、 打鍵・IME・キャレット・焦点はランタイムが配る。
+/// 以前は見た目だけを `div` で自作していて、 0.4.0 で `on_input` の配線を
+/// 外したあとは**打っても何も入らなかった** (自作の欄はランタイムから見えない)。
+fn ime_panel(ctx: &ViewContext, input: &TextInputState) -> Element {
+    let focused = input.is_focused();
+    let style = TextInputStyle {
+        bg: hex(BG0),
+        border: hex(BORDER),
+        text: hex(TEXT_HI),
+        placeholder: hex(TEXT_DIM),
+        font_size: 18.0,
+        radius: 9.0,
+        padding: 14.0,
+        focus_border: Some(hex(ACCENT_BLUE)),
+        caret: Some(hex(TEXT_HI)),
+        preedit: Some(hex(ACCENT_BLUE).with_alpha(0.25)),
+        ..TextInputStyle::default_dark()
     };
-    let show_caret = focused && (t * 1.6).rem_euclid(1.0) < 0.55;
-    let caret = div().w(Px(2.0)).h(Px(22.0)).bg(hex(TEXT_HI)).opacity(if show_caret { 1.0 } else { 0.0 });
-    let field = div()
-        .id("wg-input")
-        .cursor(Cursor::Pointer)
-        .w_full()
-        .flex_row()
-        .items_center()
-        .gap(1.0)
-        .px_pad(Px(14.0))
-        .py(Px(13.0))
-        .min_h(Px(52.0))
-        .rounded_px(9.0)
-        .bg(hex(BG0))
-        .border(1.0, hex(if focused { ACCENT_BLUE } else { BORDER }))
-        .children([text(&content).font_size(18.0).color(hex(if dim { TEXT_DIM } else { TEXT_HI })), caret]);
+    let field = text_input(ctx, "wg-input", input, &style);
 
     let hint = if focused {
         "focused — keystrokes route to TextInputState · IME preedit inline"
@@ -1266,11 +1265,11 @@ fn widget_chips() -> Element {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn widgets_section(theme: &DropdownState, hovered: Option<&str>, anim_on: bool, table_sel: usize, input: &TextInputState, focused: bool, t: f32) -> Element {
+fn widgets_section(ctx: &ViewContext, theme: &DropdownState, hovered: Option<&str>, anim_on: bool, table_sel: usize, input: &TextInputState) -> Element {
     div().flex_col().items_center().gap(18.0).children([
         eyebrow("A REAL TOOLKIT · CLICK THE DROPDOWN · FLIP THE TOGGLE · TYPE IN THE FIELD"),
         text("Batteries included.").font_size(40.0).font_weight(500).letter_spacing(-1.2).color(hex(TEXT_HI)),
-        div().flex_row().items_start().gap(20.0).children([wg_montage(theme, hovered, anim_on, table_sel), ime_panel(input, focused, t)]),
+        div().flex_row().items_start().gap(20.0).children([wg_montage(theme, hovered, anim_on, table_sel), ime_panel(ctx, input)]),
         widget_chips(),
     ])
 }
@@ -1299,8 +1298,6 @@ pub struct Home {
     table_sel: usize,
     /// The live, editable text field (ASCII + Japanese IME).
     input: TextInputState,
-    /// Whether the text field currently owns keyboard input.
-    input_focused: bool,
     /// Currently hovered element id (for the dropdown's hover highlight).
     hovered: Option<String>,
 }
@@ -1321,8 +1318,7 @@ impl Home {
             accent_idx: 0,
             anim_on: true,
             table_sel: 1,
-            input: TextInputState::new("Type here…"),
-            input_focused: false,
+            input: TextInputState::new("Click here, then type…  日本語 IME もOK"),
             hovered: None,
         }
     }
@@ -1334,12 +1330,12 @@ impl Home {
             self.trans = 0.0;
         }
     }
-    fn section(&self, idx: usize, t: f32, accent: Color) -> Element {
+    fn section(&self, ctx: &ViewContext, idx: usize, t: f32, accent: Color) -> Element {
         match idx {
             0 => home(accent, t, self.fps),
             1 => why(),
             2 => features(self.feat_sel, t),
-            3 => widgets_section(&self.theme, self.hovered.as_deref(), self.anim_on, self.table_sel, &self.input, self.input_focused, t),
+            3 => widgets_section(ctx, &self.theme, self.hovered.as_deref(), self.anim_on, self.table_sel, &self.input),
             4 => gallery(t),
             5 => code(),
             _ => start(),
@@ -1412,11 +1408,11 @@ impl DeclarativeApp for Home {
             let e = ease_out_cubic(self.trans);
             let off = 130.0;
             vec![
-                stage_screen(cw, stage_h, self.section(self.prev, t, accent), -self.dir * e * off, 1.0 - e),
-                stage_screen(cw, stage_h, self.section(self.cur, t, accent), self.dir * (1.0 - e) * off, e),
+                stage_screen(cw, stage_h, self.section(ctx, self.prev, t, accent), -self.dir * e * off, 1.0 - e),
+                stage_screen(cw, stage_h, self.section(ctx, self.cur, t, accent), self.dir * (1.0 - e) * off, e),
             ]
         } else {
-            vec![stage_screen(cw, stage_h, self.section(self.cur, t, accent), 0.0, 1.0)]
+            vec![stage_screen(cw, stage_h, self.section(ctx, self.cur, t, accent), 0.0, 1.0)]
         };
         let stage = div().w(Px(cw)).h(Px(stage_h)).children(stage_kids);
 
@@ -1464,12 +1460,7 @@ impl DeclarativeApp for Home {
     }
 
     fn on_click(&mut self, id: &str) {
-        // The live text field: clicking it takes focus; any other click blurs.
-        if id == "wg-input" {
-            self.input_focused = true;
-            return;
-        }
-        self.input_focused = false;
+        // The text field's focus is the runtime's job (`text_input`), nothing to do here.
 
         // Real theme Dropdown — open / close / select. Selecting recolours the page.
         match self.theme.handle_click(id) {
@@ -1532,4 +1523,25 @@ impl DeclarativeApp for Home {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     sabitori::run_declarative(Home::new());
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use sabitori::testing::Harness;
+
+    /// Widgets の欄に打った字が `TextInputState` に入る (配線はランタイム)。
+    #[test]
+    fn the_widgets_field_takes_typing() {
+        let mut home = Home::new();
+        home.goto(3);
+        home.trans = 1.0;
+        let mut h = Harness::new(home, 1160.0, 860.0);
+        h.frame();
+        h.click("wg-input");
+        h.text("hello");
+        h.frame();
+        assert_eq!(h.app().input.text(), "hello");
+        assert!(h.unrouted_text_inputs().is_empty());
+    }
 }
