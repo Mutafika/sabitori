@@ -412,6 +412,10 @@ pub struct Reel {
     /// Family name used for ordinary (non-mono) text, e.g. `"HackGen35"` after
     /// loading it through [`Reel::fonts`]. `None` = the system sans-serif.
     pub family: Option<String>,
+    /// Family name used for monospace text (`.mono()`, `cell_grid`), e.g.
+    /// `"Menlo"` or `"HackGen Console"`. `None` = the font database's generic
+    /// monospace, which on macOS is Courier — set this for code and terminals.
+    pub mono_family: Option<String>,
     /// Pixels per logical px. The scene is laid out at `width × height`
     /// logical px either way; `2.0` renders and writes a frame twice as large
     /// in each direction (e.g. 1920×1080 → 3840×2160), with text rasterized at
@@ -433,6 +437,7 @@ impl Reel {
             clear: [0.0, 0.0, 0.0, 1.0],
             fonts: Vec::new(),
             family: None,
+            mono_family: None,
             scale: 1.0,
             crf: 18,
         }
@@ -446,7 +451,14 @@ impl Reel {
         dir: &std::path::Path,
     ) -> std::io::Result<Vec<std::path::PathBuf>> {
         std::fs::create_dir_all(dir)?;
-        let mut gpu = Gpu::new(self.width, self.height, self.scale, &self.fonts, self.family.clone());
+        let mut gpu = Gpu::new(
+            self.width,
+            self.height,
+            self.scale,
+            &self.fonts,
+            self.family.clone(),
+            self.mono_family.clone(),
+        );
         let frame0 = FrameCtx {
             frame: 0,
             fps: self.fps,
@@ -628,7 +640,14 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn new(width: u32, height: u32, scale: f32, fonts: &[Vec<u8>], family: Option<String>) -> Self {
+    fn new(
+        width: u32,
+        height: u32,
+        scale: f32,
+        fonts: &[Vec<u8>],
+        family: Option<String>,
+        mono_family: Option<String>,
+    ) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -666,6 +685,7 @@ impl Gpu {
             text.prefer_user_fonts(fonts);
         }
         text.set_preferred_family(family);
+        text.set_preferred_monospace_family(mono_family);
         let ring = RingRenderer::new(&device, format, layout);
         let line = LineRenderer::new(&device, format, layout);
         let image = ImageRenderer::new(&device, format, layout);
@@ -919,6 +939,9 @@ impl Reel {
             duration,
             #[cfg(feature = "three-d")]
             clear: self.clear,
+            fonts: self.fonts.clone(),
+            family: self.family.clone(),
+            mono_family: self.mono_family.clone(),
             playhead: 0.0,
             playing: true,
             dragging: false,
@@ -946,6 +969,11 @@ struct PreviewApp<S: Scene> {
     /// owns a clear; without it the overlay renderer clears for itself.
     #[cfg(feature = "three-d")]
     clear: [f64; 4],
+    /// [`Reel::fonts`] / [`Reel::family`] / [`Reel::mono_family`]。書き出しと同じ字で見せる
+    /// (以前は窓へ渡しておらず、プレビューだけ既定の字で出ていた)。
+    fonts: Vec<Vec<u8>>,
+    family: Option<String>,
+    mono_family: Option<String>,
     /// Playhead in seconds, kept in `[0, duration)`.
     playhead: f32,
     playing: bool,
@@ -1043,6 +1071,18 @@ impl<S: Scene> PreviewApp<S> {
 }
 
 impl<S: Scene + 'static> DeclarativeApp for PreviewApp<S> {
+    fn fonts(&self) -> Vec<Vec<u8>> {
+        self.fonts.clone()
+    }
+
+    fn preferred_font_family(&self) -> Option<String> {
+        self.family.clone()
+    }
+
+    fn preferred_monospace_family(&self) -> Option<String> {
+        self.mono_family.clone()
+    }
+
     fn view(&self, _ctx: &ViewContext) -> Element {
         let overlay = self.scene.view(self.frame_ctx());
         // The window is *exactly* the reel resolution and the transport bar is
@@ -1273,7 +1313,7 @@ mod tests {
             .flex_row()
             .child(div().w(Px(20.0)).h(Px(30.0)).bg(Color::from_hex("#ff0000")))
             .child(div().w(Px(20.0)).h(Px(30.0)).bg(Color::from_hex("#0000ff")));
-        let mut gpu = Gpu::new(40, 30, 2.0, &[], None);
+        let mut gpu = Gpu::new(40, 30, 2.0, &[], None, None);
         assert_eq!((gpu.width, gpu.height), (80, 60));
         let rgba = gpu.render_frame(&root, [0.0, 0.0, 0.0, 1.0], Default::default());
         assert_eq!(rgba.len(), 80 * 60 * 4);
@@ -1282,6 +1322,38 @@ mod tests {
         let right = pixel(&rgba, 80, 60, 30);
         assert!(left[0] > 200 && left[2] < 60, "左半分が赤でない: {left:?}");
         assert!(right[2] > 200 && right[0] < 60, "右半分が青でない: {right:?}");
+    }
+
+    /// `mono_family` で等幅の字を選べる。同じ文字列の幅が、既定の等幅と変わることで見る。
+    /// どの字に解決されるかは環境で違う (手元の macOS では HackGen で細くなり、CI の
+    /// Linux では名前が見つからず別の字に落ちて広くなった) ので、向きは問わない。
+    /// 配線が無ければ、どちらも既定の字で同じ幅になる。
+    #[test]
+    fn mono_family_picks_the_monospace_face() {
+        if !gpu_available() {
+            return;
+        }
+        let root = div()
+            .w(Px(400.0))
+            .h(Px(60.0))
+            .bg(Color::WHITE)
+            .child(text("MMMMMMMMMM").mono().font_size(32.0).color(Color::BLACK));
+        // 黒い画素がある一番右の列。
+        let right_edge = |mono: Option<&str>| -> u32 {
+            let mut gpu = Gpu::new(400, 60, 1.0, &[], None, mono.map(str::to_string));
+            let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], Default::default());
+            (0..400u32)
+                .rev()
+                .find(|&x| (0..60u32).any(|y| pixel(&rgba, 400, x, y)[0] < 100))
+                .unwrap_or(0)
+        };
+        let default_w = right_edge(None);
+        let hackgen_w = right_edge(Some("HackGen"));
+        assert!(hackgen_w > 0, "文字が描かれていない");
+        assert!(
+            (hackgen_w as f32 - default_w as f32).abs() > default_w as f32 * 0.05,
+            "mono_family が効いていない (既定 {default_w}px, HackGen {hackgen_w}px)"
+        );
     }
 
     /// 開始色が透明なグラデーション (動画の文字の下に敷くスクリム) が描かれる。
@@ -1297,7 +1369,7 @@ mod tests {
                 .h(Px(64.0))
                 .gradient(Color::TRANSPARENT, Color::BLACK, std::f32::consts::FRAC_PI_2),
         );
-        let mut gpu = Gpu::new(64, 64, 1.0, &[], None);
+        let mut gpu = Gpu::new(64, 64, 1.0, &[], None, None);
         let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], Default::default());
         let top = pixel(&rgba, 64, 32, 2)[0];
         let bottom = pixel(&rgba, 64, 32, 61)[0];

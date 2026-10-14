@@ -1089,6 +1089,116 @@ fn splice_under_glyphs(runs: Vec<DrawRun>, mut under: Vec<(u32, std::ops::Range<
     out
 }
 
+
+/// Find-in-page ハイライト rect を text layout から集める。 各 `TextHitLayout`
+/// が持つ `HighlightSpec` の byte 範囲を、 selection と同じ per-line union で背景
+/// rect に変換する。 `current` の範囲だけ `current_color` で塗る。
+/// [`OrderedFrame::extract`] がその文字のグリフの直前に敷く。
+pub(crate) fn highlight_rects(
+    text_layouts: &[TextHitLayout],
+) -> Vec<RectInstance> {
+    let mut out: Vec<RectInstance> = Vec::new();
+    for layout in text_layouts {
+        // Specs paint in order, so a later one covers an earlier one where
+        // their ranges overlap — the app decides precedence by call order.
+        for hl in &layout.highlight {
+            for (ri, &(b0, b1)) in hl.ranges.iter().enumerate() {
+                if b1 <= b0 {
+                    continue;
+                }
+                let color = if hl.current == Some(ri) { hl.current_color } else { hl.color };
+                // 同じ line_index の hit をまとめて 1 rect にする (selection と同じ)。
+                use std::collections::BTreeMap;
+                let mut by_line: BTreeMap<u32, (f32, f32, f32, f32)> = BTreeMap::new();
+                for hit in &layout.hits {
+                    if hit.byte_end <= b0 || hit.byte_start >= b1 {
+                        continue;
+                    }
+                    let entry = by_line
+                        .entry(hit.line_index)
+                        .or_insert((hit.x, hit.y, hit.x + hit.w, hit.y + hit.h));
+                    entry.0 = entry.0.min(hit.x);
+                    entry.1 = entry.1.min(hit.y);
+                    entry.2 = entry.2.max(hit.x + hit.w);
+                    entry.3 = entry.3.max(hit.y + hit.h);
+                }
+                for (_, (x0, y0, x1, y1)) in by_line {
+                    out.push(RectInstance {
+                        rect: [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)],
+                        corner_radii: [2.0; 4],
+                        fill_color: color.to_array(),
+                        border_color: [0.0; 4],
+                        border_width: 0.0,
+                        gradient_angle: 0.0,
+                        rotation: 0.0,
+                        _pad0: 0.0,
+                        shadow_color: [0.0; 4],
+                        shadow_offset: [0.0; 2],
+                        shadow_params: [0.0; 2],
+                        gradient_end_color: [0.0; 4],
+                        clip_rect: layout
+                            .clip_rect
+                            .map(|c| [c.origin.x, c.origin.y, c.size.width, c.size.height])
+                            .unwrap_or([0.0; 4]),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// in-body リンク範囲の下線 rect (highlight_rects の下線版)。各範囲を
+/// line ごとにまとめ、行の下端に細い下線を link color で敷く。glyph の下に描く。
+pub(crate) fn link_rects(
+    text_layouts: &[TextHitLayout],
+) -> Vec<RectInstance> {
+    let mut out: Vec<RectInstance> = Vec::new();
+    for layout in text_layouts {
+        let Some(ranges) = layout.link_ranges.as_ref() else { continue };
+        for r in ranges {
+            if r.end <= r.start {
+                continue;
+            }
+            use std::collections::BTreeMap;
+            // line_index -> (x0, x1, bottom_y)
+            let mut by_line: BTreeMap<u32, (f32, f32, f32)> = BTreeMap::new();
+            for hit in &layout.hits {
+                if hit.byte_end <= r.start || hit.byte_start >= r.end {
+                    continue;
+                }
+                let entry = by_line
+                    .entry(hit.line_index)
+                    .or_insert((hit.x, hit.x + hit.w, hit.y + hit.h));
+                entry.0 = entry.0.min(hit.x);
+                entry.1 = entry.1.max(hit.x + hit.w);
+                entry.2 = entry.2.max(hit.y + hit.h);
+            }
+            for (_, (x0, x1, bottom)) in by_line {
+                out.push(RectInstance {
+                    rect: [x0, bottom - 1.5, (x1 - x0).max(1.0), 1.5],
+                    corner_radii: [0.0; 4],
+                    fill_color: r.color.to_array(),
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    gradient_angle: 0.0,
+                    rotation: 0.0,
+                    _pad0: 0.0,
+                    shadow_color: [0.0; 4],
+                    shadow_offset: [0.0; 2],
+                    shadow_params: [0.0; 2],
+                    gradient_end_color: [0.0; 4],
+                    clip_rect: layout
+                        .clip_rect
+                        .map(|c| [c.origin.x, c.origin.y, c.size.width, c.size.height])
+                        .unwrap_or([0.0; 4]),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// 1 枚ぶんの描画を、木の順のまとまり ([`DrawRun`]) と種類ごとの instance に起こした物。
 ///
 /// 使い方: [`OrderedFrame::extract`] で起こし、文字の下に敷く物があれば
@@ -1220,7 +1330,10 @@ impl OrderedFrame {
                         continue;
                     }
                     let max_width = (d.max_width > 0.0 && d.max_width < f32::MAX).then_some(d.max_width);
-                    let (mut produced, hits) = if with_hits && needs_hit_layout(d) {
+                    // ハイライトとリンクの下線は、選択の対象でない並び (上掛け・画面外・reel)
+                    // でも描く。そのために配置 (hits) が要る。
+                    let decorated = !d.highlight.is_empty() || d.link_ranges.is_some();
+                    let (mut produced, hits) = if (with_hits && needs_hit_layout(d)) || decorated {
                         let (g, h) = tr.prepare_text_with_hits_spans(
                             &d.content, d.position.x, d.position.y,
                             d.font_size, d.color, &color_spans(d), max_width,
@@ -1250,8 +1363,7 @@ impl OrderedFrame {
                     let end = self.glyphs.len() as u32;
                     push_run(&mut self.runs, DrawRun::Glyphs(at..end));
                     if let Some(hits) = hits {
-                        self.text_glyphs.insert(cur_idx, at..end);
-                        self.text_layouts.push(TextHitLayout {
+                        let layout = TextHitLayout {
                             text_idx: cur_idx,
                             content: d.content.clone(),
                             hits,
@@ -1260,7 +1372,21 @@ impl OrderedFrame {
                             link_ranges: d.link_ranges.clone(),
                             no_select: d.no_select,
                             owner: d.owner.clone(),
-                        });
+                        };
+                        // 文字の下に敷く: 検索のハイライト → リンクの下線 (塗る順)。
+                        // 選択の塗りは選択の状態を持つ主窓が後から足す。
+                        let one = std::slice::from_ref(&layout);
+                        let mut under = highlight_rects(one);
+                        under.extend(link_rects(one));
+                        if !under.is_empty() {
+                            let start = self.rects.len() as u32;
+                            self.rects.extend(under);
+                            self.under.push((at, start..self.rects.len() as u32));
+                        }
+                        if with_hits {
+                            self.text_glyphs.insert(cur_idx, at..end);
+                            self.text_layouts.push(layout);
+                        }
                     }
                 }
             }

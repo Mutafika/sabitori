@@ -8,7 +8,8 @@
 //!
 //! What it exercises: `polyline()` (the line is cut at a fractional point so it
 //! grows smoothly between samples), `arc()` rings, numbers formatted per frame,
-//! a marker sweep over words (a box under each phrase, grown left to right),
+//! a marker sweep over words (`.highlight(HighlightSpec)` with a range that
+//! grows character by character),
 //! and tree-order drawing — the callout card, the
 //! value tag and the tip dot are later siblings, so they sit on top of the
 //! grid lines, the area fill and the line without any `.layer(..)`.
@@ -20,10 +21,11 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
+use sabitori_core::element::HighlightSpec;
 use sabitori_core::{BoxShadow, Point};
 use sabitori_reel::{
     arc, div, interpolate, interpolate_eased, polyline, spring_with, text, Color, Easing, Element,
-    FrameCtx, Percent, Px, Reel, Spring,
+    FrameCtx, Px, Reel, Spring,
 };
 
 const W: f32 = 1920.0;
@@ -153,31 +155,26 @@ fn scene(ctx: FrameCtx) -> Element {
 
     // 見出し。
     let head_in = spring_with(t + 0.1, FPS, Spring::gentle()); // 最初のコマから少し見える
-    // 蛍光ペン: 句の下に敷いた帯を、左から伸ばす。2 つ目の句は線を描き終えてから。
-    // (`HighlightSpec` の塗りは窓の実行時が字の当たり判定から起こすもので、reel の
-    // 描画はまだ通らない。なので句ごとに文字を分け、帯は普通の箱として下に敷く。)
-    let marker = |s: &str, from: f32| -> Element {
+    // 蛍光ペン: 句に掛けた `HighlightSpec` の範囲を、1 字ずつ左から伸ばす。
+    // 2 つ目の句は線を描き終えてから。
+    const SENTENCE: &str = "Growth picked up after the March launch and never looked back.";
+    let marker = |phrase: &str, from: f32| -> HighlightSpec {
         let p = interpolate_eased(t, [from, from + 0.7], [0.0, 1.0], Easing::EaseInOut);
-        div()
-            .child(
-                div()
-                    .absolute()
-                    .pos(-4.0, 4.0)
-                    .w(Percent(p * 100.0))
-                    .h(Px(34.0))
-                    .rounded_px(6.0)
-                    .bg(hex("#f59e0b").with_alpha(0.42)),
-            )
-            .child(text(s.to_string()).font_size(30.0).color(hex("#fff8e1")))
+        let start = SENTENCE.find(phrase).expect("句が文に無い");
+        // 伸ばす単位は字 (バイトの途中で切らない)。
+        let n = (phrase.chars().count() as f32 * p).round() as usize;
+        let len: usize = phrase.chars().take(n).map(char::len_utf8).sum();
+        HighlightSpec {
+            ranges: vec![(start, start + len)],
+            color: hex("#f59e0b").with_alpha(0.42),
+            ..Default::default()
+        }
     };
-    let plain = |s: &str| text(s.to_string()).font_size(30.0).color(hex("#c3cad8"));
-    let sentence = div()
-        .flex_row()
-        .child(plain("Growth picked up "))
-        .child(marker("after the March launch", 1.0))
-        .child(plain(" and "))
-        .child(marker("never looked back", 5.6))
-        .child(plain("."));
+    let sentence = text(SENTENCE)
+        .font_size(30.0)
+        .color(hex("#dfe4ee"))
+        .highlight(marker("after the March launch", 1.0))
+        .highlight(marker("never looked back", 5.6));
     kids.push(
         div()
             .absolute()

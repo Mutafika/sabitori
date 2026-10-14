@@ -17,6 +17,9 @@
 
 ### Added
 
+- **`Reel::mono_family`** — reel で等幅の字 (`.mono()` / `cell_grid`) を選ぶ。指定しないと
+  フォントの DB の既定の等幅で、macOS では Courier になる。
+
 - **`sabitori-reel` に作例を 3 本足した。** どれもフレーム番号だけで決まる場面で、
   `-- 0 60 120` のようにフレーム番号を渡すとそのコマだけ PNG に書く。
   - `intro` — アプリ紹介の冒頭。画素から作った写真風の背景の上に、`color_spans` で
@@ -27,12 +30,27 @@
   - `chart` — 左から引かれる折れ線 (`polyline`)、輪 (`arc`) と数え上がる数字、
     句の下を伸びる蛍光ペン、グラフに重なる吹き出し。
 
+### Changed（破壊的）
+
+- **`Reel` に `mono_family` を足した。** 構造体リテラルで全フィールドを書いている所は
+  `..Reel::new(..)` が要る。
+
 ### Removed
 
 - **`sabitori-reel` の作例から、別の製品の紹介映像 4 本 (`demo` / `preview` / `video` /
   `enchu_opener`) と、他社のゲームに寄せた音ゲーの譜面 (`iidx`) を外した。** reel の
   使い方の見本は `bga` / `stage3d` と、上の Added の 3 本が持つ。
   README の reel の案内は、残った作例の一覧を指す。
+
+### Fixed
+
+- **検索のハイライト (`.highlight(..)`) とリンクの下線 (`.link_ranges(..)`) が主窓でしか
+  描かれていなかった。** 文字の下に敷く矩形を主窓の描画の中だけで作っていたので、画面外の
+  描画 (`offscreen::render`)・reel・別窓・3D シーン・上掛けでは黙って消えていた。
+  `bridge::OrderedFrame::extract` が敷くようにしたので、どの経路でも描かれる。選択の
+  塗りとつまみは、選択の状態を持つ主窓が今まで通り重ねる。
+- **reel のプレビュー窓 (`Reel::preview`) が `fonts` / `family` を使っていなかった。**
+  書き出しと違う字で見えていた。`mono_family` と合わせて窓へ渡す。
 
 ## [0.41.1] - 2026-10-15
 

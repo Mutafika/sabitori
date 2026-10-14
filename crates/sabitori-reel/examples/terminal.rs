@@ -302,7 +302,7 @@ fn scene(ctx: FrameCtx, evs: &[Ev]) -> Element {
                 .child(
                     // 既定の等幅 (OS の Monospace) は macOS だと Courier になるので、名指しする。
                     // 無い環境では等幅の既定に落ちる。
-                    cell_grid(grid, CELL_W, CELL_H).font_size(FONT).font_family("Menlo").ty(shift),
+                    cell_grid(grid, CELL_W, CELL_H).font_size(FONT).ty(shift),
                 )
                 .children(sc.bar.map(|(row, p)| {
                     // 進み具合の棒: 格子より後の兄弟なので、格子の上に描かれる。
@@ -379,6 +379,11 @@ fn scene(ctx: FrameCtx, evs: &[Ev]) -> Element {
     div().w(Px(W)).h(Px(H)).gradient(hex("#0d1020"), hex("#141029"), 1.2).children(kids)
 }
 
+/// 端末の字。既定の等幅は macOS だと Courier (飾りの付いた古い字) なので名指しする。
+fn mono() -> Option<String> {
+    Some("Menlo".into())
+}
+
 fn main() {
     let evs = script();
     let frames = (SECS * FPS as f32).round() as u32;
@@ -386,7 +391,7 @@ fn main() {
 
     if !stills.is_empty() {
         // 指定のコマだけ PNG に書く (見た目の確認用)。
-        let reel = Reel::new(W as u32, H as u32, FPS, stills.len() as u32);
+        let reel = Reel { mono_family: mono(), ..Reel::new(W as u32, H as u32, FPS, stills.len() as u32) };
         let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx }, &evs);
         let dir = std::env::temp_dir().join("sabitori-terminal");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
@@ -396,7 +401,7 @@ fn main() {
         return;
     }
 
-    let reel = Reel::new(W as u32, H as u32, FPS, frames);
+    let reel = Reel { mono_family: mono(), ..Reel::new(W as u32, H as u32, FPS, frames) };
     let out = std::env::temp_dir().join("sabitori-terminal.mp4");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
     match reel.render_mp4(&|ctx| scene(ctx, &evs), &out) {

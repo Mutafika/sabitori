@@ -434,6 +434,50 @@ mod tests {
         assert!(inside[0] > 200 && inside[1] < 60, "goo が出ていない: {inside:?}");
     }
 
+    /// **画面外でも検索のハイライトとリンクの下線を描く。** 以前は主窓だけが敷いて
+    /// いたので、帳票や reel では `.highlight(..)` / `.link_ranges(..)` が黙って消えた。
+    #[test]
+    fn highlights_and_link_underlines_land_in_the_image() {
+        gpu_or_skip!();
+        use sabitori_core::element::{HighlightSpec, LinkRange};
+        let s = "WWWW WWWW";
+        let view = div().w(Px(300.0)).h(Px(80.0)).child(
+            text(s)
+                .font_size(32.0)
+                .color(Color::BLACK)
+                .no_select()
+                .highlight(HighlightSpec {
+                    ranges: vec![(0, 4)],
+                    color: Color::from_hex("#ffd400"),
+                    ..Default::default()
+                })
+                .link_ranges(vec![LinkRange {
+                    start: 5,
+                    end: 9,
+                    id: "l".into(),
+                    tooltip: None,
+                    color: Color::from_hex("#0000ff"),
+                }]),
+        );
+        let out = render(&view, Sheet::px(300.0, 80.0)).expect("描けなかった");
+
+        let yellow = (0..out.height)
+            .flat_map(|y| (0..60).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let p = out.pixel(x, y).unwrap();
+                p[0] > 200 && p[1] > 170 && p[2] < 80
+            });
+        assert!(yellow, "ハイライトが出ていない");
+        // 下線は 1.5px で縁がぼけるので、「はっきり青い」画素があるかで見る。
+        let blue = (0..out.height)
+            .flat_map(|y| (out.width / 2..out.width).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let p = out.pixel(x, y).unwrap();
+                p[2] as i32 - p[0] as i32 > 80
+            });
+        assert!(blue, "リンクの下線が出ていない");
+    }
+
     /// **地の色は既定で白。** 透明のまま印刷に回すと紙が黒くなる。
     #[test]
     fn the_default_background_is_white() {
