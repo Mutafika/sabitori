@@ -17,6 +17,13 @@
 
 ### Added
 
+- **`sabitori_core::svg::Svg` — SVG の絵を要素の木にする。** `Svg::parse(src)?.element(幅)` で、
+  指定の幅に合わせた `path()` の要素たちになる。解釈は `usvg` に任せる (グループ・変形・CSS・
+  `use`・単位)。`id` の付いたグループは自分の範囲を箱にした `div` になり、
+  `element_with(幅, |部品, 要素| ..)` で部品ごとに回す・ずらす・薄くするができる (`SvgPart` の
+  `id` / `groups` / `index`)。塗りと線は色、グラデーションは止めの色を混ぜた 1 色で近似。模様・
+  画像・文字は描かない。`sabitori-reel` も `Svg` / `SvgPart` を出す。
+
 - **作例: 架空業者シリーズ 6 本 (`sabitori-reel`、各 22 秒・2〜4MB)。** どれも架空の店・会社で、
   素材の画像は使わない。
   - `bakery` — 小さなパン屋「Hearth & Hum」。麦とパンが線から描かれて焼き上がり、店名の字が

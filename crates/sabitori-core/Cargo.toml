@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# SVG の読み込み (`svg()`)。文字は扱わない (字は sabitori の文字で)。
+usvg = { version = "0.45", default-features = false }
 bytemuck = { workspace = true }
 glam.workspace = true
 serde = { workspace = true }

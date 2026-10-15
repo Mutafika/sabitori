@@ -1436,6 +1436,40 @@ mod tests {
         assert!(ink(&out, 160..200, 40..80).0 > 2000.0, "2 字目まで消えた");
     }
 
-}
 
+    /// SVG の絵は、変形とグループを畳んで、指定の幅に合わせて描かれる。100×50 の絵を
+    /// 幅 200 で描くと 2 倍: 赤い四角 (10,10)-(30,30) は (20,20)-(60,60) に、
+    /// 平行移動したグループの青い円 (中心 70,20) は (140,40) に出る。
+    #[test]
+    fn svg_draws_at_the_requested_width() {
+        gpu_or_skip!();
+        let src = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50" viewBox="0 0 100 50">
+            <rect x="10" y="10" width="20" height="20" fill="#ff0000"/>
+            <g id="moved" transform="translate(50 0)"><circle cx="20" cy="20" r="10" fill="#0000ff"/></g>
+        </svg>"##;
+        let svg = sabitori_core::svg::Svg::parse(src).unwrap();
+        let view = div().w(Px(200.0)).h(Px(100.0)).bg(Color::WHITE).child(svg.element(200.0));
+        let out = render(&view, Sheet::px(200.0, 100.0)).expect("描けなかった");
+        assert!(is_red(out.pixel(40, 40).unwrap()), "四角が無い: {:?}", out.pixel(40, 40));
+        assert_eq!(out.pixel(70, 40).unwrap()[..3], [255, 255, 255], "四角が大きすぎる");
+        assert!(is_blue(out.pixel(140, 40).unwrap()), "円が平行移動していない: {:?}", out.pixel(140, 40));
+        assert_eq!(out.pixel(40, 90).unwrap()[..3], [255, 255, 255]);
+    }
+
+    /// 部品ごとに手を加えられる: id の付いたグループだけを薄くする。
+    #[test]
+    fn svg_parts_can_be_changed_by_id() {
+        gpu_or_skip!();
+        let src = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">
+            <rect x="10" y="10" width="20" height="20" fill="#ff0000"/>
+            <g id="fade"><rect x="60" y="10" width="20" height="20" fill="#ff0000"/></g>
+        </svg>"##;
+        let svg = sabitori_core::svg::Svg::parse(src).unwrap();
+        let el = svg.element_with(100.0, |part, e| if part.id == "fade" { e.opacity(0.0) } else { e });
+        let out = render(&div().w(Px(100.0)).h(Px(50.0)).bg(Color::WHITE).child(el), Sheet::px(100.0, 50.0))
+            .expect("描けなかった");
+        assert!(is_red(out.pixel(20, 20).unwrap()), "手を加えていない方まで消えた");
+        assert_eq!(out.pixel(70, 20).unwrap()[..3], [255, 255, 255], "id のグループが消えていない");
+    }
+}
 
