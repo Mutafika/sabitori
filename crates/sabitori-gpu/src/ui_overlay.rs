@@ -57,6 +57,8 @@ pub struct UiOverlayRenderer {
     overlay_count: u32,
     /// goo (2 つの角丸の融合)。木の順に描く経路 ([`RectTarget`](crate::RectTarget)) 用。
     goo_renderer: GooRenderer,
+    /// 描き先の物理 px ([`Self::update_globals`] の論理 px × 倍率)。
+    target_size: std::cell::Cell<(u32, u32)>,
 }
 
 impl UiOverlayRenderer {
@@ -165,6 +167,7 @@ impl UiOverlayRenderer {
             base_count: 0,
             overlay_count: 0,
             goo_renderer,
+            target_size: std::cell::Cell::new((1, 1)),
         }
     }
 
@@ -199,6 +202,10 @@ impl UiOverlayRenderer {
             _pad: 0.0,
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        self.target_size.set((
+            (logical_width * scale_factor).round() as u32,
+            (logical_height * scale_factor).round() as u32,
+        ));
     }
 
     /// base / overlay の rect 群を instance buffer にアップロードする。
@@ -550,6 +557,10 @@ mod tests {
 }
 
 impl crate::RectTarget for UiOverlayRenderer {
+    fn target_size(&self) -> (u32, u32) {
+        self.target_size.get()
+    }
+
     fn upload_rect_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rects: &[RectInstance]) {
         self.upload_rects(device, queue, rects, &[]);
     }

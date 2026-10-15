@@ -19,7 +19,7 @@ use crate::element::{
     Placement, Position, Track, TrackSize, Typography,
 };
 use crate::Corners;
-use crate::render_list::{GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
+use crate::render_list::{GroupDraw, GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
 use crate::{Color, GradientKind, Grain, Point, Rect};
 
 use crate::TextMetrics;
@@ -1694,6 +1694,17 @@ fn emit_commands_inner(
 
     let rect = Rect::new(abs_x, abs_y, w, h);
 
+    // 子孫ごと回す要素は、自分の塗りから子の最後までを 1 枚の絵に囲む。閉じるのは
+    // この関数の出口 (`PopGroup`)。囲むのは自分の並びだけで、上の層や上掛けへ出る
+    // 子孫は囲めない。
+    let grouped = style.rotate.abs() > 1e-6;
+    if grouped {
+        target.commands.push(RenderCommand::PushGroup(GroupDraw {
+            pivot: Point::new(abs_x + w * 0.5, abs_y + h * 0.5),
+            rotation: style.rotate,
+        }));
+    }
+
     // 塗りは `style.background` だけを見る。`.accent()` は background にも同じ
     // 色を入れているので、ここで accent を優先する必要は無い — 優先していた
     // 頃は hover / active が background を書き換えても accent に上書きされ、
@@ -2042,6 +2053,9 @@ fn emit_commands_inner(
             for child in &element.children {
                 count_elements(child, element_counter);
             }
+            if grouped {
+                target_list.commands.push(RenderCommand::PopGroup);
+            }
             return;
         }
         target_list.commands.push(RenderCommand::PushClip(clip_rect));
@@ -2247,6 +2261,10 @@ fn emit_commands_inner(
         }
     }
 
+    if grouped {
+        let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
+        target.commands.push(RenderCommand::PopGroup);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2669,6 +2687,44 @@ fn apply_opacity(color: Color, opacity: f32) -> Color {
 mod tests {
     use super::*;
     use crate::element::{button, div, text, Px};
+
+    /// 回す要素は、自分の塗りから子の最後までを PushGroup / PopGroup で囲む。後の
+    /// 兄弟は囲みの外。余白で中身が潰れて途中で抜ける入れ物でも、閉じ忘れない。
+    #[test]
+    fn rotate_wraps_the_element_and_its_children_in_a_group() {
+        let kinds = |root: Element| -> Vec<&'static str> {
+            build_tree(&root, 200.0, 200.0)
+                .render_list
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    RenderCommand::Rect(_) => Some("rect"),
+                    RenderCommand::PushGroup(_) => Some("push"),
+                    RenderCommand::PopGroup => Some("pop"),
+                    _ => None,
+                })
+                .collect()
+        };
+        let turned = div()
+            .w(Px(50.0))
+            .h(Px(50.0))
+            .bg(Color::WHITE)
+            .rotate(0.5)
+            .child(div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK));
+        let after = div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK);
+        assert_eq!(kinds(div().child(turned).child(after)), ["push", "rect", "rect", "pop", "rect"]);
+
+        // padding が箱を食い尽くす切り抜きの入れ物は、子を描かずに抜ける。
+        let squeezed = div()
+            .w(Px(20.0))
+            .h(Px(20.0))
+            .p(Px(10.0))
+            .overflow_hidden()
+            .bg(Color::WHITE)
+            .rotate(0.5)
+            .child(div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK));
+        assert_eq!(kinds(div().child(squeezed)), ["push", "rect", "pop"]);
+    }
 
     /// 開始色が透明なグラデーション (透明 → 黒のスクリム) も描く。`bg` は
     /// 開始色でしかないので、その透明さで捨てると終わりの不透明な側まで消える。

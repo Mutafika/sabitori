@@ -1037,6 +1037,7 @@ struct ExtraWindowState {
     image_renderer: sabitori_gpu::ImageRenderer,
     ring_renderer: sabitori_gpu::RingRenderer,
     line_renderer: sabitori_gpu::LineRenderer,
+    group_renderer: sabitori_gpu::GroupRenderer,
     measure_cache: std::cell::RefCell<crate::bridge::MeasureCache>,
     pub(crate) last_build: Option<BuildResult>,
     /// ポインタの位置・ホバー・押下・管理スクロール。窓ごとに別。
@@ -1062,6 +1063,7 @@ struct Renderers {
     image: sabitori_gpu::ImageRenderer,
     rings: RingRenderer,
     lines: sabitori_gpu::LineRenderer,
+    groups: sabitori_gpu::GroupRenderer,
 }
 
 fn init_renderers<A: DeclarativeApp>(app: &A, gpu: &GpuRenderer) -> Renderers {
@@ -1084,6 +1086,7 @@ fn init_renderers<A: DeclarativeApp>(app: &A, gpu: &GpuRenderer) -> Renderers {
         image,
         rings: RingRenderer::new(&gpu.device, format, layout),
         lines: sabitori_gpu::LineRenderer::new(&gpu.device, format, layout),
+        groups: sabitori_gpu::GroupRenderer::new(&gpu.device, format, layout),
     }
 }
 
@@ -1106,6 +1109,7 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     image_renderer: Option<sabitori_gpu::ImageRenderer>,
     ring_renderer: Option<sabitori_gpu::RingRenderer>,
     line_renderer: Option<sabitori_gpu::LineRenderer>,
+    group_renderer: Option<sabitori_gpu::GroupRenderer>,
     /// Shared so a frame's measurer can borrow it while `&mut self` is also
     /// live — `build_frame` takes the measurer as a parameter, and a plain
     /// `&self.measure_cache` inside it would collide with that `&mut self`.
@@ -1528,6 +1532,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         self.image_renderer = Some(r.image);
         self.ring_renderer = Some(r.rings);
         self.line_renderer = Some(r.lines);
+        self.group_renderer = Some(r.groups);
 
         // After the primary is up, create any declared extras. Done
         // here (rather than in a separate event-loop callback) so the
@@ -2079,12 +2084,14 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 let mut ir = self.image_renderer.take();
                 let mut rr = self.ring_renderer.take();
                 let mut lr = self.line_renderer.take();
+                let mut gr = self.group_renderer.take();
                 {
                     let mut r = UiRenderers {
                         images: ir.as_mut(),
                         rings: rr.as_mut(),
                         lines: lr.as_mut(),
                         text: &mut tr,
+                        groups: gr.as_mut(),
                     };
                     frame.upload(renderer, &mut r, &device, &queue);
                     let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
@@ -2096,6 +2103,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 self.image_renderer = ir;
                 self.ring_renderer = rr;
                 self.line_renderer = lr;
+                self.group_renderer = gr;
                 let drawn_build = build_result;
 
                 self.commit_build(drawn_build);
@@ -2537,6 +2545,7 @@ impl<A: DeclarativeApp> AppState<A> {
             image_renderer: extra.image,
             ring_renderer: extra.rings,
             line_renderer: extra.lines,
+            group_renderer: extra.groups,
             measure_cache: std::cell::RefCell::new(crate::bridge::MeasureCache::new()),
             last_build: None,
             pointer: Default::default(),
@@ -2697,6 +2706,7 @@ impl<A: DeclarativeApp> AppState<A> {
             image_renderer: None,
             ring_renderer: None,
             line_renderer: None,
+            group_renderer: None,
             measure_cache: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::bridge::MeasureCache::new(),
             )),
@@ -5238,6 +5248,7 @@ impl<A: DeclarativeApp> AppState<A> {
             rings: Some(&mut extra.ring_renderer),
             lines: Some(&mut extra.line_renderer),
             text: &mut extra.text_renderer,
+            groups: Some(&mut extra.group_renderer),
         };
         let renderer = &mut extra.renderer;
         frame.upload(renderer, &mut r, &device, &queue);
@@ -5377,6 +5388,7 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                     s.image_renderer = Some(r.image);
                     s.ring_renderer = Some(r.rings);
                     s.line_renderer = Some(r.lines);
+                    s.group_renderer = Some(r.groups);
                     log::info!("Declarative renderer ready");
                 });
             }

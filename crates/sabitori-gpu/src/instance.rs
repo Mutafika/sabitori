@@ -293,3 +293,27 @@ impl RectInstance {
         }
     }
 }
+
+/// グループ (要素とその子孫を先に描いた 1 枚の絵) の貼り方。`group.wgsl` と同じ並び。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GroupInstance {
+    /// 回す中心 x, y (論理 px)、回転 (ラジアン、画面上で時計回り)、不透明度。
+    pub pivot_rot: [f32; 4],
+    /// 祖先の切り抜き (論理 px の x, y, w, h)。`w == 0 || h == 0` → 切らない。
+    pub clip_rect: [f32; 4],
+}
+
+impl GroupInstance {
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+            0 => Float32x4, // pivot_rot
+            1 => Float32x4, // clip_rect
+        ];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GroupInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: ATTRS,
+        }
+    }
+}

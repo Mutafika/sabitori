@@ -671,6 +671,9 @@ pub struct ElementStyle {
     /// **原点** (レイアウト後の左上) まわりに回る。CAD の注記が挿入点まわりに
     /// 回る仕様に合わせたため。背景付きの要素を回すと箱とラベルはずれる。
     pub rotation: f32,
+    /// 要素を**子孫ごと**回す角 (ラジアン、画面上で時計回り)。中心まわり。
+    /// [`Element::rotate`] を参照。`rotation` (その要素の箱か文字だけを回す) とは別。
+    pub rotate: f32,
     /// Visual-only X offset, applied after layout. Does not push siblings —
     /// taffy still measures the element at its laid-out slot, but the rect
     /// (and its hit region) is rendered shifted by this many px. Drives
@@ -897,6 +900,7 @@ impl Default for ElementStyle {
             opacity: 1.0,
             object_fit: ObjectFit::default(),
             rotation: 0.0,
+            rotate: 0.0,
             translate_x: 0.0,
             translate_y: 0.0,
             scale: 1.0,
@@ -2024,6 +2028,23 @@ impl Element {
     /// (左上) まわり — ピボットが違う。詳細は [`ElementStyle::rotation`]。
     pub fn rotation(mut self, radians: f32) -> Self {
         self.style.rotation = radians;
+        self
+    }
+
+    /// 要素を**中身ごと**回す (ラジアン、画面上で時計回り)。中心まわり。CSS の
+    /// `transform: rotate()` と同じく見た目だけで、レイアウトも兄弟も動かない。
+    ///
+    /// 中身 (背景・枠・子・文字・画像・切り抜き) を先に 1 枚の絵に描いてから回して
+    /// 貼るので、どの種類も同じように回る。[`rotation`](Self::rotation) は箱か文字
+    /// 1 つだけを回し (中心と原点で軸も違う)、子は回らない。
+    ///
+    /// 限り:
+    /// - 押せる場所 (当たり判定) は回らない。回す前の位置のまま。
+    /// - 回す前に窓の外へはみ出していた部分は、回しても出てこない。
+    /// - 上の層 ([`layer`](Self::layer)) や上掛け ([`overlay`](Self::overlay)) へ出る
+    ///   子孫は、別の並びに描かれるので回らない。
+    pub fn rotate(mut self, radians: f32) -> Self {
+        self.style.rotate = radians;
         self
     }
 

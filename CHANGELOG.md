@@ -17,6 +17,17 @@
 
 ### Added
 
+- **`.rotate(radians)` — 要素を中身ごと回す。** CSS の `transform: rotate()` と同じく見た目だけで、
+  レイアウトは動かない。中身 (背景・枠・子・文字・画像・切り抜き・goo) を先に窓と同じ
+  大きさの別の絵に描いてから、中心まわりに回して貼る。入れ子にすれば角は足され、外の
+  切り抜きは回した絵に掛かる。今までの `.rotation(..)` は箱か文字 1 つだけを回していた
+  (子は回らず、箱は中心・文字は原点と軸も違う)。限り: 当たり判定は回らない、回す前に窓の
+  外へ出ていた部分は出てこない、上の層や上掛けへ出る子孫は回らない。作例の `intro` の
+  カードが、傾いた状態から起き上がって入る。
+- **`sabitori_gpu::GroupRenderer` / `GroupInstance`、`RenderCommand::PushGroup` / `PopGroup`
+  (`GroupDraw`)、`bridge::DrawRun::Group` (`GroupRun`)** — 上の仕組み。ぼかしやマスクも
+  この上に載せる。
+
 - **放射グラデーション (`.radial_gradient(inner, outer)` / `.radial_gradient_at(.., cx, cy)`)**
   — 中心 (箱に対する割合) から一番遠い角へ。箱の縦横比で楕円に伸ばさず、円のまま広がる。
   光だまりや周辺減光に。
@@ -56,6 +67,10 @@
 
 ### Changed（破壊的）
 
+- **`UiRenderers` に `groups: Option<&mut GroupRenderer>` を足した。** `None` なら回さずに
+  その場で描く。`RectTarget` に `target_size()` (描き先の物理 px) を足した。
+- **`RenderCommand` に `PushGroup` / `PopGroup`、`DrawRun` に `Group` を足した。** 全部の腕を
+  書いた `match` は足す必要がある。`ElementStyle` に `rotate` を足した。
 - **`RectInstance` に `paint` と `grain` を足した (144 → 176 バイト)。** 構造体リテラルで
   書いている所は `paint: [0.0; 4], grain: [0.0; 4]` が要る。0 なら今まで通りの見た目。
 - **`ElementStyle` / `RectDraw` に `gradient_kind` と `grain` を足した。** 全フィールドを

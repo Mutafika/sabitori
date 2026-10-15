@@ -1854,4 +1854,8 @@ impl crate::RectTarget for GpuRenderer {
     fn globals(&self) -> &wgpu::BindGroup {
         &self.globals_bind_group
     }
+
+    fn target_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
 }

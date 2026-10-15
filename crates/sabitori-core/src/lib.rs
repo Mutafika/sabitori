@@ -48,7 +48,7 @@ pub use element::{
 pub use element::{
     EasingFn, StateStyle, Transition, TransitionKind, TransitionProperty,
 };
-pub use render_list::{GooDraw, RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
+pub use render_list::{GroupDraw, GooDraw, RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
 pub use build::{
     build_tree, build_tree_measured, BuildResult, CaretPos, HitRegion, ScrollMeasure, TextMeasure,
     TextShape,
