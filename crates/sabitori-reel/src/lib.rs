@@ -43,6 +43,7 @@ use sabitori_text::TextRenderer;
 // Re-export the Sabitori declarative builder surface so a scene file only needs
 // `use sabitori_reel::*` to author a tree.
 pub use sabitori_core::element::{path, polyline};
+pub use sabitori_core::svg::{Svg, SvgPart};
 pub use sabitori_core::{
     arc, button, div, image, text, Auto, BlendMode, Color, Dimension, Element, GlyphMotion, ImageData,
     ObjectFit, Percent, Px, Typography,
