@@ -15,6 +15,11 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`sabitori-reel` の作例を全部外した (`examples/` ごと)。** 動画の作例はリポジトリに置かない。
+  使い方はクレートの doc の最小の場面で示す。前の版の作例は git の履歴から取り出せる。
+
 ### Added
 
 - **`sabitori_core::svg::Svg` — SVG の絵を要素の木にする。** `Svg::parse(src)?.element(幅)` で、

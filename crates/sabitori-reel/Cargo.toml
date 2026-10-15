@@ -24,7 +24,3 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # offscreen device. `gltf` off: reel builds meshes itself. Pinned to a tag like
 # consumers pin sabitori, so CI resolves it without a sibling checkout.
 seimei = { git = "https://github.com/Mutafika/seimei", tag = "v0.4.1", default-features = false, optional = true }
-
-[[example]]
-name = "stage3d"
-required-features = ["three-d"]
