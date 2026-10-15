@@ -1395,6 +1395,38 @@ fn place_anchored(
     (x, y)
 }
 
+/// 字ごとの色 (`color_spans`) に、文字の色と同じく要素の不透明度を掛ける。掛けないと、
+/// 要素を薄くしても色を変えた字だけ濃いまま残る。不透明なら複製しない。
+fn fade_spans(
+    spans: &Option<std::sync::Arc<[crate::element::ColorSpan]>>,
+    opacity: f32,
+) -> Option<std::sync::Arc<[crate::element::ColorSpan]>> {
+    match spans {
+        Some(s) if opacity < 1.0 => {
+            Some(s.iter().map(|sp| crate::element::ColorSpan { color: apply_opacity(sp.color, opacity), ..*sp }).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// 検索のハイライトの色にも、要素の不透明度を掛ける ([`fade_spans`] と同じ理由)。
+fn fade_highlights(hl: &[crate::element::HighlightSpec], opacity: f32) -> Vec<crate::element::HighlightSpec> {
+    hl.iter()
+        .map(|h| crate::element::HighlightSpec {
+            color: apply_opacity(h.color, opacity),
+            current_color: apply_opacity(h.current_color, opacity),
+            ..h.clone()
+        })
+        .collect()
+}
+
+/// リンクの下線の色にも、要素の不透明度を掛ける。
+fn fade_links(links: &Option<Vec<crate::element::LinkRange>>, opacity: f32) -> Option<Vec<crate::element::LinkRange>> {
+    links.as_ref().map(|ls| {
+        ls.iter().map(|l| crate::element::LinkRange { color: apply_opacity(l.color, opacity), ..l.clone() }).collect()
+    })
+}
+
 /// パス ([`crate::element::path`]) を描く: 塗りは `PathFill`、線は `Polyline` (途中まで・
 /// 点線は折れ線の長さで切る)。座標は箱の左上から (`view_box` があれば箱いっぱいに)。
 #[allow(clippy::too_many_arguments)]
@@ -1445,6 +1477,12 @@ fn emit_path(
             None => lines,
         };
         for l in lines {
+            // ごく短い切れ端 (途中まで描く `trim` の描き始め、とくにモーションブラーの
+            // 標本) は描かない。長さ 0 に近い線は、端の丸だけが点として残る。
+            let len: f32 = l.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).sum();
+            if len < 0.5 {
+                continue;
+            }
             target.commands.push(RenderCommand::Polyline(PolylineDraw { points: l.iter().map(pt).collect(), width, color }));
         }
     }
@@ -1897,9 +1935,9 @@ fn emit_commands_inner(
                 font_family: style.font_family.clone(),
                 max_lines,
                 typo: style.typography(),
-                color_spans: style.color_spans.clone(),
-                highlight: style.highlight.clone(),
-                link_ranges: style.link_ranges.clone(),
+                color_spans: fade_spans(&style.color_spans, effective_opacity),
+                highlight: fade_highlights(&style.highlight, effective_opacity),
+                link_ranges: fade_links(&style.link_ranges, effective_opacity),
                 // 同じ `style.rotation` が上の RectDraw にも渡っているが、
                 // ピボットが違う (rect = 中心 / text = 原点)。TextDraw::rotation 参照。
                 rotation: style.rotation,
@@ -1951,9 +1989,9 @@ fn emit_commands_inner(
                 font_family: style.font_family.clone(),
                 max_lines,
                 typo,
-                color_spans: style.color_spans.clone(),
-                highlight: style.highlight.clone(),
-                link_ranges: style.link_ranges.clone(),
+                color_spans: fade_spans(&style.color_spans, effective_opacity),
+                highlight: fade_highlights(&style.highlight, effective_opacity),
+                link_ranges: fade_links(&style.link_ranges, effective_opacity),
                 rotation: style.rotation,
                 // A button label is a control's caption, not prose — dragging
                 // across a toolbar should never leave it highlighted. Always
@@ -2922,6 +2960,45 @@ mod tests {
         let t = build_tree(&div().child(text("Hello").mask(div().w(Px(10.0)).h(Px(10.0)))), 200.0, 200.0);
         let drawn = t.render_list.commands.iter().any(|c| matches!(c, RenderCommand::Text(d) if &*d.content == "Hello"));
         assert!(drawn, "マスクを付けた文字が消えた");
+    }
+
+    /// 要素の不透明度は、字ごとの色・検索のハイライト・リンクの色にも掛かる。掛からないと、
+    /// 薄くした要素の中で色を変えた字だけ濃く残る。
+    #[test]
+    fn opacity_reaches_span_highlight_and_link_colours() {
+        use crate::element::{HighlightSpec, LinkRange};
+        let t = text("abcdef")
+            .color_spans([(0..2, Color::from_hex("#ff0000"))])
+            .highlight(HighlightSpec { ranges: vec![(2, 4)], color: Color::from_hex("#ffd400"), ..Default::default() })
+            .link_ranges(vec![LinkRange { start: 4, end: 6, id: "l".into(), tooltip: None, color: Color::from_hex("#0000ff") }])
+            .opacity(0.5);
+        let b = build_tree(&div().child(t), 200.0, 50.0);
+        let d = b.render_list.commands.iter().find_map(|c| match c {
+            RenderCommand::Text(d) => Some(d.clone()),
+            _ => None,
+        });
+        let d = d.expect("文字が無い");
+        let half = |c: Color| (c.a - 0.5).abs() < 1e-4;
+        assert!(half(d.color_spans.as_ref().unwrap()[0].color), "字ごとの色が薄くなっていない");
+        assert!(half(d.highlight[0].color), "ハイライトが薄くなっていない");
+        assert!(half(d.link_ranges.as_ref().unwrap()[0].color), "リンクの色が薄くなっていない");
+    }
+
+    /// 途中まで描く線の描き始め (ほぼ 0) は何も描かない。長さ 0 に近い線を出すと、
+    /// 端の丸だけが点として残る。
+    #[test]
+    fn a_barely_started_trim_draws_nothing() {
+        let lines = |end: f32| {
+            let p = crate::element::path().move_to(0.0, 0.0).line_to(100.0, 0.0).stroke(Color::BLACK, 6.0).trim(0.0, end);
+            build_tree(&div().w(Px(200.0)).h(Px(50.0)).child(p.w(Px(100.0)).h(Px(10.0))), 200.0, 50.0)
+                .render_list
+                .commands
+                .iter()
+                .filter(|c| matches!(c, RenderCommand::Polyline(_)))
+                .count()
+        };
+        assert_eq!(lines(0.001), 0, "描き始めに点が残る");
+        assert_eq!(lines(0.5), 1);
     }
 
     /// 縦書きの文字の箱は、字数と升目で決まる (列の送り × (列 - 1) + 字の幅, 字数 × 字の高さ)。

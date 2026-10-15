@@ -409,7 +409,7 @@ fn shape_run(
         monospace,
         family_override,
     );
-    let weight = cosmic_text::Weight(typo.resolved_weight(bold));
+    let weight = crate::shaper::matched_weight(ctx.font_system.db(), &family, typo.resolved_weight(bold));
     let mut attrs = Attrs::new().family(family).weight(weight);
     if typo.italic {
         attrs = attrs.style(cosmic_text::Style::Italic);
