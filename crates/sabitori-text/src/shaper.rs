@@ -86,6 +86,42 @@ pub(crate) fn resolve_family<'a>(
     }
 }
 
+/// 名前で指定した書体に、頼まれた太さが無いときは、その書体にある一番近い太さに
+/// 寄せる (CSS の決まりと同じ)。寄せないと、cosmic-text はその書体を諦めて別の書体に
+/// 落ちる — ヒラギノ明朝 (W3 / W6 だけ) を太さ無しで指定すると、日本語がゴシックに
+/// なっていた。名前で指定していない (総称の) 書体や、書体が見つからないときはそのまま。
+pub(crate) fn matched_weight(db: &cosmic_text::fontdb::Database, family: &cosmic_text::Family<'_>, wanted: u16) -> cosmic_text::Weight {
+    let cosmic_text::Family::Name(name) = family else { return cosmic_text::Weight(wanted) };
+    let mut have: Vec<u16> = db
+        .faces()
+        .filter(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+        .map(|f| f.weight.0)
+        .collect();
+    if have.is_empty() || have.contains(&wanted) {
+        return cosmic_text::Weight(wanted);
+    }
+    have.sort_unstable();
+    have.dedup();
+    cosmic_text::Weight(nearest_weight(&have, wanted))
+}
+
+/// CSS Fonts 4 §5.2 の太さの寄せ方。`have` は昇順。
+fn nearest_weight(have: &[u16], wanted: u16) -> u16 {
+    let below = || have.iter().rev().copied().find(|&w| w < wanted);
+    let above = || have.iter().copied().find(|&w| w > wanted);
+    if (400..=500).contains(&wanted) {
+        // 400〜500 は、まず 500 までの重い方、次に軽い方、最後に 500 より重い方。
+        if let Some(w) = have.iter().copied().find(|&w| w > wanted && w <= 500) {
+            return w;
+        }
+        below().or_else(above).unwrap_or(wanted)
+    } else if wanted < 400 {
+        below().or_else(above).unwrap_or(wanted)
+    } else {
+        above().or_else(below).unwrap_or(wanted)
+    }
+}
+
 /// Apply [`TextAlign`] to every line of a shaped-to-be buffer.
 ///
 /// **`set_text` の後、 `shape_until_scroll` の前**に呼ぶこと。 `set_text` は
@@ -418,7 +454,7 @@ impl TextShaper {
             monospace,
             family_override,
         );
-        let weight = cosmic_text::Weight(typo.resolved_weight(bold));
+        let weight = matched_weight(self.font_system.db(), &family, typo.resolved_weight(bold));
         let mut attrs = Attrs::new().family(family).weight(weight);
         if typo.italic {
             attrs = attrs.style(cosmic_text::Style::Italic);
@@ -481,7 +517,7 @@ impl TextShaper {
             shape.monospace,
             shape.font_family,
         );
-        let weight = cosmic_text::Weight(shape.typo.resolved_weight(shape.bold));
+        let weight = matched_weight(self.font_system.db(), &family, shape.typo.resolved_weight(shape.bold));
         let mut attrs = Attrs::new().family(family).weight(weight);
         if shape.typo.italic {
             attrs = attrs.style(cosmic_text::Style::Italic);
@@ -523,7 +559,7 @@ impl TextShaper {
             monospace,
             family_override,
         );
-        let weight = cosmic_text::Weight(typo.resolved_weight(bold));
+        let weight = matched_weight(self.font_system.db(), &family, typo.resolved_weight(bold));
         let mut attrs = Attrs::new().family(family).weight(weight);
         if typo.italic {
             attrs = attrs.style(cosmic_text::Style::Italic);
@@ -1400,5 +1436,37 @@ mod caret_tests {
             assert!(c.x.is_finite() && c.y.is_finite());
         }
         assert!(!s.range_rects(text, (1, 5), shape).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::nearest_weight;
+
+    /// CSS の寄せ方: 400 は 500 → 軽い方 → 重い方、300 は軽い方から、600 は重い方から。
+    /// 名前で指定した書体に無い太さは、ある太さに寄せる (組み込みの字は 400 だけ)。
+    /// 寄せないと、その書体を諦めて別の書体に落ちる。総称の書体はそのまま。
+    #[test]
+    fn a_named_family_gets_a_weight_it_has() {
+        use super::matched_weight;
+        let mut db = cosmic_text::fontdb::Database::new();
+        db.load_font_data(super::BUILTIN_FONT.to_vec());
+        let face = db.faces().next().expect("組み込みの字が読めない");
+        let (name, have) = (face.families[0].0.clone(), face.weight.0);
+        let named = cosmic_text::Family::Name(&name);
+        let other = if have == 400 { 300 } else { 400 };
+        assert_eq!(matched_weight(&db, &named, other).0, have);
+        assert_eq!(matched_weight(&db, &named, have).0, have);
+        assert_eq!(matched_weight(&db, &cosmic_text::Family::SansSerif, 300).0, 300);
+    }
+
+    #[test]
+    fn weights_snap_like_css() {
+        assert_eq!(nearest_weight(&[300, 600], 400), 300);
+        assert_eq!(nearest_weight(&[300, 500, 600], 400), 500);
+        assert_eq!(nearest_weight(&[600, 800], 400), 600);
+        assert_eq!(nearest_weight(&[300, 600], 200), 300);
+        assert_eq!(nearest_weight(&[300, 600], 700), 600);
+        assert_eq!(nearest_weight(&[300, 900], 600), 900);
     }
 }
