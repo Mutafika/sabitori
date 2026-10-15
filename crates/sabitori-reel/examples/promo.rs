@@ -17,7 +17,7 @@ mod out;
 
 use out::Args;
 use sabitori_reel::{
-    div, interpolate, interpolate_eased, path, spring_with, text, BlendMode, Color, Easing, Element, FrameCtx,
+    div, interpolate, interpolate_eased, path, spring_with, text, Color, Easing, Element, FrameCtx,
     GlyphMotion, MotionBlur, Percent, Px, Reel, Spring,
 };
 
@@ -45,29 +45,15 @@ fn phase(t: f32, a: f32, b: f32) -> f32 {
 
 // ── 背景 ─────────────────────────────────────────────────────────────────
 
-fn backdrop(t: f32, frame: u32) -> Vec<Element> {
-    let mut kids = vec![div()
+fn backdrop(_t: f32, frame: u32) -> Vec<Element> {
+    let kids = vec![div()
         .absolute()
         .pos(0.0, 0.0)
         .w(Px(W))
         .h(Px(H))
-        .radial_gradient_at(hex("#171a3a"), hex("#05060e"), 0.65, 0.15)
+        .radial_gradient_at(hex("#1f1916"), hex("#0c0a09"), 0.65, 0.15)
         .grain(0.035)
         .grain_seed(frame)];
-    for (i, (c, x, y, r)) in [("#6366f1", 0.15, 0.85, 300.0), ("#06b6d4", 0.85, 0.2, 280.0)].into_iter().enumerate() {
-        let a = t * 0.25 + i as f32 * 2.4;
-        kids.push(
-            div()
-                .absolute()
-                .pos(x * W + a.cos() * 50.0 - r, y * H + a.sin() * 40.0 - r)
-                .w(Px(r * 2.0))
-                .h(Px(r * 2.0))
-                .rounded_px(r)
-                .bg(hex(c).with_alpha(0.22))
-                .blur(80.0)
-                .blend(BlendMode::Add),
-        );
-    }
     kids
 }
 
@@ -88,14 +74,14 @@ fn hook(t: f32) -> Element {
             text("Motion graphics,")
                 .font_size(112.0)
                 .font_weight(800)
-                .color(hex("#f1f5ff"))
+                .color(hex("#efe6d8"))
                 .per_glyph(|i, _| rise(t, 0.2 + i as f32 * 0.03)),
         )
         .child(
             text("written in Rust.")
                 .font_size(112.0)
                 .font_weight(800)
-                .color(hex("#818cf8"))
+                .color(hex("#d9673a"))
                 .per_glyph(|i, _| rise(t, 0.8 + i as f32 * 0.03)),
         )
         .blur(out * 30.0)
@@ -136,23 +122,23 @@ fn highlight(line: &str) -> Vec<(std::ops::Range<usize>, Color)> {
         let c = b[i];
         if c == b'"' {
             let j = line[i + 1..].find('"').map_or(b.len(), |k| i + 1 + k + 1);
-            spans.push((i..j, hex("#a5d6a7")));
+            spans.push((i..j, hex("#8fb59f")));
             i = j;
         } else if c.is_ascii_digit() {
             let j = (i..b.len()).find(|&k| !(b[k].is_ascii_digit() || b[k] == b'.')).unwrap_or(b.len());
-            spans.push((i..j, hex("#fbbf24")));
+            spans.push((i..j, hex("#d9a85b")));
             i = j;
         } else if c == b'.' && i + 1 < b.len() && b[i + 1].is_ascii_alphabetic() {
             let j = (i + 1..b.len()).find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_')).unwrap_or(b.len());
-            spans.push((i + 1..j, hex("#7dd3fc")));
+            spans.push((i + 1..j, hex("#efe6d8")));
             i = j;
         } else if c.is_ascii_alphabetic() {
             let j = (i..b.len()).find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'_')).unwrap_or(b.len());
             let word = &line[i..j];
             if matches!(word, "fn" | "let" | "move") {
-                spans.push((i..j, hex("#c4b5fd")));
+                spans.push((i..j, hex("#e0703a")));
             } else if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                spans.push((i..j, hex("#f9a8d4")));
+                spans.push((i..j, hex("#cf9a7a")));
             }
             i = j;
         } else {
@@ -185,9 +171,9 @@ fn code_panel(t: f32) -> Element {
                 .px_pad(Px(14.0))
                 .py(Px(3.0))
                 .rounded_px(8.0)
-                .bg(hex("#818cf8").with_alpha(0.22 * glow))
-                .child(text(typed).mono().font_size(25.0).color(hex("#cbd5e1")).color_spans(spans))
-                .child(div().w(Px(13.0)).h(Px(28.0)).bg(hex("#e2e8f0")).opacity(if caret { 0.9 } else { 0.0 })),
+                .bg(hex("#d9673a").with_alpha(0.22 * glow))
+                .child(text(typed).mono().font_size(25.0).color(hex("#b9ac99")).color_spans(spans))
+                .child(div().w(Px(13.0)).h(Px(28.0)).bg(hex("#e6dccb")).opacity(if caret { 0.9 } else { 0.0 })),
         );
     }
     div()
@@ -197,8 +183,8 @@ fn code_panel(t: f32) -> Element {
         .h(Px(680.0))
         .p(Px(30.0))
         .rounded_px(22.0)
-        .bg(hex("#0b0e1c").with_alpha(0.86))
-        .border(1.0, hex("#2b3159"))
+        .bg(hex("#151210").with_alpha(0.86))
+        .border(1.0, hex("#33291f"))
         .child(lines)
         .ty((1.0 - s) * 80.0)
         .opacity(s.clamp(0.0, 1.0))
@@ -225,12 +211,12 @@ fn step_label(t: f32) -> Element {
                 .w(Px(46.0))
                 .h(Px(46.0))
                 .rounded_px(23.0)
-                .bg(hex("#6366f1"))
+                .bg(hex("#c4532c"))
                 .items_center()
                 .justify_center()
                 .child(text(n).font_size(24.0).bold().color(Color::WHITE)),
         )
-        .child(text(label).font_size(34.0).font_weight(700).color(hex("#e0e7ff")))
+        .child(text(label).font_size(34.0).font_weight(700).color(hex("#efe6d8")))
         .opacity(a_in * a_out)
         .tx((1.0 - a_in) * -30.0)
 }
@@ -249,7 +235,7 @@ fn preview(t: f32) -> Element {
             text("Hello")
                 .font_size(96.0)
                 .font_weight(800)
-                .color(hex("#f8fafc"))
+                .color(hex("#efe6d8"))
                 .per_glyph(|i, _| {
                     let s = spring_at(t, 7.9 + i as f32 * 0.06, Spring::bouncy());
                     let wave = (t * 7.0 - i as f32 * 0.7).sin() * 26.0 * (hop * (1.0 - hop) * 4.0).min(1.0);
@@ -283,12 +269,12 @@ fn preview(t: f32) -> Element {
                 .w(Px(330.0))
                 .h(Px(220.0))
                 .rounded_px(24.0)
-                .gradient(hex("#6366f1"), hex("#06b6d4"), 0.6)
+                .gradient(hex("#c4532c"), hex("#d4a45a"), 0.6)
                 .p(Px(26.0))
                 .flex_col()
                 .gap(10.0)
                 .child(text("card()").mono().font_size(28.0).bold().color(Color::WHITE))
-                .child(text("rotate · blur · mask").font_size(22.0).color(hex("#e0f2fe")))
+                .child(text("rotate · blur · mask").font_size(22.0).color(hex("#fbeee0")))
                 .rotate(spin + (1.0 - pop) * -0.4)
                 .blur(focus)
                 .mask(wipe)
@@ -306,8 +292,8 @@ fn preview(t: f32) -> Element {
             path()
                 .svg_path("M50 6 A44 44 0 1 1 49.99 6 Z")
                 .view_box(0.0, 0.0, 100.0, 100.0)
-                .fill(hex("#22c55e").with_alpha(0.18))
-                .stroke(hex("#4ade80"), 4.0)
+                .fill(hex("#5f8f7f").with_alpha(0.18))
+                .stroke(hex("#7fb39c"), 4.0)
                 .trim(0.0, trim)
                 .w(Px(220.0))
                 .h(Px(220.0))
@@ -333,14 +319,14 @@ fn preview(t: f32) -> Element {
         .w(Px(pw))
         .h(Px(ph))
         .rounded_px(22.0)
-        .radial_gradient_at(hex("#1e1b4b"), hex("#0a0b18"), 0.3, 0.2)
-        .border(1.0, hex("#2b3159"))
+        .radial_gradient_at(hex("#241c17"), hex("#100d0b"), 0.3, 0.2)
+        .border(1.0, hex("#33291f"))
         .overflow_hidden()
         .children(kids)
         .child(
             text("preview · frame-accurate")
                 .font_size(18.0)
-                .color(hex("#94a3b8"))
+                .color(hex("#8a7d6c"))
                 .absolute()
                 .pos(24.0, ph - 40.0),
         )
@@ -359,21 +345,21 @@ fn render_step(t: f32) -> Element {
     let mut term = div()
         .flex_col()
         .gap(14.0)
-        .child(text(&cmd[..typed]).mono().font_size(30.0).color(hex("#e2e8f0")).color_spans([(0..1.min(typed), hex("#4ade80"))]));
+        .child(text(&cmd[..typed]).mono().font_size(30.0).color(hex("#e6dccb")).color_spans([(0..1.min(typed), hex("#7fb39c"))]));
     if t > 22.7 {
         term = term.child(
             text(format!("rendering + encoding  {:>3}/900 frames", (prog * 900.0) as u32))
                 .mono()
                 .font_size(26.0)
-                .color(hex("#94a3b8")),
+                .color(hex("#8a7d6c")),
         );
         term = term.child(
             div()
                 .w(Px(760.0))
                 .h(Px(14.0))
                 .rounded_px(7.0)
-                .bg(hex("#1e293b"))
-                .child(div().w(Px(760.0 * prog)).h(Px(14.0)).rounded_px(7.0).gradient(hex("#6366f1"), hex("#22d3ee"), 0.0)),
+                .bg(hex("#2a221c"))
+                .child(div().w(Px(760.0 * prog)).h(Px(14.0)).rounded_px(7.0).gradient(hex("#c4532c"), hex("#d4a45a"), 0.0)),
         );
     }
     if t > 25.3 {
@@ -383,7 +369,7 @@ fn render_step(t: f32) -> Element {
                 .mono()
                 .font_size(30.0)
                 .bold()
-                .color(hex("#4ade80"))
+                .color(hex("#7fb39c"))
                 .opacity(d.clamp(0.0, 1.0))
                 .tx((1.0 - d) * -20.0),
         );
@@ -394,8 +380,8 @@ fn render_step(t: f32) -> Element {
         .w(Px(820.0))
         .p(Px(30.0))
         .rounded_px(22.0)
-        .bg(hex("#0b0e1c").with_alpha(0.9))
-        .border(1.0, hex("#2b3159"))
+        .bg(hex("#151210").with_alpha(0.9))
+        .border(1.0, hex("#33291f"))
         .child(term)
         .ty((1.0 - s) * 80.0)
         .opacity(s.clamp(0.0, 1.0) * (1.0 - leave))
@@ -421,7 +407,7 @@ fn outro(t: f32) -> Element {
             text("sabitori-reel")
                 .font_size(140.0)
                 .font_weight(800)
-                .color(hex("#f1f5ff"))
+                .color(hex("#efe6d8"))
                 .per_glyph(|i, n| {
                     let c = i as f32 - n as f32 * 0.5;
                     let s = spring_at(t, 26.6 + c.abs() * 0.03, Spring::gentle());
@@ -432,7 +418,7 @@ fn outro(t: f32) -> Element {
             text("github.com/Mutafika/sabitori")
                 .mono()
                 .font_size(34.0)
-                .color(hex("#a5b4fc"))
+                .color(hex("#d4a45a"))
                 .mask(
                     div()
                         .w(Percent(url * 100.0))
@@ -464,7 +450,7 @@ fn scene(ctx: FrameCtx) -> Element {
     if t >= 26.5 {
         kids.push(outro(t));
     }
-    div().w(Px(W)).h(Px(H)).bg(hex("#05060e")).children(kids)
+    div().w(Px(W)).h(Px(H)).bg(hex("#0c0a09")).children(kids)
 }
 
 fn reel(frames: u32) -> Reel {

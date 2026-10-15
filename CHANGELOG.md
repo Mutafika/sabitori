@@ -21,6 +21,7 @@
   右でそのコードが描く物が動く: 場面を書く → `.per_glyph` / `.rotate` / `.blur` / `.mask` /
   `path().trim(..)` の行が光るたびにその動き → `cargo run` で MP4 に。ウェブに載せる前提で
   `crf` を 22 にし (30 秒で 6MB 弱)、再生前に見せる静止画 (`promo-poster.png`) も書く。
+  色は「錆取り」に掛けて、暖かい黒の地に錆・真鍮・緑青。
 
 - **`sabitori_reel::Video` — 動画素材を貼る。** `Video::open(path, 幅, 高さ, fps)` で開き、
   `video.element(t)` (または `frame(t)`) で動画の時刻 `t` 秒のコマを画像の要素にする。
