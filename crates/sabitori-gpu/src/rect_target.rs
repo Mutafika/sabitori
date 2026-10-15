@@ -23,4 +23,6 @@ pub trait RectTarget {
     fn globals(&self) -> &wgpu::BindGroup;
     /// 描き先の大きさ (物理 px)。グループ (先に別の絵に描く中身) の描き先をこれに合わせる。
     fn target_size(&self) -> (u32, u32);
+    /// 論理 px → 物理 px の倍率。
+    fn scale_factor(&self) -> f32;
 }

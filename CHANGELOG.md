@@ -17,6 +17,12 @@
 
 ### Added
 
+- **`.blur(px)` — 要素を中身ごとぼかす。** CSS の `filter: blur()` と同じく `px` は標準偏差
+  (論理 px、解像度の倍率に関係なく同じ幅)。`.rotate(..)` と同じく中身を別の絵に描いてから、
+  貼る前に縦横 2 回のパスでぼかす。前乗算のまま混ぜるので、透明な所との境目が黒ずまない。
+  WebGL でも動くよう、計算シェーダではなく描画のパスで掛ける。作例の `intro` の題字が、
+  ぼけた所からピントが合って入る。
+
 - **`.rotate(radians)` — 要素を中身ごと回す。** CSS の `transform: rotate()` と同じく見た目だけで、
   レイアウトは動かない。中身 (背景・枠・子・文字・画像・切り抜き・goo) を先に窓と同じ
   大きさの別の絵に描いてから、中心まわりに回して貼る。入れ子にすれば角は足され、外の
@@ -67,6 +73,8 @@
 
 ### Changed（破壊的）
 
+- **`RectTarget` に `scale_factor()` を、`GroupInstance` に `effect` を、`GroupDraw` に `blur` を
+  足した。** `GroupRenderer::prepare` は倍率 (`scale`) を取る。
 - **`UiRenderers` に `groups: Option<&mut GroupRenderer>` を足した。** `None` なら回さずに
   その場で描く。`RectTarget` に `target_size()` (描き先の物理 px) を足した。
 - **`RenderCommand` に `PushGroup` / `PopGroup`、`DrawRun` に `Group` を足した。** 全部の腕を
