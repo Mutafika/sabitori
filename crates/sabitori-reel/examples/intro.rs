@@ -24,6 +24,7 @@ mod out;
 use out::Args;
 use sabitori_core::{goo, BoxShadow, Point, Rect};
 use sabitori_reel::{
+    MotionBlur,
     div, image, interpolate, interpolate_color, interpolate_eased, spring_with, text, Color,
     Easing, Element, FrameCtx, ImageData, Px, Reel, Spring,
 };
@@ -333,6 +334,11 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
     div().w(Px(W)).h(Px(H)).bg(hex("#070818")).children(kids)
 }
 
+/// 速い動き (入場・伸びる線) が滑らかに見えるよう、1 コマを 8 回描いて平均する。
+fn reel(frames: u32) -> Reel {
+    Reel { motion_blur: Some(MotionBlur::new(8)), ..Reel::new(W as u32, H as u32, FPS, frames) }
+}
+
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let photo = backdrop(W as u32, H as u32);
@@ -341,7 +347,7 @@ fn main() {
 
     if !stills.is_empty() {
         // 指定のコマだけ PNG に書く (見た目の確認用)。
-        let reel = Reel::new(W as u32, H as u32, FPS, stills.len() as u32);
+        let reel = reel(stills.len() as u32);
         let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx }, &photo);
         let dir = args.frames_dir("intro");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
@@ -351,7 +357,7 @@ fn main() {
         return;
     }
 
-    let reel = Reel::new(W as u32, H as u32, FPS, frames);
+    let reel = reel(frames);
     let out = args.mp4("intro");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
     match reel.render_mp4(&|ctx| scene(ctx, &photo), &out) {

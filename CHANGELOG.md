@@ -17,6 +17,14 @@
 
 ### Added
 
+- **`Reel::motion_blur` (`MotionBlur`)** — 動く物にシャッターのぶれを付ける。1 コマを
+  `samples` 回、シャッターが開いている間の時刻で描き、明るさを線形に戻して平均する。
+  止まっている物は 1 画素も変わらない。`ctx.t()` から作った動き (`interpolate` /
+  `spring` / `Seq` も含む) がぶれる。`ctx.frame` を直に読む動きはぶれない。
+  作例の `intro` と `chart` で使っている。
+- **`FrameCtx::sub`** — コマの間の時刻 (コマ単位の端数)。ブラーの標本を描く間だけ 0 以外に
+  なり、`t()` と `progress()` はこれを含む。
+
 - **`Reel::mono_family`** — reel で等幅の字 (`.mono()` / `cell_grid`) を選ぶ。指定しないと
   フォントの DB の既定の等幅で、macOS では Courier になる。
 
@@ -38,6 +46,10 @@
 
 ### Changed（破壊的）
 
+- **`FrameCtx` に `sub` を、`Reel` に `motion_blur` を足した。** 構造体リテラルで全フィールドを
+  書いている所は `sub: 0.0` / `..Reel::new(..)` が要る。
+- **`spring` / `spring_with` がコマの間の時刻でも動く。** 今までは時刻を一番近いコマに丸めて
+  いた。整数のコマの値は変わらない。
 - **`Reel` に `mono_family` を足した。** 構造体リテラルで全フィールドを書いている所は
   `..Reel::new(..)` が要る。
 

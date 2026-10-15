@@ -178,6 +178,11 @@ pub mod three {
 pub struct FrameCtx {
     /// Frame index, starting at 0.
     pub frame: u32,
+    /// How far past `frame` the clock is, in frames (`0.0..1.0`). Always `0.0`
+    /// except while [`Reel::motion_blur`] samples the inside of a frame. Animate
+    /// off [`FrameCtx::t`] (which includes it) rather than `frame` so a blurred
+    /// reel sees the motion between frames.
+    pub sub: f32,
     /// Frames per second of the reel.
     pub fps: u32,
     /// Canvas width in logical pixels.
@@ -189,7 +194,7 @@ pub struct FrameCtx {
 impl FrameCtx {
     /// Time in seconds since frame 0.
     pub fn t(&self) -> f32 {
-        self.frame as f32 / self.fps as f32
+        (self.frame as f32 + self.sub) / self.fps as f32
     }
 
     /// Progress through the whole reel in `[0, 1)`.
@@ -197,7 +202,7 @@ impl FrameCtx {
         if total_frames == 0 {
             0.0
         } else {
-            self.frame as f32 / total_frames as f32
+            (self.frame as f32 + self.sub) / total_frames as f32
         }
     }
 }
@@ -268,15 +273,22 @@ pub mod anim {
             return 0.0;
         }
         let dt = 1.0 / fps as f32;
-        let steps = (t * fps as f32).round() as u32;
+        // 整数のコマは今まで通り 1 コマずつ進め、コマの間 (モーションブラーの
+        // 標本) は端数の分だけもう 1 歩進める。丸めると、コマの間で値が止まる。
+        let frames = t * fps as f32;
+        let steps = (frames + 1e-3).floor();
+        let frac = frames - steps;
         let (mut value, mut velocity) = (0.0f32, 0.0f32);
-        for _ in 0..steps {
+        for _ in 0..steps as u32 {
             let (v, vel, settled) = cfg.step(value, velocity, 1.0, dt);
             value = v;
             velocity = vel;
             if settled {
                 return 1.0;
             }
+        }
+        if frac > 1e-3 {
+            value = cfg.step(value, velocity, 1.0, dt * frac).0;
         }
         value
     }
@@ -336,8 +348,7 @@ pub mod anim {
             if !self.active(ctx) {
                 return None;
             }
-            let local = ((ctx.t() - self.start) * ctx.fps as f32).round() as u32;
-            Some(FrameCtx { frame: local, ..ctx })
+            Some(self.local(ctx))
         }
 
         /// Like [`enter`](Seq::enter) but open-ended: `None` only *before*
@@ -348,8 +359,14 @@ pub mod anim {
             if ctx.t() < self.start {
                 return None;
             }
-            let local = ((ctx.t() - self.start) * ctx.fps as f32).round() as u32;
-            Some(FrameCtx { frame: local, ..ctx })
+            Some(self.local(ctx))
+        }
+
+        /// `ctx` の時計を窓の始まりに合わせる。コマの間の端数 (`sub`) は持ち越す。
+        fn local(&self, ctx: FrameCtx) -> FrameCtx {
+            let at_frame = ctx.frame as f32 / ctx.fps as f32;
+            let local = ((at_frame - self.start) * ctx.fps as f32).round().max(0.0) as u32;
+            FrameCtx { frame: local, ..ctx }
         }
     }
 }
@@ -425,6 +442,79 @@ pub struct Reel {
     /// motion graphics compress well, so going below the default 18 costs
     /// little. Default `18`.
     pub crf: u8,
+    /// Blur what moves within a frame, like a camera shutter. `None` (the
+    /// default) draws each frame once, sharp. See [`MotionBlur`].
+    pub motion_blur: Option<MotionBlur>,
+}
+
+/// Motion blur for a [`Reel`]: each frame is drawn `samples` times at clock
+/// times spread across the open shutter ([`FrameCtx::sub`]), and the drawings
+/// are averaged in linear light. Anything still comes out unchanged; anything
+/// that moves leaves a smear as long as its travel while the shutter is open.
+///
+/// Only motion derived from [`FrameCtx::t`] (and the helpers built on it,
+/// such as [`interpolate`], [`spring`] and [`Seq`]) is blurred — code that
+/// reads `ctx.frame` sees the same integer for every sample. Costs `samples`
+/// renders per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionBlur {
+    /// Drawings per frame. `1` = no blur. 8–16 is smooth for most motion.
+    pub samples: u32,
+    /// How long the shutter stays open, as a fraction of a frame
+    /// (`0.0..=1.0`). `0.5` is film's 180° shutter; `1.0` smears the whole
+    /// gap between frames.
+    pub shutter: f32,
+}
+
+impl MotionBlur {
+    /// `samples` drawings per frame with a 180° shutter (`0.5`).
+    pub fn new(samples: u32) -> Self {
+        Self { samples, shutter: 0.5 }
+    }
+
+    /// Draw `ctx` once per sample through `draw` and average the results. The
+    /// pixels are sRGB-encoded RGBA8, so color is averaged after decoding to
+    /// linear light (an average of the encoded bytes darkens the smear);
+    /// alpha is averaged as is.
+    fn render(&self, ctx: FrameCtx, mut draw: impl FnMut(FrameCtx) -> Vec<u8>) -> Vec<u8> {
+        let n = self.samples.max(1);
+        let shutter = self.shutter.clamp(0.0, 1.0);
+        let to_linear: [f32; 256] = std::array::from_fn(|i| srgb_to_linear(i as f32 / 255.0));
+        let mut sum: Vec<f32> = Vec::new();
+        for i in 0..n {
+            let rgba = draw(FrameCtx { sub: shutter * i as f32 / n as f32, ..ctx });
+            if sum.is_empty() {
+                sum = vec![0.0; rgba.len()];
+            }
+            for (k, (acc, &b)) in sum.iter_mut().zip(&rgba).enumerate() {
+                *acc += if k % 4 == 3 { b as f32 / 255.0 } else { to_linear[b as usize] };
+            }
+        }
+        sum.iter()
+            .enumerate()
+            .map(|(k, &acc)| {
+                let v = acc / n as f32;
+                let v = if k % 4 == 3 { v } else { linear_to_srgb(v) };
+                (v * 255.0).round().clamp(0.0, 255.0) as u8
+            })
+            .collect()
+    }
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 impl Reel {
@@ -440,6 +530,7 @@ impl Reel {
             mono_family: None,
             scale: 1.0,
             crf: 18,
+            motion_blur: None,
         }
     }
 
@@ -461,6 +552,7 @@ impl Reel {
         );
         let frame0 = FrameCtx {
             frame: 0,
+            sub: 0.0,
             fps: self.fps,
             width: self.width as f32,
             height: self.height as f32,
@@ -472,9 +564,7 @@ impl Reel {
         }
         let mut paths = Vec::with_capacity(self.frames as usize);
         for frame in 0..self.frames {
-            let ctx = FrameCtx { frame, ..frame0 };
-            let root = scene.view(ctx);
-            let rgba = gpu.render_frame(&root, self.clear, frame_stage(scene, ctx));
+            let rgba = self.render_ctx(&mut gpu, scene, FrameCtx { frame, ..frame0 });
             let path = dir.join(format!("frame_{frame:05}.png"));
             image::save_buffer(
                 &path,
@@ -487,6 +577,18 @@ impl Reel {
             paths.push(path);
         }
         Ok(paths)
+    }
+
+    /// One frame's pixels, blurred when [`Reel::motion_blur`] asks for it.
+    fn render_ctx(&self, gpu: &mut Gpu, scene: &dyn Scene, ctx: FrameCtx) -> Vec<u8> {
+        let mut draw = |ctx: FrameCtx| {
+            let root = scene.view(ctx);
+            gpu.render_frame(&root, self.clear, frame_stage(scene, ctx))
+        };
+        match self.motion_blur {
+            Some(blur) if blur.samples > 1 => blur.render(ctx, draw),
+            _ => draw(ctx),
+        }
     }
 
     /// Render every frame and encode it to an H.264 MP4 at `out` via `ffmpeg`,
@@ -998,6 +1100,7 @@ impl<S: Scene> PreviewApp<S> {
     fn frame_ctx(&self) -> FrameCtx {
         FrameCtx {
             frame: self.current_frame(),
+            sub: 0.0,
             fps: self.fps,
             width: self.width,
             height: self.height,
@@ -1375,4 +1478,71 @@ mod tests {
         let bottom = pixel(&rgba, 64, 32, 61)[0];
         assert!(bottom + 100 < top, "下が暗くなっていない (上 {top}, 下 {bottom})");
     }
+
+    fn ctx(frame: u32, fps: u32, w: f32, h: f32) -> FrameCtx {
+        FrameCtx { frame, sub: 0.0, fps, width: w, height: h }
+    }
+
+    /// 速く動く箱は、ブラー有りだとシャッターが開いている間の通り道に薄く伸びる。
+    /// 無しだと通り道は背景のまま。
+    #[test]
+    fn motion_blur_smears_what_moves() {
+        if !gpu_available() {
+            return;
+        }
+        // 10fps で 1 コマに 100px 進む白い箱。コマ 0 のシャッター (1 コマ分) の間に
+        // x = 0 → 100 を通る。
+        let scene = |ctx: FrameCtx| -> Element {
+            div().w(Px(200.0)).h(Px(20.0)).bg(Color::BLACK).child(
+                div().w(Px(20.0)).h(Px(20.0)).bg(Color::WHITE).tx(ctx.t() * 1000.0),
+            )
+        };
+        let sharp = Reel::new(200, 20, 10, 1);
+        let blurred = Reel { motion_blur: Some(MotionBlur { samples: 8, shutter: 1.0 }), ..Reel::new(200, 20, 10, 1) };
+        let mut gpu = Gpu::new(200, 20, 1.0, &[], None, None);
+        let a = sharp.render_ctx(&mut gpu, &scene, ctx(0, 10, 200.0, 20.0));
+        let b = blurred.render_ctx(&mut gpu, &scene, ctx(0, 10, 200.0, 20.0));
+        let (sa, sb) = (pixel(&a, 200, 60, 10)[0], pixel(&b, 200, 60, 10)[0]);
+        assert!(sa < 10, "ブラー無しで通り道が塗られている: {sa}");
+        assert!((40..230).contains(&sb), "通り道が薄く伸びていない: {sb}");
+    }
+
+    /// 止まっている物は、ブラーを掛けても 1 画素も変わらない (線形にして平均して戻す
+    /// 往復で色がずれない)。
+    #[test]
+    fn motion_blur_leaves_still_things_alone() {
+        if !gpu_available() {
+            return;
+        }
+        let scene = |_: FrameCtx| -> Element {
+            div()
+                .w(Px(64.0))
+                .h(Px(64.0))
+                .gradient(Color::from_hex("#1e293b"), Color::from_hex("#f472b6"), 0.3)
+                .child(text("Aa").font_size(28.0).color(Color::WHITE))
+        };
+        let mut gpu = Gpu::new(64, 64, 1.0, &[], None, None);
+        let sharp = Reel::new(64, 64, 30, 1).render_ctx(&mut gpu, &scene, ctx(3, 30, 64.0, 64.0));
+        let blurred = Reel { motion_blur: Some(MotionBlur::new(6)), ..Reel::new(64, 64, 30, 1) }
+            .render_ctx(&mut gpu, &scene, ctx(3, 30, 64.0, 64.0));
+        assert!(sharp == blurred, "止まった絵がブラーで変わった");
+    }
+
+    /// ばねはコマの間でも動く。丸めて整数のコマに寄せると、ブラーの標本がみな同じ値になる。
+    #[test]
+    fn spring_moves_between_frames() {
+        let at = |frames: f32| spring(frames / 30.0, 30);
+        let (a, mid, b) = (at(3.0), at(3.5), at(4.0));
+        assert!(a < mid && mid < b, "コマの間で止まっている: {a} {mid} {b}");
+    }
+
+    /// `Seq` で時計を合わせ直しても、コマの間の端数は残る。
+    #[test]
+    fn seq_keeps_the_sub_frame() {
+        let c = FrameCtx { sub: 0.5, ..ctx(45, 30, 1.0, 1.0) };
+        let local = Seq::new(1.0, 2.0).since(c).unwrap();
+        assert_eq!(local.frame, 15);
+        assert!((local.t() - 15.5 / 30.0).abs() < 1e-5, "{}", local.t());
+    }
+
 }

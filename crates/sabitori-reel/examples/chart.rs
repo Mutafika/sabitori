@@ -28,6 +28,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use sabitori_core::element::HighlightSpec;
 use sabitori_core::{BoxShadow, Point};
 use sabitori_reel::{
+    MotionBlur,
     arc, div, interpolate, interpolate_eased, polyline, spring_with, text, Color, Easing, Element,
     FrameCtx, Px, Reel, Spring,
 };
@@ -334,6 +335,11 @@ fn y_at(pts: &[(f32, f32)], x: f32) -> f32 {
     pts.last().map_or(CY1, |q| q.1)
 }
 
+/// 速い動き (入場・伸びる線) が滑らかに見えるよう、1 コマを 8 回描いて平均する。
+fn reel(frames: u32) -> Reel {
+    Reel { motion_blur: Some(MotionBlur::new(8)), ..Reel::new(W as u32, H as u32, FPS, frames) }
+}
+
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
@@ -341,7 +347,7 @@ fn main() {
 
     if !stills.is_empty() {
         // 指定のコマだけ PNG に書く (見た目の確認用)。
-        let reel = Reel::new(W as u32, H as u32, FPS, stills.len() as u32);
+        let reel = reel(stills.len() as u32);
         let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx });
         let dir = args.frames_dir("chart");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
@@ -351,7 +357,7 @@ fn main() {
         return;
     }
 
-    let reel = Reel::new(W as u32, H as u32, FPS, frames);
+    let reel = reel(frames);
     let out = args.mp4("chart");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
     match reel.render_mp4(&scene, &out) {
