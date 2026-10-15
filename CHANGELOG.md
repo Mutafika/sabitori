@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-15
+
 ### Added
 
 - **`.vertical()` — 縦書き。** 字は上から下、列は右から左へ並び、改行か箱の高さで次の列へ送る。
@@ -4775,7 +4777,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/Mutafika/sabitori/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Mutafika/sabitori/compare/v0.41.1...v0.42.0
 [0.41.1]: https://github.com/Mutafika/sabitori/compare/v0.41.0...v0.41.1
 [0.41.0]: https://github.com/Mutafika/sabitori/compare/v0.40.0...v0.41.0
