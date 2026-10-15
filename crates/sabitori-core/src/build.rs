@@ -19,7 +19,7 @@ use crate::element::{
     Placement, Position, Track, TrackSize, Typography,
 };
 use crate::Corners;
-use crate::render_list::{GroupDraw, GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
+use crate::render_list::{GroupDraw, GooDraw, PathFillDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
 use crate::{Color, GradientKind, Grain, Point, Rect};
 
 use crate::TextMetrics;
@@ -799,6 +799,7 @@ fn path_segment(element: &Element, index: usize) -> String {
         ElementKind::Arc(_) => format!("arc[{index}]"),
         ElementKind::Polyline(_) => format!("polyline[{index}]"),
         ElementKind::Goo(_) => format!("goo[{index}]"),
+        ElementKind::Path(_) => format!("path[{index}]"),
         ElementKind::CellGrid(_) => format!("cell_grid[{index}]"),
     }
 }
@@ -1374,6 +1375,61 @@ fn place_anchored(
     (x, y)
 }
 
+/// パス ([`crate::element::path`]) を描く: 塗りは `PathFill`、線は `Polyline` (途中まで・
+/// 点線は折れ線の長さで切る)。座標は箱の左上から (`view_box` があれば箱いっぱいに)。
+#[allow(clippy::too_many_arguments)]
+fn emit_path(
+    target: &mut RenderList,
+    p: &crate::path::PathKind,
+    abs_x: f32,
+    abs_y: f32,
+    w: f32,
+    h: f32,
+    scale: f32,
+    opacity: f32,
+) {
+    // 座標 → 画面。view_box は縦横比を保って箱の真ん中に。
+    let (k, ox, oy) = match p.view_box {
+        Some((vx, vy, vw, vh)) if vw > 0.0 && vh > 0.0 => {
+            let k = (w / vw).min(h / vh);
+            (k, abs_x + (w - vw * k) * 0.5 - vx * k, abs_y + (h - vh * k) * 0.5 - vy * k)
+        }
+        _ => (scale, abs_x, abs_y),
+    };
+    let contours = crate::path::flatten(&p.cmds, 0.2, |x, y| (ox + x * k, oy + y * k));
+    if contours.is_empty() {
+        return;
+    }
+    let pt = |q: &(f32, f32)| Point::new(q.0, q.1);
+    if let Some(fill) = p.fill {
+        let closed: Vec<Vec<Point>> =
+            contours.iter().filter(|c| c.points.len() >= 3).map(|c| c.points.iter().map(pt).collect()).collect();
+        if !closed.is_empty() {
+            target.commands.push(RenderCommand::PathFill(PathFillDraw {
+                contours: closed,
+                color: apply_opacity(fill, opacity),
+                even_odd: p.even_odd,
+            }));
+        }
+    }
+    if let Some(stroke) = p.stroke {
+        let width = (p.stroke_width * k).max(0.0);
+        let color = apply_opacity(stroke, opacity);
+        let lines = if p.trim == (0.0, 1.0) {
+            contours.into_iter().map(|c| c.points).collect()
+        } else {
+            crate::path::trim(&contours, p.trim.0, p.trim.1)
+        };
+        let lines: Vec<Vec<(f32, f32)>> = match p.dash {
+            Some((on, off)) => lines.iter().flat_map(|l| crate::path::dash(l, on * k, off * k)).collect(),
+            None => lines,
+        };
+        for l in lines {
+            target.commands.push(RenderCommand::Polyline(PolylineDraw { points: l.iter().map(pt).collect(), width, color }));
+        }
+    }
+}
+
 /// マスクを持つ要素のノード → マスクを組んだ根のノード。
 type MaskLayouts = std::collections::HashMap<taffy::NodeId, taffy::NodeId>;
 
@@ -1679,7 +1735,7 @@ fn emit_commands_inner(
     // (panic もログも無い)。`arc()` は半径を箱から出すので例外にしない —
     // 0 の箱なら本当に描くものが無い。
     // `goo()` も同じ — 形は 2 つの矩形で決まり、箱は置き場所でしかない。
-    let draws_without_a_box = matches!(element.kind, ElementKind::Polyline(_) | ElementKind::Goo(_));
+    let draws_without_a_box = matches!(element.kind, ElementKind::Polyline(_) | ElementKind::Goo(_) | ElementKind::Path(_));
     if (w <= 0.0 || h <= 0.0) && !draws_without_a_box {
         // A zero-sized CLIPPING container (overflow Hidden/Scroll) shows
         // nothing: cull the entire subtree. Recursing here would emit the
@@ -1926,6 +1982,9 @@ fn emit_commands_inner(
                     color: apply_opacity(pl.color, effective_opacity),
                 }));
             }
+        }
+        ElementKind::Path(p) => {
+            emit_path(target, p, abs_x, abs_y, w, h, scale, effective_opacity);
         }
         ElementKind::Goo(g) => {
             // Shapes are local to the element box, like polyline points.
@@ -2443,7 +2502,8 @@ fn convert_to_taffy_style(
         | ElementKind::Arc(_)
         | ElementKind::CellGrid(_)
         | ElementKind::Polyline(_)
-        | ElementKind::Goo(_) => (
+        | ElementKind::Goo(_)
+        | ElementKind::Path(_) => (
             convert_min_dimension(style.min_width),
             // 縦も横と同じ 0。taffy 0.9 までは「子コンテナに定値の `min_height`
             // があると padding のある親が膨らむ」ため縦だけ絞っていたが、

@@ -321,3 +321,30 @@ impl GroupInstance {
         }
     }
 }
+
+/// パスの塗りの頂点 1 つ (`fill.wgsl`)。3 つで三角形 1 つ。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct FillVertex {
+    /// 画面座標 (論理 px)。
+    pub position: [f32; 2],
+    /// 色 (straight の線形 RGBA)。
+    pub color: [f32; 4],
+    /// 切り抜き (論理 px の x, y, w, h)。`w == 0 || h == 0` → 切らない。
+    pub clip_rect: [f32; 4],
+}
+
+impl FillVertex {
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+            0 => Float32x2, // position
+            1 => Float32x4, // color
+            2 => Float32x4, // clip_rect
+        ];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<FillVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: ATTRS,
+        }
+    }
+}

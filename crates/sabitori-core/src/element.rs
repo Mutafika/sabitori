@@ -1330,6 +1330,44 @@ pub enum ElementKind {
     Goo(Box<GooKind>),
     /// 等幅の文字の格子 ([`cell_grid`])。レイアウト上は箱 1 つ。
     CellGrid(CellGridKind),
+    /// 自由な形のパス ([`path`])。直線・ベジェ・円弧の輪郭を塗り、線を引く。座標は
+    /// 要素の箱の左上からの論理 px (`view_box` があればその座標系)。
+    Path(Box<crate::path::PathKind>),
+}
+
+/// 自由な形のパスを作る。直線・2 次 / 3 次ベジェ・円弧 (SVG の `d` で) の輪郭を、
+/// `.fill(..)` で塗り、`.stroke(..)` で線を引く。`.trim(..)` で線を途中まで描けば
+/// 「描かれていく」アニメになり、`.dash(..)` で点線になる。
+///
+/// 座標は要素の箱の左上からの論理 px。アイコンのように座標系の決まった形は
+/// `.view_box(..)` を付けると箱いっぱいに引き伸ばす (縦横比は保つ)。箱は自分では
+/// 大きさを持たないので、`.w(..)` / `.h(..)` で置き場所を決める (`polyline` と同じ)。
+///
+/// ```ignore
+/// path().svg_path("M2 12 L9 19 L22 4").view_box(0.0, 0.0, 24.0, 24.0)
+///     .w(Px(48.0)).h(Px(48.0))
+///     .stroke(Color::WHITE, 3.0).trim(0.0, progress)
+/// ```
+pub fn path() -> Element {
+    let mut e = div();
+    e.kind = ElementKind::Path(Box::default());
+    e
+}
+
+/// 読めない所の手前までを読む ([`Element::svg_path`])。
+fn partial_svg(d: &str) -> Vec<crate::path::PathCmd> {
+    // 後ろから縮めて、読める一番長い頭を探す (壊れたアイコン用の救済で、速さは要らない)。
+    let mut end = d.len();
+    while end > 0 {
+        if let Ok(c) = crate::path::parse_svg(&d[..end]) {
+            return c;
+        }
+        end -= 1;
+        while end > 0 && !d.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    Vec::new()
 }
 
 /// [`ElementKind::CellGrid`] の中身。
@@ -3336,8 +3374,119 @@ impl Element {
 
     /// Set the stroke width (logical px) of a polyline.
     pub fn stroke_width(mut self, w: f32) -> Self {
-        if let ElementKind::Polyline(p) = &mut self.kind {
-            p.width = w.max(0.0);
+        match &mut self.kind {
+            ElementKind::Polyline(p) => p.width = w.max(0.0),
+            ElementKind::Path(p) => p.stroke_width = w.max(0.0),
+            _ => {}
+        }
+        self
+    }
+
+    // -- Path (no-op on non-Path elements) --
+
+    fn path_mut(&mut self) -> Option<&mut crate::path::PathKind> {
+        match &mut self.kind {
+            ElementKind::Path(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn path_cmd(mut self, c: crate::path::PathCmd) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.cmds.push(c);
+        }
+        self
+    }
+
+    /// パス: 新しい輪郭を (`x`, `y`) から始める。
+    pub fn move_to(self, x: f32, y: f32) -> Self {
+        self.path_cmd(crate::path::PathCmd::MoveTo(x, y))
+    }
+
+    /// パス: (`x`, `y`) まで直線。
+    pub fn line_to(self, x: f32, y: f32) -> Self {
+        self.path_cmd(crate::path::PathCmd::LineTo(x, y))
+    }
+
+    /// パス: 制御点 (`cx`, `cy`) の 2 次ベジェで (`x`, `y`) まで。
+    pub fn quad_to(self, cx: f32, cy: f32, x: f32, y: f32) -> Self {
+        self.path_cmd(crate::path::PathCmd::QuadTo(cx, cy, x, y))
+    }
+
+    /// パス: 制御点 (`c1x`, `c1y`)・(`c2x`, `c2y`) の 3 次ベジェで (`x`, `y`) まで。
+    pub fn cubic_to(self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) -> Self {
+        self.path_cmd(crate::path::PathCmd::CubicTo(c1x, c1y, c2x, c2y, x, y))
+    }
+
+    /// パス: 今の輪郭を始点へ閉じる。
+    pub fn close_path(self) -> Self {
+        self.path_cmd(crate::path::PathCmd::Close)
+    }
+
+    /// パス: SVG の `d` 属性を足す (`M L H V C S Q T A Z` と相対形)。読めない所が
+    /// あれば、そこまでを足して残りは捨てる (アイコンを丸ごと貼るとき用)。
+    pub fn svg_path(mut self, d: &str) -> Self {
+        let cmds = match crate::path::parse_svg(d) {
+            Ok(c) => c,
+            Err(_) => {
+                // 読めた所までは使う。読めない手前までをもう一度読む手間は掛けず、
+                // 先頭から 1 字ずつ縮めずに、エラーの位置で切る。
+                partial_svg(d)
+            }
+        };
+        if let Some(p) = self.path_mut() {
+            p.cmds.extend(cmds);
+        }
+        self
+    }
+
+    /// パス: 塗る色。
+    pub fn fill(mut self, color: Color) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.fill = Some(color);
+        }
+        self
+    }
+
+    /// パス: 塗りを偶奇の規則にする (SVG の `fill-rule="evenodd"`)。既定は非ゼロ。
+    pub fn fill_even_odd(mut self) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.even_odd = true;
+        }
+        self
+    }
+
+    /// パス: 線の色と太さ (論理 px)。
+    pub fn stroke(mut self, color: Color, width: f32) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.stroke = Some(color);
+            p.stroke_width = width.max(0.0);
+        }
+        self
+    }
+
+    /// パス: 線を全長の `start..end` (割合) の所だけ引く。`end` を 0 → 1 に動かせば、
+    /// 線が描かれていくアニメになる。塗りには効かない。
+    pub fn trim(mut self, start: f32, end: f32) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.trim = (start, end);
+        }
+        self
+    }
+
+    /// パス: 点線にする (`on` px 描いて `off` px 空ける)。
+    pub fn dash(mut self, on: f32, off: f32) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.dash = Some((on, off));
+        }
+        self
+    }
+
+    /// パス: 座標系 (SVG の `viewBox`)。この範囲を要素の箱いっぱいに、縦横比を保って
+    /// 引き伸ばす (真ん中に寄せる)。線の太さも同じ倍率で太る。
+    pub fn view_box(mut self, x: f32, y: f32, w: f32, h: f32) -> Self {
+        if let Some(p) = self.path_mut() {
+            p.view_box = Some((x, y, w, h));
         }
         self
     }
@@ -3366,6 +3515,9 @@ impl Element {
     }
 
     pub fn stroke_color(mut self, c: Color) -> Self {
+        if let ElementKind::Path(p) = &mut self.kind {
+            p.stroke = Some(c);
+        }
         if let ElementKind::Polyline(p) = &mut self.kind {
             p.color = c;
         }
