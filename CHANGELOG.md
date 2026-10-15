@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-15
+
 ### Added
 
 - **作例 `promo` (30 秒、LP 向け)** — 使い方の説明を兼ねた紹介映像。左でコードが 1 行ずつ打たれ、
@@ -4744,7 +4746,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.41.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/Mutafika/sabitori/compare/v0.41.1...v0.42.0
 [0.41.1]: https://github.com/Mutafika/sabitori/compare/v0.41.0...v0.41.1
 [0.41.0]: https://github.com/Mutafika/sabitori/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/Mutafika/sabitori/compare/v0.39.0...v0.40.0
