@@ -17,6 +17,13 @@
 
 ### Added
 
+- **`sabitori_reel::Video` — 動画素材を貼る。** `Video::open(path, 幅, 高さ, fps)` で開き、
+  `video.element(t)` (または `frame(t)`) で動画の時刻 `t` 秒のコマを画像の要素にする。
+  `ffmpeg` (書き出しと同じ、`SABITORI_REEL_FFMPEG` で差し替え可) に生の RGBA を流させ、
+  reel が頭から順に描く間は続きを読むだけ。戻ったとき・大きく飛んだときはその時刻から
+  開き直す。コマの間の時刻 (モーションブラーの標本) は同じコマを返す。画面の録画や実写を
+  角丸の枠に入れたり、回したり、マスクしたりできる。
+
 - **`path()` — 自由な形のパス。** 直線・2 次 / 3 次ベジェ (`move_to` / `line_to` / `quad_to` /
   `cubic_to` / `close_path`) か SVG の `d` (`.svg_path(..)`、`M L H V C S Q T A Z` と相対形) で
   輪郭を書き、`.fill(..)` で塗り (非ゼロ、`.fill_even_odd()` で偶奇)、`.stroke(色, 太さ)` で

@@ -28,7 +28,6 @@
 //! [Sabitori]: https://github.com/Mutafika/sabitori
 
 use std::cell::RefCell;
-use std::process::Command;
 use std::sync::Arc;
 
 use sabitori::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
@@ -57,6 +56,9 @@ pub use sabitori_core::{
 /// [`Scene::setup_stage`] registers meshes and lights once, and
 /// [`Scene::stage`] returns the camera and per-instance transforms for a single
 /// frame — so scrubbing backwards lands on the identical image.
+mod video;
+pub use video::Video;
+
 #[cfg(feature = "three-d")]
 pub mod three {
     pub use seimei::math::Vec3D;
@@ -615,15 +617,8 @@ impl Reel {
         let _ = std::fs::remove_dir_all(&dir);
         self.render_pngs(scene, &dir)?;
 
-        let ffmpeg = std::env::var("SABITORI_REEL_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
-        let mut cmd = Command::new(&ffmpeg);
-        // Let a self-contained ffmpeg find its bundled dylibs (Remotion's build
-        // needs this on macOS). Skipped for a bare "ffmpeg" from PATH.
-        if let Some(parent) =
-            std::path::Path::new(&ffmpeg).parent().filter(|p| !p.as_os_str().is_empty())
-        {
-            cmd.env("DYLD_LIBRARY_PATH", parent);
-        }
+        let mut cmd = video::ffmpeg_command();
+        let ffmpeg = cmd.get_program().to_owned();
         let fps = self.fps.to_string();
         let crf = self.crf.to_string();
         let pattern = dir.join("frame_%05d.png");
