@@ -45,8 +45,8 @@ use sabitori_text::TextRenderer;
 // `use sabitori_reel::*` to author a tree.
 pub use sabitori_core::element::polyline;
 pub use sabitori_core::{
-    arc, button, div, image, text, Auto, BlendMode, Color, Dimension, Element, ImageData, ObjectFit, Percent,
-    Px, Typography,
+    arc, button, div, image, text, Auto, BlendMode, Color, Dimension, Element, GlyphMotion, ImageData,
+    ObjectFit, Percent, Px, Typography,
 };
 
 /// A 3D stage drawn *beneath* the UI overlay, rendered by `seimei` (PBR,

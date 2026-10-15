@@ -334,6 +334,9 @@ pub struct TextDraw {
     /// ときの「どの段落か」の手掛かり ([#107](https://github.com/Mutafika/sabitori/issues/107))。
     /// 描画の順の番号 (`element_index`) はフレームごとに変わりうるので保存できない。
     pub owner: Option<std::sync::Arc<str>>,
+    /// 1 字ずつの動き ([`Element::glyph_motion`](crate::Element::glyph_motion))。
+    /// 字の番号 (`content.chars()` の順) で引く。
+    pub glyph_motion: Option<std::sync::Arc<[crate::element::GlyphMotion]>>,
 }
 
 /// Draw an image at a position.

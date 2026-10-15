@@ -551,6 +551,27 @@ pub enum ScrollOwner {
     App,
 }
 
+/// 1 字の動き ([`Element::glyph_motion`])。字の箱の真ん中を中心に回し・拡げ、
+/// そのあとずらす。既定 (`Default`) は動かない。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphMotion {
+    /// ずらす量 (論理 px)。
+    pub dx: f32,
+    pub dy: f32,
+    /// 回す角 (ラジアン、画面上で時計回り)。
+    pub rotation: f32,
+    /// 大きさの倍率。
+    pub scale: f32,
+    /// 不透明度 (文字の色に掛ける)。
+    pub opacity: f32,
+}
+
+impl Default for GlyphMotion {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, rotation: 0.0, scale: 1.0, opacity: 1.0 }
+    }
+}
+
 /// 中身ごと描いた絵の重ね方 ([`Element::blend`])。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlendMode {
@@ -692,6 +713,8 @@ pub struct ElementStyle {
     pub blur: f32,
     /// 中身ごと描いた絵を、下にどう重ねるか。[`Element::blend`] を参照。
     pub blend: BlendMode,
+    /// 文字の 1 字ずつの動き ([`Element::glyph_motion`])。字の番号 (`chars()` の順) で引く。
+    pub glyph_motion: Option<std::sync::Arc<[GlyphMotion]>>,
     /// Visual-only X offset, applied after layout. Does not push siblings —
     /// taffy still measures the element at its laid-out slot, but the rect
     /// (and its hit region) is rendered shifted by this many px. Drives
@@ -921,6 +944,7 @@ impl Default for ElementStyle {
             rotate: 0.0,
             blur: 0.0,
             blend: BlendMode::Normal,
+            glyph_motion: None,
             translate_x: 0.0,
             translate_y: 0.0,
             scale: 1.0,
@@ -2112,6 +2136,35 @@ impl Element {
     pub fn mask(mut self, mask: Element) -> Self {
         self.mask = Some(Box::new(mask));
         self
+    }
+
+    /// 文字を 1 字ずつ動かす。`motions[i]` が `i` 字目 (`chars()` の順、空白も数える)
+    /// の動き。足りない分は動かさない。跳ねる・散る・1 字ずつ現れる、のような文字の
+    /// アニメに使う。字の並びと折り返しは動かす前のまま (見た目だけ)。
+    ///
+    /// 文字の要素だけに効く。字の位置は回す前・ずらす前のまま押せる。
+    pub fn glyph_motion(mut self, motions: Vec<GlyphMotion>) -> Self {
+        self.style.glyph_motion = Some(motions.into());
+        self
+    }
+
+    /// [`glyph_motion`](Self::glyph_motion) を、字の番号 `i` と字数 `n` から作る。
+    /// 文字の要素でなければ何もしない。
+    ///
+    /// ```ignore
+    /// // 1 字ずつ 0.05 秒ずらして下から跳ねて入る
+    /// text("Hello").per_glyph(|i, _| {
+    ///     let s = spring(t - i as f32 * 0.05, fps);
+    ///     GlyphMotion { dy: (1.0 - s) * 40.0, opacity: s.min(1.0), ..Default::default() }
+    /// })
+    /// ```
+    pub fn per_glyph(self, f: impl Fn(usize, usize) -> GlyphMotion) -> Self {
+        let n = match &self.kind {
+            ElementKind::Text { content } => content.chars().count(),
+            _ => return self,
+        };
+        let motions = (0..n).map(|i| f(i, n)).collect();
+        self.glyph_motion(motions)
     }
 
     /// Set a linear gradient background.

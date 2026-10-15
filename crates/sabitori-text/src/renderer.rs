@@ -93,7 +93,8 @@ pub fn rotate_glyphs(glyphs: &mut [GlyphInstance], origin: (f32, f32), radians: 
             origin.0 + dx * cos - dy * sin,
             origin.1 + dx * sin + dy * cos,
         ];
-        g.rotation = radians;
+        // 足す (1 字ずつ回した角の上に、文字ごと回した角を重ねる)。
+        g.rotation += radians;
     }
 }
 
@@ -178,6 +179,8 @@ pub struct TextRenderer {
     /// text selection re-shaped its whole UI at frame rate — about half of
     /// draw time (#49). Both now go through [`TextRenderer::ensure_shaped`].
     glyph_cache: std::collections::HashMap<u64, ShapedRun>,
+    /// 最後に組んだ (`prepare_text_*` に渡した) 文字の鍵。[`TextRenderer::last_glyph_bytes`] が引く。
+    last_run: Option<u64>,
     /// 格子のセル 1 つ分の字形 ([#102])。鍵は文字と太さ・斜体・大きさだけ —
     /// 格子は文字列をシェーピングしないので、端末の行が 1 字変わってもここに当たる。
     ///
@@ -692,6 +695,7 @@ impl TextRenderer {
             instance_capacity,
             scale_factor: 1.0,
             glyph_cache: std::collections::HashMap::new(),
+            last_run: None,
             cell_glyphs: std::collections::HashMap::new(),
             grid_rows: std::collections::HashMap::new(),
             grid_rows_built: 0,
@@ -1106,6 +1110,7 @@ impl TextRenderer {
         );
 
         let color_arr = color.to_array();
+        self.last_run = Some(key);
         let run = &self.glyph_cache[&key];
         let mut out = Vec::with_capacity(run.glyphs.len());
         for (i, g) in run.glyphs.iter().enumerate() {
@@ -1189,6 +1194,7 @@ impl TextRenderer {
         );
 
         let color_arr = color.to_array();
+        self.last_run = Some(key);
         let run = &self.glyph_cache[&key];
         let mut instances = Vec::with_capacity(run.glyphs.len());
         for (i, g) in run.glyphs.iter().enumerate() {
@@ -1208,6 +1214,14 @@ impl TextRenderer {
             hits.push(hit);
         }
         (instances, hits)
+    }
+
+    /// 直前の `prepare_text_spans` / `prepare_text_with_hits_spans` が返したグリフの、
+    /// それぞれの本文のバイト範囲 (同じ順)。1 字ずつ動かすときに、グリフから字を引く。
+    pub fn last_glyph_bytes(&self) -> &[(u32, u32)] {
+        self.last_run
+            .and_then(|k| self.glyph_cache.get(&k))
+            .map_or(&[], |r| r.glyph_bytes.as_slice())
     }
 
     /// Upload the atlas rows that changed since the last call.

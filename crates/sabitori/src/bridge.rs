@@ -1274,6 +1274,37 @@ fn blend_index(mode: sabitori_core::BlendMode) -> f32 {
     }
 }
 
+/// 1 字ずつ動かす ([`TextDraw::glyph_motion`])。グリフのバイト範囲 (`bytes`、グリフと
+/// 同じ順) から字の番号を引き、その字の動きを掛ける: 字の箱の真ん中を中心に拡げて
+/// 回し、ずらし、色の不透明度に掛ける。
+pub(crate) fn move_glyphs(
+    glyphs: &mut [GlyphInstance],
+    bytes: &[(u32, u32)],
+    content: &str,
+    motions: &[sabitori_core::GlyphMotion],
+) {
+    let starts: Vec<usize> = content.char_indices().map(|(b, _)| b).collect();
+    for (g, &(start, _)) in glyphs.iter_mut().zip(bytes) {
+        // 合字などで字の途中から始まるグリフは、その字のものとする。
+        let ci = match starts.binary_search(&(start as usize)) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let Some(m) = motions.get(ci) else { continue };
+        let center = [g.position[0] + g.size[0] * 0.5, g.position[1] + g.size[1] * 0.5];
+        g.size = [g.size[0] * m.scale, g.size[1] * m.scale];
+        // グリフの四角は左上 (position) まわりに回るので、真ん中が動かない左上を求める。
+        let (sin, cos) = m.rotation.sin_cos();
+        let (hx, hy) = (g.size[0] * 0.5, g.size[1] * 0.5);
+        g.position = [
+            center[0] + m.dx - (hx * cos - hy * sin),
+            center[1] + m.dy - (hx * sin + hy * cos),
+        ];
+        g.rotation += m.rotation;
+        g.color[3] *= m.opacity;
+    }
+}
+
 /// 古い経路 (種類ごとにまとめて描く) はグループを使わない。グループの印は読み飛ばし、
 /// マスクの中身 (`PushMask` から `PopGroup` まで) は描かない。描かないなら `true`。
 fn skip_mask(cmd: &RenderCommand, stack: &mut Vec<bool>) -> bool {
@@ -1484,6 +1515,10 @@ impl OrderedFrame {
                         );
                         (g, None)
                     };
+                    // 1 字ずつの動き (見た目だけ。当たりの箱は動かさない)。
+                    if let Some(m) = d.glyph_motion.as_deref() {
+                        move_glyphs(&mut produced, tr.last_glyph_bytes(), &d.content, m);
+                    }
                     // 回すのはグリフだけ。当たりの箱は回さない (render_list_to_gpu_with_hits と同じ)。
                     sabitori_text::rotate_glyphs(&mut produced, (d.position.x, d.position.y), d.rotation);
                     if let Some(c) = clip {
@@ -1711,6 +1746,26 @@ impl OrderedFrame {
 mod ordered_tests {
     use super::{push_run, splice_under_glyphs, DrawRun};
 
+    /// 字の番号はバイトではなく `chars()` の順。日本語 (1 字 3 バイト) でも 2 字目は 2 字目。
+    #[test]
+    fn glyph_motion_is_indexed_by_character() {
+        use sabitori_core::GlyphMotion;
+        use sabitori_text::GlyphInstance;
+        let g = GlyphInstance {
+            position: [0.0, 0.0],
+            size: [10.0, 10.0],
+            uv_rect: [0.0; 4],
+            color: [0.0, 0.0, 0.0, 1.0],
+            clip_rect: [0.0; 4],
+            is_color: 0.0,
+            rotation: 0.0,
+        };
+        let mut glyphs = [g, g, g];
+        let motions = [GlyphMotion::default(), GlyphMotion { dy: 5.0, ..Default::default() }];
+        super::move_glyphs(&mut glyphs, &[(0, 3), (3, 6), (6, 9)], "あいう", &motions);
+        assert_eq!(glyphs.map(|g| g.position[1]), [0.0, 5.0, 0.0]);
+    }
+
     /// 古い経路はグループの印を読み飛ばし、マスクの中身 (PushMask から PopGroup まで)
     /// を描かない。入れ子でも外のマスクが閉じるまで飛ばす。
     #[test]
@@ -1897,6 +1952,7 @@ mod tests {
             rotation,
             no_select: false,
             owner: None,
+            glyph_motion: None,
         }
     }
 
@@ -1964,6 +2020,7 @@ mod tests {
             rotation: 0.0,
             no_select: false,
             owner: None,
+            glyph_motion: None,
         };
         // top を -200 までスクロール、高さ 300 → bottom=100 は viewport 内 → 描く。
         // 旧 font_size*1.5(=24px) 近似だと top=-200 の rect は viewport 外 → 誤 cull。
@@ -2288,6 +2345,7 @@ mod hit_layout_tests {
             rotation: 0.0,
             no_select: false,
             owner: None,
+            glyph_motion: None,
         }
     }
 

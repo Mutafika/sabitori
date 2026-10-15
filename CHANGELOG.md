@@ -17,6 +17,13 @@
 
 ### Added
 
+- **`.glyph_motion(Vec<GlyphMotion>)` / `.per_glyph(|i, n| ..)` — 文字を 1 字ずつ動かす。** 字ごとに
+  ずらす (`dx` / `dy`)・回す・拡げる (字の真ん中が中心)・薄くする。字の番号は `chars()` の順
+  (日本語でも 1 字は 1 字)。並びと折り返しは動かす前のまま (見た目だけ、当たり判定も元の
+  位置)。跳ねる・散る・1 字ずつ現れる文字のアニメに。作例の `intro` の小見出しが、1 字ずつ
+  回りながら落ちてくる。`sabitori-reel` も `GlyphMotion` を出す。
+- **`TextRenderer::last_glyph_bytes()`** — 直前に組んだ文字の、グリフごとの本文のバイト範囲。
+
 - **`.mask(element)` — マスクの不透明な所だけを見せる。** マスクはこの要素と同じ大きさの箱の中で、
   子とは別に組む (要素の大きさも子の並びも変えない。文字に付けても字の大きさのまま)。色は
   使わず不透明度だけを見るので、丸く切り抜く・文字の形に切り抜く・`gradient` で端を消す・
@@ -85,6 +92,9 @@
 
 ### Changed（破壊的）
 
+- **`TextDraw` と `ElementStyle` に `glyph_motion` を足した。** `sabitori_text::rotate_glyphs` は
+  グリフの角を上書きせず足す (1 字ずつ回した角の上に、文字ごとの角を重ねる。今までは
+  どのグリフも 0 から回していたので結果は同じ)。
 - **`Element` に `mask`、`ElementStyle` に `blend`、`GroupDraw` に `blend`、`GroupRun` に `mask`
   を足し、`GroupRenderer::draw` はマスクの描き先を取る。** `RenderCommand` に `PushMask` を
   足した (全部の腕を書いた `match` は足す必要がある)。

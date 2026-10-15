@@ -1827,6 +1827,7 @@ fn emit_commands_inner(
                 rotation: style.rotation,
                 no_select,
                 owner: owner.cloned(),
+                glyph_motion: style.glyph_motion.clone(),
             }));
         }
         ElementKind::Button { label, .. } => {
@@ -1880,6 +1881,7 @@ fn emit_commands_inner(
                 // non-selectable, regardless of the inherited flag.
                 no_select: true,
                 owner: owner.cloned(),
+                glyph_motion: style.glyph_motion.clone(),
             }));
         }
         ElementKind::Div => {}

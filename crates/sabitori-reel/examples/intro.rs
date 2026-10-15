@@ -22,7 +22,7 @@
 mod out;
 
 use out::Args;
-use sabitori_core::{goo, BoxShadow, Point, Rect};
+use sabitori_core::{goo, BoxShadow, GlyphMotion, Point, Rect};
 use sabitori_reel::{
     MotionBlur,
     div, image, interpolate, interpolate_color, interpolate_eased, spring_with, text, Color,
@@ -210,11 +210,21 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
             .blur((1.0 - s_title).max(0.0) * 24.0)
             .opacity(s_title.min(1.0))
             .child(
+                // 1 字ずつ時間をずらし、上から回りながら落ちてくる。
                 text("SABITORI · REEL")
                     .font_size(22.0)
                     .font_weight(700)
                     .letter_spacing(6.0)
-                    .color(hex("#a5b4fc")),
+                    .color(hex("#a5b4fc"))
+                    .per_glyph(|i, _| {
+                        let s = spring_at(t, 0.15 + i as f32 * 0.035, Spring::bouncy());
+                        GlyphMotion {
+                            dy: (1.0 - s) * -36.0,
+                            rotation: (1.0 - s) * -0.9,
+                            opacity: s.clamp(0.0, 1.0),
+                            ..Default::default()
+                        }
+                    }),
             )
             .child(gradient_title("Motion, in code.", 128.0, stops, t * 0.12))
             .child(

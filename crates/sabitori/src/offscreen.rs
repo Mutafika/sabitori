@@ -1136,4 +1136,72 @@ mod tests {
         assert!((multiply - 61).abs() <= 4, "掛ける: {multiply}");
     }
 
+
+    /// 黒い画素が囲む箱 (x0, y0, x1, y1)。`xs` の範囲だけを見る。
+    fn ink_box(out: &Rendered, xs: std::ops::Range<u32>) -> Option<(u32, u32, u32, u32)> {
+        let mut b: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..out.height {
+            for x in xs.clone() {
+                if out.pixel(x, y).unwrap()[0] < 128 {
+                    b = Some(match b {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        b
+    }
+
+    /// `.per_glyph(..)` は字ごとに動かす。2 字目だけ下へずらし、1 字目は消す。
+    #[test]
+    fn per_glyph_moves_each_character_on_its_own() {
+        gpu_or_skip!();
+        use sabitori_core::GlyphMotion;
+        let shot = |moved: bool| {
+            let t = text("MMMM").font_size(32.0).color(Color::BLACK);
+            let t = if moved {
+                t.per_glyph(|i, _| match i {
+                    0 => GlyphMotion { opacity: 0.0, ..Default::default() },
+                    1 => GlyphMotion { dy: 60.0, ..Default::default() },
+                    _ => GlyphMotion::default(),
+                })
+            } else {
+                t
+            };
+            render(&div().w(Px(300.0)).h(Px(120.0)).bg(Color::WHITE).child(t), Sheet::px(300.0, 120.0))
+                .expect("描けなかった")
+        };
+        let still = shot(false);
+        let moved = shot(true);
+        let (x0, _, x1, y1) = ink_box(&still, 0..300).expect("文字が無い");
+        let w = (x1 - x0) / 4;
+        assert!(y1 < 50, "動かす前から下に字がある");
+        // 2 字目の列だけが下に出る。
+        let second = ink_box(&moved, x0 + w..x0 + 2 * w).expect("2 字目が無い");
+        assert!(second.1 > 55, "2 字目が下がっていない: {second:?}");
+        // 1 字目は消える。
+        assert!(ink_box(&moved, x0..x0 + w - 2).is_none(), "1 字目が消えていない");
+        // 3 字目は元のまま。
+        assert_eq!(ink_box(&moved, x0 + 2 * w + 2..x0 + 3 * w - 2), ink_box(&still, x0 + 2 * w + 2..x0 + 3 * w - 2));
+    }
+
+    /// 字は自分の真ん中を中心に回る。縦長の「I」を 90° 回すと横長になり、真ん中は動かない。
+    #[test]
+    fn glyph_rotation_turns_each_character_about_its_center() {
+        gpu_or_skip!();
+        use sabitori_core::GlyphMotion;
+        let shot = |r: f32| {
+            let t = text("I").font_size(80.0).color(Color::BLACK).per_glyph(|_, _| GlyphMotion { rotation: r, ..Default::default() });
+            render(&div().w(Px(200.0)).h(Px(200.0)).bg(Color::WHITE).p(Px(50.0)).child(t), Sheet::px(200.0, 200.0))
+                .expect("描けなかった")
+        };
+        let (a, b) = (ink_box(&shot(0.0), 0..200).unwrap(), ink_box(&shot(std::f32::consts::FRAC_PI_2), 0..200).unwrap());
+        let (aw, ah, bw, bh) = (a.2 - a.0, a.3 - a.1, b.2 - b.0, b.3 - b.1);
+        assert!(ah > aw * 2 && bw > bh * 2, "縦長が横長にならない (前 {aw}×{ah}, 後 {bw}×{bh})");
+        let c = |b: (u32, u32, u32, u32)| ((b.0 + b.2) as i32 / 2, (b.1 + b.3) as i32 / 2);
+        let (ca, cb) = (c(a), c(b));
+        assert!((ca.0 - cb.0).abs() <= 3 && (ca.1 - cb.1).abs() <= 3, "真ん中が動いた ({ca:?} → {cb:?})");
+    }
+
 }
