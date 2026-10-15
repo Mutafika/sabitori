@@ -16,6 +16,12 @@ pub struct Args {
 
 impl Args {
     pub fn parse() -> Self {
+        Self::parse_with(|_| false)
+    }
+
+    /// [`Args::parse`] に加え、`extra` が受け入れる引数 (作例が自分で読む物、例えば
+    /// 動画のパス) を素通しする。
+    pub fn parse_with(extra: impl Fn(&str) -> bool) -> Self {
         let mut out = None;
         let mut stills = Vec::new();
         let mut args = std::env::args().skip(1);
@@ -24,6 +30,8 @@ impl Args {
                 out = args.next().map(PathBuf::from);
             } else if let Ok(n) = a.parse() {
                 stills.push(n);
+            } else if extra(&a) {
+                continue;
             } else {
                 eprintln!("unknown argument: {a} (expected `--out <dir>` or frame numbers)");
                 std::process::exit(2);
