@@ -1858,4 +1858,8 @@ impl crate::RectTarget for GpuRenderer {
     fn target_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
 }

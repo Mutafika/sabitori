@@ -1697,11 +1697,12 @@ fn emit_commands_inner(
     // 子孫ごと回す要素は、自分の塗りから子の最後までを 1 枚の絵に囲む。閉じるのは
     // この関数の出口 (`PopGroup`)。囲むのは自分の並びだけで、上の層や上掛けへ出る
     // 子孫は囲めない。
-    let grouped = style.rotate.abs() > 1e-6;
+    let grouped = style.rotate.abs() > 1e-6 || style.blur > 0.0;
     if grouped {
         target.commands.push(RenderCommand::PushGroup(GroupDraw {
             pivot: Point::new(abs_x + w * 0.5, abs_y + h * 0.5),
             rotation: style.rotate,
+            blur: style.blur.max(0.0),
         }));
     }
 

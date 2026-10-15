@@ -194,6 +194,8 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
             .flex_col()
             .gap(18.0)
             .tx((1.0 - s_title) * -140.0)
+            // ぼけた所からピントが合う。`.blur(..)` は中身 (色を変えた字ごと) ぼかす。
+            .blur((1.0 - s_title).max(0.0) * 24.0)
             .opacity(s_title.min(1.0))
             .child(
                 text("SABITORI · REEL")

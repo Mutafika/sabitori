@@ -1309,6 +1309,7 @@ impl OrderedFrame {
                     let inst = sabitori_gpu::GroupInstance {
                         pivot_rot: [g.pivot.x, g.pivot.y, g.rotation, 1.0],
                         clip_rect: clip.map_or([0.0; 4], |c| clip_to_array(&c)),
+                        effect: [g.blur, 0.0, 0.0, 0.0],
                     };
                     open.push((std::mem::take(&mut self.runs), std::mem::take(&mut clip_stack), inst));
                 }
@@ -1526,7 +1527,7 @@ impl OrderedFrame {
         }
         let Some(gr) = r.groups.as_deref_mut() else { return };
         let (w, h) = rt.target_size();
-        gr.prepare(device, queue, w, h, &self.groups);
+        gr.prepare(device, queue, w, h, rt.scale_factor(), &self.groups);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("sabitori_group_encoder"),
         });
@@ -1560,6 +1561,8 @@ impl OrderedFrame {
                 occlusion_query_set: None,
             });
             self.draw_runs(&g.runs, rt, r, &mut pass);
+            drop(pass);
+            gr.apply_effects(encoder, g.slot as usize);
         }
     }
 

@@ -302,6 +302,9 @@ pub struct GroupInstance {
     pub pivot_rot: [f32; 4],
     /// 祖先の切り抜き (論理 px の x, y, w, h)。`w == 0 || h == 0` → 切らない。
     pub clip_rect: [f32; 4],
+    /// 貼る前に掛ける効果: ぼかしの標準偏差 (論理 px、`0` = 無し)、残りは空き。
+    /// 貼るシェーダは読まない ([`GroupRenderer`](crate::GroupRenderer) が先に掛ける)。
+    pub effect: [f32; 4],
 }
 
 impl GroupInstance {
@@ -309,6 +312,7 @@ impl GroupInstance {
         const ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
             0 => Float32x4, // pivot_rot
             1 => Float32x4, // clip_rect
+            // effect は貼るシェーダが読まないので並べない (幅には入っている)。
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GroupInstance>() as wgpu::BufferAddress,

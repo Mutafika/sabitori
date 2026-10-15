@@ -59,6 +59,7 @@ pub struct UiOverlayRenderer {
     goo_renderer: GooRenderer,
     /// 描き先の物理 px ([`Self::update_globals`] の論理 px × 倍率)。
     target_size: std::cell::Cell<(u32, u32)>,
+    scale_factor: std::cell::Cell<f32>,
 }
 
 impl UiOverlayRenderer {
@@ -168,6 +169,7 @@ impl UiOverlayRenderer {
             overlay_count: 0,
             goo_renderer,
             target_size: std::cell::Cell::new((1, 1)),
+            scale_factor: std::cell::Cell::new(1.0),
         }
     }
 
@@ -206,6 +208,7 @@ impl UiOverlayRenderer {
             (logical_width * scale_factor).round() as u32,
             (logical_height * scale_factor).round() as u32,
         ));
+        self.scale_factor.set(scale_factor);
     }
 
     /// base / overlay の rect 群を instance buffer にアップロードする。
@@ -559,6 +562,10 @@ mod tests {
 impl crate::RectTarget for UiOverlayRenderer {
     fn target_size(&self) -> (u32, u32) {
         self.target_size.get()
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor.get()
     }
 
     fn upload_rect_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rects: &[RectInstance]) {

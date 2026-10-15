@@ -1023,4 +1023,58 @@ mod tests {
         assert!(yellow, "ハイライトが出ていない");
     }
 
+
+    /// 白地の左半分に黒い箱。`blur` を掛けると縁がにじむ。
+    fn edge(blur: f32) -> Element {
+        div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(100.0)).h(Px(100.0)).bg(Color::BLACK).blur(blur))
+    }
+
+    /// `.blur(..)` は縁をにじませる。箱の外 (右) が暗くなり、内 (左) が明るくなる。
+    #[test]
+    fn blur_softens_the_edge() {
+        gpu_or_skip!();
+        let sharp = render(&edge(0.0), Sheet::px(200.0, 100.0)).expect("描けなかった");
+        let soft = render(&edge(8.0), Sheet::px(200.0, 100.0)).expect("描けなかった");
+        let g = |o: &Rendered, x: u32| o.pixel(x, 50).unwrap()[0];
+        // 色は線形の光で混ざるので、縁から 0.5σ 外 (黒が 3 割) でも sRGB では 220 前後。
+        assert_eq!(g(&sharp, 104), 255, "ぼかし無しで外が白くない");
+        assert!(g(&soft, 104) < 235, "外ににじんでいない: {}", g(&soft, 104));
+        assert!(g(&soft, 92) > 20, "内が明るくなっていない: {}", g(&soft, 92));
+        // 遠い所は元のまま。
+        assert!(g(&soft, 180) > 250 && g(&soft, 20) < 5, "遠くまでぼけている");
+    }
+
+    /// ぼかしの幅は論理 px。2 倍の解像度で描いても、同じ論理位置は同じ明るさになる。
+    #[test]
+    fn blur_width_is_in_logical_px() {
+        gpu_or_skip!();
+        let one = render(&edge(8.0), Sheet::px(200.0, 100.0)).expect("描けなかった");
+        let two = render(&edge(8.0), Sheet::px(200.0, 100.0).dpi(192.0)).expect("描けなかった");
+        // 縁から 4px 内側 (0.5σ) で比べる。倍率を掛け忘れると 2 倍では幅が半分 (1σ) に
+        // なり、ここは 40 ほど暗くなる。
+        let a = one.pixel(96, 50).unwrap()[0] as i32;
+        let b = two.pixel(192, 100).unwrap()[0] as i32;
+        assert!((a - b).abs() < 15, "倍率で幅が変わった (1 倍 {a}, 2 倍 {b})");
+    }
+
+    /// 色の付いた物をぼかしても、透明な所との境目が黒ずまない (前乗算のまま混ぜる)。
+    #[test]
+    fn blurred_color_does_not_darken_at_the_rim() {
+        gpu_or_skip!();
+        let view = div()
+            .w(Px(200.0))
+            .h(Px(100.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(100.0)).h(Px(100.0)).bg(Color::from_hex("#ff0000")).blur(8.0));
+        let out = render(&view, Sheet::px(200.0, 100.0)).expect("描けなかった");
+        for x in 95..115 {
+            let p = out.pixel(x, 50).unwrap();
+            assert!(p[0] > 240, "x={x} の縁が黒ずんでいる: {p:?}");
+        }
+    }
+
 }

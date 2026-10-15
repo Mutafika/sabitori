@@ -674,6 +674,8 @@ pub struct ElementStyle {
     /// 要素を**子孫ごと**回す角 (ラジアン、画面上で時計回り)。中心まわり。
     /// [`Element::rotate`] を参照。`rotation` (その要素の箱か文字だけを回す) とは別。
     pub rotate: f32,
+    /// 要素を中身ごとぼかす幅 (標準偏差、論理 px)。[`Element::blur`] を参照。
+    pub blur: f32,
     /// Visual-only X offset, applied after layout. Does not push siblings —
     /// taffy still measures the element at its laid-out slot, but the rect
     /// (and its hit region) is rendered shifted by this many px. Drives
@@ -901,6 +903,7 @@ impl Default for ElementStyle {
             object_fit: ObjectFit::default(),
             rotation: 0.0,
             rotate: 0.0,
+            blur: 0.0,
             translate_x: 0.0,
             translate_y: 0.0,
             scale: 1.0,
@@ -2045,6 +2048,19 @@ impl Element {
     ///   子孫は、別の並びに描かれるので回らない。
     pub fn rotate(mut self, radians: f32) -> Self {
         self.style.rotate = radians;
+        self
+    }
+
+    /// 要素を**中身ごと**ぼかす。CSS の `filter: blur(px)` と同じく `px` は
+    /// ガウスの標準偏差 (論理 px)。ピントの移動、奥の層、入場の「ぼけから
+    /// くっきり」に。
+    ///
+    /// [`rotate`](Self::rotate) と同じく中身を先に 1 枚の絵に描き、貼る前にぼかす
+    /// (一緒に使えば、ぼかしてから回す)。限りも同じ (当たり判定はそのまま、
+    /// 窓の外にあった部分は入ってこない、上の層・上掛けへ出る子孫はぼけない)。
+    /// 幅が大きいほど重い (画面全体の大きさで 2 回描き直す)。
+    pub fn blur(mut self, px: f32) -> Self {
+        self.style.blur = px;
         self
     }
 

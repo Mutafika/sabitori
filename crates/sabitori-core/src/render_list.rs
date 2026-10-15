@@ -44,6 +44,8 @@ pub struct GroupDraw {
     pub pivot: Point,
     /// 回す角 (ラジアン、画面上で時計回り)。
     pub rotation: f32,
+    /// 貼る前にぼかす幅 (標準偏差、論理 px)。0 = ぼかさない。
+    pub blur: f32,
 }
 
 /// 格子の字形を描く。字形は `origin + (col * cell_w, row * cell_h)` に置く。
