@@ -1442,7 +1442,7 @@ impl OrderedFrame {
                     let inst = sabitori_gpu::GroupInstance {
                         pivot_rot: [g.pivot.x, g.pivot.y, g.rotation, 1.0],
                         clip_rect: clip.map_or([0.0; 4], |c| clip_to_array(&c)),
-                        effect: [g.blur, blend_index(g.blend), 0.0, 0.0],
+                        effect: [g.blur, blend_index(g.blend), g.zoom, 0.0],
                     };
                     open.push(OpenGroup {
                         outer: std::mem::take(&mut self.runs),
@@ -1859,6 +1859,7 @@ mod ordered_tests {
             rotation: 0.0,
             blur: 0.0,
             blend: Default::default(),
+            zoom: 1.0,
         });
         let rect = || RenderCommand::Rect(RectDraw::default());
         let cmds = [

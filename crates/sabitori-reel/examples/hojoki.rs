@@ -243,8 +243,8 @@ fn scene(ctx: FrameCtx, paper: &ImageData, starts: &[Vec<f32>]) -> Element {
                 .w(Px(W))
                 .h(Px(H))
                 .children(kids)
-                .scaled(1.0 + drift * 0.04)
-                .tx(drift * -20.0),
+                // 絵として寄せる (`.scaled` だと字を描き直すので、画素の刻みで揺れる)。
+                .zoom(1.0 + drift * 0.04),
         )
         // 四隅を少し落とす。
         .child(

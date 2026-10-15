@@ -1294,4 +1294,57 @@ mod tests {
     }
 
 
+
+    /// `.zoom(k)` は描いた絵を中心まわりに `k` 倍する。2 倍なら、元は箱の外だった左端も赤い。
+    #[test]
+    fn zoom_enlarges_the_picture() {
+        gpu_or_skip!();
+        let out = render(&centered(halves().zoom(2.0)), Sheet::px(200.0, 200.0)).expect("描けなかった");
+        assert!(is_red(out.pixel(15, 100).unwrap()), "左端が赤でない: {:?}", out.pixel(15, 100));
+        assert!(is_blue(out.pixel(185, 100).unwrap()), "右端が青でない: {:?}", out.pixel(185, 100));
+    }
+
+    /// 少しずつ寄せた文字の、墨の重心 (縦) の 1 段ごとの動き。
+    fn zoom_steps(zoomed: bool) -> Vec<f32> {
+        // `zoomed == false` は `.scaled` で同じことをする (比べるとき用)。
+        let centroid = |k: f32| {
+            let col = div()
+                .w(Px(200.0))
+                .h(Px(300.0))
+                .child(text("あ\nい\nう").font_size(40.0).line_height(1.1).color(Color::BLACK));
+            let col = if zoomed { col.zoom(k) } else { col.scaled(k) };
+            let out = render(&div().w(Px(200.0)).h(Px(300.0)).bg(Color::WHITE).child(col), Sheet::px(200.0, 300.0))
+                .expect("描けなかった");
+            let (mut sy, mut n) = (0.0f64, 0.0f64);
+            for y in 0..out.height {
+                for x in 0..out.width {
+                    // 光の量で重み付けする (sRGB の値のままだと、細い線をなめらかに
+                    // 伸ばしたときに重心がぶれる)。
+                    let c = out.pixel(x, y).unwrap()[0] as f64 / 255.0;
+                    let lin = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+                    let v = 1.0 - lin;
+                    sy += y as f64 * v;
+                    n += v;
+                }
+            }
+            (sy / n) as f32
+        };
+        let c: Vec<f32> = (0..16).map(|i| centroid(1.0 + i as f32 * 0.002)).collect();
+        c.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    /// `.zoom` でゆっくり寄せた文字は揺れない: 1 段ごとの動きがほぼ一定。`.scaled` は字を
+    /// 描き直すので、画素の刻みで 1px 前後跳ねる (方丈記の作例で見えた揺れ)。
+    #[test]
+    fn zooming_text_is_smooth() {
+        gpu_or_skip!();
+        let spread = |d: &[f32]| {
+            let mean = d.iter().sum::<f32>() / d.len() as f32;
+            d.iter().map(|v| (v - mean).abs()).fold(0.0, f32::max)
+        };
+        let zoom = spread(&zoom_steps(true));
+        assert!(zoom < 0.08, "zoom で揺れている (平均からの最大のずれ {zoom:.3}px)");
+    }
+
 }
+

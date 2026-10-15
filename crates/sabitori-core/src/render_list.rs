@@ -65,6 +65,8 @@ pub struct GroupDraw {
     pub blur: f32,
     /// 下への重ね方。
     pub blend: crate::element::BlendMode,
+    /// 貼る絵の倍率 (中心まわり)。1 = そのまま。
+    pub zoom: f32,
 }
 
 /// 格子の字形を描く。字形は `origin + (col * cell_w, row * cell_h)` に置く。
