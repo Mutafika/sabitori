@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-15
+
 ### Removed
 
 - **`sabitori-reel` の作例を全部外した (`examples/` ごと)。** 動画の作例はリポジトリに置かない。
@@ -4824,7 +4826,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/Mutafika/sabitori/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Mutafika/sabitori/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Mutafika/sabitori/compare/v0.41.1...v0.42.0
 [0.41.1]: https://github.com/Mutafika/sabitori/compare/v0.41.0...v0.41.1
