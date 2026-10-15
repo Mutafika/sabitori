@@ -21,4 +21,6 @@ pub trait RectTarget {
     fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>);
     /// rect.wgsl 系のシェーダーが共通で使う globals。画像・文字の描画器にも渡す。
     fn globals(&self) -> &wgpu::BindGroup;
+    /// 描き先の大きさ (物理 px)。グループ (先に別の絵に描く中身) の描き先をこれに合わせる。
+    fn target_size(&self) -> (u32, u32);
 }

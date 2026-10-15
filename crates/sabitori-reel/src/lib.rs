@@ -726,6 +726,7 @@ struct Gpu {
     text: TextRenderer,
     ring: RingRenderer,
     line: LineRenderer,
+    groups: sabitori_gpu::GroupRenderer,
     image: ImageRenderer,
     measure_cache: RefCell<MeasureCache>,
     texture: wgpu::Texture,
@@ -790,6 +791,7 @@ impl Gpu {
         text.set_preferred_monospace_family(mono_family);
         let ring = RingRenderer::new(&device, format, layout);
         let line = LineRenderer::new(&device, format, layout);
+        let groups = sabitori_gpu::GroupRenderer::new(&device, format, layout);
         let image = ImageRenderer::new(&device, format, layout);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -824,6 +826,7 @@ impl Gpu {
             text,
             ring,
             line,
+            groups,
             image,
             measure_cache: RefCell::new(MeasureCache::new()),
             texture,
@@ -890,6 +893,7 @@ impl Gpu {
             images: Some(&mut self.image),
             rings: Some(&mut self.ring),
             lines: Some(&mut self.line),
+            groups: Some(&mut self.groups),
             text: &mut self.text,
         };
         frame.upload(&mut self.ui, &mut r, &self.device, &self.queue);

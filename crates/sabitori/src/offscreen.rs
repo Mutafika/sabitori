@@ -211,6 +211,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let mut images = sabitori_gpu::ImageRenderer::new(&device, format, ui.globals_bind_group_layout());
     let mut rings = sabitori_gpu::RingRenderer::new(&device, format, ui.globals_bind_group_layout());
     let mut lines = sabitori_gpu::LineRenderer::new(&device, format, ui.globals_bind_group_layout());
+    let mut groups = sabitori_gpu::GroupRenderer::new(&device, format, ui.globals_bind_group_layout());
 
     // 組む。測り手を渡すので、画面と同じ折り返しになる。
     let build = {
@@ -231,6 +232,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
         rings: Some(&mut rings),
         lines: Some(&mut lines),
         text: &mut text,
+        groups: Some(&mut groups),
     };
     frame.upload(&mut ui, &mut r, &device, &queue);
 
@@ -919,6 +921,106 @@ mod tests {
         let (dark, light) = (spread("#202020"), spread("#d0d0d0"));
         assert!(dark > 0.0 && light > 0.0, "揺れていない (暗 {dark}, 明 {light})");
         assert!(dark / light < 2.0 && light / dark < 2.0, "暗い所と明るい所で揺れ幅が違いすぎる (暗 {dark}, 明 {light})");
+    }
+
+
+    fn is_red(p: [u8; 4]) -> bool {
+        p[0] > 200 && p[1] < 60 && p[2] < 60
+    }
+    fn is_blue(p: [u8; 4]) -> bool {
+        p[2] > 200 && p[0] < 60 && p[1] < 60
+    }
+
+    /// 左が赤・右が青の箱。
+    fn halves() -> Element {
+        div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .flex_row()
+            .child(div().w(Px(50.0)).h(Px(100.0)).bg(Color::from_hex("#ff0000")))
+            .child(div().w(Px(50.0)).h(Px(100.0)).bg(Color::from_hex("#0000ff")))
+    }
+
+    fn centered(child: Element) -> Element {
+        div().w(Px(200.0)).h(Px(200.0)).bg(Color::WHITE).items_center().justify_center().child(child)
+    }
+
+    /// `.rotate(..)` は子ごと回す。時計回りに 90° なら、左の赤が上に、右の青が下に来る。
+    #[test]
+    fn rotate_turns_the_children_too() {
+        gpu_or_skip!();
+        let out = render(&centered(halves().rotate(std::f32::consts::FRAC_PI_2)), Sheet::px(200.0, 200.0))
+            .expect("描けなかった");
+        assert!(is_red(out.pixel(100, 65).unwrap()), "上が赤でない: {:?}", out.pixel(100, 65));
+        assert!(is_blue(out.pixel(100, 135).unwrap()), "下が青でない: {:?}", out.pixel(100, 135));
+    }
+
+    /// 入れ子で回すと角は足される。90° の中で 90° 回すと 180° で、左右が入れ替わる。
+    #[test]
+    fn nested_rotations_add_up() {
+        gpu_or_skip!();
+        let q = std::f32::consts::FRAC_PI_2;
+        let out = render(&centered(div().rotate(q).child(halves().rotate(q))), Sheet::px(200.0, 200.0))
+            .expect("描けなかった");
+        assert!(is_blue(out.pixel(65, 100).unwrap()), "左が青でない: {:?}", out.pixel(65, 100));
+        assert!(is_red(out.pixel(135, 100).unwrap()), "右が赤でない: {:?}", out.pixel(135, 100));
+    }
+
+    /// 回す要素の中の切り抜きは、回した後の箱の形で効く。横長の箱 (100×40) に
+    /// はみ出す赤を入れて 90° 回すと、赤は縦長の箱の中にだけ出る。
+    #[test]
+    fn clipping_inside_a_rotated_box_turns_with_it() {
+        gpu_or_skip!();
+        let boxed = div()
+            .w(Px(100.0))
+            .h(Px(40.0))
+            .overflow_hidden()
+            .child(div().w(Px(300.0)).h(Px(40.0)).bg(Color::from_hex("#ff0000")))
+            .rotate(std::f32::consts::FRAC_PI_2);
+        let view = div().w(Px(300.0)).h(Px(300.0)).bg(Color::WHITE).items_center().justify_center().child(boxed);
+        let out = render(&view, Sheet::px(300.0, 300.0)).expect("描けなかった");
+        assert!(is_red(out.pixel(150, 110).unwrap()), "回した箱の中が赤でない");
+        assert!(!is_red(out.pixel(110, 150).unwrap()), "回す前の箱の位置に赤が残っている");
+        assert!(!is_red(out.pixel(150, 240).unwrap()), "はみ出しが切られていない");
+    }
+
+    /// 外の切り抜きは回した絵に掛かる。切る入れ物の中で 45° 回した正方形の角は、
+    /// 入れ物の外に出ない。
+    #[test]
+    fn an_outer_clip_cuts_the_rotated_picture() {
+        gpu_or_skip!();
+        let view = div().w(Px(200.0)).h(Px(200.0)).bg(Color::WHITE).child(
+            div().w(Px(100.0)).h(Px(100.0)).overflow_hidden().child(
+                div().w(Px(100.0)).h(Px(100.0)).bg(Color::from_hex("#ff0000")).rotate(std::f32::consts::FRAC_PI_4),
+            ),
+        );
+        let out = render(&view, Sheet::px(200.0, 200.0)).expect("描けなかった");
+        assert!(is_red(out.pixel(50, 50).unwrap()), "真ん中が赤でない");
+        // 回した正方形の下の角は y ≈ 120 まで届くが、入れ物は 100 で切る。
+        assert!(!is_red(out.pixel(50, 110).unwrap()), "入れ物の外に角が出ている");
+    }
+
+    /// 回す要素の中の文字にも、検索のハイライトが文字の下に敷かれる (文字の下に敷く
+    /// 矩形は、グループの中の並びに差し込む)。
+    #[test]
+    fn highlights_inside_a_rotated_box_are_drawn() {
+        gpu_or_skip!();
+        use sabitori_core::element::HighlightSpec;
+        let view = div().w(Px(300.0)).h(Px(300.0)).bg(Color::WHITE).items_center().justify_center().child(
+            div().rotate(0.3).child(
+                text("WWWW WWWW").font_size(32.0).color(Color::BLACK).no_select().highlight(HighlightSpec {
+                    ranges: vec![(0, 4)],
+                    color: Color::from_hex("#ffd400"),
+                    ..Default::default()
+                }),
+            ),
+        );
+        let out = render(&view, Sheet::px(300.0, 300.0)).expect("描けなかった");
+        let yellow = (0..out.height).flat_map(|y| (0..out.width).map(move |x| (x, y))).any(|(x, y)| {
+            let p = out.pixel(x, y).unwrap();
+            p[0] > 200 && p[1] > 170 && p[2] < 80
+        });
+        assert!(yellow, "ハイライトが出ていない");
     }
 
 }

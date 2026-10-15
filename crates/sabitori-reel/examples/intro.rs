@@ -211,7 +211,8 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
             ),
     );
 
-    // カード 3 枚: 時間をずらして下から。写真にも、互いの影にも重なる。
+    // カード 3 枚: 時間をずらして、傾いた状態から起き上がりつつ下から。写真にも、
+    // 互いの影にも重なる。`.rotate(..)` は中身 (文字・光る点) ごと回す。
     let cards = [
         ("#5eead4", "A pure function of the frame", "Scrub backwards, land on the same pixels."),
         ("#a78bfa", "Tree-order drawing", "Boxes over images and text just cover them."),
@@ -224,6 +225,7 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
                 .absolute()
                 .pos(1270.0, 200.0 + i as f32 * 150.0)
                 .ty((1.0 - s) * 90.0)
+                .rotate((1.0 - s) * 0.22)
                 .opacity(s.clamp(0.0, 1.0)),
         );
     }

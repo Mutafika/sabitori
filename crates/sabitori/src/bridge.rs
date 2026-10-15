@@ -509,6 +509,8 @@ fn render_list_to_gpu_with_hits_impl(
             RenderCommand::PopClip => {
                 clip_stack.pop();
             }
+            // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
+            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -681,6 +683,8 @@ fn render_list_to_gpu_with_rings_impl(
             RenderCommand::PopClip => {
                 clip_stack.pop();
             }
+            // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
+            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -869,6 +873,8 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
             RenderCommand::PopClip => {
                 clip_stack.pop();
             }
+            // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
+            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
             RenderCommand::Image(d) => {
                 let Some(inst) = image_instance(d, clip_stack.last()) else { continue };
                 if let Some(batch) = batches.iter_mut().find(|b| b.key == d.key) {
@@ -958,6 +964,9 @@ pub struct UiRenderers<'a> {
     pub rings: Option<&'a mut sabitori_gpu::RingRenderer>,
     pub lines: Option<&'a mut sabitori_gpu::LineRenderer>,
     pub text: &'a mut TextRenderer,
+    /// 中身ごと回す要素 ([`Element::rotate`](sabitori_core::Element::rotate)) を描く。
+    /// `None` なら回さずその場に描く。
+    pub groups: Option<&'a mut sabitori_gpu::GroupRenderer>,
 }
 
 /// Draw one UI layer inside an open render pass: images → rings → polylines →
@@ -1028,17 +1037,28 @@ pub enum DrawRun {
     Rings(std::ops::Range<u32>),
     Lines(std::ops::Range<u32>),
     Glyphs(std::ops::Range<u32>),
+    /// 先に別の絵に描いてから回して貼るまとまり ([`Element::rotate`](sabitori_core::Element::rotate))。
+    Group(Box<GroupRun>),
+}
+
+/// [`DrawRun::Group`] の中身。
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupRun {
+    /// 描き先と貼り方 ([`OrderedFrame::groups`]) の番号。内側のグループほど小さい。
+    pub slot: u32,
+    pub runs: Vec<DrawRun>,
 }
 
 impl DrawRun {
-    fn span_mut(&mut self) -> &mut std::ops::Range<u32> {
+    fn span_mut(&mut self) -> Option<&mut std::ops::Range<u32>> {
         match self {
             DrawRun::Rects(r)
             | DrawRun::Goo(r)
             | DrawRun::Images { range: r, .. }
             | DrawRun::Rings(r)
             | DrawRun::Lines(r)
-            | DrawRun::Glyphs(r) => r,
+            | DrawRun::Glyphs(r) => Some(r),
+            DrawRun::Group(_) => None,
         }
     }
 }
@@ -1046,17 +1066,22 @@ impl DrawRun {
 /// `run` を並びの末尾に足す。直前と同じ種類 (画像は同じテクスチャ) で続いていれば
 /// 1 つにまとめる。空の範囲は足さない。
 fn push_run(runs: &mut Vec<DrawRun>, mut run: DrawRun) {
-    let span = run.span_mut();
+    // グループはまとめない (1 つずつ別の絵)。
+    let Some(span) = run.span_mut() else {
+        runs.push(run);
+        return;
+    };
     if span.start >= span.end {
         return;
     }
+    let span = span.clone();
     if let Some(last) = runs.last_mut() {
         let same_kind = match (&*last, &run) {
             (DrawRun::Images { key: a, .. }, DrawRun::Images { key: b, .. }) => a == b,
             (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
         };
-        if same_kind && last.span_mut().end == run.span_mut().start {
-            last.span_mut().end = run.span_mut().end;
+        if let Some(last_span) = last.span_mut().filter(|s| same_kind && s.end == span.start) {
+            last_span.end = span.end;
             return;
         }
     }
@@ -1074,12 +1099,27 @@ fn splice_under_glyphs(runs: Vec<DrawRun>, mut under: Vec<(u32, std::ops::Range<
         return runs;
     }
     under.sort_by_key(|(at, _)| *at);
-    let mut out = Vec::with_capacity(runs.len() + under.len() * 2);
-    let mut pending = under.into_iter().peekable();
+    splice_runs(runs, &mut under.into_iter().peekable())
+}
+
+/// グリフは木の順に振ってあるので、グループの中も同じ順で潜れば番号順に当たる。
+fn splice_runs(
+    runs: Vec<DrawRun>,
+    pending: &mut std::iter::Peekable<std::vec::IntoIter<(u32, std::ops::Range<u32>)>>,
+) -> Vec<DrawRun> {
+    let mut out = Vec::with_capacity(runs.len());
     for run in runs {
-        let DrawRun::Glyphs(range) = run else {
-            out.push(run);
-            continue;
+        let range = match run {
+            DrawRun::Glyphs(range) => range,
+            DrawRun::Group(mut g) => {
+                g.runs = splice_runs(std::mem::take(&mut g.runs), pending);
+                out.push(DrawRun::Group(g));
+                continue;
+            }
+            other => {
+                out.push(other);
+                continue;
+            }
         };
         let mut cur = range.start;
         while let Some((at, _)) = pending.peek() {
@@ -1206,6 +1246,9 @@ pub(crate) fn link_rects(
     out
 }
 
+/// 開いているグループ: (外の並び, 外の切り抜き, 貼り方)。
+type OpenGroup = (Vec<DrawRun>, Vec<sabitori_core::Rect>, sabitori_gpu::GroupInstance);
+
 /// 1 枚ぶんの描画を、木の順のまとまり ([`DrawRun`]) と種類ごとの instance に起こした物。
 ///
 /// 使い方: [`OrderedFrame::extract`] で起こし、文字の下に敷く物があれば
@@ -1225,6 +1268,8 @@ pub struct OrderedFrame {
     pub lines: Vec<LineInstance>,
     pub glyphs: Vec<GlyphInstance>,
     pub runs: Vec<DrawRun>,
+    /// グループ ([`DrawRun::Group`]) の貼り方。`slot` の順。
+    pub groups: Vec<sabitori_gpu::GroupInstance>,
     /// 選択・検索・リンクに使う文字の配置 (読む順)。
     pub text_layouts: Vec<TextHitLayout>,
     /// `text_layouts` の各文字が `glyphs` のどこからどこまでか (`text_idx` → 範囲)。
@@ -1249,6 +1294,8 @@ impl OrderedFrame {
 
     fn extract_one(&mut self, list: &RenderList, with_hits: bool, text_idx: &mut usize, tr: &mut TextRenderer) {
         let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
+        // 開いているグループ: (外の並び, 外の切り抜き, 貼り方)。
+        let mut open: Vec<OpenGroup> = Vec::new();
         for cmd in &list.commands {
             let clip = clip_stack.last().copied();
             match cmd {
@@ -1256,6 +1303,16 @@ impl OrderedFrame {
                 RenderCommand::PopClip => {
                     clip_stack.pop();
                 }
+                // 中身は窓と同じ座標で別の絵に描く。外の切り抜きは貼る絵に掛け、中では
+                // 掛けない (回した後の位置で切るため)。
+                RenderCommand::PushGroup(g) => {
+                    let inst = sabitori_gpu::GroupInstance {
+                        pivot_rot: [g.pivot.x, g.pivot.y, g.rotation, 1.0],
+                        clip_rect: clip.map_or([0.0; 4], |c| clip_to_array(&c)),
+                    };
+                    open.push((std::mem::take(&mut self.runs), std::mem::take(&mut clip_stack), inst));
+                }
+                RenderCommand::PopGroup => self.close_group(&mut open, &mut clip_stack),
                 RenderCommand::Rect(d) => {
                     if clip.is_some_and(|c| is_clipped(&c, &d.rect)) {
                         continue;
@@ -1398,6 +1455,18 @@ impl OrderedFrame {
                 }
             }
         }
+        while !open.is_empty() {
+            self.close_group(&mut open, &mut clip_stack);
+        }
+    }
+
+    fn close_group(&mut self, open: &mut Vec<OpenGroup>, clip_stack: &mut Vec<sabitori_core::Rect>) {
+        let Some((outer, outer_clips, inst)) = open.pop() else { return };
+        let inner = std::mem::replace(&mut self.runs, outer);
+        *clip_stack = outer_clips;
+        let slot = self.groups.len() as u32;
+        self.groups.push(inst);
+        push_run(&mut self.runs, DrawRun::Group(Box::new(GroupRun { slot, runs: inner })));
     }
 
     /// 文字 `text_idx` の下に矩形を敷く (選択・検索のハイライト・リンクの下線)。
@@ -1449,6 +1518,49 @@ impl OrderedFrame {
             line_r.upload(device, queue, &self.lines);
         }
         r.text.upload_glyphs(device, queue, &self.glyphs);
+
+        // グループの中身を、それぞれの絵に先に描く (内側から)。本番のパスはこの後の
+        // 提出なので、貼るときには描き終わっている。
+        if self.groups.is_empty() {
+            return;
+        }
+        let Some(gr) = r.groups.as_deref_mut() else { return };
+        let (w, h) = rt.target_size();
+        gr.prepare(device, queue, w, h, &self.groups);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("sabitori_group_encoder"),
+        });
+        self.render_groups(&self.runs, &*rt, r, &mut encoder);
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    fn render_groups(
+        &self,
+        runs: &[DrawRun],
+        rt: &impl sabitori_gpu::RectTarget,
+        r: &UiRenderers<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let Some(gr) = r.groups.as_deref() else { return };
+        for run in runs {
+            let DrawRun::Group(g) = run else { continue };
+            self.render_groups(&g.runs, rt, r, encoder);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sabitori_group_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: gr.target(g.slot as usize),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.draw_runs(&g.runs, rt, r, &mut pass);
+        }
     }
 
     /// 木の順に描く。[`OrderedFrame::upload`] の後、開いたパスの中で呼ぶ。
@@ -1458,8 +1570,18 @@ impl OrderedFrame {
         r: &UiRenderers<'_>,
         pass: &mut wgpu::RenderPass<'_>,
     ) {
+        self.draw_runs(&self.runs, rt, r, pass);
+    }
+
+    fn draw_runs(
+        &self,
+        runs: &[DrawRun],
+        rt: &impl sabitori_gpu::RectTarget,
+        r: &UiRenderers<'_>,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) {
         let globals = rt.globals();
-        for run in &self.runs {
+        for run in runs {
             match run {
                 DrawRun::Rects(range) => rt.draw_rect_range(pass, range.clone()),
                 DrawRun::Goo(range) => rt.draw_goo_range(pass, range.clone()),
@@ -1479,6 +1601,11 @@ impl OrderedFrame {
                     }
                 }
                 DrawRun::Glyphs(range) => r.text.draw_glyphs(pass, globals, range.clone()),
+                // 描く物が無ければ回さずその場に描く。
+                DrawRun::Group(g) => match r.groups.as_deref() {
+                    Some(gr) => gr.draw(pass, globals, g.slot),
+                    None => self.draw_runs(&g.runs, rt, r, pass),
+                },
             }
         }
     }

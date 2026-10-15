@@ -27,8 +27,23 @@ pub enum RenderCommand {
     CellGrid(CellGridDraw),
     /// Push a scissor clip rectangle. All subsequent draws are clipped to this rect.
     PushClip(Rect),
+    /// ここから [`RenderCommand::PopGroup`] までを 1 枚の絵に描き、`GroupDraw` の
+    /// 通りに回して貼る ([`Element::rotate`](crate::Element::rotate))。中の切り抜きは
+    /// 中で閉じる。外の切り抜きは貼る絵に掛かる。
+    PushGroup(GroupDraw),
+    /// 直前の [`RenderCommand::PushGroup`] を閉じる。
+    PopGroup,
     /// Pop the most recent clip rectangle.
     PopClip,
+}
+
+/// グループの貼り方 ([`RenderCommand::PushGroup`])。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupDraw {
+    /// 回す中心 (画面座標)。
+    pub pivot: Point,
+    /// 回す角 (ラジアン、画面上で時計回り)。
+    pub rotation: f32,
 }
 
 /// 格子の字形を描く。字形は `origin + (col * cell_w, row * cell_h)` に置く。
