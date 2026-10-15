@@ -17,6 +17,11 @@
 
 ### Added
 
+- **作例 `promo` (30 秒、LP 向け)** — 使い方の説明を兼ねた紹介映像。左でコードが 1 行ずつ打たれ、
+  右でそのコードが描く物が動く: 場面を書く → `.per_glyph` / `.rotate` / `.blur` / `.mask` /
+  `path().trim(..)` の行が光るたびにその動き → `cargo run` で MP4 に。ウェブに載せる前提で
+  `crf` を 22 にし (30 秒で 6MB 弱)、再生前に見せる静止画 (`promo-poster.png`) も書く。
+
 - **`sabitori_reel::Video` — 動画素材を貼る。** `Video::open(path, 幅, 高さ, fps)` で開き、
   `video.element(t)` (または `frame(t)`) で動画の時刻 `t` 秒のコマを画像の要素にする。
   `ffmpeg` (書き出しと同じ、`SABITORI_REEL_FFMPEG` で差し替え可) に生の RGBA を流させ、
