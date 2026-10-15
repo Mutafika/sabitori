@@ -334,7 +334,7 @@ fn scene(ctx: FrameCtx, steel: &ImageData, rust: &ImageData, field: &[f32]) -> E
 }
 
 fn reel(frames: u32) -> Reel {
-    Reel { motion_blur: Some(MotionBlur::new(6)), crf: 20, ..Reel::new(W as u32, H as u32, FPS, frames) }
+    Reel { motion_blur: Some(MotionBlur::new(6)), crf: 24, ..Reel::new(W as u32, H as u32, FPS, frames) }
 }
 
 fn main() {
