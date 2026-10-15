@@ -717,6 +717,8 @@ pub struct ElementStyle {
     pub zoom: f32,
     /// 文字の 1 字ずつの動き ([`Element::glyph_motion`])。字の番号 (`chars()` の順) で引く。
     pub glyph_motion: Option<std::sync::Arc<[GlyphMotion]>>,
+    /// 縦書き ([`Element::vertical`])。
+    pub vertical: bool,
     /// Visual-only X offset, applied after layout. Does not push siblings —
     /// taffy still measures the element at its laid-out slot, but the rect
     /// (and its hit region) is rendered shifted by this many px. Drives
@@ -948,6 +950,7 @@ impl Default for ElementStyle {
             blend: BlendMode::Normal,
             zoom: 1.0,
             glyph_motion: None,
+            vertical: false,
             translate_x: 0.0,
             translate_y: 0.0,
             scale: 1.0,
@@ -2198,6 +2201,18 @@ impl Element {
     /// アニメに使う。字の並びと折り返しは動かす前のまま (見た目だけ)。
     ///
     /// 文字の要素だけに効く。字の位置は回す前・ずらす前のまま押せる。
+    /// 縦書きにする。字は上から下へ、列は右から左へ並び、改行か箱の高さで次の列へ
+    /// 送る。句読点・括弧は縦書きの形 (句読点は升目の右上)、長音記号と半角の英数字は
+    /// 90° 回し、小さい仮名は右上へ寄せる。列の間は `line_height` (既定 1.6 字)。
+    ///
+    /// 高さを決めておけば (`.h(..)`)、収まらない字は次の列へ送られる。決めなければ
+    /// 段落 (改行) ごとに 1 列。字の選択・検索のハイライト・リンクには対応していない。
+    /// [`per_glyph`](Self::per_glyph) は使える (字の番号は横書きと同じ `chars()` の順)。
+    pub fn vertical(mut self) -> Self {
+        self.style.vertical = true;
+        self
+    }
+
     pub fn glyph_motion(mut self, motions: Vec<GlyphMotion>) -> Self {
         self.style.glyph_motion = Some(motions.into());
         self

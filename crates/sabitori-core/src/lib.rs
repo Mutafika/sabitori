@@ -11,6 +11,7 @@ pub mod image_cache;
 pub mod cell_grid;
 pub mod selection;
 pub mod path;
+pub mod vertical;
 
 pub use color::Color;
 pub use geometry::{Corners, Edges, Point, Rect, Size, TextMetrics};
