@@ -300,7 +300,7 @@ impl ApplicationHandler for GpuFlexApp {
                     corner_radii: [0.0; 4],
                     border_color: [0.0; 4],
                     border_width: 0.0,
-                    gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0,
+                    gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                     shadow_color: [0.0; 4],
                     shadow_offset: [0.0; 2],
                     shadow_params: [0.0; 2],
@@ -318,7 +318,7 @@ impl ApplicationHandler for GpuFlexApp {
                         corner_radii: [MOUSE_RADIUS; 4],
                         border_color: Color::new(1.0, 1.0, 1.0, ring_alpha).to_array(),
                         border_width: 1.0,
-                        gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0,
+                        gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                         shadow_color: [0.0; 4],
                         shadow_offset: [0.0; 2],
                         shadow_params: [0.0; 2],
@@ -338,7 +338,7 @@ impl ApplicationHandler for GpuFlexApp {
                         corner_radii: [r; 4], // circle
                         border_color: [0.0; 4],
                         border_width: 0.0,
-                        gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0,
+                        gradient_angle: 0.0, rotation: 0.0, _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                         shadow_color: if speed > 100.0 {
                             col.with_alpha(0.3).to_array()
                         } else {

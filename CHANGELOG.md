@@ -17,6 +17,16 @@
 
 ### Added
 
+- **放射グラデーション (`.radial_gradient(inner, outer)` / `.radial_gradient_at(.., cx, cy)`)**
+  — 中心 (箱に対する割合) から一番遠い角へ。箱の縦横比で楕円に伸ばさず、円のまま広がる。
+  光だまりや周辺減光に。
+- **フィルムの粒子 (`.grain(amount)` / `.grain_seed(seed)`)** — 塗りの上で、画素ごとに明るさを
+  揺らす。揺らすのは目で見た明るさなので、暗い所も明るい所も同じくらいに見える。暗い
+  グラデーションの縞も消える。reel では `grain_seed(ctx.frame)` で粒子が動く。作例の
+  `chart` の背景で使っている。
+- **`GradientKind` / `Grain`** — 上の 2 つを持つ `ElementStyle::gradient_kind` / `grain` と、
+  `RectDraw` の同名のフィールド。
+
 - **`Reel::motion_blur` (`MotionBlur`)** — 動く物にシャッターのぶれを付ける。1 コマを
   `samples` 回、シャッターが開いている間の時刻で描き、明るさを線形に戻して平均する。
   止まっている物は 1 画素も変わらない。`ctx.t()` から作った動き (`interpolate` /
@@ -46,6 +56,10 @@
 
 ### Changed（破壊的）
 
+- **`RectInstance` に `paint` と `grain` を足した (144 → 176 バイト)。** 構造体リテラルで
+  書いている所は `paint: [0.0; 4], grain: [0.0; 4]` が要る。0 なら今まで通りの見た目。
+- **`ElementStyle` / `RectDraw` に `gradient_kind` と `grain` を足した。** 全フィールドを
+  書いたリテラルは `gradient_kind: GradientKind::None, grain: Grain::NONE` が要る。
 - **`FrameCtx` に `sub` を、`Reel` に `motion_blur` を足した。** 構造体リテラルで全フィールドを
   書いている所は `sub: 0.0` / `..Reel::new(..)` が要る。
 - **`spring` / `spring_with` がコマの間の時刻でも動く。** 今までは時刻を一番近いコマに丸めて
@@ -62,6 +76,9 @@
 
 ### Fixed
 
+- **`.gradient(a, b, 0.0)` (左 → 右) が単色で塗られていた。** 角度 0 を「グラデーション
+  無し」の印に使っていたため。`.gradient(..)` は角度に関係なくグラデーションになる。
+  フィールドを直に書く古い形 (`gradient_angle` だけ 0 以外) も今まで通り効く。
 - **検索のハイライト (`.highlight(..)`) とリンクの下線 (`.link_ranges(..)`) が主窓でしか
   描かれていなかった。** 文字の下に敷く矩形を主窓の描画の中だけで作っていたので、画面外の
   描画 (`offscreen::render`)・reel・別窓・3D シーン・上掛けでは黙って消えていた。

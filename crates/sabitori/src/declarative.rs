@@ -4822,7 +4822,7 @@ impl<A: DeclarativeApp> AppState<A> {
                     border_width: 0.0,
                     gradient_angle: 0.0,
                     rotation: 0.0,
-                    _pad0: 0.0,
+                    _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                     shadow_color: [0.0; 4],
                     shadow_offset: [0.0; 2],
                     shadow_params: [0.0; 2],

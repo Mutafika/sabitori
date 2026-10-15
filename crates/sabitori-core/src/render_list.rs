@@ -4,7 +4,7 @@
 //! list of [`RenderCommand`]s that the GPU renderer can consume.
 
 use crate::{Color, Corners, Point, Rect};
-use crate::element::{ImageData, ObjectFit};
+use crate::element::{GradientKind, Grain, ImageData, ObjectFit};
 
 /// A single render command produced by the build step.
 #[derive(Clone, Debug)]
@@ -206,10 +206,15 @@ pub struct RectDraw {
     pub shadow_spread: f32,
     /// Opacity (0.0 = invisible, 1.0 = fully opaque).
     pub opacity: f32,
-    /// Gradient angle in radians (0.0 = no gradient).
+    /// Gradient angle in radians. Read for [`GradientKind::Linear`], and for
+    /// `GradientKind::None` when non-zero (the older way to ask for one).
     pub gradient_angle: f32,
     /// Gradient end color. Fill color is the start.
     pub gradient_end_color: Color,
+    /// Shape of the gradient.
+    pub gradient_kind: GradientKind,
+    /// Film grain over the fill.
+    pub grain: Grain,
     /// 回転角 (ラジアン)。中心まわりに回転。線描画用。
     pub rotation: f32,
 }
@@ -229,6 +234,8 @@ impl Default for RectDraw {
             opacity: 1.0,
             gradient_angle: 0.0,
             gradient_end_color: Color::TRANSPARENT,
+            gradient_kind: GradientKind::None,
+            grain: Grain::NONE,
             rotation: 0.0,
         }
     }

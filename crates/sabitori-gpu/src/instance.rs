@@ -202,8 +202,14 @@ pub struct RectInstance {
     /// (`is_clipped` in sabitori's bridge treats a zero-sized clip as
     /// "clips everything").
     pub clip_rect: [f32; 4],          // offset 128, size 16
+    /// Gradient shape: kind (`0` = by `gradient_angle` alone, the older
+    /// encoding where `0` means none; `1` = linear, so angle `0` works;
+    /// `2` = radial), then the radial center x, y as fractions of the rect.
+    pub paint: [f32; 4],              // offset 144, size 16
+    /// Film grain: amount (perceived brightness, full swing; `0` = off), seed.
+    pub grain: [f32; 4],              // offset 160, size 16
 }
-// Total: 144 bytes
+// Total: 176 bytes
 
 impl RectInstance {
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -267,6 +273,16 @@ impl RectInstance {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: 128,
                 shader_location: 11, // clip_rect
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 144,
+                shader_location: 12, // paint
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 160,
+                shader_location: 13, // grain
             },
         ];
 
