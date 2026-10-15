@@ -1796,6 +1796,7 @@ fn emit_commands_inner(
     let grouped = style.rotate.abs() > 1e-6
         || style.blur > 0.0
         || style.blend != crate::element::BlendMode::Normal
+        || (style.zoom - 1.0).abs() > 1e-6
         || element.mask.is_some();
     if grouped {
         target.commands.push(RenderCommand::PushGroup(GroupDraw {
@@ -1803,6 +1804,7 @@ fn emit_commands_inner(
             rotation: style.rotate,
             blur: style.blur.max(0.0),
             blend: style.blend,
+            zoom: style.zoom,
         }));
     }
 

@@ -31,6 +31,8 @@ struct GroupInstance {
     @location(0) pivot_rot: vec4<f32>,
     // 祖先の切り抜き (論理 px の x, y, w, h)。w == 0 || h == 0 → 切らない。
     @location(1) clip_rect: vec4<f32>,
+    // ぼかし, 重ね方, 倍率 (0 は 1), 空き。ここで読むのは倍率だけ。
+    @location(2) effect: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -56,7 +58,8 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: GroupInstance) -> VertexOutput 
     let angle = inst.pivot_rot.z;
     let c = cos(angle);
     let s = sin(angle);
-    let d = uv * globals.screen_size - pivot;
+    let zoom = select(1.0, inst.effect.z, inst.effect.z > 0.0);
+    let d = (uv * globals.screen_size - pivot) * zoom;
     let p = pivot + vec2<f32>(d.x * c - d.y * s, d.x * s + d.y * c);
     var out: VertexOutput;
     out.position = vec4<f32>(

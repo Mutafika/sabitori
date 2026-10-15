@@ -713,6 +713,8 @@ pub struct ElementStyle {
     pub blur: f32,
     /// 中身ごと描いた絵を、下にどう重ねるか。[`Element::blend`] を参照。
     pub blend: BlendMode,
+    /// 中身ごと描いた絵を拡大縮小する倍率 ([`Element::zoom`])。1 = そのまま。
+    pub zoom: f32,
     /// 文字の 1 字ずつの動き ([`Element::glyph_motion`])。字の番号 (`chars()` の順) で引く。
     pub glyph_motion: Option<std::sync::Arc<[GlyphMotion]>>,
     /// Visual-only X offset, applied after layout. Does not push siblings —
@@ -944,6 +946,7 @@ impl Default for ElementStyle {
             rotate: 0.0,
             blur: 0.0,
             blend: BlendMode::Normal,
+            zoom: 1.0,
             glyph_motion: None,
             translate_x: 0.0,
             translate_y: 0.0,
@@ -2160,6 +2163,20 @@ impl Element {
     /// 同じ)。
     pub fn blend(mut self, mode: BlendMode) -> Self {
         self.style.blend = mode;
+        self
+    }
+
+    /// 中身ごと描いた**絵を**、中心まわりに `k` 倍する。カメラの寄り・引きに使う。
+    ///
+    /// [`scaled`](Self::scaled) は字や線を拡大した大きさで描き直すので、ゆっくり
+    /// 動かすと字が画素の刻みで揺れる (字は画素に合わせて作った画像のため)。こちらは
+    /// 普通の大きさで 1 枚の絵に描いてから、その絵を伸び縮みさせるので、どれだけ
+    /// ゆっくりでも滑らかに動く。代わりに、大きく寄ると少しぼやける。
+    ///
+    /// [`rotate`](Self::rotate) と同じく中身を先に 1 枚の絵に描く (限りも同じ: 押せる
+    /// 場所はそのまま、窓の外にあった部分は入ってこない)。
+    pub fn zoom(mut self, k: f32) -> Self {
+        self.style.zoom = k;
         self
     }
 
