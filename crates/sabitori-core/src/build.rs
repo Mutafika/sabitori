@@ -617,6 +617,11 @@ fn build_tree_impl(
         measurer,
     );
 
+    // Phase 2.6: マスク (`Element::mask`) を、それぞれの要素の箱の大きさで別に組む。
+    // 子に混ぜないので、本体のレイアウト (文字の大きさの測り方も) は変わらない。
+    let mut masks = std::collections::HashMap::new();
+    layout_masks(&mut taffy, root, root_node, measurer, &mut masks);
+
     // Phase 3: walk tree, collect absolute positions, emit render commands
     // 層の番号 → 描画リスト (0 が普通の層 = `render_list`)
     let mut render_lists: std::collections::BTreeMap<u8, RenderList> = std::collections::BTreeMap::new();
@@ -655,6 +660,7 @@ fn build_tree_impl(
         probes,
         &mut probe_positions,
         &anchor_positions,
+        &masks,
         (0.0, 0.0),
         None,
     );
@@ -1368,6 +1374,36 @@ fn place_anchored(
     (x, y)
 }
 
+/// マスクを持つ要素のノード → マスクを組んだ根のノード。
+type MaskLayouts = std::collections::HashMap<taffy::NodeId, taffy::NodeId>;
+
+/// マスク (`Element::mask`) を、持ち主の箱 (レイアウトの大きさ) を窓として、別の根に
+/// 組む (`Percent(100.0)` は持ち主の大きさになる)。持ち主の木には繋がない。マスクを
+/// 持つ要素が無ければ木を 1 周するだけ。
+fn layout_masks(
+    taffy: &mut TaffyTree<TextNodeContext>,
+    element: &Element,
+    node: taffy::NodeId,
+    measurer: Option<&dyn TextMeasure>,
+    out: &mut MaskLayouts,
+) {
+    if element.style.hidden {
+        return;
+    }
+    if let Some(mask) = element.mask.as_deref() {
+        if let Ok(l) = taffy.layout(node) {
+            let (w, h) = (l.size.width, l.size.height);
+            let mask_node = create_taffy_node(taffy, mask, &measurer, false, false);
+            compute_layout_for(taffy, mask_node, w, h, measurer);
+            out.insert(node, mask_node);
+        }
+    }
+    let kids = taffy.children(node).unwrap_or_default();
+    for (child, &child_node) in element.children.iter().zip(kids.iter()) {
+        layout_masks(taffy, child, child_node, measurer, out);
+    }
+}
+
 /// 浮かせる要素の画面位置を決める。アンカーが無ければ空の表を返す。
 fn resolve_anchors(
     taffy: &mut TaffyTree<TextNodeContext>,
@@ -1496,6 +1532,8 @@ fn emit_commands(
     probes: &std::collections::HashSet<String>,
     probe_positions: &mut std::collections::HashMap<String, f32>,
     anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
+    // マスクを持つ要素のノード → マスクを組んだ根のノード。
+    masks: &MaskLayouts,
     parent_scroll: (f32, f32),
     parent_owner: Option<&std::sync::Arc<str>>,
 ) {
@@ -1512,7 +1550,7 @@ fn emit_commands(
         taffy, element, taffy_node, parent_x, parent_y, parent_opacity, render_lists, overlay_list,
         hit_regions, overlay_hit_regions, scroll_measures, element_counter, in_overlay, parent_layer,
         parent_no_select, parent_scale, parent_clip, parent_disabled, probes, probe_positions,
-        anchor_positions, parent_scroll, parent_owner,
+        anchor_positions, masks, parent_scroll, parent_owner,
     );
     if let Some(len) = pushed_len {
         let list = render_lists.entry(layer).or_default();
@@ -1558,6 +1596,8 @@ fn emit_commands_inner(
     // `Element::anchor_to` で貼り付け先から決まった画面位置 (taffy のノード単位)。
     // ここに載っている要素は、taffy が置いた場所ではなくこちらへ出る。
     anchor_positions: &std::collections::HashMap<taffy::NodeId, (f32, f32)>,
+    // マスクを持つ要素のノード → マスクを組んだ根のノード。
+    masks: &MaskLayouts,
     // いちばん近い「切る入れ物」が子に課しているスクロール量 (素の px)。
     // `sticky_x` / `sticky_y` はこれを打ち消して元の位置に留まる。
     parent_scroll: (f32, f32),
@@ -1685,7 +1725,7 @@ fn emit_commands_inner(
                     disabled,
                     // 大きさ 0 の入れ物は切らない (切るものは上で返している)
                     // ので、留まる相手は親から素通し。
-                    probes, probe_positions, anchor_positions, parent_scroll, owner,
+                    probes, probe_positions, anchor_positions, masks, parent_scroll, owner,
                 );
             }
         }
@@ -1697,12 +1737,16 @@ fn emit_commands_inner(
     // 子孫ごと回す要素は、自分の塗りから子の最後までを 1 枚の絵に囲む。閉じるのは
     // この関数の出口 (`PopGroup`)。囲むのは自分の並びだけで、上の層や上掛けへ出る
     // 子孫は囲めない。
-    let grouped = style.rotate.abs() > 1e-6 || style.blur > 0.0;
+    let grouped = style.rotate.abs() > 1e-6
+        || style.blur > 0.0
+        || style.blend != crate::element::BlendMode::Normal
+        || element.mask.is_some();
     if grouped {
         target.commands.push(RenderCommand::PushGroup(GroupDraw {
             pivot: Point::new(abs_x + w * 0.5, abs_y + h * 0.5),
             rotation: style.rotate,
             blur: style.blur.max(0.0),
+            blend: style.blend,
         }));
     }
 
@@ -2142,7 +2186,7 @@ fn emit_commands_inner(
                 no_select, scale,
                 child_clip,
                 disabled,
-                probes, probe_positions, anchor_positions, child_scroll, owner,
+                probes, probe_positions, anchor_positions, masks, child_scroll, owner,
             );
         }
     }
@@ -2263,6 +2307,25 @@ fn emit_commands_inner(
     }
 
     if grouped {
+        // マスクは中身の後に、同じ並びへ描く。当たり判定・スクロールの寸法・probe は
+        // 持ち帰らない (マスクは見えも押せもしない)。番号は木の外の値を振り、本物の
+        // 要素と重ねない。切り抜きはグループの中で新しく始まる。
+        if let (Some(mask_node), Some(mask_el)) = (masks.get(&taffy_node), element.mask.as_deref()) {
+            let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
+            target.commands.push(RenderCommand::PushMask);
+            let (mut hits, mut overlay_hits, mut measures) = (Vec::new(), Vec::new(), Default::default());
+            let mut counter = usize::MAX / 2;
+            emit_commands(
+                taffy, mask_el, *mask_node,
+                abs_x, abs_y, 1.0,
+                render_lists, overlay_list,
+                &mut hits, &mut overlay_hits, &mut measures, &mut counter, use_overlay, layer,
+                true, scale,
+                None,
+                disabled,
+                &Default::default(), &mut Default::default(), anchor_positions, masks, parent_scroll, owner,
+            );
+        }
         let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
         target.commands.push(RenderCommand::PopGroup);
     }
@@ -2725,6 +2788,51 @@ mod tests {
             .rotate(0.5)
             .child(div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK));
         assert_eq!(kinds(div().child(squeezed)), ["push", "rect", "pop"]);
+    }
+
+    /// マスクは中身の後に `PushMask` を挟んで描き、中身としては描かない。子に混ぜない
+    /// ので、要素の大きさ (文字なら字の大きさ) も、後ろの要素の番号も変わらない。
+    #[test]
+    fn a_mask_is_drawn_after_the_content_and_changes_nothing_else() {
+        let masked = div()
+            .w(Px(50.0))
+            .h(Px(50.0))
+            .bg(Color::WHITE)
+            .mask(div().w(Px(20.0)).h(Px(20.0)).bg(Color::BLACK))
+            .child(div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK));
+        let b = build_tree(&div().child(masked).child(text("after")), 200.0, 200.0);
+        let kinds: Vec<&str> = b
+            .render_list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                RenderCommand::Rect(_) => Some("rect"),
+                RenderCommand::PushGroup(_) => Some("push"),
+                RenderCommand::PushMask => Some("mask"),
+                RenderCommand::PopGroup => Some("pop"),
+                RenderCommand::Text(_) => Some("text"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, ["push", "rect", "rect", "mask", "rect", "pop", "text"]);
+        let after = |b: &BuildResult| {
+            b.render_list.commands.iter().find_map(|c| match c {
+                RenderCommand::Text(t) => Some(t.element_index),
+                _ => None,
+            })
+        };
+        let plain = div()
+            .w(Px(50.0))
+            .h(Px(50.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(10.0)).h(Px(10.0)).bg(Color::BLACK));
+        let plain = build_tree(&div().child(plain).child(text("after")), 200.0, 200.0);
+        assert_eq!(after(&b), after(&plain), "マスクで後ろの番号がずれた");
+
+        // 文字に付けても、文字は字の大きさのまま描かれる (子にすると葉でなくなり 0 になる)。
+        let t = build_tree(&div().child(text("Hello").mask(div().w(Px(10.0)).h(Px(10.0)))), 200.0, 200.0);
+        let drawn = t.render_list.commands.iter().any(|c| matches!(c, RenderCommand::Text(d) if &*d.content == "Hello"));
+        assert!(drawn, "マスクを付けた文字が消えた");
     }
 
     /// 開始色が透明なグラデーション (透明 → 黒のスクリム) も描く。`bg` は

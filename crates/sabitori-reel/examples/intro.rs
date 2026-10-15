@@ -26,7 +26,7 @@ use sabitori_core::{goo, BoxShadow, Point, Rect};
 use sabitori_reel::{
     MotionBlur,
     div, image, interpolate, interpolate_color, interpolate_eased, spring_with, text, Color,
-    Easing, Element, FrameCtx, ImageData, Px, Reel, Spring,
+    Easing, Element, FrameCtx, ImageData, Percent, Px, Reel, Spring,
 };
 
 const W: f32 = 1920.0;
@@ -129,6 +129,18 @@ fn gradient_title(s: &str, size: f32, stops: [Color; 3], shift: f32) -> Element 
 }
 
 /// 背景の写真に重ねる半透明のカード。
+/// 左から `p` (0 → 1) まで見せるマスク。右端の 160px は不透明から透明へ溶ける。
+fn wipe(p: f32) -> Element {
+    let soft = 160.0;
+    div()
+        .w(Percent(100.0))
+        .h(Percent(100.0))
+        .flex_row()
+        .child(div().w(Percent(p * 100.0)).h(Percent(100.0)).bg(Color::BLACK))
+        .child(div().w(Px(soft)).h(Percent(100.0)).gradient(Color::BLACK, Color::TRANSPARENT, 0.0))
+        .tx(-soft * (1.0 - p))
+}
+
 fn card(icon: Color, title: &str, body: &str) -> Element {
     div()
         .w(Px(500.0))
@@ -206,10 +218,11 @@ fn scene(ctx: FrameCtx, photo: &ImageData) -> Element {
             )
             .child(gradient_title("Motion, in code.", 128.0, stops, t * 0.12))
             .child(
+                // 左から拭き取るように現す: 端をぼかした帯を伸ばし、それをマスクにする。
                 text("An Element tree per frame, rendered on the GPU — offscreen.")
                     .font_size(32.0)
                     .color(hex("#dcd8f0"))
-                    .opacity(interpolate(t, [0.8, 1.4], [0.0, 1.0])),
+                    .mask(wipe(interpolate_eased(t, [0.8, 1.8], [0.0, 1.0], Easing::EaseInOut))),
             ),
     );
 

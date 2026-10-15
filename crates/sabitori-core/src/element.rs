@@ -551,6 +551,20 @@ pub enum ScrollOwner {
     App,
 }
 
+/// 中身ごと描いた絵の重ね方 ([`Element::blend`])。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    /// ふつうに上に重ねる。
+    #[default]
+    Normal,
+    /// 足す。重なるほど明るくなる (光・炎・粒子)。
+    Add,
+    /// スクリーン。明るくなるが白で飽和しにくい。
+    Screen,
+    /// 掛ける。暗くなる (影・紙の質感)。白は何も変えない。
+    Multiply,
+}
+
 /// Shape of a box's gradient fill (`background` → `gradient_end`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GradientKind {
@@ -676,6 +690,8 @@ pub struct ElementStyle {
     pub rotate: f32,
     /// 要素を中身ごとぼかす幅 (標準偏差、論理 px)。[`Element::blur`] を参照。
     pub blur: f32,
+    /// 中身ごと描いた絵を、下にどう重ねるか。[`Element::blend`] を参照。
+    pub blend: BlendMode,
     /// Visual-only X offset, applied after layout. Does not push siblings —
     /// taffy still measures the element at its laid-out slot, but the rect
     /// (and its hit region) is rendered shifted by this many px. Drives
@@ -904,6 +920,7 @@ impl Default for ElementStyle {
             rotation: 0.0,
             rotate: 0.0,
             blur: 0.0,
+            blend: BlendMode::Normal,
             translate_x: 0.0,
             translate_y: 0.0,
             scale: 1.0,
@@ -1185,6 +1202,8 @@ pub struct Element {
     /// 窓の幅の区分ごとの上書き ([`Element::at`])。ランタイムが `view()` の直後に
     /// [`apply_size_rules`] で畳む。
     pub size_rules: Vec<SizeRule>,
+    /// マスク ([`Element::mask`])。子とは別に、この要素の箱の大きさで組む。
+    pub mask: Option<Box<Element>>,
 }
 
 /// 窓の幅の区分ごとの上書き 1 つ ([`Element::at`] / [`Element::at_least`] /
@@ -1585,6 +1604,7 @@ pub fn div() -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1708,6 +1728,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1750,6 +1771,7 @@ pub fn polyline() -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1807,6 +1829,7 @@ pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1855,6 +1878,7 @@ pub fn arc() -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1887,6 +1911,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -1952,6 +1977,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         window_drag: false,
         right_click_through: false,
         size_rules: Vec::new(),
+        mask: None,
     }
 }
 
@@ -2061,6 +2087,30 @@ impl Element {
     /// 幅が大きいほど重い (画面全体の大きさで 2 回描き直す)。
     pub fn blur(mut self, px: f32) -> Self {
         self.style.blur = px;
+        self
+    }
+
+    /// 中身ごと描いた絵を、下にどう重ねるか (CSS の `mix-blend-mode`)。光・炎・
+    /// 粒子は [`BlendMode::Add`] / [`BlendMode::Screen`] で明るく重ね、影や紙の質感は
+    /// [`BlendMode::Multiply`] で暗く重ねる。
+    ///
+    /// [`rotate`](Self::rotate) と同じく中身を先に 1 枚の絵に描いてから重ねる (限りも
+    /// 同じ)。
+    pub fn blend(mut self, mode: BlendMode) -> Self {
+        self.style.blend = mode;
+        self
+    }
+
+    /// `mask` の不透明な所だけを見せる (CSS の `mask`)。`mask` はこの要素と同じ大きさの
+    /// 箱の中に、左上を合わせて組まれる (子とは別に組むので、この要素の大きさも子の
+    /// 並びも変えない)。文字の形に切り抜く・丸く切り抜く・`gradient` で端を消す・
+    /// 伸びる箱でワイプして現す、に使う。
+    ///
+    /// マスクの色は使わず、不透明度だけを見る。マスクそのものは描かれず、押せも
+    /// しない。[`rotate`](Self::rotate) と同じく中身を先に 1 枚の絵に描く (限りも
+    /// 同じ)。2 回呼ぶと後の物が効く。
+    pub fn mask(mut self, mask: Element) -> Self {
+        self.mask = Some(Box::new(mask));
         self
     }
 

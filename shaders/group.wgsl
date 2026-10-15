@@ -20,6 +20,12 @@ var group_tex: texture_2d<f32>;
 @group(1) @binding(1)
 var group_sampler: sampler;
 
+// マスク (`fs_masked` だけが使う)。不透明度だけを見る。
+@group(2) @binding(0)
+var mask_tex: texture_2d<f32>;
+@group(2) @binding(1)
+var mask_sampler: sampler;
+
 struct GroupInstance {
     // 回す中心 x, y (論理 px)、回転 (ラジアン、画面上で時計回り)、不透明度。
     @location(0) pivot_rot: vec4<f32>,
@@ -65,15 +71,30 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: GroupInstance) -> VertexOutput 
     return out;
 }
 
+fn clipped(in: VertexOutput) -> bool {
+    if in.clip_rect.z <= 0.0 || in.clip_rect.w <= 0.0 {
+        return false;
+    }
+    let p = in.position.xy / globals.scale_factor;
+    let lo = in.clip_rect.xy;
+    let hi = in.clip_rect.xy + in.clip_rect.zw;
+    return p.x < lo.x || p.x > hi.x || p.y < lo.y || p.y > hi.y;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    if in.clip_rect.z > 0.0 && in.clip_rect.w > 0.0 {
-        let p = in.position.xy / globals.scale_factor;
-        let lo = in.clip_rect.xy;
-        let hi = in.clip_rect.xy + in.clip_rect.zw;
-        if p.x < lo.x || p.x > hi.x || p.y < lo.y || p.y > hi.y {
-            discard;
-        }
+    if clipped(in) {
+        discard;
     }
     return textureSample(group_tex, group_sampler, in.uv) * in.opacity;
+}
+
+// マスクはグループと同じ座標で描いてあるので、同じ uv で読む (一緒に回る)。
+@fragment
+fn fs_masked(in: VertexOutput) -> @location(0) vec4<f32> {
+    if clipped(in) {
+        discard;
+    }
+    let m = textureSample(mask_tex, mask_sampler, in.uv).a;
+    return textureSample(group_tex, group_sampler, in.uv) * (in.opacity * m);
 }
