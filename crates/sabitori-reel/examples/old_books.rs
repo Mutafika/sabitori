@@ -6,12 +6,16 @@
 //! - the camera leans in (`.zoom(..)`, smooth for text), one book is drawn out
 //!   of the row and comes forward;
 //! - it opens from the spine (`.mask(..)` wiping out from the gutter) onto two
-//!   pages of paper made from noise; a bird is sketched on the left page with a
-//!   pen line (`path().trim(..)`), and the shop's notice is inked down the right
-//!   page character by character (`per_glyph`, with a blurred under-copy as the
-//!   bleed);
+//!   pages of paper made from noise; a dove with an olive twig settles onto the
+//!   left page beside a pair of glasses and a quill, and the shop's notice is
+//!   inked down the right page character by character (`per_glyph`, with a
+//!   blurred under-copy as the bleed);
 //! - foxing stains and a red seal are multiplied onto the paper
-//!   (`BlendMode::Multiply`).
+//!   (`BlendMode::Multiply`), and the dove gives a little hop.
+//!
+//! The objects (candle, hourglass, potted plant, dove, glasses, quill) are
+//! Fluent Emoji flat SVGs (MIT, `assets/fluent/`), read with `Svg` and moved
+//! part by part with `element_with` — the candle flame flickers, the dove bobs.
 //!
 //! The face is Hiragino Mincho (macOS); elsewhere the system serif is used.
 //!
@@ -25,8 +29,8 @@ mod out;
 
 use out::Args;
 use sabitori_reel::{
-    div, image, interpolate, interpolate_eased, path, spring_with, text, BlendMode, Color, Easing, Element,
-    FrameCtx, GlyphMotion, ImageData, MotionBlur, Percent, Px, Reel, Spring,
+    div, image, interpolate, interpolate_eased, spring_with, text, BlendMode, Color, Easing, Element, FrameCtx,
+    GlyphMotion, ImageData, MotionBlur, Percent, Px, Reel, Spring, Svg,
 };
 
 const W: f32 = 1920.0;
@@ -189,7 +193,28 @@ fn shelf_layout(books: &[Spine]) -> (Vec<f32>, f32) {
     (xs, 700.0)
 }
 
-fn shelf(t: f32, books: &[Spine], wood_img: &ImageData) -> Element {
+/// 板の上の小物: 左に蝋燭と砂時計、右に鉢植え。蝋燭の炎 (4・5 番目の形) は揺れ、
+/// 砂時計は 2.4 秒でひっくり返り、鉢植えはそよぐ。
+fn shelf_objects(t: f32, a: &Art, base: f32) -> Vec<Element> {
+    let flick = (t * 11.0).sin() * 0.5 + (t * 17.3).sin() * 0.5;
+    let candle = a.candle.element_with(200.0, |part, e| {
+        if part.index >= 3 {
+            e.scaled(1.0 + 0.07 * flick).opacity(0.85 + 0.15 * flick.abs())
+        } else {
+            e
+        }
+    });
+    let flip = interpolate_eased(t, [2.4, 3.2], [0.0, std::f32::consts::PI], Easing::EaseInOut);
+    let sway = (t * 1.3).sin() * 0.05;
+    let arrive = |delay: f32| spring_at(t, delay, Spring::gentle());
+    vec![
+        candle.absolute().pos(60.0, base - 196.0).opacity(arrive(0.2).clamp(0.0, 1.0)),
+        a.hourglass.element(150.0).absolute().pos(250.0, base - 150.0).rotate(flip).opacity(arrive(0.5).clamp(0.0, 1.0)),
+        a.plant.element(250.0).absolute().pos(1650.0, base - 246.0).rotate(sway).opacity(arrive(1.6).clamp(0.0, 1.0)),
+    ]
+}
+
+fn shelf(t: f32, books: &[Spine], wood_img: &ImageData, art: &Art) -> Element {
     let (xs, base) = shelf_layout(books);
     let mut kids: Vec<Element> = Vec::new();
     // 奥の壁と板。
@@ -209,50 +234,49 @@ fn shelf(t: f32, books: &[Spine], wood_img: &ImageData) -> Element {
         }
         kids.push(el);
     }
+    kids.extend(shelf_objects(t, art, base));
     div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).children(kids)
 }
 
 // ── 開いた本 ─────────────────────────────────────────────────────────────
 
-/// 左の頁に、ペンで描かれていく鳩。
-fn bird(t: f32) -> Element {
-    let draw = interpolate_eased(t, [10.4, 12.6], [0.0, 1.0], Easing::EaseInOut);
-    let ink = hex("#2a2420");
-    let body = "M40 150 C60 95 120 80 170 92 C200 70 240 70 262 92 C250 98 246 108 248 118 C290 130 300 170 270 200 \
-                C220 240 120 236 70 200 C55 190 45 172 40 150 Z";
-    let wing = "M120 140 C150 120 200 120 230 150 C205 165 160 172 120 160";
-    let legs = "M150 232 L145 262 M175 232 L180 262";
-    let tail = "M48 158 L6 128 L18 166 L2 184 L50 176";
-    let beak = "M262 92 L290 102 L264 108";
-    let mk = |d: &str, w: f32| {
-        path()
-            .svg_path(d)
-            .view_box(0.0, 0.0, 320.0, 300.0)
-            .stroke(ink, w)
-            .trim(0.0, draw)
-            .w(Px(380.0))
-            .h(Px(356.0))
-            .absolute()
-            .pos(0.0, 0.0)
+/// 左の頁の小物: オリーブの枝をくわえた鳩がふわっと降り、眼鏡と羽根ペンが置かれる。
+/// 落款が押された後 (19.4 秒)、鳩が小さく一度跳ねる。
+fn left_page_art(t: f32, a: &Art) -> Vec<Element> {
+    let land = spring_at(t, 10.3, Spring::gentle());
+    let bob = (t * 2.2).sin() * 6.0;
+    // 跳ねる: 19.4 秒から 0.5 秒の山なり。
+    let hop = {
+        let u = ((t - 19.4) / 0.5).clamp(0.0, 1.0);
+        4.0 * u * (1.0 - u)
     };
-    div()
-        .w(Px(380.0))
-        .h(Px(356.0))
-        .child(mk(body, 3.0))
-        .child(mk(wing, 2.5))
-        .child(mk(legs, 2.5))
-        .child(mk(tail, 2.5))
-        .child(mk(beak, 2.5))
-        .child(
-            div()
-                .absolute()
-                .pos(260.0 * 380.0 / 320.0 - 4.0, 96.0 * 356.0 / 300.0 - 4.0)
-                .w(Px(8.0))
-                .h(Px(8.0))
-                .rounded_px(4.0)
-                .bg(ink)
-                .opacity(interpolate(t, [12.4, 12.7], [0.0, 1.0])),
-        )
+    let dove = a
+        .dove
+        .element(300.0)
+        .absolute()
+        .pos(120.0, 150.0)
+        .ty((1.0 - land) * -120.0 + bob * land - hop * 40.0)
+        .rotate((1.0 - land) * -0.3 - hop * 0.12)
+        .opacity(land.clamp(0.0, 1.0));
+    let glasses_in = spring_at(t, 11.2, Spring::bouncy());
+    let quill_in = spring_at(t, 11.7, Spring::gentle());
+    vec![
+        a.glasses
+            .element(190.0)
+            .absolute()
+            .pos(300.0, 560.0)
+            .ty((1.0 - glasses_in) * 80.0)
+            .rotate(-0.14)
+            .opacity(glasses_in.clamp(0.0, 1.0)),
+        a.feather
+            .element(150.0)
+            .absolute()
+            .pos(60.0, 500.0)
+            .rotate(-0.5 + (1.0 - quill_in) * 1.2)
+            .ty((1.0 - quill_in) * -60.0)
+            .opacity(quill_in.clamp(0.0, 1.0)),
+        dove,
+    ]
 }
 
 /// 案内文。右の列から読む。
@@ -346,7 +370,7 @@ fn page(paper: &ImageData, key: &str, left: bool) -> Element {
         .child(gutter)
 }
 
-fn open_book(t: f32, paper: &ImageData, times: &[f32]) -> Element {
+fn open_book(t: f32, paper: &ImageData, times: &[f32], art: &Art) -> Element {
     // 綴じ目から両側へ開く: 真ん中から広がるマスク。
     let open = ease(t, 8.6, 10.0);
     let half = (PW + 16.0) * open;
@@ -357,8 +381,8 @@ fn open_book(t: f32, paper: &ImageData, times: &[f32]) -> Element {
     let left = page(paper, "page-l", true)
         .absolute()
         .pos(8.0, 12.0)
-        .child(bird(t).absolute().pos(90.0, 190.0))
-        .children(foxing(t));
+        .children(foxing(t))
+        .children(left_page_art(t, art));
     let right = page(paper, "page-r", false)
         .absolute()
         .pos(PW + 8.0, 12.0)
@@ -403,11 +427,36 @@ fn open_book(t: f32, paper: &ImageData, times: &[f32]) -> Element {
 
 // ── 場面 ─────────────────────────────────────────────────────────────────
 
+/// 素材の絵 (Fluent Emoji の Flat、MIT)。読むのは 1 回だけ。
+struct Art {
+    candle: Svg,
+    hourglass: Svg,
+    plant: Svg,
+    dove: Svg,
+    glasses: Svg,
+    feather: Svg,
+}
+
+impl Art {
+    fn load() -> Self {
+        let p = |src: &str| Svg::parse(src).expect("素材の SVG が読めない");
+        Self {
+            candle: p(include_str!("assets/fluent/candle_flat.svg")),
+            hourglass: p(include_str!("assets/fluent/hourglass_done_flat.svg")),
+            plant: p(include_str!("assets/fluent/potted_plant_flat.svg")),
+            dove: p(include_str!("assets/fluent/dove_flat.svg")),
+            glasses: p(include_str!("assets/fluent/glasses_flat.svg")),
+            feather: p(include_str!("assets/fluent/feather_flat.svg")),
+        }
+    }
+}
+
 struct Assets {
     paper: ImageData,
     wood: ImageData,
     books: Vec<Spine>,
     times: Vec<f32>,
+    art: Art,
 }
 
 fn scene(ctx: FrameCtx, a: &Assets) -> Element {
@@ -419,7 +468,7 @@ fn scene(ctx: FrameCtx, a: &Assets) -> Element {
         let lean = ease(t, 3.0, 7.6);
         let leave = ease(t, 7.4, 8.6);
         kids.push(
-            shelf(t, &a.books, &a.wood)
+            shelf(t, &a.books, &a.wood, &a.art)
                 .zoom(1.0 + lean * 0.35)
                 .blur(leave * 14.0)
                 .opacity(1.0 - leave * 0.85),
@@ -459,7 +508,7 @@ fn scene(ctx: FrameCtx, a: &Assets) -> Element {
         // 開いた後はほんの少しずつ寄る (字が揺れないよう zoom で)。
         let drift = ease(t, 10.0, SECS);
         kids.push(
-            open_book(t, &a.paper, &a.times)
+            open_book(t, &a.paper, &a.times, &a.art)
                 .absolute()
                 .pos((W - PW * 2.0 - 16.0) * 0.5, (H - PH - 24.0) * 0.5)
                 .zoom(0.96 + settle * 0.04 + drift * 0.035)
@@ -499,7 +548,13 @@ fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
     let assets =
-        Assets { paper: old_paper(PW as u32, PH as u32), wood: wood(960, 540), books: spines(), times: ink_times() };
+        Assets {
+            paper: old_paper(PW as u32, PH as u32),
+            wood: wood(960, 540),
+            books: spines(),
+            times: ink_times(),
+            art: Art::load(),
+        };
     let draw = |ctx: FrameCtx| scene(ctx, &assets);
 
     if !args.stills.is_empty() {

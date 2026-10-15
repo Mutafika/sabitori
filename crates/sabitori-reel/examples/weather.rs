@@ -4,10 +4,13 @@
 //! forecast deals in card by card. The ground behind the phone follows the
 //! weather — overcast grey, wet slate, then warm yellow.
 //!
+//! - the clouds, sun and forecast icons are SVG illustrations (Fluent Emoji,
+//!   MIT — see `assets/fluent/LICENSE`) loaded with `Svg`, and their parts are
+//!   animated on their own with `element_with`: the sun's ray ring turns, the
+//!   rain cloud's drops fall and re-form;
 //! - the phone screen is an ordinary element tree, rounded off with a `mask`;
-//! - raindrops and cloud puffs are plain boxes (single-box `.rotation(..)`, no
-//!   groups), so a hundred of them stay cheap;
-//! - the sun's rays are one `path()` that turns;
+//! - the streaks of rain outside the phone are plain boxes (single-box
+//!   `.rotation(..)`), so a hundred of them stay cheap;
 //! - the copy on the left and the closing line come in with `per_glyph`.
 //!
 //!   cargo run -p sabitori-reel --example weather --release
@@ -18,12 +21,10 @@
 #[path = "common/out.rs"]
 mod out;
 
-use std::f32::consts::TAU;
-
 use out::Args;
 use sabitori_reel::{
-    div, interpolate, interpolate_eased, path, spring_with, text, Color, Easing, Element, FrameCtx, GlyphMotion,
-    MotionBlur, Percent, Px, Reel, Spring,
+    div, interpolate, interpolate_eased, spring_with, text, Color, Easing, Element, FrameCtx, GlyphMotion,
+    MotionBlur, Percent, Px, Reel, Spring, Svg,
 };
 
 const W: f32 = 1920.0;
@@ -100,70 +101,82 @@ fn temperature(t: f32) -> f32 {
     up + down + warm
 }
 
-// ── 絵の部品 ─────────────────────────────────────────────────────────────
+// ── 絵 (SVG の素材) ──────────────────────────────────────────────────────
 
-/// 雲: 丸 3 つと底の板。幅 `w`、左上 (x, y)。
-fn cloud(x: f32, y: f32, w: f32, color: Color) -> Vec<Element> {
-    let h = w * 0.5;
-    let puff = |cx: f32, cy: f32, r: f32| div().absolute().pos(x + cx - r, y + cy - r).w(Px(r * 2.0)).h(Px(r * 2.0)).rounded_px(r).bg(color);
-    vec![
-        puff(w * 0.30, h * 0.62, w * 0.20),
-        puff(w * 0.55, h * 0.45, w * 0.26),
-        puff(w * 0.76, h * 0.66, w * 0.17),
-        div().absolute().pos(x + w * 0.12, y + h * 0.62).w(Px(w * 0.76)).h(Px(h * 0.38)).rounded_px(h * 0.19).bg(color),
-    ]
+/// 使う絵。一度だけ読み、毎コマ使い回す。
+struct Art {
+    cloud: Svg,
+    rain_cloud: Svg,
+    sun: Svg,
+    sun_cloud: Svg,
+    shower: Svg,
+    drop: Svg,
 }
 
-/// 太陽: 丸と、回る光の筋 (1 本の `path`)。中心 (cx, cy)、半径 r。
-fn sun_disc(cx: f32, cy: f32, r: f32, turn: f32, color: Color) -> Vec<Element> {
-    let mut rays = path();
-    for k in 0..10 {
-        let a = k as f32 / 10.0 * TAU;
-        let (c, s) = (a.cos(), a.sin());
-        let (r0, r1) = (r * 1.35, r * 1.75);
-        rays = rays.move_to(r * 2.0 + c * r0, r * 2.0 + s * r0).line_to(r * 2.0 + c * r1, r * 2.0 + s * r1);
+impl Art {
+    fn load() -> Self {
+        let svg = |s: &str| Svg::parse(s).expect("SVG が読めない");
+        Self {
+            cloud: svg(include_str!("assets/fluent/cloud_flat.svg")),
+            rain_cloud: svg(include_str!("assets/fluent/cloud_with_rain_flat.svg")),
+            sun: svg(include_str!("assets/fluent/sun_flat.svg")),
+            sun_cloud: svg(include_str!("assets/fluent/sun_behind_cloud_flat.svg")),
+            shower: svg(include_str!("assets/fluent/sun_behind_rain_cloud_flat.svg")),
+            drop: svg(include_str!("assets/fluent/droplet_flat.svg")),
+        }
     }
-    vec![
-        rays.stroke(color, r * 0.16)
-            .w(Px(r * 4.0))
-            .h(Px(r * 4.0))
-            .absolute()
-            .pos(cx - r * 2.0, cy - r * 2.0)
-            .rotate(turn),
-        div().absolute().pos(cx - r, cy - r).w(Px(r * 2.0)).h(Px(r * 2.0)).rounded_px(r).bg(color),
-    ]
 }
 
-/// 小さな天気の絵 (週間予報のカード用)。中心 (cx, cy)。
-fn icon(kind: u8, cx: f32, cy: f32) -> Vec<Element> {
+/// 太陽: 光の輪 (0 番目の形) だけを回す。
+fn sun_svg(art: &Art, width: f32, turn: f32) -> Element {
+    art.sun.element_with(width, |part, e| if part.index == 0 { e.rotate(turn) } else { e })
+}
+
+/// 雨雲: 雨粒 (2〜4 番目の形) が落ちては雲の下で形になり直す。`phase` は秒。
+fn rain_cloud_svg(art: &Art, width: f32, phase: f32, amount: f32) -> Element {
+    art.rain_cloud.element_with(width, |part, e| {
+        if part.index < 2 {
+            return e;
+        }
+        let k = (phase * 1.6 + part.index as f32 * 0.33).fract();
+        e.ty(k * width * 0.12).opacity(amount * (1.0 - k * k))
+    })
+}
+
+/// 小さな天気の絵 (週間予報のカード用): 0 晴れ、1 くもり、2 雨、3 晴れ時々くもり、
+/// 4 にわか雨。`t` で少し動かす。
+fn icon(art: &Art, kind: u8, t: f32) -> Element {
+    let w = 46.0;
     match kind {
-        0 => {
-            let r = 13.0;
-            vec![div().absolute().pos(cx - r, cy - r).w(Px(r * 2.0)).h(Px(r * 2.0)).rounded_px(r).bg(hex("#e8a417"))]
-        }
-        1 => cloud(cx - 22.0, cy - 13.0, 44.0, hex("#8d8f93")),
-        _ => {
-            let mut v = cloud(cx - 22.0, cy - 18.0, 44.0, hex("#6d7176"));
-            for k in 0..3 {
-                v.push(
-                    div()
-                        .absolute()
-                        .pos(cx - 12.0 + k as f32 * 11.0, cy + 8.0)
-                        .w(Px(3.0))
-                        .h(Px(10.0))
-                        .rounded_px(1.5)
-                        .bg(hex("#3d6fae"))
-                        .rotation(0.25),
-                );
-            }
-            v
-        }
+        0 => sun_svg(art, w, t * 0.6),
+        1 => art.cloud.element(w).tx((t * 1.5).sin() * 2.0),
+        2 => rain_cloud_svg(art, w, t, 1.0),
+        3 => art.sun_cloud.element_with(w, |part, e| if part.index == 1 { e.rotate(t * 0.6) } else { e }),
+        _ => art.shower.element(w),
     }
 }
 
 // ── 電話の画面 ───────────────────────────────────────────────────────────
 
-/// 雨粒 (画面の中、画面の座標)。
+/// 画面の中の雨粒 (素材の雫)。
+fn droplets(art: &Art, t: f32, w: f32, h: f32, n: u32) -> Vec<Element> {
+    let a = rain(t);
+    if a <= 0.0 {
+        return Vec::new();
+    }
+    (0..n)
+        .filter(|&i| hash(i, 7) < a)
+        .map(|i| {
+            let speed = 700.0 + hash(i, 8) * 400.0;
+            let size = 18.0 + hash(i, 9) * 16.0;
+            let x = hash(i, 10) * (w - size);
+            let y = ((t * speed + hash(i, 11) * h) % (h + 120.0)) - 60.0;
+            art.drop.element(size).absolute().pos(x, y).opacity(0.85)
+        })
+        .collect()
+}
+
+/// 雨の筋 (画面の外、地の上)。
 fn raindrops(t: f32, w: f32, h: f32, n: u32, seed: u32) -> Vec<Element> {
     let a = rain(t);
     if a <= 0.0 {
@@ -188,15 +201,15 @@ fn raindrops(t: f32, w: f32, h: f32, n: u32, seed: u32) -> Vec<Element> {
         .collect()
 }
 
-fn week(t: f32) -> Element {
+fn week(art: &Art, t: f32) -> Element {
     let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let kinds = [0u8, 0, 1, 2, 2, 1, 0];
+    let kinds = [0u8, 3, 1, 2, 4, 3, 0];
     let highs = [23, 24, 20, 16, 15, 19, 25];
     let lows = [12, 13, 12, 10, 9, 11, 14];
     let mut row = div().flex_row().gap(8.0);
     for i in 0..7 {
         let s = spring_at(t, 11.8 + i as f32 * 0.13, Spring::bouncy());
-        let mut cardk = div()
+        let cardk = div()
             .w(Px(58.0))
             .h(Px(150.0))
             .rounded_px(16.0)
@@ -206,18 +219,15 @@ fn week(t: f32) -> Element {
             .p(Px(10.0))
             .gap(6.0)
             .child(text(days[i]).font_size(15.0).bold().color(ink()))
-            .child(div().w(Px(44.0)).h(Px(40.0)))
+            .child(icon(art, kinds[i], t + i as f32 * 0.4))
             .child(text(format!("{}°", highs[i])).font_size(18.0).bold().color(ink()))
             .child(text(format!("{}°", lows[i])).font_size(15.0).color(ink().with_alpha(0.5)));
-        for e in icon(kinds[i], 29.0, 64.0) {
-            cardk = cardk.child(e);
-        }
         row = row.child(cardk.ty((1.0 - s) * 140.0).opacity(s.clamp(0.0, 1.0)));
     }
     row
 }
 
-fn screen(t: f32) -> Element {
+fn screen(art: &Art, t: f32) -> Element {
     let temp = temperature(t);
     let label = if sun(t) > 0.5 {
         "Sunny"
@@ -227,23 +237,42 @@ fn screen(t: f32) -> Element {
         "Cloudy"
     };
     let mut kids: Vec<Element> = Vec::new();
-    // 太陽 (雲の奥)。
+    // 太陽 (雲の奥)。下から昇り、光の輪が回る。
     let rise = sun(t);
     if rise > 0.0 {
-        kids.extend(sun_disc(PW - 120.0, 260.0 - rise * 80.0 + (1.0 - rise) * 120.0, 58.0, t * 0.4, hex("#f0a91b").with_alpha(rise)));
+        let sw = 230.0;
+        kids.push(
+            sun_svg(art, sw, t * 0.5)
+                .absolute()
+                .pos(PW - sw - 30.0, 120.0 + (1.0 - rise) * 260.0)
+                .opacity(rise),
+        );
     }
     // 雲が右から左へ流れる。晴れると上へはけて薄くなる。
     let leave = sun(t);
-    for (i, (w, y, speed, shade)) in [(240.0, 90.0, 38.0, "#c9c9c6"), (170.0, 170.0, 60.0, "#b4b5b3"), (270.0, 215.0, 26.0, "#d4d3cf")]
-        .into_iter()
-        .enumerate()
-    {
+    // 素材は正方形の箱の真ん中に雲があるので、箱の上は空いている。字に重ならない高さに。
+    for (i, (w, y, speed)) in [(210.0, -30.0, 38.0), (150.0, 60.0, 60.0), (240.0, 70.0, 26.0)].into_iter().enumerate() {
         let x = PW + 60.0 - ((t * speed + i as f32 * 210.0) % (PW + 400.0));
-        let dark = hex(shade).lerp(hex("#8e9196"), rain(t));
-        let c = dark.with_alpha(1.0 - leave);
-        kids.extend(cloud(x, y - leave * 200.0, w, c));
+        kids.push(
+            art.cloud
+                .element(w)
+                .absolute()
+                .pos(x, y - leave * 220.0)
+                .opacity((1.0 - leave) * (1.0 - rain(t) * 0.6)),
+        );
     }
-    kids.extend(raindrops(t, PW, PH, 90, 11));
+    // 雨の間は、真ん中に雨雲が降りてきて雨を落とす。
+    let rc = rain(t) * (1.0 - leave);
+    if rc > 0.0 {
+        let w = 300.0;
+        kids.push(
+            rain_cloud_svg(art, w, t, rc)
+                .absolute()
+                .pos((PW - w) * 0.5, -20.0 - (1.0 - rc) * 120.0)
+                .opacity(rc),
+        );
+    }
+    kids.extend(droplets(art, t, PW, PH, 40));
     // 中身。
     let pop = spring_at(t, 0.6, Spring::gentle());
     let info = div()
@@ -257,7 +286,7 @@ fn screen(t: f32) -> Element {
         .opacity(pop.clamp(0.0, 1.0))
         .ty((1.0 - pop) * 30.0);
     kids.push(info);
-    kids.push(week(t).absolute().pos(20.0, PH - 190.0));
+    kids.push(week(art, t).absolute().pos(20.0, PH - 190.0));
     // 上の帯 (時刻と電池)。
     kids.push(
         div()
@@ -278,7 +307,7 @@ fn screen(t: f32) -> Element {
         .mask(div().w(Percent(100.0)).h(Percent(100.0)).rounded_px(56.0).bg(Color::BLACK))
 }
 
-fn phone(t: f32) -> Element {
+fn phone(art: &Art, t: f32) -> Element {
     let s = spring_at(t, 0.1, Spring::gentle());
     let out = ease(t, 17.4, 18.6);
     div()
@@ -290,7 +319,7 @@ fn phone(t: f32) -> Element {
         .bg(ink())
         .shadow_md(ink().with_alpha(0.35))
         .p(Px(14.0))
-        .child(screen(t))
+        .child(screen(art, t))
         .ty((1.0 - s) * 600.0 + out * 40.0)
         .zoom(1.0 - out * 0.12)
         .opacity(1.0 - out)
@@ -330,18 +359,17 @@ fn copy(t: f32) -> Element {
     d
 }
 
-fn outro(t: f32) -> Element {
+fn outro(art: &Art, t: f32) -> Element {
     let s = spring_at(t, 18.4, Spring::bouncy());
     let icon_box = div()
         .w(Px(150.0))
         .h(Px(150.0))
         .rounded_px(40.0)
         .bg(hex("#fff6d8"))
-        .shadow_md(ink().with_alpha(0.3));
-    let mut icon_box = icon_box;
-    for e in sun_disc(75.0, 75.0, 30.0, t * 0.5, hex("#f0a91b")) {
-        icon_box = icon_box.child(e);
-    }
+        .shadow_md(ink().with_alpha(0.3))
+        .items_center()
+        .justify_center()
+        .child(sun_svg(art, 110.0, t * 0.5));
     div()
         .absolute()
         .pos(0.0, 0.0)
@@ -371,7 +399,7 @@ fn outro(t: f32) -> Element {
         )
 }
 
-fn scene(ctx: FrameCtx) -> Element {
+fn scene(ctx: FrameCtx, art: &Art) -> Element {
     let t = ctx.t();
     let mut kids: Vec<Element> = vec![div()
         .absolute()
@@ -384,11 +412,11 @@ fn scene(ctx: FrameCtx) -> Element {
     // 地にも雨 (画面の外)。
     kids.extend(raindrops(t, W, H, 70, 40).into_iter().map(|d| d.opacity(0.6)));
     if t < 18.7 {
-        kids.push(phone(t));
+        kids.push(phone(art, t));
         kids.push(copy(t));
     }
     if t > 18.2 {
-        kids.push(outro(t));
+        kids.push(outro(art, t));
     }
     let fin = interpolate(t, [21.4, 22.0], [0.0, 1.0]);
     div().w(Px(W)).h(Px(H)).bg(ground(t)).children(kids).opacity(1.0 - fin)
@@ -401,6 +429,8 @@ fn reel(frames: u32) -> Reel {
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
+    let art = Art::load();
+    let scene = |ctx: FrameCtx| scene(ctx, &art);
 
     if !args.stills.is_empty() {
         let stills = &args.stills;

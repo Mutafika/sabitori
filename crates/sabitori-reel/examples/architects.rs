@@ -8,6 +8,11 @@
 //! - beside it the elevation rises: walls fill up from the ground line (a
 //!   growing `mask`), windows drop in, and a slanted cast shadow stretches
 //!   across the ground;
+//! - a pencil sketches over the plan and a drafting triangle lies on the sheet
+//!   (Fluent Emoji SVGs via `Svg`, recoloured to sit on the paper);
+//! - then the drawing becomes the thing: a crane swings in, the house is
+//!   stacked up part by part (each SVG shape dropping in, `element_with`),
+//!   trees pop up beside it and a soft shadow settles under it;
 //! - one accent colour (vermilion) marks the entrance and the north arrow;
 //! - the title block draws itself and carries the name; the whole sheet eases
 //!   in with `.zoom(..)` so the fine lines never shimmer.
@@ -23,8 +28,10 @@ mod out;
 use std::f32::consts::FRAC_PI_2;
 
 use out::Args;
+use sabitori_core::element::ElementKind;
 use sabitori_reel::{
-    div, interpolate, interpolate_eased, path, text, Color, Easing, Element, FrameCtx, MotionBlur, Percent, Px, Reel,
+    div, interpolate, interpolate_eased, path, spring_with, text, Color, Easing, Element, FrameCtx, MotionBlur,
+    Percent, Px, Reel, Spring, Svg, SvgPart,
 };
 
 const W: f32 = 1920.0;
@@ -46,6 +53,64 @@ fn faint() -> Color {
 }
 fn vermilion() -> Color {
     hex("#d2452d")
+}
+
+fn spring_at(t: f32, start: f32, cfg: Spring) -> f32 {
+    if t < start {
+        0.0
+    } else {
+        spring_with(t - start, FPS, cfg)
+    }
+}
+
+// ── 素材 (Fluent Emoji, MIT) ─────────────────────────────────────────────
+
+/// 使う絵。一度だけ読む。
+struct Assets {
+    house: Svg,
+    crane: Svg,
+    pine: Svg,
+    tree: Svg,
+    pencil: Svg,
+    triangle: Svg,
+}
+
+impl Assets {
+    fn load() -> Self {
+        let svg = |src: &str| Svg::parse(src).expect("SVG が読めない");
+        Self {
+            house: svg(include_str!("assets/fluent/house_flat.svg")),
+            crane: svg(include_str!("assets/fluent/building_construction_flat.svg")),
+            pine: svg(include_str!("assets/fluent/evergreen_tree_flat.svg")),
+            tree: svg(include_str!("assets/fluent/deciduous_tree_flat.svg")),
+            pencil: svg(include_str!("assets/fluent/pencil_flat.svg")),
+            triangle: svg(include_str!("assets/fluent/triangular_ruler_flat.svg")),
+        }
+    }
+}
+
+/// パスの塗りと線の色を `f` で替える。
+fn recolor(e: &mut Element, f: impl Fn(Color) -> Color) {
+    if let ElementKind::Path(p) = &mut e.kind {
+        p.fill = p.fill.map(&f);
+        p.stroke = p.stroke.map(&f);
+    }
+}
+
+/// 絵文字の鮮やかな色を、紙に置いた模型のくらいまで落ち着かせる (彩度を `k` だけ抜き、
+/// 少し紙の色に寄せる)。
+fn mute(c: Color, k: f32) -> Color {
+    let l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    let gray = Color { r: l, g: l, b: l, a: c.a };
+    c.lerp(gray, k).lerp(hex("#d9d1c2").with_alpha(c.a), k * 0.25)
+}
+
+/// 色を落ち着かせた絵。`f` で部品ごとに手を加える。
+fn muted(svg: &Svg, width: f32, k: f32, f: impl Fn(&SvgPart<'_>, Element) -> Element) -> Element {
+    svg.element_with(width, |part, mut e| {
+        recolor(&mut e, |c| mute(c, k));
+        f(part, e)
+    })
 }
 
 fn ease(t: f32, a: f32, b: f32) -> f32 {
@@ -194,6 +259,8 @@ fn rise(p: f32) -> Element {
 
 fn elevation(t: f32) -> Vec<Element> {
     let mut out = Vec::new();
+    // 本物の家が建つと、描いた立面は薄い下書きとして残る。
+    let ghost = 1.0 - 0.8 * ease(t, 11.2, 12.4);
     // 地盤線と、その下の帯 (地面)。
     out.push(stroke(&format!("M1040 {GROUND} H1820"), 3.0, graphite(), ease(t, 7.6, 8.6)));
     // 壁: 塗りが下から立ち上がる (母屋、少し遅れて下屋)。
@@ -233,28 +300,130 @@ fn elevation(t: f32) -> Vec<Element> {
                 .opacity(s),
         );
     }
-    // 影: 左上からの光。地面に斜めの影が右へ伸びる。
-    let len = 150.0 * ease(t, 11.6, 13.4);
-    if len > 1.0 {
-        out.push(fill(
-            &format!("M1740 {g} L{x1} {g} L{x2} {g2} L1780 {g2} Z", g = GROUND, g2 = GROUND + 34.0, x1 = 1740.0 + len, x2 = 1780.0 + len),
-            graphite().with_alpha(0.22),
-        ));
-        // 母屋が下屋の壁に落とす影 (斜めの帯)。
-        let k = ease(t, 11.8, 13.4);
-        out.push(fill(
-            &format!("M1560 562 L{a} 562 L1560 {b} Z", a = 1560.0 + 150.0 * k, b = 562.0 + 120.0 * k),
-            graphite().with_alpha(0.18),
-        ));
-    }
     // 地面の帯 (斜線のハッチ)。
     for k in 0..25 {
         let x = 1050.0 + k as f32 * 30.0;
         out.push(stroke(&format!("M{x} {g} L{x2} {g2}", g = GROUND + 4.0, x2 = x - 16.0, g2 = GROUND + 20.0), 1.0, graphite().with_alpha(0.55), ease(t, 8.0 + k as f32 * 0.02, 8.4 + k as f32 * 0.02)));
     }
+    // ここまでが描いた立面。本物が建ったら薄くする (地面の線と注記は残す)。
+    let drawn: Vec<Element> = out.drain(1..).collect();
+    out.push(div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).children(drawn).opacity(ghost));
     let label = interpolate(t, [8.4, 8.9], [0.0, 1.0]);
     out.push(note("SOUTH ELEVATION  1:100", 18.0, graphite().with_alpha(0.75)).absolute().pos(1060.0, GROUND + 40.0).opacity(label));
     out.push(note("GROUND FLOOR PLAN  1:100", 18.0, graphite().with_alpha(0.75)).absolute().pos(220.0, 730.0).opacity(interpolate(t, [5.6, 6.1], [0.0, 1.0])));
+    out
+}
+
+// ── 図面が実物になる (11〜15 秒) ─────────────────────────────────────────
+
+/// 家の絵の幅と置き場所 (立面図と同じ座標)。絵の地面 (草の帯の下) を地盤線に合わせる。
+const HOUSE_W: f32 = 440.0;
+const HOUSE_X: f32 = 1130.0;
+
+fn real_house(t: f32, a: &Assets) -> Vec<Element> {
+    let mut out = Vec::new();
+    // クレーン: 右から振り込んで、家が組み上がったら右へ去る。
+    let crane_in = spring_at(t, 11.0, Spring::gentle());
+    let crane_out = ease(t, 14.2, 15.0);
+    if t > 11.0 && crane_out < 1.0 {
+        let cw = 300.0;
+        out.push(
+            muted(&a.crane, cw, 0.45, |_, e| e)
+                .absolute()
+                .pos(1560.0 + (1.0 - crane_in) * 420.0 + crane_out * 520.0, GROUND - cw * 0.97)
+                .rotate((1.0 - crane_in) * 0.25)
+                .opacity((crane_in * 1.4).clamp(0.0, 1.0) * (1.0 - crane_out)),
+        );
+    }
+    // 地面に落ちる柔らかい影 (家が組み上がってから)。
+    let sh = ease(t, 13.4, 14.6);
+    if sh > 0.0 {
+        out.push(
+            div()
+                .absolute()
+                .pos(HOUSE_X + 20.0, GROUND - 14.0)
+                .w(Px(HOUSE_W - 40.0))
+                .h(Px(26.0))
+                .rounded_px(13.0)
+                .bg(graphite().with_alpha(0.22 * sh))
+                .blur(10.0),
+        );
+    }
+    // 木: 家の両脇に、地面から伸びる。
+    let trees: [(&Svg, f32, f32, f32); 3] =
+        [(&a.pine, 960.0, 190.0, 14.3), (&a.tree, 1600.0, 210.0, 14.55), (&a.pine, 1780.0, 150.0, 14.8)];
+    for (svg, x, w, at) in trees {
+        let s = spring_at(t, at, Spring::bouncy());
+        if s <= 0.0 {
+            continue;
+        }
+        out.push(
+            muted(svg, w, 0.45, |_, e| e)
+                .absolute()
+                .pos(x, GROUND - w * 0.97)
+                .ty((1.0 - s) * w * 0.5)
+                .scaled(s.max(0.0))
+                .opacity(s.clamp(0.0, 1.0)),
+        );
+    }
+    // 家: 部品 (SVG の形) が 1 つずつ上から落ちてきて積み上がる。
+    if t > 11.8 {
+        out.push(
+            muted(&a.house, HOUSE_W, 0.4, |part, e| {
+                let s = spring_at(t, 11.9 + part.index as f32 * 0.24, Spring::bouncy());
+                e.ty(-(1.0 - s) * 320.0).opacity((s * 2.0).clamp(0.0, 1.0))
+            })
+            .absolute()
+            .pos(HOUSE_X, GROUND - HOUSE_W * 0.97),
+        );
+    }
+    out
+}
+
+// ── 机の上の道具 ─────────────────────────────────────────────────────────
+
+/// 鉛筆の芯の先 (絵の左下) を (`x`, `y`) に置く。
+fn pencil_at(a: &Assets, x: f32, y: f32, w: f32, angle: f32) -> Element {
+    muted(&a.pencil, w, 0.35, |_, e| e).absolute().pos(x - w * 0.06, y - w * 0.94).rotate(angle)
+}
+
+fn desk(t: f32, a: &Assets) -> Vec<Element> {
+    let mut out = Vec::new();
+    // 三角定規: 透けた灰色にして、左下から滑り込む。
+    let tri = spring_at(t, 0.5, Spring::gentle());
+    out.push(
+        a.triangle
+            .element_with(250.0, |part, mut e| {
+                recolor(&mut e, |c| {
+                    if part.index == 0 { graphite().with_alpha(0.10 * c.a) } else { graphite().with_alpha(0.30 * c.a) }
+                });
+                e
+            })
+            .absolute()
+            .pos(60.0 - (1.0 - tri) * 320.0, 790.0)
+            .rotate(-0.18)
+            .opacity(tri.clamp(0.0, 1.0)),
+    );
+    // 鉛筆: 平面図を描く間は図の上をすべり (芯の先が図の上を回る)、描き終えると脇に置かれる。
+    let w = 120.0;
+    if t < 6.3 {
+        let p = interpolate(t, [0.9, 6.0], [0.0, 1.0]);
+        let ang = p * std::f32::consts::TAU * 1.6;
+        let (x, y) = (560.0 + ang.cos() * 260.0, 460.0 + (ang * 2.0).sin() * 170.0);
+        let enter = ease(t, 0.6, 1.2);
+        out.push(pencil_at(a, x + (1.0 - enter) * 400.0, y - (1.0 - enter) * 300.0, w, 0.0).opacity(enter));
+    } else {
+        let p = ease(t, 6.3, 7.2);
+        let from = (560.0 + (std::f32::consts::TAU * 1.6).cos() * 260.0, 460.0 + (std::f32::consts::TAU * 3.2).sin() * 170.0);
+        let to = (330.0, 1010.0);
+        out.push(pencil_at(
+            a,
+            from.0 + (to.0 - from.0) * p,
+            from.1 + (to.1 - from.1) * p,
+            w,
+            -0.5 * p,
+        ));
+    }
     out
 }
 
@@ -320,17 +489,20 @@ fn tagline(t: f32) -> Element {
         .ty((1.0 - a) * 12.0)
 }
 
-fn scene(ctx: FrameCtx) -> Element {
+fn scene(ctx: FrameCtx, a: &Assets) -> Element {
     let t = ctx.t();
     let mut sheet: Vec<Element> = Vec::new();
     sheet.extend(grid(t));
     sheet.extend(plan(t));
     sheet.extend(dimensions(t));
-    // 立面図は少し左へ (影が紙の右端で切れないように)。
-    sheet.push(div().absolute().pos(-70.0, 0.0).w(Px(W)).h(Px(H)).children(elevation(t)));
+    // 立面図は少し左へ (木が紙の右端で切れないように)。
+    let mut elev = elevation(t);
+    elev.extend(real_house(t, a));
+    sheet.push(div().absolute().pos(-70.0, 0.0).w(Px(W)).h(Px(H)).children(elev));
     sheet.extend(accents(t));
     sheet.extend(title_block(t));
     sheet.push(tagline(t));
+    sheet.extend(desk(t, a));
     // 紙全体をゆっくり寄せる (絵として。`.scaled` だと細い線と字が揺れる)。
     let zoom = interpolate_eased(t, [0.0, SECS], [1.0, 1.05], Easing::EaseInOut);
     let fade_in = interpolate(t, [0.0, 0.8], [0.0, 1.0]);
@@ -355,6 +527,8 @@ fn reel(frames: u32) -> Reel {
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
+    let assets = Assets::load();
+    let scene = |ctx: FrameCtx| scene(ctx, &assets);
 
     if !args.stills.is_empty() {
         let stills = &args.stills;

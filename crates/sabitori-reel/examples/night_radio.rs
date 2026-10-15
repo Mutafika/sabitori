@@ -1,16 +1,21 @@
 //! sabitori-reel — **a late-night radio station ident** (22 s) for "Night
 //! Lantern 82.4", a station that does not exist.
 //!
-//! - the tuner needle sweeps through static and springs onto 82.4 MHz while
-//!   the knob turns with it;
+//! - the tuner needle sweeps through static and springs onto 82.4 MHz; the
+//!   little radio (an SVG illustration, `Svg`) moves its own needle with it,
+//!   its window lights up and it starts to bob and breathe out notes;
 //! - the waveform (`polyline`) goes from noise to a calm voice-like wave once
 //!   the station locks;
 //! - the neon sign flickers on: each glyph is lit (`per_glyph`) and doubled by
 //!   a blurred copy added on top (`BlendMode::Add`), so the tubes glow;
-//! - the night's programme scrolls past like an LED board, then the camera
-//!   eases back (`zoom`) and the sign hums out.
+//! - a microphone hops in beside ON AIR, a crescent moon rises among
+//!   twinkling stars, the night's programme scrolls past like an LED board,
+//!   and headphones join the last line as the camera eases back (`zoom`).
 //!
 //! Warm amber and vermilion neon on a deep green-black, fixed film grain.
+//! The illustrations are Microsoft's Fluent Emoji (Flat, MIT — see
+//! `assets/fluent/LICENSE`), recoloured part by part (`element_with`) to sit in
+//! the night palette.
 //!
 //!   cargo run -p sabitori-reel --example night_radio --release
 //!
@@ -23,7 +28,7 @@ mod out;
 use out::Args;
 use sabitori_reel::{
     div, interpolate, interpolate_eased, polyline, spring_with, text, BlendMode, Color, Easing, Element, FrameCtx,
-    GlyphMotion, MotionBlur, Px, Reel, Spring,
+    GlyphMotion, MotionBlur, Px, Reel, Spring, Svg,
 };
 
 const W: f32 = 1920.0;
@@ -42,9 +47,6 @@ fn hex(s: &str) -> Color {
 fn night() -> Color {
     hex("#070c0a")
 }
-fn panel() -> Color {
-    hex("#0f1814")
-}
 fn amber() -> Color {
     hex("#ffb547")
 }
@@ -53,6 +55,39 @@ fn vermilion() -> Color {
 }
 fn dim() -> Color {
     hex("#6f5a35")
+}
+
+/// 絵 (Fluent Emoji の Flat、MIT)。一度だけ読んで使い回す。
+struct Art {
+    radio: Svg,
+    mic: Svg,
+    moon: Svg,
+    star: Svg,
+    note: Svg,
+    phones: Svg,
+}
+
+impl Art {
+    fn load() -> Self {
+        let p = |s: &str| Svg::parse(s).expect("SVG が読めない");
+        Self {
+            radio: p(include_str!("assets/fluent/radio_flat.svg")),
+            mic: p(include_str!("assets/fluent/studio_microphone_flat.svg")),
+            moon: p(include_str!("assets/fluent/crescent_moon_flat.svg")),
+            star: p(include_str!("assets/fluent/star_flat.svg")),
+            note: p(include_str!("assets/fluent/musical_note_flat.svg")),
+            phones: p(include_str!("assets/fluent/headphone_flat.svg")),
+        }
+    }
+}
+
+/// 紫がかった灰 (マイク・ヘッドホン) を、夜の色に合う暖かい灰へ。
+fn warm_grey(light: bool) -> Color {
+    if light {
+        hex("#c9bba3")
+    } else {
+        hex("#8c7f6c")
+    }
 }
 
 fn spring_at(t: f32, start: f32, cfg: Spring) -> f32 {
@@ -136,18 +171,117 @@ fn dial(t: f32) -> Element {
     d
 }
 
-/// つまみ: 針と一緒に回る。
-fn knob(t: f32) -> Element {
-    let r = 70.0;
-    let a = (needle(t) - LO) / (HI - LO) * 5.0 - 2.5;
-    let (dx, dy) = (a.sin() * r * 0.68, -a.cos() * r * 0.68);
+/// 小さなラジオ (絵)。窓 (元は水色) は暗い琥珀にして、局に合うと灯る。赤い針は本物の
+/// 針と一緒に動き、合った後は音に合わせて小さく弾む。
+fn radio(art: &Art, t: f32, width: f32) -> Element {
+    let l = lock(t);
+    let pos = (needle(t) - LO) / (HI - LO) - 0.5;
+    let beat = (t * 7.0).sin().max(0.0) * l;
+    art.radio
+        .element_with(width, |part, e| match part.index {
+            // 4: 窓 (水色) → 琥珀。灯り具合は合い具合で。
+            4 => e.fill(hex("#2b2112").lerp(amber(), 0.15 + 0.75 * l)),
+            // 5: 窓の中の赤い針。
+            5 => e.tx(pos * width * 0.16),
+            // 6: スピーカーの格子。音に合わせて少し明るく。
+            6 => e.opacity(0.85 + 0.15 * beat),
+            _ => e,
+        })
+        .ty(-beat * 6.0)
+}
+
+/// 窓の後ろの、加算で重ねる暖かい光 (合った時だけ)。
+fn radio_glow(t: f32, width: f32) -> Element {
+    let l = lock(t);
     div()
-        .w(Px(r * 2.0))
-        .h(Px(r * 2.0))
-        .rounded_px(r)
-        .bg(panel())
-        .border(3.0, dim())
-        .child(div().absolute().pos(r + dx - 7.0, r + dy - 7.0).w(Px(14.0)).h(Px(14.0)).rounded_px(7.0).bg(amber()))
+        .w(Px(width * 0.9))
+        .h(Px(width * 0.6))
+        .rounded_px(width * 0.3)
+        .bg(amber().with_alpha(0.22 * l))
+        .blur(40.0)
+        .blend(BlendMode::Add)
+}
+
+/// ラジオから立ちのぼる音符: 局に合ってから、少しずつずらして生まれ、右上へ漂って消える。
+fn notes(art: &Art, t: f32, origin: (f32, f32)) -> Vec<Element> {
+    let born0 = 4.4;
+    if t < born0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for k in 0..14u32 {
+        let born = born0 + k as f32 * 0.9 + hash(k, 3) * 0.4;
+        let age = t - born;
+        // 看板に届く前に消える (ラジオの上でふわっと)。
+        if !(0.0..2.2).contains(&age) {
+            continue;
+        }
+        let size = 44.0 + hash(k, 4) * 30.0;
+        let x = origin.0 + (hash(k, 5) - 0.3) * 90.0 * age + (age * 2.4 + k as f32).sin() * 16.0;
+        let y = origin.1 - age * (55.0 + hash(k, 6) * 25.0);
+        let a = interpolate(age, [0.0, 0.4], [0.0, 1.0]) * interpolate(age, [1.4, 2.2], [1.0, 0.0]);
+        let tint = if k % 3 == 0 { vermilion() } else { amber() };
+        out.push(
+            art.note
+                .element_with(size, |_, e| e.fill(tint))
+                .absolute()
+                .pos(x, y)
+                .rotate((age * 1.7 + k as f32).sin() * 0.25)
+                .opacity(a * 0.9),
+        );
+    }
+    out
+}
+
+/// 右上の月と、またたく星。月は 0〜6 秒でゆっくり昇る。
+fn sky(art: &Art, t: f32) -> Vec<Element> {
+    let rise = interpolate_eased(t, [0.0, 6.0], [0.0, 1.0], Easing::EaseOut);
+    let mut out = vec![art
+        .moon
+        .element(150.0)
+        .absolute()
+        .pos(1720.0, 70.0 + (1.0 - rise) * 120.0)
+        .rotate(-0.3 + rise * 0.15)
+        .opacity(0.25 + 0.65 * rise)];
+    let stars = [(1660.0, 60.0, 28.0), (1860.0, 210.0, 22.0), (1590.0, 180.0, 18.0), (90.0, 70.0, 24.0), (180.0, 170.0, 16.0)];
+    for (i, (x, y, size)) in stars.into_iter().enumerate() {
+        let tw = 0.45 + 0.55 * ((t * (1.3 + i as f32 * 0.37) + i as f32 * 1.9).sin() * 0.5 + 0.5);
+        out.push(
+            art.star
+                .element(size)
+                .absolute()
+                .pos(x, y)
+                .rotate(t * 0.2 + i as f32)
+                .opacity(tw * interpolate(t, [0.4 + i as f32 * 0.3, 1.4 + i as f32 * 0.3], [0.0, 1.0])),
+        );
+    }
+    out
+}
+
+/// マイク: ON AIR が点いた所で跳ねて入り、ゆらゆらする。
+fn mic(art: &Art, t: f32) -> Element {
+    let s = spring_at(t, 4.7, Spring::bouncy());
+    art.mic
+        .element_with(150.0, |part, e| match part.index {
+            0 => e.fill(warm_grey(false)),
+            1 => e.fill(warm_grey(true)),
+            _ => e,
+        })
+        .scaled(s.max(0.0))
+        .rotate((1.0 - s) * 0.8 + (t * 1.4).sin() * 0.06)
+}
+
+/// ヘッドホン (締めの一言の横)。
+fn phones(art: &Art, t: f32) -> Element {
+    let s = spring_at(t, 19.2, Spring::bouncy());
+    art.phones
+        .element_with(96.0, |part, e| match part.index {
+            0 | 1 => e.fill(warm_grey(false)),
+            _ => e.fill(warm_grey(true)),
+        })
+        .ty((1.0 - s) * -60.0)
+        .rotate((1.0 - s) * -0.5)
+        .opacity(s.clamp(0.0, 1.0))
 }
 
 // ── 波形 ─────────────────────────────────────────────────────────────────
@@ -246,7 +380,7 @@ fn schedule(t: f32) -> Element {
     col
 }
 
-fn scene(ctx: FrameCtx) -> Element {
+fn scene(ctx: FrameCtx, art: &Art) -> Element {
     let t = ctx.t();
     let fade_in = interpolate(t, [0.0, 0.8], [0.0, 1.0]);
     let out = interpolate_eased(t, [20.6, 22.0], [0.0, 1.0], Easing::EaseIn);
@@ -254,10 +388,14 @@ fn scene(ctx: FrameCtx) -> Element {
     let shift = interpolate_eased(t, [13.4, 14.4], [0.0, 1.0], Easing::EaseInOut);
 
     let mut stage: Vec<Element> = Vec::new();
+    // 右上: 月と星。
+    stage.extend(sky(art, t).into_iter().map(|e| e.opacity(1.0 - shift * 0.5)));
     // 上: 目盛り。
     stage.push(dial(t).ty(80.0).opacity(1.0 - shift * 0.7));
-    // 左下: つまみ。
-    stage.push(knob(t).absolute().pos(160.0, 840.0).opacity(1.0 - shift));
+    // 左下: ラジオ (後ろに灯りの光)。音符はスピーカーから右上へ。
+    stage.push(radio_glow(t, 270.0).absolute().pos(40.0, 820.0).opacity(1.0 - shift * 0.4));
+    stage.push(radio(art, t, 270.0).absolute().pos(30.0, 740.0).opacity(1.0 - shift * 0.4));
+    stage.extend(notes(art, t, (150.0, 760.0)).into_iter().map(|e| e.opacity(1.0 - shift)));
     // 下: 波形。
     stage.push(wave(t, 1300.0, 200.0).absolute().pos(310.0, 780.0).opacity(1.0 - shift * 0.4));
 
@@ -269,6 +407,9 @@ fn scene(ctx: FrameCtx) -> Element {
         .border(4.0, vermilion().with_alpha(flicker(t, 4.5, 3)))
         .child(neon("ON AIR", 46.0, vermilion(), t, 4.5, 3));
     stage.push(on_air.absolute().pos(W - 380.0, 300.0).opacity(1.0 - shift));
+    if t > 4.6 {
+        stage.push(mic(art, t).absolute().pos(W - 560.0, 250.0).opacity(1.0 - shift));
+    }
 
     // 看板。
     let sign = div()
@@ -302,10 +443,13 @@ fn scene(ctx: FrameCtx) -> Element {
         stage.push(
             div()
                 .absolute()
-                .pos(0.0, H - 108.0)
+                .pos(0.0, H - 128.0)
                 .w(Px(W))
                 .flex_row()
                 .justify_center()
+                .items_center()
+                .gap(26.0)
+                .child(phones(art, t))
                 .child(neon("tune in, softly", 54.0, amber(), t, 19.0, 71)),
         );
     }
@@ -343,6 +487,8 @@ fn reel(frames: u32) -> Reel {
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
+    let art = Art::load();
+    let scene = |ctx: FrameCtx| scene(ctx, &art);
 
     if !args.stills.is_empty() {
         let stills = &args.stills;

@@ -15,6 +15,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **架空業者シリーズの作例 6 本の絵を、SVG の素材に替えた。** 手で座標を打った丸と四角の絵を、
+  Fluent Emoji (MIT) の Flat 版の SVG (`examples/assets/fluent/`、36 枚) に替え、`Svg` で要素に
+  して部品ごとに動かす (食パンが部品から組み上がる、蝋燭の炎だけ揺れる、ラジオの針が目盛りと
+  一緒に動く、家が積み上がる、雨雲から雨粒だけ落ちる、など)。`game_studio` は最後に引くと
+  ゲーム機の液晶の中だったと分かり、机の上で素材が元の色で出る。
+
 ### Added
 
 - **`sabitori_core::svg::Svg` — SVG の絵を要素の木にする。** `Svg::parse(src)?.element(幅)` で、

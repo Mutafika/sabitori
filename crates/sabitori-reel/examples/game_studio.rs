@@ -1,17 +1,22 @@
 //! sabitori-reel — **a made-up indie game studio** (22 s): "BITMOSS", and
-//! their made-up game "HOP GARDEN", in the four greens of an old handheld.
+//! their made-up game "HOP GARDEN", in the four greens of an old handheld —
+//! until the camera pulls back and the handheld turns out to be sitting on a
+//! desk full of colour.
 //!
 //! - the studio logo scrolls down in 8-pixel steps, like a console booting;
-//! - a squishy blob (`goo`: the body and a trailing foot fused) hops across a
-//!   tiled level, stretching on the way up and squashing on landing, and
-//!   collects coins — each one pops and the score counts up;
-//! - a hi-score counts up to a big number while pixel sparkles blink;
+//! - a squishy blob (`goo`) hops across a tiled level collecting coins, past a
+//!   patrolling alien, with hearts and a score in the corner;
+//! - a trophy bounces over a hi-score that counts up;
 //! - the title drops in letter by letter (`per_glyph`), snapped to whole
-//!   "pixels" so it moves like a sprite, not like a vector;
-//! - "PRESS START" blinks, and the screen fades through the palette.
+//!   "pixels" so it moves like a sprite;
+//! - "PRESS START" blinks, then the picture shrinks (`.zoom`) into the screen
+//!   of a handheld, and the desk around it fills with the real thing.
 //!
-//! Sprites are strings of characters turned into runs of squares. Monospace
-//! text uses Menlo (`Reel::mono_family`).
+//! The coins, stars, hearts, trophy, alien, controller, joystick and gem are
+//! Fluent Emoji (Flat, MIT — see `assets/fluent/LICENSE`) loaded with `Svg`.
+//! Inside the game they are recoloured to the four greens (`element_with`
+//! rewrites each shape's fill by its brightness); on the desk they keep their
+//! own colours.
 //!
 //!   cargo run -p sabitori-reel --example game_studio --release
 //!
@@ -22,10 +27,11 @@
 mod out;
 
 use out::Args;
+use sabitori_core::element::ElementKind;
 use sabitori_core::{goo, Rect};
 use sabitori_reel::{
     div, interpolate, interpolate_eased, spring_with, text, Color, Easing, Element, FrameCtx, GlyphMotion, MotionBlur,
-    Px, Reel, Spring,
+    Px, Reel, Spring, Svg,
 };
 
 const W: f32 = 1920.0;
@@ -37,6 +43,11 @@ const SECS: f32 = 22.0;
 const DOT: f32 = 8.0;
 /// 床の上端。
 const GROUND: f32 = 800.0;
+
+/// 引いた後、ゲームの画面が窓 (ゲーム機の液晶) に収まる倍率。
+const SCREEN: f32 = 0.30;
+/// 引き始めと引き終わり。
+const PULL: (f32, f32) = (17.6, 19.6);
 
 fn hex(s: &str) -> Color {
     Color::from_hex(s)
@@ -76,6 +87,78 @@ fn hash(i: u32, k: u32) -> f32 {
     (h & 0xffff) as f32 / 65535.0
 }
 
+// ── 素材 ─────────────────────────────────────────────────────────────────
+
+/// 使う絵 (Fluent Emoji の Flat、MIT)。
+struct Art {
+    coin: Svg,
+    star: Svg,
+    heart: Svg,
+    trophy: Svg,
+    alien: Svg,
+    pad: Svg,
+    joystick: Svg,
+    gem: Svg,
+}
+
+impl Art {
+    fn load() -> Self {
+        let p = |s: &str| Svg::parse(s).expect("SVG が読めない");
+        Self {
+            coin: p(include_str!("assets/fluent/coin_flat.svg")),
+            star: p(include_str!("assets/fluent/star_flat.svg")),
+            heart: p(include_str!("assets/fluent/red_heart_flat.svg")),
+            trophy: p(include_str!("assets/fluent/trophy_flat.svg")),
+            alien: p(include_str!("assets/fluent/alien_monster_flat.svg")),
+            pad: p(include_str!("assets/fluent/video_game_flat.svg")),
+            joystick: p(include_str!("assets/fluent/joystick_flat.svg")),
+            gem: p(include_str!("assets/fluent/gem_stone_flat.svg")),
+        }
+    }
+}
+
+/// 目で見た明るさ (0..1)。
+fn lightness(c: Color) -> f32 {
+    c.luminance().powf(1.0 / 2.2)
+}
+
+/// 色を、その絵の中での明るさで緑に落とす (`lo..hi` はその絵の明るさの幅)。
+/// 3 段目 (c2) は地 (c3) とほとんど同じ緑で見えなくなるので使わず、明るい側を c1、
+/// 暗い側を c0 の 2 段にする (昔の携帯機の絵も、地の色を入れて 3 色が普通)。
+fn to_green(c: Color, lo: f32, hi: f32) -> Color {
+    let r = if hi > lo { (lightness(c) - lo) / (hi - lo) } else { 1.0 };
+    let g = if r > 0.45 { c1() } else { c0() };
+    g.with_alpha(c.a)
+}
+
+/// 緑に落とした絵 (ゲームの中の物)。先に 1 度なめて、絵の明るさの幅を測る。
+fn green(svg: &Svg, width: f32) -> Element {
+    let range = std::cell::Cell::new((1.0f32, 0.0f32));
+    let _ = svg.element_with(width, |_, e| {
+        if let ElementKind::Path(p) = &e.kind {
+            for c in p.fill.iter().chain(p.stroke.iter()) {
+                let (lo, hi) = range.get();
+                range.set((lo.min(lightness(*c)), hi.max(lightness(*c))));
+            }
+        }
+        e
+    });
+    let (lo, hi) = range.get();
+    svg.element_with(width, |_, mut e| {
+        if let ElementKind::Path(p) = &mut e.kind {
+            p.fill = p.fill.map(|c| to_green(c, lo, hi));
+            p.stroke = p.stroke.map(|c| to_green(c, lo, hi));
+        }
+        e
+    })
+}
+
+/// 絵の高さ (幅 `width` で置いたとき)。
+fn height_of(svg: &Svg, width: f32) -> f32 {
+    let (w, h) = svg.size();
+    width * h / w
+}
+
 /// 文字の並びをドット絵にする。同じ色が横に続く所は 1 つの四角にまとめる。
 /// `'0'`〜`'3'` が 4 階調 (濃い順)、それ以外は透明。
 fn sprite(rows: &[&str], px: f32) -> Element {
@@ -112,17 +195,6 @@ fn sprite(rows: &[&str], px: f32) -> Element {
     }
     d
 }
-
-const COIN: [&str; 8] = [
-    "..0000..", //
-    ".022220.", //
-    "02233220", //
-    "02230220", //
-    "02230220", //
-    "02233220", //
-    ".022220.", //
-    "..0000..", //
-];
 
 const SPARKLE: [&str; 5] = [
     "..0..", //
@@ -238,22 +310,37 @@ fn score_at(t: f32) -> u32 {
     coin_xs().iter().filter(|&&x| t >= passes_at(x)).count() as u32 * 100
 }
 
-fn play(t: f32) -> Vec<Element> {
+fn play(t: f32, art: &Art) -> Vec<Element> {
     let mut out = vec![ground()];
     for (i, bx) in [260.0, 900.0, 1500.0].into_iter().enumerate() {
         out.push(sprite(&BUSH, DOT).absolute().pos(bx + i as f32 * 20.0, GROUND - BUSH.len() as f32 * DOT));
     }
+    // 空の星: ゆっくりまたたく (大きさを 2 段で切り替える)。
+    for (i, (sx, sy)) in [(600.0, 250.0), (1180.0, 200.0), (1660.0, 300.0)].into_iter().enumerate() {
+        let big = ((t * 2.0 + i as f32 * 0.7) as i32) % 2 == 0;
+        let w = if big { 56.0 } else { 40.0 };
+        out.push(green(&art.star, w).absolute().pos(snap(sx - w * 0.5), snap(sy - w * 0.5)));
+    }
+    // 宇宙人: 2 つ目の茂みの先を行ったり来たりする。キャラが上を跳び越える。
+    let patrol = (t * 0.9).sin();
+    let aw = 96.0;
+    out.push(
+        green(&art.alien, aw)
+            .absolute()
+            .pos(snap(1180.0 + patrol * 140.0), GROUND - height_of(&art.alien, aw) - snap(((t * 6.0).sin().abs()) * 8.0)),
+    );
+    let cw = 64.0;
     for (i, x) in coin_xs().into_iter().enumerate() {
         let got = passes_at(x);
         // 浮いて上下に揺れ、拾われたら跳ね上がって点滅しながら消える。
         let bob = snap((t * 3.0 + i as f32).sin() * 10.0);
         let y = GROUND - 240.0 + bob;
         if t < got {
-            out.push(sprite(&COIN, DOT).absolute().pos(x - 32.0, y));
+            out.push(green(&art.coin, cw).absolute().pos(x - cw * 0.5, y));
         } else if t < got + 0.45 {
             let age = t - got;
             if ((age * 16.0) as i32) % 2 == 0 {
-                out.push(sprite(&COIN, DOT).absolute().pos(x - 32.0, snap(y - age * 260.0)));
+                out.push(green(&art.coin, cw).absolute().pos(x - cw * 0.5, snap(y - age * 260.0)));
             }
             out.push(
                 text("+100")
@@ -277,37 +364,57 @@ fn play(t: f32) -> Vec<Element> {
             .absolute()
             .pos(80.0, 70.0),
     );
+    // 残りの命: ハート 3 つ。
+    for k in 0..3 {
+        out.push(green(&art.heart, 44.0).absolute().pos(80.0 + k as f32 * 56.0, 132.0));
+    }
     out.push(text("WORLD 1-1").mono().bold().font_size(44.0).color(c0()).absolute().pos(W - 400.0, 70.0));
     out
 }
 
 // ── 3. 最高点 (9.4〜14 秒) ───────────────────────────────────────────────
 
-fn hiscore(t: f32) -> Vec<Element> {
-    let n = interpolate_eased(t, [9.8, 12.2], [0.0, 98_765.0], Easing::EaseOut) as u32;
+fn hiscore(t: f32, art: &Art) -> Vec<Element> {
+    // 数はコマの頭の時刻で決める (コマの間の時刻で数が変わると、モーションブラーで
+    // 2 つの数が重なって読めなくなる)。
+    let at_frame = (t * FPS as f32).floor() / FPS as f32;
+    let n = interpolate_eased(at_frame, [9.8, 12.2], [0.0, 98_765.0], Easing::EaseOut) as u32;
     let pop = spring_at(t, 9.5, Spring::bouncy());
-    let mut out = vec![div()
-        .absolute()
-        .pos(0.0, H * 0.5 - 170.0)
-        .w(Px(W))
-        .flex_col()
-        .items_center()
-        .gap(24.0)
-        .child(text("HI-SCORE").mono().bold().font_size(64.0).letter_spacing(8.0).color(c1()))
-        .child(text(format!("{n:06}")).mono().bold().font_size(200.0).color(c0()))
-        .ty(snap((1.0 - pop) * 120.0))];
+    // 優勝杯: 上から落ちてきて弾み、そのあと小さく跳ね続ける。
+    let cup = spring_at(t, 9.7, Spring::bouncy());
+    let hop = snap(((t * 3.2).sin().abs()) * 18.0 * interpolate(t, [10.6, 11.0], [0.0, 1.0]));
+    let tw = 150.0;
+    let mut out = vec![
+        green(&art.trophy, tw)
+            .absolute()
+            .pos(W * 0.5 - tw * 0.5, snap(H * 0.5 - 360.0 - (1.0 - cup) * 500.0) - hop),
+        div()
+            .absolute()
+            .pos(0.0, H * 0.5 - 170.0)
+            .w(Px(W))
+            .flex_col()
+            .items_center()
+            .gap(24.0)
+            .child(text("HI-SCORE").mono().bold().font_size(64.0).letter_spacing(8.0).color(c1()))
+            .child(text(format!("{n:06}")).mono().bold().font_size(200.0).color(c0()))
+            .ty(snap((1.0 - pop) * 120.0) + 60.0),
+    ];
     // きらきら: 決まった場所で、それぞれの間合いで点滅する。
     for i in 0..14u32 {
         let phase = (t * 3.0 + hash(i, 1) * 4.0) as i32;
         if t > 10.0 && phase % 3 == 0 {
             let (x, y) = (snap(160.0 + hash(i, 2) * (W - 320.0)), snap(120.0 + hash(i, 3) * (H - 240.0)));
+            // 真ん中 (優勝杯と数字) には出さない。
+            if (x - W * 0.5).abs() < 560.0 && (y - H * 0.5).abs() < 360.0 {
+                continue;
+            }
             out.push(sprite(&SPARKLE, DOT).absolute().pos(x, y));
         }
     }
     out
 }
 
-// ── 4. 題名 (14〜19 秒) ──────────────────────────────────────────────────
+// ── 4. 題名 (14〜) ───────────────────────────────────────────────────────
 
 fn title(t: f32) -> Vec<Element> {
     let drop = |shadow: bool| {
@@ -346,10 +453,9 @@ fn title(t: f32) -> Vec<Element> {
     ]
 }
 
-// ── 5. PRESS START (19〜22 秒) ───────────────────────────────────────────
-
+/// PRESS START (16.8 秒から点滅)。
 fn press_start(t: f32) -> Element {
-    let on = ((t - 19.0) * 2.0) as i32 % 2 == 0;
+    let on = ((t - 16.8) * 2.0) as i32 % 2 == 0;
     div()
         .absolute()
         .pos(0.0, H - 250.0)
@@ -360,42 +466,180 @@ fn press_start(t: f32) -> Element {
         .opacity(if on { 1.0 } else { 0.0 })
 }
 
-fn scene(ctx: FrameCtx) -> Element {
-    let t = ctx.t();
+/// ゲームの画面 (窓いっぱいの大きさで組む。引くときは丸ごと縮める)。
+fn game(t: f32, art: &Art) -> Element {
     let mut kids: Vec<Element> = Vec::new();
     if t < 3.2 {
         kids.extend(boot(t));
     } else if t < PLAY.1 {
-        kids.extend(play(t));
+        kids.extend(play(t, art));
     } else if t < 14.0 {
-        kids.extend(hiscore(t));
+        kids.extend(hiscore(t, art));
     } else {
         kids.extend(title(t));
-        if t >= 19.0 {
+        if t >= 16.8 {
             kids.push(press_start(t));
         }
     }
-    // 終わりは階調を 1 段ずつ濃くして暗転 (液晶が落ちる感じ)。
-    let end = ((t - 21.2) / 0.15).floor().clamp(-1.0, 3.0);
-    let screen = if end >= 0.0 {
-        let c = [c2(), c1(), c0(), c0()][end as usize];
-        Some(div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).bg(c))
-    } else {
-        None
-    };
     // 寄りは絵ごと (字が揺れない `.zoom`)。題名の間だけ、ゆっくり寄る。
-    let push = interpolate_eased(t, [14.0, 21.0], [1.0, 1.05], Easing::EaseInOut);
-    let mut root = div()
+    let push = interpolate_eased(t, [14.0, PULL.0], [1.0, 1.04], Easing::EaseInOut);
+    div()
         .w(Px(W))
         .h(Px(H))
         .bg(c3())
         .grain(0.04)
         .grain_seed(3)
-        .child(div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).children(kids).zoom(push));
-    if let Some(s) = screen {
-        root = root.child(s);
+        .overflow_hidden()
+        .child(div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).children(kids).zoom(push))
+}
+
+// ── 5. 引くと机 (17.6〜22 秒) ────────────────────────────────────────────
+
+/// 机の上の物: (絵, 幅, 真ん中の x, y, 傾き)。ゲーム機を囲むように置く。
+fn desk_items(art: &Art) -> Vec<(&Svg, f32, f32, f32, f32)> {
+    vec![
+        (&art.pad, 300.0, 300.0, 300.0, -0.25),
+        (&art.joystick, 220.0, 1650.0, 760.0, 0.18),
+        (&art.star, 150.0, 1620.0, 240.0, 0.2),
+        (&art.heart, 140.0, 250.0, 760.0, -0.15),
+        (&art.trophy, 170.0, 1700.0, 470.0, 0.0),
+        (&art.gem, 130.0, 420.0, 560.0, 0.3),
+        (&art.coin, 100.0, 1480.0, 950.0, -0.2),
+        (&art.alien, 150.0, 520.0, 960.0, 0.12),
+    ]
+}
+
+/// ゲーム機の本体 (引き終わった時の大きさで、画面の真ん中を窓の真ん中に)。
+fn handheld(t: f32) -> Element {
+    let (sw, sh) = (W * SCREEN, H * SCREEN);
+    let (cx, cy) = (W * 0.5, H * 0.5);
+    let body = (cx - 380.0, cy - sh * 0.5 - 80.0, 760.0, sh + 380.0);
+    let bezel = (cx - sw * 0.5 - 36.0, cy - sh * 0.5 - 36.0, sw + 72.0, sh + 86.0);
+    let ink = hex("#2f2a26");
+    let shell = hex("#e9e1d3");
+    let dpad = |x: f32, y: f32| {
+        div()
+            .absolute()
+            .pos(x, y)
+            .w(Px(150.0))
+            .h(Px(150.0))
+            .child(div().absolute().pos(50.0, 0.0).w(Px(50.0)).h(Px(150.0)).rounded_px(8.0).bg(ink))
+            .child(div().absolute().pos(0.0, 50.0).w(Px(150.0)).h(Px(50.0)).rounded_px(8.0).bg(ink))
+    };
+    let button = |x: f32, y: f32, label: &str| {
+        div()
+            .absolute()
+            .pos(x, y)
+            .w(Px(78.0))
+            .h(Px(78.0))
+            .rounded_px(39.0)
+            .bg(hex("#b8325a"))
+            .shadow_md(Color::BLACK.with_alpha(0.25))
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .child(text(label).font_size(28.0).bold().color(hex("#f4d9e2")))
+    };
+    // 電源の明かり: 引き終わる頃に点く。
+    let led = interpolate(t, [PULL.1 - 0.4, PULL.1], [0.0, 1.0]);
+    div()
+        .absolute()
+        .pos(0.0, 0.0)
+        .w(Px(W))
+        .h(Px(H))
+        .child(
+            div()
+                .absolute()
+                .pos(body.0, body.1)
+                .w(Px(body.2))
+                .h(Px(body.3))
+                .rounded_px(48.0)
+                .bg(shell)
+                .shadow_md(Color::BLACK.with_alpha(0.35)),
+        )
+        .child(div().absolute().pos(bezel.0, bezel.1).w(Px(bezel.2)).h(Px(bezel.3)).rounded_px(22.0).bg(hex("#4a4650")))
+        .child(
+            div()
+                .absolute()
+                .pos(bezel.0 + 14.0, bezel.1 + 14.0)
+                .w(Px(14.0))
+                .h(Px(14.0))
+                .rounded_px(7.0)
+                .bg(hex("#e8402f").with_alpha(0.25 + 0.75 * led)),
+        )
+        .child(
+            text("BITMOSS  POCKET")
+                .mono()
+                .bold()
+                .font_size(22.0)
+                .letter_spacing(4.0)
+                .color(hex("#bdb6c4"))
+                .absolute()
+                .pos(bezel.0 + 30.0, bezel.1 + bezel.3 - 36.0),
+        )
+        .child(dpad(cx - 290.0, cy + sh * 0.5 + 70.0))
+        .child(button(cx + 160.0, cy + sh * 0.5 + 130.0, "B"))
+        .child(button(cx + 260.0, cy + sh * 0.5 + 72.0, "A"))
+        .child(
+            div()
+                .absolute()
+                .pos(cx - 70.0, cy + sh * 0.5 + 240.0)
+                .w(Px(140.0))
+                .h(Px(22.0))
+                .rounded_px(11.0)
+                .bg(hex("#b5ad9f")),
+        )
+}
+
+/// 机: 暖かい木の色の地と、カラフルな物 (元の色の絵文字)。
+fn desk(t: f32, art: &Art) -> Element {
+    let mut d = div()
+        .absolute()
+        .pos(0.0, 0.0)
+        .w(Px(W))
+        .h(Px(H))
+        .radial_gradient_at(hex("#e8a35e"), hex("#a8562b"), 0.5, 0.45)
+        .grain(0.05)
+        .grain_seed(9);
+    for (i, (svg, w, x, y, tilt)) in desk_items(art).into_iter().enumerate() {
+        // 引いて画面に入ってくる頃に、ぽんと弾んで現れ、そのあとゆらゆら。
+        let s = spring_at(t, PULL.0 + 0.6 + i as f32 * 0.12, Spring::bouncy());
+        let sway = (t * 1.3 + i as f32).sin() * 0.06;
+        let float = (t * 1.7 + i as f32 * 0.9).sin() * 8.0;
+        let h = height_of(svg, w);
+        d = d.child(
+            svg.element(w)
+                .absolute()
+                .pos(x - w * 0.5, y - h * 0.5 + float)
+                .rotate(tilt + sway + (1.0 - s) * 0.8)
+                .zoom(s.max(0.001))
+                .opacity(s.clamp(0.0, 1.0)),
+        );
     }
-    root
+    d.child(handheld(t))
+}
+
+fn scene(ctx: FrameCtx, art: &Art) -> Element {
+    let t = ctx.t();
+    let screen = game(t, art);
+    let root = if t < PULL.0 {
+        // ゲームの画面だけ (縮めずにそのまま描く: ドットがくっきりする)。
+        div().w(Px(W)).h(Px(H)).child(screen)
+    } else {
+        // カメラを引く: 机は `z` 倍から 1 倍へ、ゲームの画面は `SCREEN × z` 倍へ。どちらも
+        // 窓の真ん中を中心に縮めるので、画面はいつもゲーム機の窓にぴったり収まる。
+        let p = interpolate_eased(t, [PULL.0, PULL.1], [0.0, 1.0], Easing::EaseInOut);
+        let z = (1.0 / SCREEN).powf(1.0 - p);
+        div()
+            .w(Px(W))
+            .h(Px(H))
+            .bg(hex("#a8562b"))
+            .child(desk(t, art).zoom(z))
+            .child(screen.absolute().pos(0.0, 0.0).zoom(SCREEN * z))
+    };
+    // 終わりは暖かい暗さへ落とす。
+    let out = interpolate(t, [21.3, 22.0], [0.0, 1.0]);
+    root.child(div().absolute().pos(0.0, 0.0).w(Px(W)).h(Px(H)).bg(hex("#1c120c")).opacity(out))
 }
 
 fn reel(frames: u32) -> Reel {
@@ -410,11 +654,13 @@ fn reel(frames: u32) -> Reel {
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
+    let art = Art::load();
+    let draw = |ctx: FrameCtx| scene(ctx, &art);
 
     if !args.stills.is_empty() {
         let stills = &args.stills;
         let reel = reel(stills.len() as u32);
-        let pick = |ctx: FrameCtx| scene(FrameCtx { frame: stills[ctx.frame as usize], ..ctx });
+        let pick = |ctx: FrameCtx| draw(FrameCtx { frame: stills[ctx.frame as usize], ..ctx });
         let dir = args.frames_dir("game_studio");
         let paths = reel.render_pngs(&pick, &dir).expect("render failed");
         for (f, p) in stills.iter().zip(&paths) {
@@ -426,7 +672,7 @@ fn main() {
     let reel = reel(frames);
     let out = args.mp4("game_studio");
     println!("rendering + encoding {frames} frames ({}x{} @ {FPS}fps) …", reel.width, reel.height);
-    match reel.render_mp4(&scene, &out) {
+    match reel.render_mp4(&draw, &out) {
         Ok(path) => println!("wrote {}", path.display()),
         Err(e) => eprintln!("encode failed: {e}"),
     }

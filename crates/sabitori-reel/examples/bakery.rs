@@ -2,13 +2,15 @@
 //! series: "Hearth & Hum", a corner bakery that does not exist.
 //!
 //! - flour drifts down through the whole piece (plain dots, no blur);
-//! - a wheat stalk and a loaf are drawn as if by hand (`path().trim(..)`), the
-//!   loaf fills in from the bottom like it is rising (`.mask(..)`), steam curls
-//!   up off it;
+//! - the pictures are Fluent Emoji (MIT, `assets/fluent/`) read with `Svg`
+//!   and taken apart with `element_with`: a sheaf of grain grows up and its
+//!   ears pop on one by one, a loaf is built from its pieces (crust, top, cut
+//!   face) and sprinkled, steam curls up off it;
 //! - the name drops in letter by letter like dough (`per_glyph`) and bakes:
 //!   each letter turns from raw cream to golden brown, the edges first
 //!   (`color_spans` re-coloured every frame);
-//! - the menu is three line icons with paper price tags slapped on;
+//! - the menu is three pastries dropped onto cards, squashing as they land,
+//!   the bagel getting its seeds one at a time, with paper price tags;
 //! - the camera leans in slowly the whole time (`.zoom(..)`).
 //!
 //!   cargo run -p sabitori-reel --example bakery --release
@@ -22,8 +24,30 @@ mod out;
 use out::Args;
 use sabitori_reel::{
     div, interpolate, interpolate_eased, path, spring_with, text, Color, Easing, Element, FrameCtx, GlyphMotion,
-    MotionBlur, Percent, Px, Reel, Spring,
+    MotionBlur, Px, Reel, Spring, Svg,
 };
+
+/// 絵 (Fluent Emoji の Flat、MIT)。1 度だけ読む。
+struct Art {
+    sheaf: Svg,
+    bread: Svg,
+    croissant: Svg,
+    baguette: Svg,
+    bagel: Svg,
+}
+
+impl Art {
+    fn load() -> Self {
+        let svg = |s: &str| Svg::parse(s).expect("素材の SVG が読めない");
+        Self {
+            sheaf: svg(include_str!("assets/fluent/sheaf_of_rice_flat.svg")),
+            bread: svg(include_str!("assets/fluent/bread_flat.svg")),
+            croissant: svg(include_str!("assets/fluent/croissant_flat.svg")),
+            baguette: svg(include_str!("assets/fluent/baguette_bread_flat.svg")),
+            bagel: svg(include_str!("assets/fluent/bagel_flat.svg")),
+        }
+    }
+}
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -87,119 +111,74 @@ fn flour(t: f32) -> Vec<Element> {
         .collect()
 }
 
-// ── 1. 麦 (0〜4.6 秒) ────────────────────────────────────────────────────
+// ── 1. 稲穂 (0〜4.6 秒) ──────────────────────────────────────────────────
 
-fn wheat(t: f32) -> Element {
-    let stem = interpolate_eased(t, [0.4, 1.8], [0.0, 1.0], Easing::EaseInOut);
+/// 束が下から伸びて揺れ、穂 (黄色の形、3 番目から) が 1 つずつ弾んで付く。
+fn sheaf(t: f32, art: &Art) -> Element {
+    let grow = spring_at(t, 0.3, Spring::gentle());
     let leave = interpolate_eased(t, [4.0, 4.6], [0.0, 1.0], Easing::EaseIn);
-    let mut d = div().absolute().pos(W * 0.5 - 160.0, H * 0.5 - 330.0).w(Px(320.0)).h(Px(620.0));
-    // 茎: 下から上へ、少し曲がって描かれる。
-    d = d.child(
-        path()
-            .svg_path("M160 600 Q150 420 165 250 Q175 150 160 60")
-            .stroke(crust(), 6.0)
-            .trim(0.0, stem)
-            .w(Px(320.0))
-            .h(Px(620.0))
-            .absolute()
-            .pos(0.0, 0.0),
-    );
-    // 穂: 茎の上の方に、左右交互に粒が付いていく。
-    for k in 0..10 {
-        let side = if k % 2 == 0 { -1.0 } else { 1.0 };
-        let y = 90.0 + k as f32 * 26.0;
-        let s = spring_at(t, 1.4 + k as f32 * 0.12, Spring::bouncy());
-        d = d.child(
-            div()
-                .absolute()
-                .pos(160.0 + side * 22.0 - 15.0, y)
-                .w(Px(30.0))
-                .h(Px(54.0))
-                .rounded_px(15.0)
-                .bg(hex("#d9a54e"))
-                .border(2.5, crust())
-                .rotate(side * 0.55)
-                .scaled(s.max(0.0))
-                .opacity(s.clamp(0.0, 1.0)),
-        );
-    }
-    // 葉: 線で 1 本。
-    d = d.child(
-        path()
-            .svg_path("M162 470 Q220 430 262 330")
-            .stroke(crust(), 4.0)
-            .trim(0.0, interpolate(t, [1.6, 2.4], [0.0, 1.0]))
-            .w(Px(320.0))
-            .h(Px(620.0))
-            .absolute()
-            .pos(0.0, 0.0),
-    );
-    d.ty(leave * -60.0).opacity(1.0 - leave)
+    let sway = (t * 1.6).sin() * 0.05 * grow.min(1.0);
+    let size = 640.0;
+    let pict = art.sheaf.element_with(size, |part, e| {
+        if part.index >= 2 {
+            let s = spring_at(t, 1.3 + (part.index - 2) as f32 * 0.35, Spring::bouncy());
+            e.scaled(s.max(0.0)).opacity(s.clamp(0.0, 1.0))
+        } else {
+            e
+        }
+    });
+    div()
+        .absolute()
+        .pos(W * 0.5 - size * 0.5, H * 0.5 - size * 0.5)
+        .child(pict)
+        .rotate(sway)
+        .ty((1.0 - grow) * 420.0 + leave * -60.0)
+        .opacity(grow.clamp(0.0, 1.0) * (1.0 - leave))
 }
 
 // ── 2. パン (4.4〜10.4 秒) ───────────────────────────────────────────────
 
-const LOAF: &str = "M30 170 Q24 90 120 66 Q210 44 300 66 Q396 90 390 170 Q392 196 360 198 L60 198 Q28 196 30 170 Z";
-
-fn loaf(t: f32) -> Element {
-    let outline = interpolate_eased(t, [4.6, 6.0], [0.0, 1.0], Easing::EaseInOut);
-    let rise = interpolate_eased(t, [5.8, 7.4], [0.0, 1.0], Easing::EaseOutCubic);
-    let scores = interpolate_eased(t, [7.2, 8.0], [0.0, 1.0], Easing::EaseOutCubic);
+/// 食パンを組み立てる: 側面・上面・切り口の順に落ちてきて着地し、最後に粒 (4 番目から)
+/// を 1 つずつ散らす。焼き上がったら湯気が上る。
+fn bread(t: f32, art: &Art) -> Element {
     let leave = interpolate_eased(t, [9.8, 10.4], [0.0, 1.0], Easing::EaseIn);
-    let (lw, lh) = (420.0, 220.0);
-    let shape = |p: Element| p.view_box(0.0, 0.0, 420.0, 220.0).w(Px(lw)).h(Px(lh)).absolute().pos(0.0, 0.0);
-    // 中身は下から膨らむ: 塗った形を、下から伸びる箱でマスクする。
-    let fill = div()
-        .absolute()
-        .pos(0.0, 0.0)
-        .w(Px(lw))
-        .h(Px(lh))
-        .child(shape(path().svg_path(LOAF).fill(golden())))
-        .mask(
-            div()
-                .w(Percent(100.0))
-                .h(Percent(100.0))
-                .flex_col()
-                .justify_end()
-                .child(div().w(Percent(100.0)).h(Percent(rise * 100.0)).bg(Color::BLACK)),
-        );
+    let size = 560.0;
+    let pict = art.bread.element_with(size, |part, e| match part.index {
+        0..=2 => {
+            let s = spring_at(t, 4.6 + part.index as f32 * 0.45, Spring::bouncy());
+            e.ty((1.0 - s) * -520.0).opacity(s.clamp(0.0, 1.0) * 2.0)
+        }
+        k => {
+            let s = spring_at(t, 6.4 + (k - 3) as f32 * 0.07, Spring::bouncy());
+            e.scaled(s.max(0.0) * 1.0).opacity(s.clamp(0.0, 1.0))
+        }
+    });
+    // 着地の瞬間に全体が少し潰れる。
+    let land = (1.0 - ((t - 5.75) * 5.0).abs()).max(0.0);
     let mut d = div()
         .absolute()
-        .pos(W * 0.5 - lw * 0.5, H * 0.5 - 60.0)
-        .w(Px(lw))
-        .h(Px(lh))
-        .child(fill)
-        .child(shape(path().svg_path(LOAF).stroke(toast(), 7.0).trim(0.0, outline)));
-    // 切れ目: 斜めに 3 本。
-    for k in 0..3 {
-        let x0 = 120.0 + k as f32 * 70.0;
-        let d_k = interpolate(scores, [k as f32 / 3.0, (k as f32 + 1.0) / 3.0], [0.0, 1.0]);
-        d = d.child(shape(
-            path()
-                .move_to(x0, 120.0)
-                .quad_to(x0 + 30.0, 92.0, x0 + 52.0, 84.0)
-                .stroke(hex("#f3dcae"), 7.0)
-                .trim(0.0, d_k),
-        ));
-    }
+        .pos(W * 0.5 - size * 0.5, H * 0.5 - size * 0.5 + 40.0)
+        .w(Px(size))
+        .h(Px(size))
+        .child(pict.scaled(1.0 - land * 0.04));
     // 湯気: 3 本、ゆらゆら上る。
-    if t > 7.6 {
+    if t > 7.8 {
         for k in 0..3 {
-            let age = t - 7.6 - k as f32 * 0.35;
+            let age = t - 7.8 - k as f32 * 0.35;
             if age < 0.0 {
                 continue;
             }
             let cyc = (age * 0.6).fract();
-            let x = 130.0 + k as f32 * 80.0;
+            let x = 170.0 + k as f32 * 90.0;
             d = d.child(
                 path()
                     .svg_path("M20 120 Q4 96 20 72 Q36 48 20 24 Q8 8 20 0")
-                    .stroke(Color::WHITE.with_alpha(0.85), 5.0)
+                    .stroke(Color::WHITE.with_alpha(0.9), 6.0)
                     .trim(0.0, interpolate(cyc, [0.0, 0.5], [0.0, 1.0]))
                     .w(Px(40.0))
                     .h(Px(120.0))
                     .absolute()
-                    .pos(x, -150.0 - cyc * 60.0)
+                    .pos(x, -40.0 - cyc * 70.0)
                     .opacity((1.0 - cyc) * interpolate(age, [0.0, 0.4], [0.0, 1.0])),
             );
         }
@@ -263,12 +242,11 @@ fn name(t: f32) -> Element {
 
 // ── 4. 品書き (15.4〜21 秒) ──────────────────────────────────────────────
 
-fn menu(t: f32) -> Vec<Element> {
-    let items: [(&str, &str, &str, f32); 3] = [
-        // 三日月のクロワッサン、細長いバゲット、丸いパン。
-        ("croissant", "¥280", "M20 110 Q30 40 100 30 Q170 40 180 110 Q150 80 100 78 Q50 80 20 110 Z M60 60 L74 92 M100 46 L100 82 M140 60 L126 92", 15.6),
-        ("baguette", "¥360", "M14 120 Q10 100 40 88 L170 40 Q196 32 192 56 Q190 70 160 82 L36 130 Q16 136 14 120 Z M64 92 L84 80 M100 78 L120 66 M136 64 L156 52", 16.0),
-        ("milk bun", "¥180", "M24 116 Q20 50 100 44 Q180 50 176 116 Q176 132 156 132 L44 132 Q24 132 24 116 Z M70 78 Q100 62 130 78", 16.4),
+fn menu(t: f32, art: &Art) -> Vec<Element> {
+    let items: [(&str, &str, &Svg, f32); 3] = [
+        ("croissant", "¥280", &art.croissant, 15.6),
+        ("baguette", "¥360", &art.baguette, 16.0),
+        ("bagel", "¥220", &art.bagel, 16.4),
     ];
     let leave = interpolate_eased(t, [20.4, 21.0], [0.0, 1.0], Easing::EaseIn);
     let mut out = Vec::new();
@@ -283,9 +261,21 @@ fn menu(t: f32) -> Vec<Element> {
             .ty((1.0 - head) * -30.0)
             .opacity(head.clamp(0.0, 1.0) * (1.0 - leave)),
     );
-    for (i, (label, price, d, at)) in items.into_iter().enumerate() {
+    for (i, (label, price, svg, at)) in items.into_iter().enumerate() {
         let x = W * 0.5 - 600.0 + i as f32 * 420.0;
-        let draw = interpolate_eased(t, [at, at + 1.1], [0.0, 1.0], Easing::EaseInOut);
+        // パンが上から落ちてきて、着地で潰れてから戻る。
+        let drop = spring_at(t, at + 0.2, Spring::bouncy());
+        let squash = (1.0 - ((t - at - 0.55) * 4.0).abs()).max(0.0);
+        let is_bagel = i == 2;
+        let pict = svg.element_with(270.0, |part, e| {
+            // ベーグルの胡麻 (4 番目から) は着地のあとに 1 粒ずつ。
+            if is_bagel && part.index >= 4 {
+                let s = spring_at(t, at + 0.9 + (part.index - 4) as f32 * 0.06, Spring::bouncy());
+                e.scaled(s.max(0.0)).opacity(s.clamp(0.0, 1.0))
+            } else {
+                e
+            }
+        });
         let tag = spring_at(t, at + 1.0, Spring::bouncy());
         let card = div()
             .absolute()
@@ -298,15 +288,12 @@ fn menu(t: f32) -> Vec<Element> {
             .flex_col()
             .items_center()
             .p(Px(30.0))
-            .gap(18.0)
+            .gap(14.0)
+            .justify_center()
             .child(
-                path()
-                    .svg_path(d)
-                    .view_box(0.0, 0.0, 200.0, 150.0)
-                    .stroke(crust(), 5.0)
-                    .trim(0.0, draw)
-                    .w(Px(260.0))
-                    .h(Px(200.0)),
+                pict.ty((1.0 - drop) * -360.0)
+                    .scaled(1.0 + squash * 0.06)
+                    .opacity((drop * 3.0).clamp(0.0, 1.0)),
             )
             .child(text(label).font_size(40.0).font_weight(700).color(toast()))
             .ty(leave * 80.0)
@@ -341,7 +328,7 @@ fn menu(t: f32) -> Vec<Element> {
     out
 }
 
-fn scene(ctx: FrameCtx) -> Element {
+fn scene(ctx: FrameCtx, art: &Art) -> Element {
     let t = ctx.t();
     let mut kids: Vec<Element> = vec![div()
         .absolute()
@@ -352,16 +339,16 @@ fn scene(ctx: FrameCtx) -> Element {
         .grain(0.05)
         .grain_seed(3)];
     if t < 4.7 {
-        kids.push(wheat(t));
+        kids.push(sheaf(t, art));
     }
     if (4.4..10.5).contains(&t) {
-        kids.push(loaf(t));
+        kids.push(bread(t, art));
     }
     if (10.2..15.7).contains(&t) {
         kids.push(name(t));
     }
     if (15.3..21.1).contains(&t) {
-        kids.extend(menu(t));
+        kids.extend(menu(t, art));
     }
     // 最後は名前に戻って締める。
     if t >= 20.8 {
@@ -369,9 +356,12 @@ fn scene(ctx: FrameCtx) -> Element {
         kids.push(
             div()
                 .absolute()
-                .pos(0.0, H * 0.42)
+                .pos(0.0, H * 0.28)
                 .w(Px(W))
-                .justify_center()
+                .flex_col()
+                .items_center()
+                .gap(10.0)
+                .child(art.bread.element(220.0).rotate((1.0 - s) * -0.5))
                 .child(text("Hearth & Hum").font_size(120.0).font_weight(800).color(crust()))
                 .opacity(s.clamp(0.0, 1.0))
                 .ty((1.0 - s) * 30.0),
@@ -395,6 +385,8 @@ fn reel(frames: u32) -> Reel {
 fn main() {
     let frames = (SECS * FPS as f32).round() as u32;
     let args = Args::parse();
+    let art = Art::load();
+    let scene = |ctx: FrameCtx| scene(ctx, &art);
 
     if !args.stills.is_empty() {
         let stills = &args.stills;
