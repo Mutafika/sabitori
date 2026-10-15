@@ -31,6 +31,10 @@ pub enum RenderCommand {
     /// 通りに回して貼る ([`Element::rotate`](crate::Element::rotate))。中の切り抜きは
     /// 中で閉じる。外の切り抜きは貼る絵に掛かる。
     PushGroup(GroupDraw),
+    /// ここから [`RenderCommand::PopGroup`] までは、開いているグループのマスク
+    /// ([`Element::mask`](crate::Element::mask))。別の絵に描き、その不透明度を
+    /// グループの絵に掛ける。
+    PushMask,
     /// 直前の [`RenderCommand::PushGroup`] を閉じる。
     PopGroup,
     /// Pop the most recent clip rectangle.
@@ -46,6 +50,8 @@ pub struct GroupDraw {
     pub rotation: f32,
     /// 貼る前にぼかす幅 (標準偏差、論理 px)。0 = ぼかさない。
     pub blur: f32,
+    /// 下への重ね方。
+    pub blend: crate::element::BlendMode,
 }
 
 /// 格子の字形を描く。字形は `origin + (col * cell_w, row * cell_h)` に置く。

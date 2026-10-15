@@ -20,7 +20,8 @@ struct Slot {
 }
 
 pub struct GroupRenderer {
-    pipeline: wgpu::RenderPipeline,
+    /// 貼るパイプライン: `[重ね方][マスクの有無]`。
+    pipelines: [[wgpu::RenderPipeline; 2]; 4],
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     format: wgpu::TextureFormat,
@@ -36,9 +37,36 @@ pub struct GroupRenderer {
     blur_params_capacity: usize,
     /// グループ `i` のぼかしの標準偏差 (物理 px)。0 なら掛けない。
     blur_sigma: Vec<f32>,
+    /// グループ `i` の重ね方 (`GroupInstance::effect[1]`)。
+    blend: Vec<usize>,
     /// 横にぼかした途中の絵。
     scratch: Option<Slot>,
 }
+
+/// 重ね方 (`GroupInstance::effect[1]` の番号順: ふつう・足す・スクリーン・掛ける)。
+/// 色は前乗算で届く。アルファはどれも「上に重ねる」と同じ。
+const BLENDS: [wgpu::BlendState; 4] = {
+    const OVER_ALPHA: wgpu::BlendComponent = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    };
+    const fn color(src_factor: wgpu::BlendFactor, dst_factor: wgpu::BlendFactor) -> wgpu::BlendState {
+        wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor, dst_factor, operation: wgpu::BlendOperation::Add },
+            alpha: OVER_ALPHA,
+        }
+    }
+    [
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        // 足す: src + dst
+        color(wgpu::BlendFactor::One, wgpu::BlendFactor::One),
+        // スクリーン: src + dst × (1 − src)
+        color(wgpu::BlendFactor::One, wgpu::BlendFactor::OneMinusSrc),
+        // 掛ける: src × dst + dst × (1 − src.a)
+        color(wgpu::BlendFactor::Dst, wgpu::BlendFactor::OneMinusSrcAlpha),
+    ]
+};
 
 /// ぼかしの設定 1 つぶんの間隔。動的オフセットは 256 バイト揃えが要る。
 const BLUR_STRIDE: u64 = 256;
@@ -83,36 +111,44 @@ impl GroupRenderer {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let plain_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("group_pipeline_layout"),
             bind_group_layouts: &[globals_bind_group_layout, &texture_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("group_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[GroupInstance::layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
+        let masked_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("group_masked_pipeline_layout"),
+            bind_group_layouts: &[globals_bind_group_layout, &texture_layout, &texture_layout],
+            push_constant_ranges: &[],
         });
+        let make = |blend: wgpu::BlendState, masked: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("group_pipeline"),
+                layout: Some(if masked { &masked_layout } else { &plain_layout }),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[GroupInstance::layout()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(if masked { "fs_masked" } else { "fs_main" }),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipelines = BLENDS.map(|b| [make(b, false), make(b, true)]);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("group_sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -176,7 +212,7 @@ impl GroupRenderer {
         let (blur_params, blur_params_bind_group) =
             Self::blur_params_buffer(device, &blur_params_layout, blur_params_capacity);
         Self {
-            pipeline,
+            pipelines,
             texture_layout,
             sampler,
             format,
@@ -190,6 +226,7 @@ impl GroupRenderer {
             blur_params_bind_group,
             blur_params_capacity,
             blur_sigma: Vec::new(),
+            blend: Vec::new(),
             scratch: None,
         }
     }
@@ -284,6 +321,7 @@ impl GroupRenderer {
         }
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
 
+        self.blend = instances.iter().map(|g| (g.effect[1].max(0.0) as usize).min(BLENDS.len() - 1)).collect();
         self.blur_sigma = instances.iter().map(|g| (g.effect[0] * scale).max(0.0)).collect();
         if self.blur_sigma.iter().all(|&s| s <= 0.0) {
             return;
@@ -348,12 +386,23 @@ impl GroupRenderer {
         &self.slots[slot].view
     }
 
-    /// グループ `slot` を、上げた貼り方で貼る。
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, globals_bind_group: &wgpu::BindGroup, slot: u32) {
+    /// グループ `slot` を、上げた貼り方で貼る。`mask` があれば、その絵の不透明度を掛ける。
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        globals_bind_group: &wgpu::BindGroup,
+        slot: u32,
+        mask: Option<u32>,
+    ) {
         let Some(s) = self.slots.get(slot as usize) else { return };
-        pass.set_pipeline(&self.pipeline);
+        let blend = self.blend.get(slot as usize).copied().unwrap_or(0);
+        let mask = mask.and_then(|m| self.slots.get(m as usize));
+        pass.set_pipeline(&self.pipelines[blend][mask.is_some() as usize]);
         pass.set_bind_group(0, globals_bind_group, &[]);
         pass.set_bind_group(1, &s.bind_group, &[]);
+        if let Some(m) = mask {
+            pass.set_bind_group(2, &m.bind_group, &[]);
+        }
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         pass.draw(0..6, slot..slot + 1);
     }

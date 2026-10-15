@@ -1077,4 +1077,63 @@ mod tests {
         }
     }
 
+
+    /// `.mask(..)` は、マスクの不透明な所だけを見せる。丸いマスクなら角は消え、
+    /// マスクそのもの (緑) はどこにも描かれない。
+    #[test]
+    fn mask_shows_only_where_the_mask_is_opaque() {
+        gpu_or_skip!();
+        let circle = div().w(Px(100.0)).h(Px(100.0)).rounded_px(50.0).bg(Color::from_hex("#00ff00"));
+        let view = div()
+            .w(Px(100.0))
+            .h(Px(100.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(100.0)).h(Px(100.0)).bg(Color::from_hex("#ff0000")).mask(circle));
+        let out = render(&view, Sheet::px(100.0, 100.0)).expect("描けなかった");
+        assert!(is_red(out.pixel(50, 50).unwrap()), "真ん中が赤でない");
+        assert_eq!(out.pixel(4, 4).unwrap()[..3], [255, 255, 255], "角が消えていない");
+        let green = (0..100).flat_map(|y| (0..100).map(move |x| (x, y))).any(|(x, y)| {
+            let p = out.pixel(x, y).unwrap();
+            p[1] > 100 && p[0] < 100
+        });
+        assert!(!green, "マスクそのものが描かれている");
+    }
+
+    /// マスクの不透明度は途中の値も効く。左が透明・右が不透明のグラデーションなら、
+    /// 左は地の白、右は赤。
+    #[test]
+    fn a_gradient_mask_fades_the_content() {
+        gpu_or_skip!();
+        let fade = div().w(Px(100.0)).h(Px(20.0)).gradient(Color::TRANSPARENT, Color::BLACK, 0.0);
+        let view = div()
+            .w(Px(100.0))
+            .h(Px(20.0))
+            .bg(Color::WHITE)
+            .child(div().w(Px(100.0)).h(Px(20.0)).bg(Color::from_hex("#ff0000")).mask(fade));
+        let out = render(&view, Sheet::px(100.0, 20.0)).expect("描けなかった");
+        let (l, r) = (out.pixel(2, 10).unwrap(), out.pixel(97, 10).unwrap());
+        assert!(l[1] > 230, "左が白くない: {l:?}");
+        assert!(r[1] < 60 && r[0] > 230, "右が赤くない: {r:?}");
+    }
+
+    /// 重ね方。灰色 (#808080) の地に同じ灰色を重ねると、ふつうは同じ灰色、足すと
+    /// 明るく、スクリーンも明るく、掛けると暗くなる (色は線形の光で混ぜる)。
+    #[test]
+    fn blend_modes_mix_with_what_is_below() {
+        gpu_or_skip!();
+        use sabitori_core::BlendMode;
+        let shot = |mode: BlendMode| {
+            let gray = Color::from_hex("#808080");
+            let view = div().w(Px(40.0)).h(Px(40.0)).bg(gray).child(div().w(Px(40.0)).h(Px(40.0)).bg(gray).blend(mode));
+            render(&view, Sheet::px(40.0, 40.0)).expect("描けなかった").pixel(20, 20).unwrap()[0] as i32
+        };
+        let normal = shot(BlendMode::Normal);
+        let (add, screen, multiply) = (shot(BlendMode::Add), shot(BlendMode::Screen), shot(BlendMode::Multiply));
+        assert!((normal - 128).abs() <= 2, "ふつう: {normal}");
+        // 線形で 0.216 + 0.216 = 0.432 → 175、1 − (1 − 0.216)² = 0.385 → 166、0.216² = 0.047 → 61。
+        assert!((add - 175).abs() <= 4, "足す: {add}");
+        assert!((screen - 166).abs() <= 4, "スクリーン: {screen}");
+        assert!((multiply - 61).abs() <= 4, "掛ける: {multiply}");
+    }
+
 }

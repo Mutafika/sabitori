@@ -501,7 +501,11 @@ fn render_list_to_gpu_with_hits_impl(
     let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
     let mut text_idx: usize = 0;
 
+    let mut mask_stack = Vec::new();
     for cmd in &list.commands {
+        if skip_mask(cmd, &mut mask_stack) {
+            continue;
+        }
         match cmd {
             RenderCommand::PushClip(clip_rect) => {
                 push_intersected_clip(&mut clip_stack, *clip_rect);
@@ -510,7 +514,7 @@ fn render_list_to_gpu_with_hits_impl(
                 clip_stack.pop();
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
-            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
+            RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -675,7 +679,11 @@ fn render_list_to_gpu_with_rings_impl(
     let mut lines: Vec<LineInstance> = Vec::new();
     let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
 
+    let mut mask_stack = Vec::new();
     for cmd in &list.commands {
+        if skip_mask(cmd, &mut mask_stack) {
+            continue;
+        }
         match cmd {
             RenderCommand::PushClip(clip_rect) => {
                 push_intersected_clip(&mut clip_stack, *clip_rect);
@@ -684,7 +692,7 @@ fn render_list_to_gpu_with_rings_impl(
                 clip_stack.pop();
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
-            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
+            RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -865,7 +873,11 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
     let mut batches: Vec<ImageBatch> = Vec::new();
     let mut clip_stack: Vec<sabitori_core::Rect> = Vec::new();
 
+    let mut mask_stack = Vec::new();
     for cmd in &list.commands {
+        if skip_mask(cmd, &mut mask_stack) {
+            continue;
+        }
         match cmd {
             RenderCommand::PushClip(clip_rect) => {
                 push_intersected_clip(&mut clip_stack, *clip_rect);
@@ -874,7 +886,7 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
                 clip_stack.pop();
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
-            RenderCommand::PushGroup(_) | RenderCommand::PopGroup => {}
+            RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
             RenderCommand::Image(d) => {
                 let Some(inst) = image_instance(d, clip_stack.last()) else { continue };
                 if let Some(batch) = batches.iter_mut().find(|b| b.key == d.key) {
@@ -1047,6 +1059,9 @@ pub struct GroupRun {
     /// 描き先と貼り方 ([`OrderedFrame::groups`]) の番号。内側のグループほど小さい。
     pub slot: u32,
     pub runs: Vec<DrawRun>,
+    /// マスク ([`Element::mask`](sabitori_core::Element::mask)): 描き先の番号と中身。
+    /// その絵の不透明度をグループの絵に掛ける。
+    pub mask: Option<(u32, Vec<DrawRun>)>,
 }
 
 impl DrawRun {
@@ -1113,6 +1128,9 @@ fn splice_runs(
             DrawRun::Glyphs(range) => range,
             DrawRun::Group(mut g) => {
                 g.runs = splice_runs(std::mem::take(&mut g.runs), pending);
+                if let Some((_, runs)) = g.mask.as_mut() {
+                    *runs = splice_runs(std::mem::take(runs), pending);
+                }
                 out.push(DrawRun::Group(g));
                 continue;
             }
@@ -1246,8 +1264,47 @@ pub(crate) fn link_rects(
     out
 }
 
-/// 開いているグループ: (外の並び, 外の切り抜き, 貼り方)。
-type OpenGroup = (Vec<DrawRun>, Vec<sabitori_core::Rect>, sabitori_gpu::GroupInstance);
+/// [`GroupInstance::effect`](sabitori_gpu::GroupInstance::effect) の `[1]` に入れる重ね方の番号。
+fn blend_index(mode: sabitori_core::BlendMode) -> f32 {
+    match mode {
+        sabitori_core::BlendMode::Normal => 0.0,
+        sabitori_core::BlendMode::Add => 1.0,
+        sabitori_core::BlendMode::Screen => 2.0,
+        sabitori_core::BlendMode::Multiply => 3.0,
+    }
+}
+
+/// 古い経路 (種類ごとにまとめて描く) はグループを使わない。グループの印は読み飛ばし、
+/// マスクの中身 (`PushMask` から `PopGroup` まで) は描かない。描かないなら `true`。
+fn skip_mask(cmd: &RenderCommand, stack: &mut Vec<bool>) -> bool {
+    match cmd {
+        RenderCommand::PushGroup(_) => {
+            stack.push(false);
+            true
+        }
+        RenderCommand::PushMask => {
+            if let Some(m) = stack.last_mut() {
+                *m = true;
+            }
+            true
+        }
+        RenderCommand::PopGroup => {
+            stack.pop();
+            true
+        }
+        _ => stack.iter().any(|&m| m),
+    }
+}
+
+/// 開いているグループ。
+struct OpenGroup {
+    /// 外の並びと切り抜き (閉じたら戻す)。
+    outer: Vec<DrawRun>,
+    outer_clips: Vec<sabitori_core::Rect>,
+    inst: sabitori_gpu::GroupInstance,
+    /// マスクに入ったら、それまでの中身をここへ退ける。
+    content: Option<Vec<DrawRun>>,
+}
 
 /// 1 枚ぶんの描画を、木の順のまとまり ([`DrawRun`]) と種類ごとの instance に起こした物。
 ///
@@ -1309,9 +1366,21 @@ impl OrderedFrame {
                     let inst = sabitori_gpu::GroupInstance {
                         pivot_rot: [g.pivot.x, g.pivot.y, g.rotation, 1.0],
                         clip_rect: clip.map_or([0.0; 4], |c| clip_to_array(&c)),
-                        effect: [g.blur, 0.0, 0.0, 0.0],
+                        effect: [g.blur, blend_index(g.blend), 0.0, 0.0],
                     };
-                    open.push((std::mem::take(&mut self.runs), std::mem::take(&mut clip_stack), inst));
+                    open.push(OpenGroup {
+                        outer: std::mem::take(&mut self.runs),
+                        outer_clips: std::mem::take(&mut clip_stack),
+                        inst,
+                        content: None,
+                    });
+                }
+                // マスクも中身と同じ座標で、別の絵に描く。切り抜きは新しく始める。
+                RenderCommand::PushMask => {
+                    if let Some(g) = open.last_mut() {
+                        g.content = Some(std::mem::take(&mut self.runs));
+                        clip_stack.clear();
+                    }
                 }
                 RenderCommand::PopGroup => self.close_group(&mut open, &mut clip_stack),
                 RenderCommand::Rect(d) => {
@@ -1462,12 +1531,21 @@ impl OrderedFrame {
     }
 
     fn close_group(&mut self, open: &mut Vec<OpenGroup>, clip_stack: &mut Vec<sabitori_core::Rect>) {
-        let Some((outer, outer_clips, inst)) = open.pop() else { return };
-        let inner = std::mem::replace(&mut self.runs, outer);
-        *clip_stack = outer_clips;
+        let Some(g) = open.pop() else { return };
+        let last = std::mem::replace(&mut self.runs, g.outer);
+        *clip_stack = g.outer_clips;
+        let (runs, mask) = match g.content {
+            Some(content) => {
+                // マスクの描き先も 1 枠使う (貼り方は使わない)。
+                let slot = self.groups.len() as u32;
+                self.groups.push(sabitori_gpu::GroupInstance::default());
+                (content, Some((slot, last)))
+            }
+            None => (last, None),
+        };
         let slot = self.groups.len() as u32;
-        self.groups.push(inst);
-        push_run(&mut self.runs, DrawRun::Group(Box::new(GroupRun { slot, runs: inner })));
+        self.groups.push(g.inst);
+        push_run(&mut self.runs, DrawRun::Group(Box::new(GroupRun { slot, runs, mask })));
     }
 
     /// 文字 `text_idx` の下に矩形を敷く (選択・検索のハイライト・リンクの下線)。
@@ -1546,24 +1624,39 @@ impl OrderedFrame {
         for run in runs {
             let DrawRun::Group(g) = run else { continue };
             self.render_groups(&g.runs, rt, r, encoder);
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("sabitori_group_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: gr.target(g.slot as usize),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            self.draw_runs(&g.runs, rt, r, &mut pass);
-            drop(pass);
+            self.render_into(gr.target(g.slot as usize), &g.runs, rt, r, encoder);
             gr.apply_effects(encoder, g.slot as usize);
+            if let Some((mask_slot, mask_runs)) = &g.mask {
+                self.render_groups(mask_runs, rt, r, encoder);
+                self.render_into(gr.target(*mask_slot as usize), mask_runs, rt, r, encoder);
+            }
         }
+    }
+
+    /// `runs` を透明に消した `view` へ描く。
+    fn render_into(
+        &self,
+        view: &wgpu::TextureView,
+        runs: &[DrawRun],
+        rt: &impl sabitori_gpu::RectTarget,
+        r: &UiRenderers<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sabitori_group_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.draw_runs(runs, rt, r, &mut pass);
     }
 
     /// 木の順に描く。[`OrderedFrame::upload`] の後、開いたパスの中で呼ぶ。
@@ -1604,9 +1697,9 @@ impl OrderedFrame {
                     }
                 }
                 DrawRun::Glyphs(range) => r.text.draw_glyphs(pass, globals, range.clone()),
-                // 描く物が無ければ回さずその場に描く。
+                // 描く物が無ければ、回さず・マスクせずにその場に描く。
                 DrawRun::Group(g) => match r.groups.as_deref() {
-                    Some(gr) => gr.draw(pass, globals, g.slot),
+                    Some(gr) => gr.draw(pass, globals, g.slot, g.mask.as_ref().map(|(m, _)| *m)),
                     None => self.draw_runs(&g.runs, rt, r, pass),
                 },
             }
@@ -1617,6 +1710,28 @@ impl OrderedFrame {
 #[cfg(test)]
 mod ordered_tests {
     use super::{push_run, splice_under_glyphs, DrawRun};
+
+    /// 古い経路はグループの印を読み飛ばし、マスクの中身 (PushMask から PopGroup まで)
+    /// を描かない。入れ子でも外のマスクが閉じるまで飛ばす。
+    #[test]
+    fn old_paths_skip_mask_contents() {
+        use super::skip_mask;
+        use sabitori_core::render_list::{GroupDraw, RectDraw, RenderCommand};
+        let g = || RenderCommand::PushGroup(GroupDraw {
+            pivot: sabitori_core::Point::ZERO,
+            rotation: 0.0,
+            blur: 0.0,
+            blend: Default::default(),
+        });
+        let rect = || RenderCommand::Rect(RectDraw::default());
+        let cmds = [
+            g(), rect(), RenderCommand::PushMask, rect(), g(), rect(), RenderCommand::PopGroup, RenderCommand::PopGroup,
+            rect(),
+        ];
+        let mut stack = Vec::new();
+        let drawn: Vec<bool> = cmds.iter().map(|c| !skip_mask(c, &mut stack)).collect();
+        assert_eq!(drawn, [false, true, false, false, false, false, false, false, true]);
+    }
 
     /// 同じ種類が続けば 1 つにまとめ、種類が変われば分ける (木の順を崩さない)。
     #[test]

@@ -17,6 +17,18 @@
 
 ### Added
 
+- **`.mask(element)` — マスクの不透明な所だけを見せる。** マスクはこの要素と同じ大きさの箱の中で、
+  子とは別に組む (要素の大きさも子の並びも変えない。文字に付けても字の大きさのまま)。色は
+  使わず不透明度だけを見るので、丸く切り抜く・文字の形に切り抜く・`gradient` で端を消す・
+  伸びる箱でワイプして現す、に使える。マスクそのものは描かれず、押せない。作例の `intro` の
+  副題が、端のぼけた帯で左から現れる。
+- **`.blend(BlendMode)` — 中身ごと描いた絵の重ね方 (CSS の `mix-blend-mode`)。** `Normal` /
+  `Add` (足す) / `Screen` / `Multiply` (掛ける)。色は線形の光で混ぜる。
+- 上の 2 つも `.rotate(..)` と同じく中身を別の絵に描いてから貼る。`RenderCommand::PushMask`、
+  `GroupDraw::blend`、`GroupRun::mask`、`Element::mask` (フィールド)、`BlendMode` を足した。
+  `sabitori-reel` も `BlendMode` を出す。種類ごとにまとめて描く古い経路は、マスクの中身を
+  描かずに飛ばす (グループは使わない)。
+
 - **`.blur(px)` — 要素を中身ごとぼかす。** CSS の `filter: blur()` と同じく `px` は標準偏差
   (論理 px、解像度の倍率に関係なく同じ幅)。`.rotate(..)` と同じく中身を別の絵に描いてから、
   貼る前に縦横 2 回のパスでぼかす。前乗算のまま混ぜるので、透明な所との境目が黒ずまない。
@@ -73,6 +85,9 @@
 
 ### Changed（破壊的）
 
+- **`Element` に `mask`、`ElementStyle` に `blend`、`GroupDraw` に `blend`、`GroupRun` に `mask`
+  を足し、`GroupRenderer::draw` はマスクの描き先を取る。** `RenderCommand` に `PushMask` を
+  足した (全部の腕を書いた `match` は足す必要がある)。
 - **`RectTarget` に `scale_factor()` を、`GroupInstance` に `effect` を、`GroupDraw` に `blur` を
   足した。** `GroupRenderer::prepare` は倍率 (`scale`) を取る。
 - **`UiRenderers` に `groups: Option<&mut GroupRenderer>` を足した。** `None` なら回さずに

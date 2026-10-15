@@ -35,7 +35,7 @@ pub use element::{
 pub use element::{Anchor, Placement};
 // 文字ごとの前景色 (`Element::color_spans`)。
 pub use element::ColorSpan;
-pub use element::{GradientKind, Grain};
+pub use element::{BlendMode, GradientKind, Grain};
 // 等幅の文字の格子 (#102)。
 pub use element::{cell_grid, CellGridKind};
 // grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
