@@ -611,11 +611,18 @@ impl Reel {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Clear the scratch dir first so a shorter reel can't inherit stale
-        // frames from a previous, longer run.
-        let dir = std::env::temp_dir().join("sabitori-reel-encode");
+        // コマを置く作業用のフォルダは書き出しごとに別にする。以前は全員が同じ
+        // `sabitori-reel-encode` を使い、書く前に消していたので、並行で書き出すと
+        // 互いのコマを消し合い、動画に他の場面が混ざった。
+        let dir = scratch_dir();
         let _ = std::fs::remove_dir_all(&dir);
-        self.render_pngs(scene, &dir)?;
+        let result = self.render_pngs(scene, &dir).and_then(|_| self.encode(&dir, out));
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    /// `dir` に並んだコマを `ffmpeg` で `out` の MP4 にする。
+    fn encode(&self, dir: &std::path::Path, out: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
 
         let mut cmd = video::ffmpeg_command();
         let ffmpeg = cmd.get_program().to_owned();
@@ -657,6 +664,14 @@ impl Reel {
         }
         Ok(out.to_path_buf())
     }
+}
+
+/// 書き出し 1 回ぶんの作業用フォルダ (プロセスと回ごとに別)。
+fn scratch_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("sabitori-reel-encode-{}-{n}", std::process::id()))
 }
 
 /// Owns the headless GPU device, the offscreen render target, Sabitori's four
@@ -1546,6 +1561,15 @@ mod tests {
         let local = Seq::new(1.0, 2.0).since(c).unwrap();
         assert_eq!(local.frame, 15);
         assert!((local.t() - 15.5 / 30.0).abs() < 1e-5, "{}", local.t());
+    }
+
+
+    /// 書き出しごとに作業用のフォルダが別 (並行で書き出しても、互いのコマを消し合わない)。
+    #[test]
+    fn each_encode_gets_its_own_scratch_dir() {
+        let (a, b) = (scratch_dir(), scratch_dir());
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains(&std::process::id().to_string()));
     }
 
 }
