@@ -352,6 +352,9 @@ pub struct TextDraw {
     /// 1 字ずつの動き ([`Element::glyph_motion`](crate::Element::glyph_motion))。
     /// 字の番号 (`content.chars()` の順) で引く。
     pub glyph_motion: Option<std::sync::Arc<[crate::element::GlyphMotion]>>,
+    /// 縦書き ([`Element::vertical`](crate::Element::vertical))。箱 (`max_width` ×
+    /// `max_height`) の右上から、列を右から左へ並べる。
+    pub vertical: bool,
 }
 
 /// Draw an image at a position.

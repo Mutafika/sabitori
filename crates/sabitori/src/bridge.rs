@@ -1572,6 +1572,27 @@ impl OrderedFrame {
                     // ハイライトとリンクの下線は、選択の対象でない並び (上掛け・画面外・reel)
                     // でも描く。そのために配置 (hits) が要る。
                     let decorated = !d.highlight.is_empty() || d.link_ranges.is_some();
+                    // 縦書きは別の並べ方 (選択・ハイライト・リンクは対応していない)。
+                    if d.vertical {
+                        let (mut produced, bytes) = tr.prepare_vertical(
+                            &d.content, d.position.x, d.position.y, d.max_width, d.max_height,
+                            d.font_size, d.color, &color_spans(d), d.bold, d.font_family.as_deref(), d.typo,
+                        );
+                        if let Some(m) = d.glyph_motion.as_deref() {
+                            move_glyphs(&mut produced, &bytes, &d.content, m);
+                        }
+                        sabitori_text::rotate_glyphs(&mut produced, (d.position.x, d.position.y), d.rotation);
+                        if let Some(c) = clip {
+                            let arr = clip_to_array(&c);
+                            for g in produced.iter_mut() {
+                                g.clip_rect = arr;
+                            }
+                        }
+                        let at = self.glyphs.len() as u32;
+                        self.glyphs.extend(produced);
+                        push_run(&mut self.runs, DrawRun::Glyphs(at..self.glyphs.len() as u32));
+                        continue;
+                    }
                     let (mut produced, hits) = if (with_hits && needs_hit_layout(d)) || decorated {
                         let (g, h) = tr.prepare_text_with_hits_spans(
                             &d.content, d.position.x, d.position.y,
@@ -2036,6 +2057,7 @@ mod tests {
             no_select: false,
             owner: None,
             glyph_motion: None,
+            vertical: false,
         }
     }
 
@@ -2104,6 +2126,7 @@ mod tests {
             no_select: false,
             owner: None,
             glyph_motion: None,
+            vertical: false,
         };
         // top を -200 までスクロール、高さ 300 → bottom=100 は viewport 内 → 描く。
         // 旧 font_size*1.5(=24px) 近似だと top=-200 の rect は viewport 外 → 誤 cull。
@@ -2429,6 +2452,7 @@ mod hit_layout_tests {
             no_select: false,
             owner: None,
             glyph_motion: None,
+            vertical: false,
         }
     }
 

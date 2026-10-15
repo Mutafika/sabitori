@@ -1216,6 +1216,82 @@ impl TextRenderer {
         (instances, hits)
     }
 
+    /// 縦書き ([`sabitori_core::Element::vertical`]) の字を並べる。箱 (`x`, `y` から
+    /// `box_w` × `box_h`) の右上から、列を右から左へ。升目の決め方と縦書きの形は
+    /// [`sabitori_core::vertical`]。1 字ずつ横書きと同じ方法で組み、升目の真ん中に置く。
+    ///
+    /// グリフと、それぞれの本文のバイト範囲 (1 字ずつ動かすとき用) を返す。
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_vertical(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        box_w: f32,
+        box_h: f32,
+        font_size: f32,
+        color: Color,
+        spans: &[ColorSpan],
+        bold: bool,
+        family_override: Option<&str>,
+        typo: Typography,
+    ) -> (Vec<GlyphInstance>, Vec<(u32, u32)>) {
+        use sabitori_core::vertical::{vertical_cells, vertical_pitch, VerticalPlacement};
+        let (step, column) = vertical_pitch(font_size, &typo);
+        let max_height = (box_h > 0.0).then_some(box_h);
+        let cells = vertical_cells(text, font_size, &typo, max_height);
+        // 1 字は升目と同じ高さの 1 行として組む (字送りと行間は升目の側で持つ)。
+        let one = Typography { letter_spacing: 0.0, line_height: Some(1.0), ..typo };
+        let right = x + box_w;
+        let mut glyphs = Vec::new();
+        let mut bytes = Vec::new();
+        let mut buf = [0u8; 4];
+        for cell in cells {
+            let cx = right - cell.column as f32 * column - font_size;
+            let cy = y + cell.row as f32 * step;
+            let form: &str = cell.form.encode_utf8(&mut buf);
+            let (mut gs, hits) = self.prepare_text_with_hits_spans(
+                form, cx, cy, font_size, color, &[], None, bold, false, family_override, None, one,
+            );
+            // 字幅が升目より狭い字 (かな・記号) は、升目の真ん中へ寄せる。
+            let advance = hits.first().map_or(font_size, |h| h.w);
+            let dx = (font_size - advance) * 0.5;
+            let tint = span_color(spans, cell.byte_start as u32, cell.byte_end as u32);
+            let (pivot_x, pivot_y) = (cx + font_size * 0.5, cy + font_size * 0.5);
+            for g in gs.iter_mut() {
+                g.position[0] += dx;
+                match cell.placement {
+                    VerticalPlacement::Upright => {}
+                    VerticalPlacement::Small => {
+                        g.position[0] += font_size * 0.1;
+                        g.position[1] -= font_size * 0.1;
+                    }
+                    VerticalPlacement::Punct => {
+                        // 横書きの句読点は升目の左下にある。右上へ同じだけ動かす。
+                        g.position[0] += font_size * 0.55;
+                        g.position[1] -= font_size * 0.55;
+                    }
+                    VerticalPlacement::Rotated => {
+                        // 升目の真ん中で時計回りに 90°。グリフの四角は左上まわりに回るので、
+                        // 真ん中の行き先から左上を求め直す。
+                        let (hx, hy) = (g.size[0] * 0.5, g.size[1] * 0.5);
+                        let (gx, gy) = (g.position[0] + hx - pivot_x, g.position[1] + hy - pivot_y);
+                        let (ncx, ncy) = (pivot_x - gy, pivot_y + gx);
+                        g.rotation += std::f32::consts::FRAC_PI_2;
+                        let (sin, cos) = g.rotation.sin_cos();
+                        g.position = [ncx - (hx * cos - hy * sin), ncy - (hx * sin + hy * cos)];
+                    }
+                }
+                if let Some(c) = tint {
+                    g.color = c;
+                }
+                glyphs.push(*g);
+                bytes.push((cell.byte_start as u32, cell.byte_end as u32));
+            }
+        }
+        (glyphs, bytes)
+    }
+
     /// 直前の `prepare_text_spans` / `prepare_text_with_hits_spans` が返したグリフの、
     /// それぞれの本文のバイト範囲 (同じ順)。1 字ずつ動かすときに、グリフから字を引く。
     pub fn last_glyph_bytes(&self) -> &[(u32, u32)] {

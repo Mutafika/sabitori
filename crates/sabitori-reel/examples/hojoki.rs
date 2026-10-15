@@ -3,12 +3,12 @@
 //! time, each one bleeding into the paper as it lands. A seal is pressed at
 //! the end.
 //!
-//! - each column is one `text()` with a newline between characters, animated
-//!   with `per_glyph` (no element per character, so 85 characters stay cheap);
+//! - each column is one `text()`, animated with `per_glyph` (no element per
+//!   character, so 85 characters stay cheap);
 //! - the bleed is a blurred copy of the column underneath (`.blur(..)`) whose
 //!   glyphs flare when they appear and settle to a faint halo;
-//! - punctuation is nudged to the top-right of its cell, as vertical writing
-//!   sets it;
+//! - the columns are vertical text (`.vertical()`): punctuation sits in the
+//!   top-right of its cell and brackets turn, as vertical writing sets them;
 //! - the paper is a fibre texture made from noise, the seal is multiplied onto
 //!   it (`BlendMode::Multiply`) so the paper shows through the red.
 //!
@@ -119,17 +119,16 @@ fn starts() -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// 1 列を縦に組んだ文字。`motion(字の番号, 字)` で 1 字ずつ動かす。改行も 1 字に数えるので、
-/// 番号は 2 つ飛びになる。
+/// 1 列の縦書き (`.vertical()`)。`motion(字の番号, 字)` で 1 字ずつ動かす。字の送りは PITCH。
 fn column(s: &str, color: Color, motion: impl Fn(usize, char) -> GlyphMotion) -> Element {
     let chars: Vec<char> = s.chars().collect();
-    let content: String = chars.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("\n");
-    text(content)
+    text(s.to_string())
+        .vertical()
         .font_size(SIZE)
         .font_weight(600)
-        .line_height(PITCH / SIZE)
+        .letter_spacing(PITCH - SIZE)
         .color(color)
-        .per_glyph(move |i, _| if i % 2 == 0 { motion(i / 2, chars[i / 2]) } else { GlyphMotion::default() })
+        .per_glyph(move |i, _| motion(i, chars[i]))
 }
 
 fn spring_at(t: f32, start: f32, cfg: Spring) -> f32 {
@@ -153,14 +152,12 @@ fn scene(ctx: FrameCtx, paper: &ImageData, starts: &[Vec<f32>]) -> Element {
     for (ci, col) in COLUMNS.iter().enumerate() {
         let at = &starts[ci];
         let x = right - ci as f32 * COL_GAP - SIZE;
-        let nudge = |c: char| if is_punct(c) { (SIZE * 0.6, -PITCH * 0.7) } else { (0.0, 0.0) };
         // にじみ: ぼかした写し。書いた瞬間に濃く広がり、薄い暈 (かさ) になって残る。
         kids.push(
-            column(col, ink, |k, c| {
+            column(col, ink, |k, _| {
                 let age = t - at[k];
-                let (dx, dy) = nudge(c);
                 let a = if age < 0.0 { 0.0 } else { 0.16 + 0.5 * (-age * 2.2).exp() };
-                GlyphMotion { dx, dy, scale: 1.0 + 0.25 * (-age * 3.0).exp().min(1.0), opacity: a, ..Default::default() }
+                GlyphMotion { scale: 1.0 + 0.25 * (-age * 3.0).exp().min(1.0), opacity: a, ..Default::default() }
             })
             .absolute()
             .pos(x, top)
@@ -168,14 +165,13 @@ fn scene(ctx: FrameCtx, paper: &ImageData, starts: &[Vec<f32>]) -> Element {
         );
         // 墨: 置いた瞬間は少し大きく淡く、すぐ締まる。
         kids.push(
-            column(col, ink, |k, c| {
+            column(col, ink, |k, _| {
                 let age = t - at[k];
-                let (dx, dy) = nudge(c);
                 if age < 0.0 {
                     return GlyphMotion { opacity: 0.0, ..Default::default() };
                 }
                 let s = interpolate_eased(age, [0.0, 0.35], [0.0, 1.0], Easing::EaseOutCubic);
-                GlyphMotion { dx, dy, scale: 1.08 - 0.08 * s, opacity: 0.35 + 0.65 * s, ..Default::default() }
+                GlyphMotion { scale: 1.08 - 0.08 * s, opacity: 0.35 + 0.65 * s, ..Default::default() }
             })
             .absolute()
             .pos(x, top),

@@ -1346,5 +1346,96 @@ mod tests {
         assert!(zoom < 0.08, "zoom で揺れている (平均からの最大のずれ {zoom:.3}px)");
     }
 
+
+    /// 縦書きを 200×200 の白地に描く (字は 40px、列の送りは 64px)。
+    fn vertical_shot(t: Element) -> Rendered {
+        let view = div()
+            .w(Px(200.0))
+            .h(Px(200.0))
+            .bg(Color::WHITE)
+            .flex_row()
+            .justify_end()
+            .items_start()
+            .child(t.font_size(40.0).color(Color::BLACK));
+        render(&view, Sheet::px(200.0, 200.0)).expect("描けなかった")
+    }
+
+    /// 矩形の中の墨の量と重心 (x, y)。
+    fn ink(out: &Rendered, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>) -> (f32, f32, f32) {
+        let (mut n, mut sx, mut sy) = (0.0f32, 0.0f32, 0.0f32);
+        for y in ys {
+            for x in xs.clone() {
+                let v = (255 - out.pixel(x, y).unwrap()[0]) as f32;
+                n += v;
+                sx += x as f32 * v;
+                sy += y as f32 * v;
+            }
+        }
+        (n, sx / n.max(1.0), sy / n.max(1.0))
+    }
+
+    /// 縦書き: 字は上から下、列は右から左。右の列は 160..200、次の列は 96..136。
+    #[test]
+    fn vertical_text_runs_down_then_leftward() {
+        gpu_or_skip!();
+        let out = vertical_shot(text("あい\nう").vertical());
+        assert!(ink(&out, 160..200, 0..40).0 > 2000.0, "右の列の 1 字目が無い");
+        assert!(ink(&out, 160..200, 40..80).0 > 2000.0, "右の列の 2 字目が無い");
+        assert!(ink(&out, 96..136, 0..40).0 > 2000.0, "次の列が右から 2 番目に無い");
+        assert!(ink(&out, 96..136, 40..80).0 < 100.0, "次の列に余計な字がある");
+    }
+
+    /// 句読点は升目の右上。横書きの形のままだと左下に落ちる。
+    #[test]
+    fn vertical_punctuation_sits_top_right() {
+        gpu_or_skip!();
+        let out = vertical_shot(text("あ、").vertical());
+        let (n, x, y) = ink(&out, 160..200, 40..80);
+        assert!(n > 200.0, "読点が無い");
+        assert!(x > 180.0 && y < 60.0, "読点が右上に無い (重心 {x:.1}, {y:.1})");
+    }
+
+    /// 括弧は 90° 回して縦の形にする。横書きの「 は縦長 (縦の線が長い) なので、回すと
+    /// 横長になる。
+    #[test]
+    fn vertical_brackets_turn() {
+        gpu_or_skip!();
+        let out = vertical_shot(text("「").vertical());
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for y in 0..60 {
+            for x in 140..200 {
+                if out.pixel(x, y).unwrap()[0] < 128 {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+        }
+        assert!(x1 >= x0, "括弧が無い");
+        let (w, h) = (x1 - x0, y1 - y0);
+        assert!(w > h, "括弧が縦の形になっていない ({w}×{h})");
+    }
+
+    /// 高さを決めると、収まらない字は次の列へ送る。80px の高さに 40px の字は 2 字まで。
+    #[test]
+    fn vertical_text_wraps_at_the_box_height() {
+        gpu_or_skip!();
+        let out = vertical_shot(text("あいう").vertical().h(Px(80.0)));
+        assert!(ink(&out, 160..200, 80..120).0 < 100.0, "高さを越えて 3 字目が下に出た");
+        assert!(ink(&out, 96..136, 0..40).0 > 2000.0, "3 字目が次の列に来ていない");
+    }
+
+    /// 1 字ずつの動きも縦書きで効く (字の番号は横書きと同じ)。
+    #[test]
+    fn per_glyph_works_on_vertical_text() {
+        gpu_or_skip!();
+        use sabitori_core::GlyphMotion;
+        let out = vertical_shot(text("あい").vertical().per_glyph(|i, _| GlyphMotion {
+            opacity: if i == 0 { 0.0 } else { 1.0 },
+            ..Default::default()
+        }));
+        assert!(ink(&out, 160..200, 0..40).0 < 100.0, "1 字目が消えていない");
+        assert!(ink(&out, 160..200, 40..80).0 > 2000.0, "2 字目まで消えた");
+    }
+
 }
+
 

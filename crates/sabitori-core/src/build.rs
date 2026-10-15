@@ -952,6 +952,8 @@ pub struct TextNodeContext {
     /// Line cap (`max_lines`) so the measured height matches the render-time
     /// truncation. Without it a clamped label measures at full wrapped height.
     pub max_lines: Option<u32>,
+    /// 縦書き。大きさは字数と升目から決まる ([`crate::vertical::vertical_extent`])。
+    pub vertical: bool,
 }
 
 /// Taffy measure_fn callback for leaf text nodes. Calls the user-supplied
@@ -985,6 +987,21 @@ fn measure_text_leaf(
     // Everything returned is the **content** box — taffy adds the padding
     // back around it (#112).
     let (pad_top, pad_right, pad_bottom, pad_left) = ctx.padding;
+    // 縦書きは字数と升目から決まる。折り返すのは高さ (決まっていれば)。
+    if ctx.vertical {
+        let max_height = match known.height {
+            Some(h) => Some((h - pad_top - pad_bottom).max(0.0)),
+            None => match avail.height {
+                AvailableSpace::Definite(h) => Some(h.max(0.0)),
+                _ => None,
+            },
+        };
+        let (w, h) = crate::vertical::vertical_extent(&ctx.content, ctx.font_size, &ctx.typo, max_height);
+        return TaffySize {
+            width: known.width.map_or(w, |kw| (kw - pad_left - pad_right).max(0.0)),
+            height: known.height.map_or(h, |kh| (kh - pad_top - pad_bottom).max(0.0)),
+        };
+    }
     // Shape at the node's already-resolved width when Taffy has fixed it (explicit
     // `.w()`), and only fall back to `avail`. Deriving max_width solely from `avail`
     // shaped a width-constrained text node (known.width=Some, avail=MaxContent)
@@ -1068,6 +1085,7 @@ fn create_taffy_node(
                 padding: (0.0, 0.0, 0.0, 0.0),
                 typo: element.style.typography(),
                 max_lines,
+                vertical: element.style.vertical,
             }),
             ElementKind::Button { label, .. } => {
                 let pad = resolve_edges_px(&element.style.padding);
@@ -1080,6 +1098,7 @@ fn create_taffy_node(
                     padding: (pad.1, pad.2, pad.3, pad.0), // (top, right, bottom, left)
                     typo: element.style.typography(),
                     max_lines,
+                    vertical: false,
                 })
             }
             _ => None,
@@ -1123,6 +1142,7 @@ fn lays_out_in_a_row(element: &Element) -> bool {
 fn shrinks_to_one_line(element: &Element, in_row: bool) -> bool {
     let st = &element.style;
     in_row
+        && !st.vertical
         && matches!(&element.kind, ElementKind::Text { content } if !content.contains('\n'))
         && st.width == Dimension::Auto
         && st.min_width == Dimension::Auto
@@ -1886,6 +1906,7 @@ fn emit_commands_inner(
                 no_select,
                 owner: owner.cloned(),
                 glyph_motion: style.glyph_motion.clone(),
+                vertical: style.vertical,
             }));
         }
         ElementKind::Button { label, .. } => {
@@ -1940,6 +1961,7 @@ fn emit_commands_inner(
                 no_select: true,
                 owner: owner.cloned(),
                 glyph_motion: style.glyph_motion.clone(),
+                vertical: false,
             }));
         }
         ElementKind::Div => {}
@@ -2403,6 +2425,9 @@ fn measure_or_estimate(
     style: &ElementStyle,
     measurer: Option<&dyn TextMeasure>,
 ) -> (f32, f32) {
+    if style.vertical {
+        return crate::vertical::vertical_extent(content, style.font_size, &style.typography(), None);
+    }
     if let Some(m) = measurer {
         // No width constraint here — this is only used as a min-size hint.
         // Actual wrapped sizing happens via `compute_layout_with_measure`.
@@ -2897,6 +2922,17 @@ mod tests {
         let t = build_tree(&div().child(text("Hello").mask(div().w(Px(10.0)).h(Px(10.0)))), 200.0, 200.0);
         let drawn = t.render_list.commands.iter().any(|c| matches!(c, RenderCommand::Text(d) if &*d.content == "Hello"));
         assert!(drawn, "マスクを付けた文字が消えた");
+    }
+
+    /// 縦書きの文字の箱は、字数と升目で決まる (列の送り × (列 - 1) + 字の幅, 字数 × 字の高さ)。
+    #[test]
+    fn vertical_text_measures_by_columns() {
+        let b = build_tree(&div().child(text("あい\nう").vertical().font_size(40.0)), 400.0, 400.0);
+        let r = b.render_list.commands.iter().find_map(|c| match c {
+            RenderCommand::Text(t) => Some((t.max_width, t.max_height, t.vertical)),
+            _ => None,
+        });
+        assert_eq!(r, Some((104.0, 80.0, true)));
     }
 
     /// 開始色が透明なグラデーション (透明 → 黒のスクリム) も描く。`bg` は
