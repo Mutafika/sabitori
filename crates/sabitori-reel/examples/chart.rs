@@ -28,6 +28,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use sabitori_core::element::HighlightSpec;
 use sabitori_core::{BoxShadow, Point};
 use sabitori_reel::{
+    path,
     MotionBlur,
     arc, div, interpolate, interpolate_eased, polyline, spring_with, text, Color, Easing, Element,
     FrameCtx, Px, Reel, Spring,
@@ -59,11 +60,6 @@ fn accent() -> Color {
 
 fn ink() -> Color {
     hex("#e8edf6")
-}
-
-/// 地の下の方の色 (面の塗りを溶かす先)。
-fn bg_bottom() -> Color {
-    hex("#0e1528")
 }
 
 fn muted() -> Color {
@@ -196,24 +192,27 @@ fn scene(ctx: FrameCtx) -> Element {
     // 線の伸び具合と、その下の面。面は目盛りの線より先に描いて、目盛りを上に見せる。
     let p = line_progress(t);
     let pts = line_upto(p);
-    if p > 0.0 {
-        // 面の塗り: 線の下を細い縦の帯で埋める (上ほど濃い縦の階調)。帯は 1px ずつ
-        // 重ね、色は地に混ぜた不透明の色にする (半透明だと、重なりや縁が筋になる)。
+    if pts.len() >= 2 {
+        // 面の塗り: 縦のグラデーションの板を、線の下の形 (パス) でマスクする。
         let tip_x = pts.last().map_or(CX0, |q| q.0);
-        let step = 6.0;
-        let mut x = CX0;
-        while x < tip_x {
-            let y = y_at(&pts, x + step * 0.5);
-            kids.push(
-                div()
-                    .absolute()
-                    .pos(x, y)
-                    .w(Px((step + 1.0).min(tip_x - x)))
-                    .h(Px(CY1 - y))
-                    .gradient(bg_bottom().lerp(accent(), 0.24), bg_bottom(), FRAC_PI_2),
-            );
-            x += step;
+        let top = pts.iter().map(|q| q.1).fold(CY1, f32::min);
+        let mut area = path().move_to(pts[0].0 - CX0, CY1 - top);
+        for q in &pts {
+            area = area.line_to(q.0 - CX0, q.1 - top);
         }
+        let area = area.line_to(tip_x - CX0, CY1 - top).close_path().fill(Color::BLACK);
+        kids.push(
+            div()
+                .absolute()
+                .pos(CX0, top)
+                .w(Px(tip_x - CX0))
+                .h(Px(CY1 - top))
+                .gradient(accent().with_alpha(0.34), accent().with_alpha(0.02), FRAC_PI_2)
+                // 暗いグラデーションの段 (8 bit の縞) を粒子で散らす。
+                .grain(0.02)
+                .grain_seed(ctx.frame)
+                .mask(area),
+        );
     }
 
     // 軸と目盛り: 横線を下から順に引く。
@@ -328,18 +327,6 @@ fn scene(ctx: FrameCtx) -> Element {
         .grain(0.035)
         .grain_seed(ctx.frame)
         .children(kids)
-}
-
-/// 折れ線の `x` での高さ。
-fn y_at(pts: &[(f32, f32)], x: f32) -> f32 {
-    for w in pts.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if x <= b.0 {
-            let f = ((x - a.0) / (b.0 - a.0).max(1e-3)).clamp(0.0, 1.0);
-            return a.1 + (b.1 - a.1) * f;
-        }
-    }
-    pts.last().map_or(CY1, |q| q.1)
 }
 
 /// 速い動き (入場・伸びる線) が滑らかに見えるよう、1 コマを 8 回描いて平均する。

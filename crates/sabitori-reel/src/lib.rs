@@ -43,7 +43,7 @@ use sabitori_text::TextRenderer;
 
 // Re-export the Sabitori declarative builder surface so a scene file only needs
 // `use sabitori_reel::*` to author a tree.
-pub use sabitori_core::element::polyline;
+pub use sabitori_core::element::{path, polyline};
 pub use sabitori_core::{
     arc, button, div, image, text, Auto, BlendMode, Color, Dimension, Element, GlyphMotion, ImageData,
     ObjectFit, Percent, Px, Typography,
@@ -727,6 +727,7 @@ struct Gpu {
     ring: RingRenderer,
     line: LineRenderer,
     groups: sabitori_gpu::GroupRenderer,
+    fills: sabitori_gpu::FillRenderer,
     image: ImageRenderer,
     measure_cache: RefCell<MeasureCache>,
     texture: wgpu::Texture,
@@ -792,6 +793,7 @@ impl Gpu {
         let ring = RingRenderer::new(&device, format, layout);
         let line = LineRenderer::new(&device, format, layout);
         let groups = sabitori_gpu::GroupRenderer::new(&device, format, layout);
+        let fills = sabitori_gpu::FillRenderer::new(&device, format, layout);
         let image = ImageRenderer::new(&device, format, layout);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -827,6 +829,7 @@ impl Gpu {
             ring,
             line,
             groups,
+            fills,
             image,
             measure_cache: RefCell::new(MeasureCache::new()),
             texture,
@@ -894,6 +897,7 @@ impl Gpu {
             rings: Some(&mut self.ring),
             lines: Some(&mut self.line),
             groups: Some(&mut self.groups),
+            fills: Some(&mut self.fills),
             text: &mut self.text,
         };
         frame.upload(&mut self.ui, &mut r, &self.device, &self.queue);

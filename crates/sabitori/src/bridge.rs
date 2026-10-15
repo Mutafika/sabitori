@@ -515,6 +515,8 @@ fn render_list_to_gpu_with_hits_impl(
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
             RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
+            // パスの塗りは木の順に描く経路だけ。
+            RenderCommand::PathFill(_) => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -693,6 +695,8 @@ fn render_list_to_gpu_with_rings_impl(
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
             RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
+            // パスの塗りは木の順に描く経路だけ。
+            RenderCommand::PathFill(_) => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
                 if let Some(c) = clip {
@@ -887,6 +891,8 @@ pub fn extract_image_batches(list: &RenderList) -> Vec<ImageBatch> {
             }
             // 種類ごとにまとめて描く古い経路は、グループを回さずその場に描く。
             RenderCommand::PushGroup(_) | RenderCommand::PushMask | RenderCommand::PopGroup => {}
+            // パスの塗りは木の順に描く経路だけ。
+            RenderCommand::PathFill(_) => {}
             RenderCommand::Image(d) => {
                 let Some(inst) = image_instance(d, clip_stack.last()) else { continue };
                 if let Some(batch) = batches.iter_mut().find(|b| b.key == d.key) {
@@ -979,6 +985,8 @@ pub struct UiRenderers<'a> {
     /// 中身ごと回す要素 ([`Element::rotate`](sabitori_core::Element::rotate)) を描く。
     /// `None` なら回さずその場に描く。
     pub groups: Option<&'a mut sabitori_gpu::GroupRenderer>,
+    /// パスの塗り ([`path`](sabitori_core::element::path)) を描く。`None` なら塗らない。
+    pub fills: Option<&'a mut sabitori_gpu::FillRenderer>,
 }
 
 /// Draw one UI layer inside an open render pass: images → rings → polylines →
@@ -1049,6 +1057,8 @@ pub enum DrawRun {
     Rings(std::ops::Range<u32>),
     Lines(std::ops::Range<u32>),
     Glyphs(std::ops::Range<u32>),
+    /// パスの塗りの頂点 (3 つで三角形 1 つ)。
+    Fills(std::ops::Range<u32>),
     /// 先に別の絵に描いてから回して貼るまとまり ([`Element::rotate`](sabitori_core::Element::rotate))。
     Group(Box<GroupRun>),
 }
@@ -1072,7 +1082,8 @@ impl DrawRun {
             | DrawRun::Images { range: r, .. }
             | DrawRun::Rings(r)
             | DrawRun::Lines(r)
-            | DrawRun::Glyphs(r) => Some(r),
+            | DrawRun::Glyphs(r)
+            | DrawRun::Fills(r) => Some(r),
             DrawRun::Group(_) => None,
         }
     }
@@ -1264,6 +1275,38 @@ pub(crate) fn link_rects(
     out
 }
 
+/// パスの塗りを三角形に割る (lyon)。輪郭は閉じたものとして扱う。
+fn tessellate_fill(d: &sabitori_core::PathFillDraw, clip_rect: [f32; 4]) -> Vec<sabitori_gpu::FillVertex> {
+    use lyon_tessellation::math::point;
+    use lyon_tessellation::path::Path;
+    use lyon_tessellation::{BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex, VertexBuffers};
+    let mut builder = Path::builder();
+    for c in &d.contours {
+        let Some(first) = c.first() else { continue };
+        builder.begin(point(first.x, first.y));
+        for p in &c[1..] {
+            builder.line_to(point(p.x, p.y));
+        }
+        builder.end(true);
+    }
+    let path = builder.build();
+    let mut geom: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    let rule = if d.even_odd { FillRule::EvenOdd } else { FillRule::NonZero };
+    let ok = FillTessellator::new().tessellate_path(
+        &path,
+        &FillOptions::tolerance(0.1).with_fill_rule(rule),
+        &mut BuffersBuilder::new(&mut geom, |v: FillVertex| v.position().to_array()),
+    );
+    if ok.is_err() {
+        return Vec::new();
+    }
+    let color = d.color.to_array();
+    geom.indices
+        .iter()
+        .map(|&i| sabitori_gpu::FillVertex { position: geom.vertices[i as usize], color, clip_rect })
+        .collect()
+}
+
 /// [`GroupInstance::effect`](sabitori_gpu::GroupInstance::effect) の `[1]` に入れる重ね方の番号。
 fn blend_index(mode: sabitori_core::BlendMode) -> f32 {
     match mode {
@@ -1355,6 +1398,8 @@ pub struct OrderedFrame {
     pub rings: Vec<RingInstance>,
     pub lines: Vec<LineInstance>,
     pub glyphs: Vec<GlyphInstance>,
+    /// パスの塗りの頂点。
+    pub fills: Vec<sabitori_gpu::FillVertex>,
     pub runs: Vec<DrawRun>,
     /// グループ ([`DrawRun::Group`]) の貼り方。`slot` の順。
     pub groups: Vec<sabitori_gpu::GroupInstance>,
@@ -1475,6 +1520,35 @@ impl OrderedFrame {
                     let at = self.lines.len() as u32;
                     self.lines.extend(insts);
                     push_run(&mut self.runs, DrawRun::Lines(at..self.lines.len() as u32));
+                }
+                RenderCommand::PathFill(d) => {
+                    let all: Vec<sabitori_core::Point> = d.contours.iter().flatten().copied().collect();
+                    if clip.is_some_and(|c| polyline_clipped(&c, &all)) {
+                        continue;
+                    }
+                    let clip_arr = clip.map_or([0.0; 4], |c| clip_to_array(&c));
+                    let at = self.fills.len() as u32;
+                    self.fills.extend(tessellate_fill(d, clip_arr));
+                    push_run(&mut self.runs, DrawRun::Fills(at..self.fills.len() as u32));
+                    // 三角形の縁はぎざぎざなので、不透明な塗りには同じ色の細い線を縁に
+                    // 重ねて滑らかにする (半透明だと重なった所が濃くなるので重ねない)。
+                    if d.color.a >= 0.999 {
+                        let at = self.lines.len() as u32;
+                        for c in &d.contours {
+                            let mut ring = c.clone();
+                            if ring.first() != ring.last() {
+                                ring.push(ring[0]);
+                            }
+                            // 太さはほぼ 0 で、線の縁のぼかし (±0.75px) だけで縁の内外を
+                            // なだらかにつなぐ。
+                            let mut edge = polyline_to_instances(&PolylineDraw { points: ring, width: 0.2, color: d.color });
+                            for e in edge.iter_mut() {
+                                e.clip_rect = clip_arr;
+                            }
+                            self.lines.extend(edge);
+                        }
+                        push_run(&mut self.runs, DrawRun::Lines(at..self.lines.len() as u32));
+                    }
                 }
                 RenderCommand::CellGrid(d) => {
                     if clip.is_some_and(|c| is_clipped(&c, &d.rect())) {
@@ -1632,6 +1706,9 @@ impl OrderedFrame {
             line_r.upload(device, queue, &self.lines);
         }
         r.text.upload_glyphs(device, queue, &self.glyphs);
+        if let Some(fill_r) = r.fills.as_deref_mut() {
+            fill_r.upload(device, queue, &self.fills);
+        }
 
         // グループの中身を、それぞれの絵に先に描く (内側から)。本番のパスはこの後の
         // 提出なので、貼るときには描き終わっている。
@@ -1732,6 +1809,11 @@ impl OrderedFrame {
                     }
                 }
                 DrawRun::Glyphs(range) => r.text.draw_glyphs(pass, globals, range.clone()),
+                DrawRun::Fills(range) => {
+                    if let Some(fill_r) = r.fills.as_deref() {
+                        fill_r.draw(pass, globals, range.clone());
+                    }
+                }
                 // 描く物が無ければ、回さず・マスクせずにその場に描く。
                 DrawRun::Group(g) => match r.groups.as_deref() {
                     Some(gr) => gr.draw(pass, globals, g.slot, g.mask.as_ref().map(|(m, _)| *m)),

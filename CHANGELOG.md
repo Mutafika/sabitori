@@ -17,6 +17,19 @@
 
 ### Added
 
+- **`path()` — 自由な形のパス。** 直線・2 次 / 3 次ベジェ (`move_to` / `line_to` / `quad_to` /
+  `cubic_to` / `close_path`) か SVG の `d` (`.svg_path(..)`、`M L H V C S Q T A Z` と相対形) で
+  輪郭を書き、`.fill(..)` で塗り (非ゼロ、`.fill_even_odd()` で偶奇)、`.stroke(色, 太さ)` で
+  線を引く。`.trim(start, end)` で線を全長の一部だけ引けば「描かれていく」アニメ、
+  `.dash(on, off)` で点線。`.view_box(..)` を付けるとアイコンの座標系を箱いっぱいに
+  引き伸ばす (縦横比は保つ)。線は今の線の描画器 (折れ線) で、塗りは三角形に割って
+  (`lyon_tessellation`) 新しい `FillRenderer` で描き、不透明な塗りの縁には細い線を重ねて
+  滑らかにする。作例の `chart` の面の塗りは、細い帯を並べていたのをやめ、グラデーションの
+  板をパスでマスクする形にした。`sabitori-reel` も `path` を出す。
+- **`sabitori_core::path`** (`PathCmd` / `PathKind` / `flatten` / `trim` / `dash` / `parse_svg`)、
+  `RenderCommand::PathFill` (`PathFillDraw`)、`sabitori_gpu::FillRenderer` / `FillVertex`、
+  `DrawRun::Fills`。
+
 - **`.glyph_motion(Vec<GlyphMotion>)` / `.per_glyph(|i, n| ..)` — 文字を 1 字ずつ動かす。** 字ごとに
   ずらす (`dx` / `dy`)・回す・拡げる (字の真ん中が中心)・薄くする。字の番号は `chars()` の順
   (日本語でも 1 字は 1 字)。並びと折り返しは動かす前のまま (見た目だけ、当たり判定も元の
@@ -92,6 +105,9 @@
 
 ### Changed（破壊的）
 
+- **`ElementKind` に `Path`、`RenderCommand` に `PathFill`、`DrawRun` に `Fills`、`UiRenderers` に
+  `fills` を足した。** 全部の腕を書いた `match` と、`UiRenderers` のリテラルは足す必要がある
+  (`fills: None` ならパスの塗りだけ描かれない)。
 - **`TextDraw` と `ElementStyle` に `glyph_motion` を足した。** `sabitori_text::rotate_glyphs` は
   グリフの角を上書きせず足す (1 字ずつ回した角の上に、文字ごとの角を重ねる。今までは
   どのグリフも 0 から回していたので結果は同じ)。

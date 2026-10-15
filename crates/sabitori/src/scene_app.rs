@@ -99,6 +99,8 @@ struct SceneAppState<A: SceneApp> {
     line_renderer: Option<sabitori_gpu::LineRenderer>,
     /// Draws elements turned with their contents (`.rotate(..)`).
     group_renderer: Option<sabitori_gpu::GroupRenderer>,
+    /// Draws path fills (`path().fill(..)`).
+    fill_renderer: Option<sabitori_gpu::FillRenderer>,
     measure_cache: std::cell::RefCell<MeasureCache>,
     last_frame: Instant,
     last_build: Option<sabitori_core::build::BuildResult>,
@@ -474,6 +476,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             &gpu.globals_bind_group_layout,
         ));
         self.group_renderer = Some(sabitori_gpu::GroupRenderer::new(
+            &gpu.device,
+            gpu.surface_config.format,
+            &gpu.globals_bind_group_layout,
+        ));
+        self.fill_renderer = Some(sabitori_gpu::FillRenderer::new(
             &gpu.device,
             gpu.surface_config.format,
             &gpu.globals_bind_group_layout,
@@ -1371,6 +1378,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 let mut rr = self.ring_renderer.take();
                 let mut lr = self.line_renderer.take();
                 let mut gr = self.group_renderer.take();
+                let mut fr = self.fill_renderer.take();
                 {
                     let mut r = UiRenderers {
                         images: ir.as_mut(),
@@ -1378,6 +1386,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         lines: lr.as_mut(),
                         text: &mut tr,
                         groups: gr.as_mut(),
+                        fills: fr.as_mut(),
                     };
                     frame.upload(renderer, &mut r, &device, &queue);
                     let app = &mut self.app;
@@ -1394,6 +1403,7 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 self.ring_renderer = rr;
                 self.line_renderer = lr;
                 self.group_renderer = gr;
+                self.fill_renderer = fr;
 
                 // Notify the app of this frame's build (hit-region rects by
                 // id) so floating panels etc. can look themselves up. Set in
@@ -1542,6 +1552,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         ring_renderer: None,
         line_renderer: None,
         group_renderer: None,
+        fill_renderer: None,
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,
@@ -1606,6 +1617,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
         ring_renderer: None,
         line_renderer: None,
         group_renderer: None,
+        fill_renderer: None,
         measure_cache: std::cell::RefCell::new(MeasureCache::new()),
         last_frame: Instant::now(),
         last_build: None,

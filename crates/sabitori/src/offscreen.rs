@@ -212,6 +212,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let mut rings = sabitori_gpu::RingRenderer::new(&device, format, ui.globals_bind_group_layout());
     let mut lines = sabitori_gpu::LineRenderer::new(&device, format, ui.globals_bind_group_layout());
     let mut groups = sabitori_gpu::GroupRenderer::new(&device, format, ui.globals_bind_group_layout());
+    let mut fills = sabitori_gpu::FillRenderer::new(&device, format, ui.globals_bind_group_layout());
 
     // 組む。測り手を渡すので、画面と同じ折り返しになる。
     let build = {
@@ -233,6 +234,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
         lines: Some(&mut lines),
         text: &mut text,
         groups: Some(&mut groups),
+        fills: Some(&mut fills),
     };
     frame.upload(&mut ui, &mut r, &device, &queue);
 
@@ -346,7 +348,7 @@ fn read_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sabitori_core::element::{div, text, Px};
+    use sabitori_core::element::{div, path, text, Px};
 
     /// GPU が無い環境 (CI のコンテナ) では飛ばす。
     macro_rules! gpu_or_skip {
@@ -1203,5 +1205,93 @@ mod tests {
         let (ca, cb) = (c(a), c(b));
         assert!((ca.0 - cb.0).abs() <= 3 && (ca.1 - cb.1).abs() <= 3, "真ん中が動いた ({ca:?} → {cb:?})");
     }
+
+
+    fn on_white(child: Element, w: f32, h: f32) -> Rendered {
+        render(&div().w(Px(w)).h(Px(h)).bg(Color::WHITE).child(child), Sheet::px(w, h)).expect("描けなかった")
+    }
+
+    /// `path()` の塗り: 三角形の中は塗られ、外は地のまま。
+    #[test]
+    fn a_path_fill_paints_inside_its_outline() {
+        gpu_or_skip!();
+        let tri = path()
+            .move_to(10.0, 10.0)
+            .line_to(90.0, 10.0)
+            .line_to(50.0, 90.0)
+            .close_path()
+            .fill(Color::from_hex("#ff0000"))
+            .w(Px(100.0))
+            .h(Px(100.0));
+        let out = on_white(tri, 100.0, 100.0);
+        assert!(is_red(out.pixel(50, 40).unwrap()), "中が塗られていない");
+        assert_eq!(out.pixel(12, 80).unwrap()[..3], [255, 255, 255], "外が塗られている");
+    }
+
+    /// 斜めの縁は滑らか (中間の色の画素がある)。縁に細い線を重ねて ぎざぎざ を消している。
+    #[test]
+    fn a_path_fill_has_smooth_edges() {
+        gpu_or_skip!();
+        let tri = path()
+            .move_to(0.0, 0.0)
+            .line_to(100.0, 37.0)
+            .line_to(0.0, 100.0)
+            .close_path()
+            .fill(Color::BLACK)
+            .w(Px(100.0))
+            .h(Px(100.0));
+        let out = on_white(tri, 100.0, 100.0);
+        // 上の斜めの縁 (y = 0.37 x) を横切る列で、中間の明るさの画素を数える。
+        let mid = (5..95)
+            .filter(|&x| {
+                let y = (x as f32 * 0.37).round() as u32;
+                (y.saturating_sub(2)..y + 3).any(|yy| (5..250).contains(&out.pixel(x, yy).unwrap()[0]))
+            })
+            .count();
+        // 縁に線を重ねないと 0 列 (塗りの三角形だけでは中間の色が出ない)。
+        assert!(mid > 50, "縁がぎざぎざ (中間の画素がある列 {mid}/90)");
+    }
+
+    /// 塗りの規則。同じ向きの四角を入れ子にすると、非ゼロでは穴が埋まり、偶奇では穴が空く。
+    #[test]
+    fn fill_rules_differ_on_nested_outlines() {
+        gpu_or_skip!();
+        let d = "M10 10 H90 V90 H10 Z M30 30 H70 V70 H30 Z";
+        let shot = |even_odd: bool| {
+            let p = path().svg_path(d).fill(Color::from_hex("#ff0000")).w(Px(100.0)).h(Px(100.0));
+            on_white(if even_odd { p.fill_even_odd() } else { p }, 100.0, 100.0)
+        };
+        assert!(is_red(shot(false).pixel(50, 50).unwrap()), "非ゼロで穴が空いている");
+        assert_eq!(shot(true).pixel(50, 50).unwrap()[..3], [255, 255, 255], "偶奇で穴が空いていない");
+        assert!(is_red(shot(true).pixel(20, 50).unwrap()), "偶奇で外側が塗られていない");
+    }
+
+    /// `view_box` はパスの座標系を箱いっぱいに引き伸ばす。10×10 の三角形を 100×100 の箱に。
+    #[test]
+    fn view_box_stretches_the_path_to_the_box() {
+        gpu_or_skip!();
+        let tri = path()
+            .svg_path("M0 0 L10 0 L10 10 Z")
+            .view_box(0.0, 0.0, 10.0, 10.0)
+            .fill(Color::from_hex("#ff0000"))
+            .w(Px(100.0))
+            .h(Px(100.0));
+        let out = on_white(tri, 100.0, 100.0);
+        assert!(is_red(out.pixel(80, 20).unwrap()), "右上が塗られていない");
+        assert_eq!(out.pixel(20, 80).unwrap()[..3], [255, 255, 255], "左下が塗られている");
+    }
+
+    /// 線は `trim` で途中まで、`dash` で点線になる。
+    #[test]
+    fn strokes_trim_and_dash() {
+        gpu_or_skip!();
+        let line = || path().move_to(0.0, 10.0).line_to(100.0, 10.0).w(Px(100.0)).h(Px(20.0));
+        let ink = |o: &Rendered, x: u32| o.pixel(x, 10).unwrap()[0] < 100;
+        let half = on_white(line().stroke(Color::BLACK, 4.0).trim(0.0, 0.5), 100.0, 20.0);
+        assert!(ink(&half, 25) && !ink(&half, 75), "途中までになっていない");
+        let dashed = on_white(line().stroke(Color::BLACK, 4.0).dash(10.0, 10.0), 100.0, 20.0);
+        assert!(ink(&dashed, 5) && !ink(&dashed, 15) && ink(&dashed, 25), "点線になっていない");
+    }
+
 
 }

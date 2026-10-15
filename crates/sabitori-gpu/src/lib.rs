@@ -1,5 +1,6 @@
 mod camera;
 mod context;
+mod fill_renderer;
 mod goo_renderer;
 mod group_renderer;
 mod image_renderer;
@@ -19,9 +20,10 @@ pub use wgpu;
 pub use camera::OrbitCamera;
 pub use context::{GpuContext, SceneRenderContext};
 pub use image_renderer::{ImageInstance, ImageRenderer};
+pub use fill_renderer::FillRenderer;
 pub use goo_renderer::{GooRenderer, GooSlot};
 pub use group_renderer::GroupRenderer;
-pub use instance::{GooInstance, GroupInstance, LineInstance, RectInstance, RingInstance};
+pub use instance::{FillVertex, GooInstance, GroupInstance, LineInstance, RectInstance, RingInstance};
 pub use line_renderer::LineRenderer;
 pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, RenderPhase};
 pub use ring_renderer::RingRenderer;

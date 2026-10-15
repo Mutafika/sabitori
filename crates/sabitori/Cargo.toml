@@ -48,6 +48,8 @@ winit.workspace = true
 web-time.workspace = true
 log.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+# パスの塗り (`path().fill(..)`) を三角形に割る。
+lyon_tessellation = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # 支援技術への橋渡し (#25)。wasm では要らない (DOM が無いので別の話になる)。

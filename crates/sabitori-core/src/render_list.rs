@@ -22,6 +22,9 @@ pub enum RenderCommand {
     Polyline(PolylineDraw),
     /// Draw two rounded rects fused by an SDF smooth union.
     Goo(GooDraw),
+    /// パスの塗り ([`crate::element::path`])。輪郭を三角形に割って描く。線は
+    /// [`RenderCommand::Polyline`] として別に出ている。
+    PathFill(PathFillDraw),
     /// 等幅の文字の格子の字形 ([#102](https://github.com/Mutafika/sabitori/issues/102))。
     /// 背景と下線・取り消し線は `Rect` として別に出ている。
     CellGrid(CellGridDraw),
@@ -39,6 +42,16 @@ pub enum RenderCommand {
     PopGroup,
     /// Pop the most recent clip rectangle.
     PopClip,
+}
+
+/// パスの塗り ([`RenderCommand::PathFill`])。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathFillDraw {
+    /// 閉じた輪郭たち (画面座標、折れ線に直したもの)。
+    pub contours: Vec<Vec<Point>>,
+    pub color: Color,
+    /// 偶奇の規則か (`false` なら非ゼロ)。
+    pub even_odd: bool,
 }
 
 /// グループの貼り方 ([`RenderCommand::PushGroup`])。
