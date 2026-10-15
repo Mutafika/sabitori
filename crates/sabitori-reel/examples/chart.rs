@@ -320,7 +320,14 @@ fn scene(ctx: FrameCtx) -> Element {
             ),
     );
 
-    div().w(Px(W)).h(Px(H)).gradient(hex("#0b1120"), hex("#0f1629"), FRAC_PI_2).children(kids)
+    // 右上から差す光だまりと、コマごとに模様が変わるフィルムの粒子。
+    div()
+        .w(Px(W))
+        .h(Px(H))
+        .radial_gradient_at(hex("#16233f"), hex("#080d19"), 0.78, 0.18)
+        .grain(0.035)
+        .grain_seed(ctx.frame)
+        .children(kids)
 }
 
 /// 折れ線の `x` での高さ。

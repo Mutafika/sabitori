@@ -20,7 +20,7 @@ use crate::element::{
 };
 use crate::Corners;
 use crate::render_list::{GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw};
-use crate::{Color, Point, Rect};
+use crate::{Color, GradientKind, Grain, Point, Rect};
 
 use crate::TextMetrics;
 
@@ -1706,7 +1706,10 @@ fn emit_commands_inner(
     // ないので、「上が透明・下が不透明」のスクリム (動画や写真の上の文字の下に
     // 敷く定番) は `bg.a == 0` で、ここで丸ごと落ちていた。0 は「グラデーション
     // 無し」(rect.wgsl と同じ判定)。
-    let has_gradient = style.gradient_angle.abs() > 0.001 && style.gradient_end.a > 0.0;
+    let has_gradient = match style.gradient_kind {
+        GradientKind::None => style.gradient_angle.abs() > 0.001,
+        GradientKind::Linear | GradientKind::Radial { .. } => true,
+    } && style.gradient_end.a > 0.0;
     let has_visual =
         bg.a > 0.0 || has_gradient || style.border_width > 0.0 || style.shadow.is_some();
 
@@ -1731,6 +1734,8 @@ fn emit_commands_inner(
             opacity: effective_opacity,
             gradient_angle: style.gradient_angle,
             gradient_end_color: apply_opacity(style.gradient_end, effective_opacity),
+            gradient_kind: style.gradient_kind,
+            grain: Grain { amount: style.grain.amount * effective_opacity, ..style.grain },
             rotation: style.rotation,
         }));
     }
@@ -2200,6 +2205,8 @@ fn emit_commands_inner(
                     opacity: effective_opacity,
                     gradient_angle: 0.0,
                     gradient_end_color: Color::TRANSPARENT,
+                    gradient_kind: GradientKind::None,
+                    grain: Grain::NONE,
                     rotation: 0.0,
                 }));
             }
@@ -2232,6 +2239,8 @@ fn emit_commands_inner(
                     opacity: effective_opacity,
                     gradient_angle: 0.0,
                     gradient_end_color: Color::TRANSPARENT,
+                    gradient_kind: GradientKind::None,
+                    grain: Grain::NONE,
                     rotation: 0.0,
                 }));
             }

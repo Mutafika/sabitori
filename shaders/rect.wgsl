@@ -1,6 +1,6 @@
 // Sabitori SDF Rounded Rectangle Shader
 // Renders anti-aliased rounded rectangles with borders, box shadows,
-// and linear gradients using Signed Distance Fields.
+// linear / radial gradients and film grain using Signed Distance Fields.
 
 struct Globals {
     screen_size: vec2<f32>,
@@ -25,6 +25,10 @@ struct RectInstance {
     @location(10) rotation: f32,
     // Per-instance scissor in logical px (x, y, w, h). zw==0 → no clip.
     @location(11) clip_rect: vec4<f32>,
+    // kind (0 = by angle alone, 1 = linear, 2 = radial), radial center (uv).
+    @location(12) paint: vec4<f32>,
+    // amount, seed.
+    @location(13) grain: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -46,6 +50,8 @@ struct VertexOutput {
     // @builtin(position) / scale_factor, so we don't need a varying for
     // it.
     @location(12) clip_rect: vec4<f32>,
+    @location(13) paint: vec4<f32>,
+    @location(14) grain: vec4<f32>,
 }
 
 var<private> QUAD_VERTICES: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
@@ -129,6 +135,8 @@ fn vs_main(
     out.gradient_angle = instance.gradient_angle;
     out.gradient_end_color = instance.gradient_end_color;
     out.clip_rect = instance.clip_rect;
+    out.paint = instance.paint;
+    out.grain = instance.grain;
 
     return out;
 }
@@ -173,6 +181,19 @@ fn clip_discard(screen_pos: vec2<f32>, clip_rect: vec4<f32>) -> bool {
         || screen_pos.y < cmin.y || screen_pos.y > cmax.y;
 }
 
+// 整数のハッシュ (PCG)。sin を使う定番の式は GPU ごとに精度が違い、縞が出る。
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// 物理画素ごとに 0..1 の値。種が違えば別の模様。
+fn grain_noise(pixel: vec2<f32>, seed: f32) -> f32 {
+    let p = vec2<u32>(vec2<i32>(floor(pixel)));
+    return f32(pcg(p.x ^ pcg(p.y ^ pcg(u32(seed))))) / 4294967295.0;
+}
+
 // 色は straight (前乗算していない) で届く。合成は PREMULTIPLIED_ALPHA_BLENDING
 // なので、rgb に自分の alpha を掛けるのはここ。掛け忘れると半透明の色が
 // `rgb + dst * (1 - a)` で合成され、加算のように白く光る。
@@ -200,7 +221,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // -- Fill color: solid or gradient --
     var base_color: vec4<f32>;
-    if abs(in.gradient_angle) > 0.001 {
+    let kind = u32(in.paint.x + 0.5);
+    if kind == 2u {
+        // 円 (箱の縦横比で伸ばさない)。中心から一番遠い角で end の色になる。
+        let size = in.half_size * 2.0;
+        let p = in.local_pos + in.half_size;
+        let c = in.paint.yz * size;
+        let far = max(
+            max(length(c), length(c - vec2<f32>(size.x, 0.0))),
+            max(length(c - vec2<f32>(0.0, size.y)), length(c - size)),
+        );
+        let t = clamp(length(p - c) / max(far, 0.001), 0.0, 1.0);
+        base_color = mix(premul(in.fill_color), premul(in.gradient_end_color), t);
+    } else if kind == 1u || abs(in.gradient_angle) > 0.001 {
         // Reconstruct UV from local_pos and half_size
         let uv = in.local_pos / (in.half_size * 2.0) + 0.5;
         let angle = in.gradient_angle;
@@ -224,6 +257,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let inner_dist = dist + in.border_width;
         let border_mask = fill_alpha * (1.0 - (1.0 - smoothstep(-aa_radius, aa_radius, inner_dist)));
         fill = mix(fill, premul(in.border_color) * fill_alpha, border_mask);
+    }
+
+    // -- Film grain: 塗りの上だけ、画素ごとに明るさを揺らす --
+    // 揺らすのは目で見た明るさ (ガンマ 2 で近似)。線形の光に同じ量を足すと、
+    // 暗い所ばかりざらつき、明るい所では見えない。
+    if in.grain.x > 0.0 && fill.a > 0.001 {
+        let n = grain_noise(in.position.xy, in.grain.y) - 0.5;
+        let seen = sqrt(max(fill.rgb / fill.a, vec3<f32>(0.0))) + n * in.grain.x;
+        let lit = max(seen, vec3<f32>(0.0));
+        fill = vec4<f32>(lit * lit * fill.a, fill.a);
     }
 
     // Composite

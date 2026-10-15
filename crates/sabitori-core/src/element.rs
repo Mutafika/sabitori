@@ -551,6 +551,34 @@ pub enum ScrollOwner {
     App,
 }
 
+/// Shape of a box's gradient fill (`background` → `gradient_end`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GradientKind {
+    /// No gradient — unless `gradient_angle` is non-zero (the older way of
+    /// asking for a linear one, kept for trees that set the fields directly).
+    #[default]
+    None,
+    /// Along `gradient_angle`. Unlike `None`, an angle of `0` (left → right)
+    /// is a gradient too.
+    Linear,
+    /// Out from (`cx`, `cy`) — fractions of the box — to its farthest corner.
+    Radial { cx: f32, cy: f32 },
+}
+
+/// Film grain over a box's fill. See [`Element::grain`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Grain {
+    /// How far a pixel may be pushed (perceived brightness, full swing).
+    /// `0` = off.
+    pub amount: f32,
+    /// Picks the pattern.
+    pub seed: u32,
+}
+
+impl Grain {
+    pub const NONE: Grain = Grain { amount: 0.0, seed: 0 };
+}
+
 /// Complete resolved style for one element.
 #[derive(Clone, Debug)]
 pub struct ElementStyle {
@@ -621,10 +649,16 @@ pub struct ElementStyle {
 
     // Visual
     pub background: Color,
-    /// Gradient end color. When set with gradient_angle != 0, creates a linear gradient.
+    /// Gradient end color. `background` is the start.
     pub gradient_end: Color,
     /// Gradient angle in radians (0 = left-to-right, PI/2 = top-to-bottom).
+    /// Only read for [`GradientKind::Linear`] — and, for trees that set the
+    /// fields by hand, when `gradient_kind` is `None` and this is non-zero.
     pub gradient_angle: f32,
+    /// Shape of the gradient from `background` to `gradient_end`.
+    pub gradient_kind: GradientKind,
+    /// Film grain over the fill. See [`Grain`].
+    pub grain: Grain,
     pub corner_radius: Corners<f32>,
     pub border_color: Color,
     pub border_width: f32,
@@ -854,6 +888,8 @@ impl Default for ElementStyle {
             background: Color::TRANSPARENT,
             gradient_end: Color::TRANSPARENT,
             gradient_angle: 0.0,
+            gradient_kind: GradientKind::None,
+            grain: Grain::NONE,
             corner_radius: Corners::all(0.0),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
@@ -1982,8 +2018,6 @@ impl Element {
         self
     }
 
-    /// Set a linear gradient background.
-    /// `angle` is in radians (0 = left→right, PI/2 = top→bottom).
     /// ラジアン回転を加える。正 = 画面上時計回り。
     ///
     /// 矩形は中心まわり (細長い rect を回転させて線として使う)、テキストは原点
@@ -1993,10 +2027,48 @@ impl Element {
         self
     }
 
+    /// Set a linear gradient background.
+    /// `angle` is in radians (0 = left→right, PI/2 = top→bottom).
     pub fn gradient(mut self, from: Color, to: Color, angle: f32) -> Self {
         self.style.background = from;
         self.style.gradient_end = to;
         self.style.gradient_angle = angle;
+        self.style.gradient_kind = GradientKind::Linear;
+        self
+    }
+
+    /// Radial gradient background: `inner` at the center, `outer` at the
+    /// farthest corner (a circle, not stretched to the box's aspect).
+    pub fn radial_gradient(self, inner: Color, outer: Color) -> Self {
+        self.radial_gradient_at(inner, outer, 0.5, 0.5)
+    }
+
+    /// [`radial_gradient`](Self::radial_gradient) centered at (`cx`, `cy`),
+    /// as fractions of the box (`0.0, 0.0` = top-left, `1.0, 1.0` =
+    /// bottom-right; outside the box works too). `outer` lands on the
+    /// corner farthest from the center.
+    pub fn radial_gradient_at(mut self, inner: Color, outer: Color, cx: f32, cy: f32) -> Self {
+        self.style.background = inner;
+        self.style.gradient_end = outer;
+        self.style.gradient_kind = GradientKind::Radial { cx, cy };
+        self
+    }
+
+    /// Film grain over this element's fill: each device pixel is nudged
+    /// brighter or darker by up to `amount / 2` of perceived brightness
+    /// (`0.03`–`0.08` reads as film), evenly from shadows to highlights. Also breaks up banding in dark gradients. Text
+    /// and children are not grained — put it on the background. The pattern
+    /// is fixed; change it every frame with [`grain_seed`](Self::grain_seed)
+    /// for moving grain in a reel.
+    pub fn grain(mut self, amount: f32) -> Self {
+        self.style.grain.amount = amount;
+        self
+    }
+
+    /// Pick the grain pattern. Same seed = same pattern; pass the frame
+    /// number to make the grain crawl like film.
+    pub fn grain_seed(mut self, seed: u32) -> Self {
+        self.style.grain.seed = seed;
         self
     }
 

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use sabitori_core::build::{CaretPos, TextMeasure, TextShape};
-use sabitori_core::element::{ImageData, ObjectFit, Typography};
+use sabitori_core::element::{GradientKind, ImageData, ObjectFit, Typography};
 use sabitori_core::render_list::{
     GooDraw, ImageDraw, PolylineDraw, RectDraw, RenderCommand, RenderList, RingDraw, TextDraw,
 };
@@ -276,6 +276,13 @@ pub fn rect_to_instance(d: &RectDraw) -> RectInstance {
         gradient_angle: d.gradient_angle,
         rotation: d.rotation,
         _pad0: 0.0,
+        paint: match d.gradient_kind {
+            GradientKind::None => [0.0; 4],
+            GradientKind::Linear => [1.0, 0.0, 0.0, 0.0],
+            GradientKind::Radial { cx, cy } => [2.0, cx, cy, 0.0],
+        },
+        // 種は f32 で正確に持てる 24 bit に畳む。
+        grain: [d.grain.amount, (d.grain.seed & 0xff_ffff) as f32, 0.0, 0.0],
         shadow_color: d.shadow_color.to_array(),
         shadow_offset: [d.shadow_offset.x, d.shadow_offset.y],
         shadow_params: [d.shadow_blur, d.shadow_spread],
@@ -1131,7 +1138,7 @@ pub(crate) fn highlight_rects(
                         border_width: 0.0,
                         gradient_angle: 0.0,
                         rotation: 0.0,
-                        _pad0: 0.0,
+                        _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                         shadow_color: [0.0; 4],
                         shadow_offset: [0.0; 2],
                         shadow_params: [0.0; 2],
@@ -1183,7 +1190,7 @@ pub(crate) fn link_rects(
                     border_width: 0.0,
                     gradient_angle: 0.0,
                     rotation: 0.0,
-                    _pad0: 0.0,
+                    _pad0: 0.0, paint: [0.0; 4], grain: [0.0; 4],
                     shadow_color: [0.0; 4],
                     shadow_offset: [0.0; 2],
                     shadow_params: [0.0; 2],

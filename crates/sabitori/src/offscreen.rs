@@ -848,4 +848,77 @@ mod tests {
             }
         }
     }
+
+    /// 角度 0 (左 → 右) の線形グラデーションも描く。以前は 0 が「無し」の印だったので、
+    /// `.gradient(a, b, 0.0)` は黙って単色になった。
+    #[test]
+    fn a_left_to_right_gradient_is_a_gradient() {
+        gpu_or_skip!();
+        let view = div().w(Px(100.0)).h(Px(20.0)).gradient(Color::BLACK, Color::WHITE, 0.0);
+        let out = render(&view, Sheet::px(100.0, 20.0)).expect("描けなかった");
+        let (l, r) = (out.pixel(5, 10).unwrap()[0], out.pixel(94, 10).unwrap()[0]);
+        // 色は線形の光で混ざるので、端から 5% の所でも sRGB では 60 台まで上がる。
+        assert!(l < 100 && r > 200, "左右で色が変わっていない (左 {l}, 右 {r})");
+    }
+
+    /// 放射グラデーションは中心が `inner`、角が `outer`。中心をずらせば明るい所も動く。
+    #[test]
+    fn radial_gradient_is_bright_at_its_center() {
+        gpu_or_skip!();
+        let at = |cx: f32| {
+            let view = div().w(Px(100.0)).h(Px(100.0)).radial_gradient_at(Color::WHITE, Color::BLACK, cx, 0.5);
+            render(&view, Sheet::px(100.0, 100.0)).expect("描けなかった")
+        };
+        let mid = at(0.5);
+        let (c, corner, edge) = (mid.pixel(50, 50).unwrap()[0], mid.pixel(1, 1).unwrap()[0], mid.pixel(1, 50).unwrap()[0]);
+        assert!(c > 230, "中心が明るくない: {c}");
+        assert!(corner < 70, "角が暗くない: {corner}");
+        // 円なので、辺の真ん中は角より中心に近く、明るい。
+        assert!(edge > corner + 30, "辺の真ん中と角が同じ (辺 {edge}, 角 {corner})");
+        // 横長の箱でも円のまま: 上辺の真ん中は中心から近いので明るく、左辺の真ん中は暗い。
+        // 箱の縦横比で楕円に伸ばすと、どちらも同じくらいの暗さになる。
+        let wide = div().w(Px(200.0)).h(Px(50.0)).radial_gradient(Color::WHITE, Color::BLACK);
+        let wide = render(&wide, Sheet::px(200.0, 50.0)).expect("描けなかった");
+        let (top, side) = (wide.pixel(100, 1).unwrap()[0], wide.pixel(1, 25).unwrap()[0]);
+        assert!(top > side + 80, "円になっていない (上辺 {top}, 左辺 {side})");
+        let left = at(0.1);
+        assert!(left.pixel(10, 50).unwrap()[0] > left.pixel(90, 50).unwrap()[0] + 100, "中心が動いていない");
+    }
+
+    /// 粒子のノイズは平らな塗りに画素ごとの揺れを足す。種が同じなら同じ模様、違えば別の模様。
+    #[test]
+    fn grain_speckles_a_flat_fill() {
+        gpu_or_skip!();
+        let gray = Color::from_hex("#808080");
+        let shot = |grain: f32, seed: u32| {
+            let view = div().w(Px(64.0)).h(Px(64.0)).bg(gray).grain(grain).grain_seed(seed);
+            let out = render(&view, Sheet::px(64.0, 64.0)).expect("描けなかった");
+            // 縁の 1px は角を滑らかにする分だけ薄いので、内側だけを見る。
+            (4..60).flat_map(|y| (4..60).map(move |x| (x, y))).map(|(x, y)| out.pixel(x, y).unwrap()[0]).collect::<Vec<_>>()
+        };
+        let flat = shot(0.0, 0);
+        assert!(flat.iter().all(|&v| v == flat[0]), "ノイズ無しで揺れている");
+        let a = shot(0.1, 1);
+        let spread = a.iter().max().unwrap() - a.iter().min().unwrap();
+        assert!(spread > 20, "揺れていない (幅 {spread})");
+        assert_eq!(a, shot(0.1, 1), "同じ種で模様が変わった");
+        assert_ne!(a, shot(0.1, 2), "種を変えても同じ模様");
+    }
+
+    /// 粒子は暗い所も明るい所も同じくらいに見える。線形の光に足すと、暗い所ばかり
+    /// ざらつき、明るい所では消える。
+    #[test]
+    fn grain_reads_the_same_in_shadows_and_highlights() {
+        gpu_or_skip!();
+        let spread = |hex: &str| {
+            let view = div().w(Px(64.0)).h(Px(64.0)).bg(Color::from_hex(hex)).grain(0.08).grain_seed(7);
+            let out = render(&view, Sheet::px(64.0, 64.0)).expect("描けなかった");
+            let v: Vec<u8> = (4..60).flat_map(|y| (4..60).map(move |x| (x, y))).map(|(x, y)| out.pixel(x, y).unwrap()[1]).collect();
+            (v.iter().max().unwrap() - v.iter().min().unwrap()) as f32
+        };
+        let (dark, light) = (spread("#202020"), spread("#d0d0d0"));
+        assert!(dark > 0.0 && light > 0.0, "揺れていない (暗 {dark}, 明 {light})");
+        assert!(dark / light < 2.0 && light / dark < 2.0, "暗い所と明るい所で揺れ幅が違いすぎる (暗 {dark}, 明 {light})");
+    }
+
 }
