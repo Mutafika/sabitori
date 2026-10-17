@@ -1080,6 +1080,58 @@ mod tests {
     }
 
 
+    /// **隙間なく並べた四角の継ぎ目に地が透けない** (#163)。縁が画素の境目に乗って
+    /// いれば、縁の内側の画素は塗り切る。以前は縁を 0.75px ぼかしていたので、境目の
+    /// 両側の画素が 9 割ほどしか塗られず、白い地が細い線になって透けていた。倍率 2 でも同じ。
+    #[test]
+    fn abutting_boxes_leave_no_seam() {
+        gpu_or_skip!();
+        for dpi in [96.0, 192.0] {
+            let black = || div().bg(Color::BLACK);
+            let view = div().w(Px(100.0)).h(Px(60.0)).bg(Color::WHITE).children([
+                black().pos(20.0, 10.0).w(Px(30.0)).h(Px(20.0)),
+                black().pos(50.0, 10.0).w(Px(30.0)).h(Px(20.0)),
+                black().pos(20.0, 30.0).w(Px(60.0)).h(Px(20.0)),
+            ]);
+            let out = render(&view, Sheet::px(100.0, 60.0).dpi(dpi)).expect("描けなかった");
+            let s = (dpi / 96.0) as u32;
+            // 左右の継ぎ目 (x = 50) と上下の継ぎ目 (y = 30) の両側、外周の縁のすぐ内側。
+            let inside = [
+                (50 * s - 1, 20 * s),
+                (50 * s, 20 * s),
+                (35 * s, 30 * s - 1),
+                (35 * s, 30 * s),
+                (20 * s, 20 * s),
+                (80 * s - 1, 40 * s),
+            ];
+            for (x, y) in inside {
+                let p = out.pixel(x, y).unwrap();
+                assert!(p[0] < 4, "倍率 {s}: ({x}, {y}) に地が透けている: {p:?}");
+            }
+            // 縁のすぐ外側は白のまま (ぼかしが外へはみ出さない)。
+            let p = out.pixel(20 * s - 1, 20 * s).unwrap();
+            assert!(p[0] > 250, "倍率 {s}: 縁の外側が塗られている: {p:?}");
+        }
+    }
+
+    /// 角を丸めた画像も、まっすぐな辺は塗り切る (#163 と同じ縁の計算)。
+    #[test]
+    fn rounded_images_side_by_side_leave_no_seam() {
+        gpu_or_skip!();
+        let red = sabitori_core::element::ImageData::new([255u8, 0, 0, 255].repeat(16), 4, 4);
+        let view = div().w(Px(100.0)).h(Px(60.0)).bg(Color::WHITE).children([
+            sabitori_core::element::image("a", red.clone()).pos(20.0, 10.0).w(Px(30.0)).h(Px(40.0)).rounded_px(6.0),
+            sabitori_core::element::image("b", red).pos(50.0, 10.0).w(Px(30.0)).h(Px(40.0)).rounded_px(6.0),
+        ]);
+        let out = render(&view, Sheet::px(100.0, 60.0)).expect("描けなかった");
+        for x in [49, 50] {
+            let p = out.pixel(x, 30).unwrap();
+            assert!(p[1] < 4 && p[2] < 4, "({x}, 30) に地が透けている: {p:?}");
+        }
+        // 前提: 角は丸めてある (角の画素は地の白)。
+        assert!(out.pixel(20, 10).unwrap()[1] > 200, "角が丸まっていない");
+    }
+
     /// `.mask(..)` は、マスクの不透明な所だけを見せる。丸いマスクなら角は消え、
     /// マスクそのもの (緑) はどこにも描かれない。
     #[test]
