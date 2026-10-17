@@ -122,7 +122,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     if max_radius > 0.0 {
         let dist = sdf_rounded_rect(in.local_pos, in.half_size, in.corner_radii);
-        let clip = 1.0 - smoothstep(-0.75, 0.75, dist);
+        // 四角 (rect.wgsl の coverage) と同じく、物理 px で ±0.5 を混ぜる (#163)。
+        let clip = clamp(0.5 - dist * globals.scale_factor, 0.0, 1.0);
         alpha *= clip;
     }
 

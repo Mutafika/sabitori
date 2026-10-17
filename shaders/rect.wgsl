@@ -197,6 +197,14 @@ fn grain_noise(pixel: vec2<f32>, seed: f32) -> f32 {
 // 色は straight (前乗算していない) で届く。合成は PREMULTIPLIED_ALPHA_BLENDING
 // なので、rgb に自分の alpha を掛けるのはここ。掛け忘れると半透明の色が
 // `rgb + dst * (1 - a)` で合成され、加算のように白く光る。
+/// 画素が形に覆われる割合。`dist` は形の縁からの距離 (論理 px、内側が負)。
+/// 物理 px に直して、画素の中心から ±0.5 の範囲を線形に混ぜる。縁が画素の境目に
+/// 乗っていれば内側の画素は 1、外側は 0 になるので、隙間なく並べた四角の継ぎ目に
+/// 地が透けない (#163)。半端な位置の縁や角丸は 1 物理 px でなめらかになる。
+fn coverage(dist: f32) -> f32 {
+    return clamp(0.5 - dist * globals.scale_factor, 0.0, 1.0);
+}
+
 fn premul(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(c.rgb * c.a, c.a);
 }
@@ -207,7 +215,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if clip_discard(screen_pos, in.clip_rect) {
         discard;
     }
-    let aa_radius = 0.75;
 
     // -- Box Shadow --
     var shadow = vec4<f32>(0.0);
@@ -249,13 +256,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // -- Main Rectangle --
     let dist = sdf_rounded_rect(in.local_pos, in.half_size, in.corner_radii);
-    let fill_alpha = 1.0 - smoothstep(-aa_radius, aa_radius, dist);
+    let fill_alpha = coverage(dist);
     var fill = base_color * fill_alpha;
 
     // Border
     if in.border_width > 0.0 {
         let inner_dist = dist + in.border_width;
-        let border_mask = fill_alpha * (1.0 - (1.0 - smoothstep(-aa_radius, aa_radius, inner_dist)));
+        let border_mask = fill_alpha * (1.0 - coverage(inner_dist));
         fill = mix(fill, premul(in.border_color) * fill_alpha, border_mask);
     }
 
