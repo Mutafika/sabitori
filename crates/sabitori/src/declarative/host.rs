@@ -18,7 +18,7 @@ const CASCADE: f64 = 24.0;
 
 pub(crate) struct Host<A: DeclarativeApp> {
     windows: Vec<AppState<A>>,
-    /// 最後に焦点を持った主窓。OS から渡されたパスの届け先。
+    /// 最後に焦点を持った主窓。OS から渡されたパスと開き直しの届け先。
     focused: Option<WindowId>,
 }
 
@@ -70,9 +70,9 @@ impl<A: DeclarativeApp> Host<A> {
         any
     }
 
-    /// OS から渡されたパスを、最後に焦点を持った窓のアプリへ (macOS)。
+    /// OS から渡されたパスと開き直しを、最後に焦点を持った窓のアプリへ (macOS)。
     /// 窓ができるまでは溜めたまま待つ — 起動時の分を窓のない状態で渡さない。
-    fn deliver_open_paths(&mut self) {
+    fn deliver_from_os(&mut self) {
         #[cfg(target_os = "macos")]
         {
             let ids: Vec<Option<WindowId>> = self
@@ -87,6 +87,9 @@ impl<A: DeclarativeApp> Host<A> {
             if !paths.is_empty() {
                 self.windows[i].app.on_open_paths(paths);
             }
+            for _ in 0..crate::macos_open::take_reopens() {
+                self.windows[i].app.on_reopen();
+            }
         }
     }
 }
@@ -96,7 +99,7 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
         for w in &mut self.windows {
             w.user_event(event_loop, event);
         }
-        self.deliver_open_paths();
+        self.deliver_from_os();
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -104,7 +107,7 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
             w.resumed(event_loop);
         }
         // 窓ができる前に届いていた分 (起動のきっかけになったパス)。
-        self.deliver_open_paths();
+        self.deliver_from_os();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

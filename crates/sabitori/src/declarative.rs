@@ -684,6 +684,15 @@ pub trait DeclarativeApp: 'static {
     /// 受け付ける種類は Info.plist の `CFBundleDocumentTypes` で宣言する。
     fn on_open_paths(&mut self, _paths: Vec<std::path::PathBuf>) {}
 
+    /// 動いている最中に、もう一度開かれた (macOS: Dock のアイコンを押した、Finder・
+    /// Launchpad で選んだ、`open -a`)。開かれた回数だけ呼ぶ。届け先は
+    /// [`Self::on_open_paths`] と同じ、最後に焦点を持った窓のアプリ。
+    ///
+    /// 何もしなくても見た目は macOS の決まりどおり (窓が出ていれば前に出すだけ、
+    /// 全部しまわれていれば 1 枚戻す)。ブラウザの新しいウインドウのように窓を足すなら、
+    /// ここで [`Self::take_new_windows`] に積む。
+    fn on_reopen(&mut self) {}
+
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.
     fn on_drop(&mut self, _data: &str, _target_id: &str) {}
@@ -5299,7 +5308,7 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         let _ = proxy.send_event(());
     });
 
-    // Finder / `open -a` から渡されたパスの受け口。delegate が張られた後
+    // Finder / `open -a` から渡されたパスと、開き直されたことの受け口。delegate が張られた後
     // (= event loop を作った後) で、起動処理が走る前 (= run_app の前) に仕込む。
     #[cfg(target_os = "macos")]
     {
