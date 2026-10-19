@@ -15,8 +15,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **macOS では、字を Mac の文字の滑らか表示 (Core Text) と同じに描く** ([#165](https://github.com/Mutafika/sabitori/issues/165))。
+  縁を sRGB の値で混ぜる描き方は字の形そのままの濃さで、Mac の他のアプリの字より 3〜4 割薄い。Core Text
+  は字を太らせて描いている (この Mac で測った):
+  - 縦と横に別々に広げる (一辺の正方形とのミンコフスキー和)。縦横の線は `d`、斜めの線は `d√2` 太り、
+    曲線は平均で 1.27 倍太る。どの向きにも同じだけ広げる swash の `embolden` では曲線と斜めが 2〜3 割
+    足りないので、外形を自前で広げる。
+  - 太らせる量 `d` は `字の大きさ (物理 px) × (3 + 5 × 明るさ) / 256` px で、0.6 px で頭打ち。明るさは字の
+    色の線形の値で赤 1/4・緑 3/4 (青は効かない)。地の色には依らない。14 px の白い字で 0.44 px、黒い字で
+    0.16 px。
+  - ヒンティングしない。
+  字形はアトラスに太らせる段 (1/32 px) ごとに入る。組んだ結果の鍵には段を足すので、段が同じ色どうしは
+  使い回す。`TextRenderer::set_font_smoothing(false)` で前の描き方に戻る (macOS 以外は既定で切)。
+
 ### Changed（破壊的）
 
+- **`GlyphAtlas::get_or_insert` が `&mut SwashCache` の代わりに描き方 (`smoothing: Option<u8>`) を取る**。
+  字形は sabitori が swash で描くようになったので、`TextRenderer::swash_cache` は無くなった。
 - **`GlyphInstance`・`TextDraw`・`CellGridDraw` に `backdrop` (字の下に見える地の色) が増えた** ([#165](https://github.com/Mutafika/sabitori/issues/165))。
   直に組んでいる場合は足す (`GlyphInstance` は `[0.0; 4]`、ほかは `None` = 地が分からない)。字形に地を
   入れるのは `sabitori_text::fill_backdrop`。
