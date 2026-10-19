@@ -17,10 +17,11 @@
 
 ### Added
 
-- **`DeclarativeApp::on_reopen`: 動いている最中に、もう一度開かれたこと (macOS)**。Dock のアイコンを押した、
-  Finder・Launchpad で選んだ、`open -a` を、開かれた回数だけ、最後に焦点を持った窓のアプリへ届ける
-  (`on_open_paths` と同じ届け先)。何もしなければ見た目は今までどおり (macOS の決まりで、窓が出ていれば
-  前に出すだけ)。ブラウザのように新しい窓を開くなら、ここで `take_new_windows` に積む。
+- **`DeclarativeApp::on_reopen(has_visible_windows)`: 動いている最中に、もう一度開かれたこと (macOS)**。
+  Dock のアイコンを押した、Finder・Launchpad で選んだ、`open -a` を、開かれた回数だけ、最後に焦点を持った
+  窓のアプリへ届ける (`on_open_paths` と同じ届け先)。`has_visible_windows` はそのとき見えている窓が
+  あったか。何もしなければ見た目は今までどおり (macOS の決まりで、窓が出ていれば前に出すだけ、全部
+  しまわれていれば 1 枚戻す)。新しい窓を開くなら、ここで `take_new_windows` に積む。
   winit 0.30 の delegate が `applicationShouldHandleReopen:hasVisibleWindows:` を持たないので、
   `application:openURLs:` と同じく実行時に足している。
 

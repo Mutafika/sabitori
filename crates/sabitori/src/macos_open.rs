@@ -19,7 +19,7 @@
 //! 届かなかった。
 //!
 //! 動いている最中に Dock のアイコン・Finder・`open -a` で開き直されたこと
-//! (`applicationShouldHandleReopen:hasVisibleWindows:`) も同じ道で数えて
+//! (`applicationShouldHandleReopen:hasVisibleWindows:`) も、見えている窓があったかと一緒に同じ道で積んで
 //! [`DeclarativeApp::on_reopen`] に渡す。
 //!
 //! [`DeclarativeApp::on_open_paths`]: crate::DeclarativeApp::on_open_paths
@@ -27,7 +27,7 @@
 
 #![cfg(target_os = "macos")]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
@@ -36,7 +36,8 @@ use objc2_foundation::{NSArray, NSURL};
 
 thread_local! {
     static QUEUE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
-    static REOPENS: Cell<u32> = const { Cell::new(0) };
+    /// 開き直されたときに見えている窓があったか、届いた順。
+    static REOPENS: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
     static WAKE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
@@ -82,9 +83,9 @@ pub(crate) fn take() -> Vec<PathBuf> {
     QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
-/// 開き直された回数を取り出して 0 に戻す。
-pub(crate) fn take_reopens() -> u32 {
-    REOPENS.with(|n| n.replace(0))
+/// 開き直されたのを全部取り出す (届いた順)。それぞれ、そのとき見えている窓があったか。
+pub(crate) fn take_reopens() -> Vec<bool> {
+    REOPENS.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
 fn wake() {
@@ -95,10 +96,10 @@ fn wake() {
     });
 }
 
-/// 開き直された。数えて起こすだけで、見た目は AppKit の決まりのまま (YES) —
+/// 開き直された。積んで起こすだけで、見た目は AppKit の決まりのまま (YES) —
 /// 窓が全部しまわれていれば 1 枚戻し、あれば前に出すだけ。窓を足すかはアプリが決める。
-unsafe extern "C-unwind" fn reopen(_this: *mut AnyObject, _cmd: Sel, _app: *mut AnyObject, _visible: Bool) -> Bool {
-    REOPENS.with(|n| n.set(n.get() + 1));
+unsafe extern "C-unwind" fn reopen(_this: *mut AnyObject, _cmd: Sel, _app: *mut AnyObject, visible: Bool) -> Bool {
+    REOPENS.with(|r| r.borrow_mut().push(visible.as_bool()));
     wake();
     Bool::YES
 }

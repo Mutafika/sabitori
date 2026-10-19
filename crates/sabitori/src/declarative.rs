@@ -688,10 +688,12 @@ pub trait DeclarativeApp: 'static {
     /// Launchpad で選んだ、`open -a`)。開かれた回数だけ呼ぶ。届け先は
     /// [`Self::on_open_paths`] と同じ、最後に焦点を持った窓のアプリ。
     ///
-    /// 何もしなくても見た目は macOS の決まりどおり (窓が出ていれば前に出すだけ、
-    /// 全部しまわれていれば 1 枚戻す)。ブラウザの新しいウインドウのように窓を足すなら、
-    /// ここで [`Self::take_new_windows`] に積む。
-    fn on_reopen(&mut self) {}
+    /// `has_visible_windows` はそのとき見えている窓があったか (OS が添えてくる値)。
+    /// 何もしなくても見た目は macOS の決まりどおりで、`true` なら前に出すだけ、
+    /// `false` (全部しまわれている) なら 1 枚戻す。窓を足すなら、ここで
+    /// [`Self::take_new_windows`] に積む — `false` のときに足すと、戻る 1 枚と合わせて
+    /// 2 枚出る。
+    fn on_reopen(&mut self, _has_visible_windows: bool) {}
 
     /// Called when a drag completes over a drop zone.
     /// `data` is from `.draggable()`, `target_id` is the drop zone's `.id()`.

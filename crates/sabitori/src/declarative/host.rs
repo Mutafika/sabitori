@@ -87,8 +87,8 @@ impl<A: DeclarativeApp> Host<A> {
             if !paths.is_empty() {
                 self.windows[i].app.on_open_paths(paths);
             }
-            for _ in 0..crate::macos_open::take_reopens() {
-                self.windows[i].app.on_reopen();
+            for visible in crate::macos_open::take_reopens() {
+                self.windows[i].app.on_reopen(visible);
             }
         }
     }
@@ -156,7 +156,7 @@ fn more_urgent(a: ControlFlow, b: ControlFlow) -> ControlFlow {
     }
 }
 
-/// OS から渡されたパスの届け先。最後に焦点を持った窓、それが無ければ (閉じた・
+/// OS から渡されたパスと開き直しの届け先。最後に焦点を持った窓、それが無ければ (閉じた・
 /// まだ焦点が来ていない) 窓ができている最初のもの。どれも窓が無ければ `None`。
 fn open_target<T: PartialEq>(ids: &[Option<T>], focused: Option<&T>) -> Option<usize> {
     focused
