@@ -85,6 +85,9 @@ pub struct CellGridDraw {
     /// 行ごとの字形を前のフレームから使い回すための鍵 (要素の id から作る)。
     /// `None` = 使い回さない (字形そのものは文字単位でキャッシュされる)。
     pub cache_key: Option<u64>,
+    /// 地の色が無いセルの下に見える色 ([`TextDraw::backdrop`] と同じ)。
+    /// 地の色を持つセルは、その色の上として描く。
+    pub backdrop: Option<Color>,
 }
 
 impl CellGridDraw {
@@ -355,6 +358,12 @@ pub struct TextDraw {
     /// 縦書き ([`Element::vertical`](crate::Element::vertical))。箱 (`max_width` ×
     /// `max_height`) の右上から、列を右から左へ並べる。
     pub vertical: bool,
+    /// 字の下に見える地の色 ([#165](https://github.com/Mutafika/sabitori/issues/165))。
+    /// 祖先の背景を重ねた色で、不透明。字の縁の濃さを地に合わせて決めるのに使う。
+    ///
+    /// `None` = 分からない (背景を持つ祖先が無い・グラデーションや画像の上・下の
+    /// 分からない薄い半透明)。描く側は字の明るさから地を推す。
+    pub backdrop: Option<Color>,
 }
 
 /// Draw an image at a position.

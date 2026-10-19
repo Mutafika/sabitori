@@ -663,6 +663,7 @@ fn build_tree_impl(
         &masks,
         (0.0, 0.0),
         None,
+        None,
     );
 
     // Reverse each list so front-most (last drawn) comes first for picking,
@@ -722,6 +723,7 @@ fn emit_cell_grid(
     scale: f32,
     opacity: f32,
     clip: Option<Rect>,
+    backdrop: Option<Color>,
 ) {
     use crate::cell_grid::CellFlags;
     let grid = &cg.grid;
@@ -742,6 +744,7 @@ fn emit_cell_grid(
         opacity,
         font_family: style.font_family.clone(),
         cache_key,
+        backdrop,
     };
     // 背景と線も見えている行だけ。スクロールの中の長いログで、見えない行の
     // 矩形を毎フレーム出さない。
@@ -1650,6 +1653,7 @@ fn emit_commands(
     masks: &MaskLayouts,
     parent_scroll: (f32, f32),
     parent_owner: Option<&std::sync::Arc<str>>,
+    parent_backdrop: Option<Color>,
 ) {
     let layer = parent_layer.max(element.layer);
     let clip_into_layer = (!in_overlay && !element.overlay && layer > parent_layer).then_some(parent_clip).flatten();
@@ -1664,7 +1668,7 @@ fn emit_commands(
         taffy, element, taffy_node, parent_x, parent_y, parent_opacity, render_lists, overlay_list,
         hit_regions, overlay_hit_regions, scroll_measures, element_counter, in_overlay, parent_layer,
         parent_no_select, parent_scale, parent_clip, parent_disabled, probes, probe_positions,
-        anchor_positions, masks, parent_scroll, parent_owner,
+        anchor_positions, masks, parent_scroll, parent_owner, parent_backdrop,
     );
     if let Some(len) = pushed_len {
         let list = render_lists.entry(layer).or_default();
@@ -1718,6 +1722,8 @@ fn emit_commands_inner(
     // id の付いたいちばん近い祖先の id。文字に持たせて、選択範囲をアプリが
     // 安定した位置 (段落の id) に戻せるようにする (#107)。
     parent_owner: Option<&std::sync::Arc<str>>,
+    // 祖先の背景を重ねた、この要素の下に見える地の色 (#165)。分からなければ `None`。
+    parent_backdrop: Option<Color>,
 ) {
     // 隠した要素 (`display: none`) は中身ごと描かず、押せもしない。taffy は
     // 中身ごと大きさ 0 に置くので箱のある物は下の「0 は飛ばす」で消えるが、
@@ -1838,8 +1844,9 @@ fn emit_commands_inner(
                     parent_clip,
                     disabled,
                     // 大きさ 0 の入れ物は切らない (切るものは上で返している)
-                    // ので、留まる相手は親から素通し。
+                    // ので、留まる相手は親から素通し。塗る物も無いので地も素通し。
                     probes, probe_positions, anchor_positions, masks, parent_scroll, owner,
+                    parent_backdrop,
                 );
             }
         }
@@ -1884,6 +1891,11 @@ fn emit_commands_inner(
     } && style.gradient_end.a > 0.0;
     let has_visual =
         bg.a > 0.0 || has_gradient || style.border_width > 0.0 || style.shadow.is_some();
+    // 自分の字と子が見る地 (#165)。画像の上は場所ごとに色が違うので分からない。
+    let backdrop = match element.kind {
+        ElementKind::Image { .. } => None,
+        _ => backdrop_under(parent_backdrop, apply_opacity(bg, effective_opacity), has_gradient),
+    };
 
     if has_visual {
         let (shadow_color, shadow_offset, shadow_blur, shadow_spread) =
@@ -1945,6 +1957,7 @@ fn emit_commands_inner(
                 owner: owner.cloned(),
                 glyph_motion: style.glyph_motion.clone(),
                 vertical: style.vertical,
+                backdrop,
             }));
         }
         ElementKind::Button { label, .. } => {
@@ -2000,6 +2013,7 @@ fn emit_commands_inner(
                 owner: owner.cloned(),
                 glyph_motion: style.glyph_motion.clone(),
                 vertical: false,
+                backdrop,
             }));
         }
         ElementKind::Div => {}
@@ -2078,7 +2092,7 @@ fn emit_commands_inner(
             }));
         }
         ElementKind::CellGrid(cg) => {
-            emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity, parent_clip);
+            emit_cell_grid(target, cg, style, element, index, abs_x, abs_y, scale, effective_opacity, parent_clip, backdrop);
         }
         ElementKind::Image { key, data } => {
             target.commands.push(RenderCommand::Image(ImageDraw {
@@ -2309,7 +2323,7 @@ fn emit_commands_inner(
                 no_select, scale,
                 child_clip,
                 disabled,
-                probes, probe_positions, anchor_positions, masks, child_scroll, owner,
+                probes, probe_positions, anchor_positions, masks, child_scroll, owner, backdrop,
             );
         }
     }
@@ -2447,6 +2461,7 @@ fn emit_commands_inner(
                 None,
                 disabled,
                 &Default::default(), &mut Default::default(), anchor_positions, masks, parent_scroll, owner,
+                None,
             );
         }
         let target = if use_overlay { &mut *overlay_list } else { render_lists.entry(layer).or_default() };
@@ -2851,6 +2866,30 @@ fn dim_to_px(d: Dimension) -> f32 {
     match d {
         Dimension::Px(v) => v,
         _ => 0.0,
+    }
+}
+
+/// 子が見る地の色 ([`TextDraw::backdrop`]、#165)。親の地の上に自分の背景を重ねる。
+///
+/// 不透明な背景ならその色。半透明なら親の地と混ぜる (GPU と同じく光の量で)。
+///
+/// 親の地が分からない半透明は、半分より濃ければ自分の色を地とみなす — 見えている
+/// 地の大半はこの色だから (透ける窓の地の色を壁紙の上に敷いた端末など)。薄い
+/// 半透明と、場所で色が変わるグラデーションは分からない (`None`)。
+fn backdrop_under(parent: Option<Color>, fill: Color, has_gradient: bool) -> Option<Color> {
+    if has_gradient {
+        return None;
+    }
+    if fill.a <= 0.0 {
+        return parent;
+    }
+    if fill.a >= 1.0 {
+        return Some(fill);
+    }
+    match parent {
+        Some(p) => Some(fill.over(p)),
+        None if fill.a >= 0.5 => Some(fill.with_alpha(1.0)),
+        None => None,
     }
 }
 
@@ -6003,5 +6042,81 @@ mod cell_grid_tests {
         let b = build_tree(&cell_grid(Arc::new(g), 8.0, 17.0), 100.0, 100.0);
         let (rects, _) = commands(&b);
         assert_eq!(rects[0].rect, Rect::new(0.0, 0.0, 16.0, 17.0));
+    }
+}
+
+/// 字の下の地 ([`TextDraw::backdrop`]、#165)。字の縁の濃さを地に合わせて決めるので、
+/// 描く側へ渡す。
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+    use crate::cell_grid::CellGrid;
+    use crate::element::{button, cell_grid, div, text};
+    use std::sync::Arc;
+
+    fn backdrops(root: &Element) -> Vec<Option<Color>> {
+        build_tree(root, 400.0, 300.0).render_list.texts().map(|t| t.backdrop).collect()
+    }
+
+    /// いちばん近い、背景を持つ祖先 (自分を含む) の色。背景の無い入れ物は素通し。
+    #[test]
+    fn text_sees_the_nearest_background() {
+        let dark = Color::from_hex("#1e1e1e");
+        let light = Color::from_hex("#ffffff");
+        let root = div().bg(dark).flex_col().children([
+            text("暗い地"),
+            div().child(div().child(text("入れ物を挟んでも暗い地"))),
+            div().bg(light).child(text("明るい地")),
+            button("ボタンの地").bg(light),
+        ]);
+        assert_eq!(backdrops(&root), vec![Some(dark), Some(dark), Some(light), Some(light)]);
+    }
+
+    /// 半透明の背景 (不透明度で薄めた背景も) は、下の地と混ぜた色 (GPU と同じく光の量で)。
+    #[test]
+    fn a_translucent_background_mixes_with_the_ground_under_it() {
+        let veil = Color::WHITE.with_alpha(0.5);
+        let mixed = veil.over(Color::BLACK);
+        assert_eq!(backdrops(&div().bg(Color::BLACK).child(div().bg(veil).child(text("x")))), vec![Some(mixed)]);
+        let faded = div().bg(Color::BLACK).child(div().opacity(0.5).bg(Color::WHITE).child(text("x")));
+        assert_eq!(backdrops(&faded), vec![Some(mixed)]);
+    }
+
+    /// 下の分からない半透明でも、半分より濃ければその色を地とみなす。透ける窓の端末
+    /// (地の色を不透明度 0.62 で壁紙の上に敷く) の字は、暗い地の上として描く。
+    #[test]
+    fn a_mostly_opaque_background_over_nothing_is_the_ground() {
+        let term = Color::from_hex("#1e1e1e");
+        let window = div().bg(term.with_alpha(0.62)).child(text("透ける窓"));
+        assert_eq!(backdrops(&window), vec![Some(term)]);
+    }
+
+    /// 分からない地は `None` (描く側が字の明るさから推す) — 背景が 1 つも無い、
+    /// 下の分からない薄い半透明、場所で色の変わるグラデーションと画像。
+    #[test]
+    fn an_unknown_ground_is_none() {
+        assert_eq!(backdrops(&div().child(text("地なし"))), vec![None]);
+        let veil = div().bg(Color::WHITE.with_alpha(0.3)).child(text("下が分からない薄い半透明"));
+        assert_eq!(backdrops(&veil), vec![None]);
+        let gradient = div()
+            .bg(Color::BLACK)
+            .child(div().gradient(Color::BLACK, Color::WHITE, 90.0).child(text("グラデーション")));
+        assert_eq!(backdrops(&gradient), vec![None]);
+        let pixels = crate::element::ImageData::new([0u8, 0, 0, 255].repeat(4), 2, 2);
+        let on_image = div().bg(Color::WHITE).child(crate::element::image("絵", pixels).child(text("絵の上")));
+        assert_eq!(backdrops(&on_image), vec![None]);
+    }
+
+    /// 格子も同じ地を持つ (地の色を持つセルは、描く側がその色を使う)。
+    #[test]
+    fn a_cell_grid_carries_the_ground_too() {
+        let dark = Color::from_hex("#1e1e1e");
+        let grid = Arc::new(CellGrid::new(4, 1, Color::WHITE));
+        let b = build_tree(&div().bg(dark).child(cell_grid(grid, 8.0, 17.0)), 100.0, 100.0);
+        let draw = b.render_list.commands.iter().find_map(|c| match c {
+            RenderCommand::CellGrid(g) => Some(g),
+            _ => None,
+        });
+        assert_eq!(draw.unwrap().backdrop, Some(dark));
     }
 }

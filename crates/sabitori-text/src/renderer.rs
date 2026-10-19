@@ -58,6 +58,16 @@ pub struct GlyphInstance {
     /// than by hand — writing only this field spins each glyph in place and
     /// leaves the baseline horizontal.
     pub rotation: f32,
+    /// 字の下に見える地の色 (linear RGBA、[#165])。`a == 1.0` = 分かっている、
+    /// `a == 0.0` = 分からない (シェーダが字の明るさから地を推す)。入れるのは
+    /// [`fill_backdrop`]。
+    ///
+    /// シェーダは字の縁の覆い率をこの地に合わせて付け替える。面は光の量で混ぜる
+    /// ので、そのままだと暗い地の明るい字は縁が明るく太り、明るい地の暗い字は
+    /// 縁が薄くやせる。
+    ///
+    /// [#165]: https://github.com/Mutafika/sabitori/issues/165
+    pub backdrop: [f32; 4],
 }
 
 /// Rotate an already-laid-out glyph run around `origin` (logical px).
@@ -98,6 +108,34 @@ pub fn rotate_glyphs(glyphs: &mut [GlyphInstance], origin: (f32, f32), radians: 
     }
 }
 
+/// 地の分からない字形に、地の色を入れる ([`GlyphInstance::backdrop`])。
+///
+/// 自分で地を知っている字形 (地の色を持つ格子のセル) はそのまま。`None` なら
+/// 何もしない (シェーダが字の明るさから地を推す)。
+pub fn fill_backdrop(glyphs: &mut [GlyphInstance], backdrop: Option<Color>) {
+    let Some(b) = backdrop else { return };
+    let b = b.with_alpha(1.0).to_array();
+    for g in glyphs.iter_mut().filter(|g| g.backdrop[3] == 0.0) {
+        g.backdrop = b;
+    }
+}
+
+/// 字形を物理画素の上に置く ([#103]、[#165])。字形の中の位置はもともと物理画素の
+/// 整数なので、画面上の位置を丸めればアトラスの 1 画素が画面の 1 画素にそのまま
+/// 乗る。端数のまま置くとアトラスが線形補間で読まれて字がにじむ — レイアウトは
+/// 整数に丸めてあっても、スクロールの端数・`translate`・`scale` はその後に足される。
+///
+/// 丸めは字ごとで積み重ならない。回した字形は丸めない (斜めの四角は画素に揃わない)。
+///
+/// [#103]: https://github.com/Mutafika/sabitori/issues/103
+/// [#165]: https://github.com/Mutafika/sabitori/issues/165
+fn snap_to_pixels(g: &mut GlyphInstance, scale: f32) {
+    if g.rotation != 0.0 {
+        return;
+    }
+    g.position = [(g.position[0] * scale).round() / scale, (g.position[1] * scale).round() / scale];
+}
+
 impl GlyphInstance {
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         const ATTRS: &[wgpu::VertexAttribute] = &[
@@ -135,6 +173,11 @@ impl GlyphInstance {
                 format: wgpu::VertexFormat::Float32,
                 offset: 68,
                 shader_location: 6, // rotation
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 72,
+                shader_location: 7, // backdrop
             },
         ];
 
@@ -525,6 +568,8 @@ fn shape_run(
                     // laid out flat here (and cached that way). The caller
                     // applies rotation afterwards via `rotate_glyphs`.
                     rotation: 0.0,
+                    // 地は描く側が知っている (`fill_backdrop`)。
+                    backdrop: [0.0; 4],
                 });
             }
         }
@@ -702,6 +747,11 @@ impl TextRenderer {
         }
     }
 
+    /// 字形を丸めて置く倍率 (物理画素 / 論理 px)。
+    fn pixel_scale(&self) -> f32 {
+        if self.scale_factor > 0.0 { self.scale_factor } else { 1.0 }
+    }
+
     /// シェーピングの結果を全部捨てる。字形の位置・アトラスの座標を焼き込んで
     /// いるので、書体・倍率・アトラスが変わったら 3 つとも一緒に捨てる。
     fn clear_shaped(&mut self) {
@@ -756,13 +806,11 @@ impl TextRenderer {
         // 字がにじむ (text() は呼ぶ側が整数の位置に置くので起きない)。字形の中の位置は
         // もともと物理画素の整数なので、最後の画面上の位置だけを丸めれば揃う。丸めは
         // 字ごとで積み重ならないので、行末でも格子からずれない。
-        let scale = if self.scale_factor > 0.0 { self.scale_factor } else { 1.0 };
+        let scale = self.pixel_scale();
         let place = |g: &GlyphInstance| {
             let mut g = *g;
-            g.position = [
-                ((g.position[0] + x) * scale).round() / scale,
-                ((g.position[1] + y) * scale).round() / scale,
-            ];
+            g.position = [g.position[0] + x, g.position[1] + y];
+            snap_to_pixels(&mut g, scale);
             g
         };
         let mut out = Vec::new();
@@ -789,6 +837,9 @@ impl TextRenderer {
                 }
                 color.a *= opacity;
                 let color = color.to_array();
+                // 地の色を持つセルは、その色の上として縁の濃さを決める (#165)。持たない
+                // セルは要素の地 (描く側が `fill_backdrop` で入れる)。
+                let backdrop = cell.bg.filter(|b| b.a >= 1.0).map_or([0.0; 4], Color::to_array);
                 let (cx, cy) = (col as f32 * cell_w, row as f32 * cell_h);
                 // 字形がセルより広いときは横に縮めて収める。端末は `⌘` を 1 セルの字と
                 // 数えるが、HackGen などは全角幅の字形を持っていて、そのまま置くと隣の字に
@@ -805,6 +856,7 @@ impl TextRenderer {
                     }
                     g.position = [g.position[0] + cx, g.position[1] + cy];
                     g.color = color;
+                    g.backdrop = backdrop;
                     line.push(g);
                 }
             }
@@ -1110,12 +1162,14 @@ impl TextRenderer {
         );
 
         let color_arr = color.to_array();
+        let scale = self.pixel_scale();
         self.last_run = Some(key);
         let run = &self.glyph_cache[&key];
         let mut out = Vec::with_capacity(run.glyphs.len());
         for (i, g) in run.glyphs.iter().enumerate() {
             let mut gi = *g;
             gi.position = [g.position[0] + x, g.position[1] + y];
+            snap_to_pixels(&mut gi, scale);
             // 既定は単色。スパンに当たった glyph だけ塗り替える (#78)。
             gi.color = match run.glyph_bytes.get(i) {
                 Some(&(s, e)) => span_color(spans, s, e).unwrap_or(color_arr),
@@ -1194,12 +1248,14 @@ impl TextRenderer {
         );
 
         let color_arr = color.to_array();
+        let scale = self.pixel_scale();
         self.last_run = Some(key);
         let run = &self.glyph_cache[&key];
         let mut instances = Vec::with_capacity(run.glyphs.len());
         for (i, g) in run.glyphs.iter().enumerate() {
             let mut gi = *g;
             gi.position = [g.position[0] + x, g.position[1] + y];
+            snap_to_pixels(&mut gi, scale);
             gi.color = match run.glyph_bytes.get(i) {
                 Some(&(s, e)) => span_color(spans, s, e).unwrap_or(color_arr),
                 None => color_arr,
@@ -1243,6 +1299,7 @@ impl TextRenderer {
         // 1 字は升目と同じ高さの 1 行として組む (字送りと行間は升目の側で持つ)。
         let one = Typography { letter_spacing: 0.0, line_height: Some(1.0), ..typo };
         let right = x + box_w;
+        let scale = self.pixel_scale();
         let mut glyphs = Vec::new();
         let mut bytes = Vec::new();
         let mut buf = [0u8; 4];
@@ -1285,6 +1342,8 @@ impl TextRenderer {
                 if let Some(c) = tint {
                     g.color = c;
                 }
+                // 升目へ寄せた端数を落とす (横に倒した字は丸めない)。
+                snap_to_pixels(g, scale);
                 glyphs.push(*g);
                 bytes.push((cell.byte_start as u32, cell.byte_end as u32));
             }
@@ -1413,6 +1472,7 @@ mod rotate_tests {
             clip_rect: [0.0; 4],
             is_color: 0.0,
             rotation: 0.0,
+            backdrop: [0.0; 4],
         }
     }
 
