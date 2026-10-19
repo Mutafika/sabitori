@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sabitori_core::{Color, Typography};
 use wgpu::util::DeviceExt;
 
@@ -136,6 +136,41 @@ fn snap_to_pixels(g: &mut GlyphInstance, scale: f32) {
     g.position = [(g.position[0] * scale).round() / scale, (g.position[1] * scale).round() / scale];
 }
 
+/// 太らせる量の刻み: 1 px をこの数に分ける。
+pub(crate) const THICKEN_STEPS: f32 = 32.0;
+
+/// 字の外形を太らせる段 ([`THICKEN_STEPS`] 分の 1 px 単位)。macOS の文字の滑らか表示
+/// (Core Text) を測って合わせた:
+///
+/// - 縦の線も横の線も、`字の大きさ (物理 px) × (3 + 5 × 明るさ) / 256` px 太らせる。
+///   0.6 px で頭打ち。14 px の白い字で 0.44 px、黒い字で 0.16 px (太らせ方の形は
+///   [`crate::atlas`] の `widen`)
+/// - 明るさは字の色の線形の値で、赤 1/4・緑 3/4 (青は効かない)。地の色には依らない
+///
+/// 字の形はそのまま (縁を地と sRGB の値で混ぜる、#165) だと、Mac の他のアプリより
+/// 細く薄く見える。
+pub(crate) fn thicken_level(font_px: f32, color: [f32; 4]) -> u8 {
+    let light = (0.25 * color[0] + 0.75 * color[1]).clamp(0.0, 1.0);
+    let px = (font_px * (3.0 + 5.0 * light) / 256.0).min(0.6);
+    (px * THICKEN_STEPS).round() as u8
+}
+
+/// 太らせる段も字形を変えるので、組んだ結果の鍵に足す。色そのものは足さない —
+/// 段が同じになる色どうしは同じ字形を使い回す。文字の滑らか表示が切なら鍵はそのまま。
+fn weigh_key(key: u64, smoothing: bool, font_px: f32, color: [f32; 4], spans: &[ColorSpan]) -> u64 {
+    if !smoothing {
+        return key;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    thicken_level(font_px, color).hash(&mut h);
+    for sp in spans {
+        (sp.start, sp.end, thicken_level(font_px, sp.color)).hash(&mut h);
+    }
+    h.finish()
+}
+
 impl GlyphInstance {
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         const ATTRS: &[wgpu::VertexAttribute] = &[
@@ -195,7 +230,6 @@ pub struct TextRenderer {
     /// headless callers via [`TextShaper`], so on-screen text and off-screen
     /// measurement resolve through the same faces, locale and quantization.
     pub shaper: TextShaper,
-    pub swash_cache: SwashCache,
     pub atlas: GlyphAtlas,
     pub pipeline: wgpu::RenderPipeline,
     pub atlas_texture: wgpu::Texture,
@@ -208,6 +242,10 @@ pub struct TextRenderer {
     /// Layout stays logical — only rasterization scales. The app updates this
     /// each frame from the renderer's `scale_factor`.
     pub scale_factor: f32,
+    /// macOS の文字の滑らか表示と同じに描くか: ヒンティングせず、字の色で決まる量
+    /// ([`thicken_level`]) だけ太らせる。macOS では既定で入。変えるのは
+    /// [`TextRenderer::set_font_smoothing`]。
+    smoothing: bool,
     /// Per-frame-persistent shaping cache. cosmic-text "Advanced" shaping
     /// (`Buffer::new` + `set_text` + `shape_until_scroll`) is expensive and the
     /// scene loop re-tessellates the whole UI every frame, so an unchanged label
@@ -245,6 +283,8 @@ struct CellGlyphKey {
     ch: char,
     bold: bool,
     italic: bool,
+    /// 文字の滑らか表示の太らせる段 (字の色で変わる)。切なら `None`。
+    smoothing: Option<u8>,
     font_bits: u32,
     line_bits: u32,
     family: u64,
@@ -298,9 +338,13 @@ struct ShapedRun {
 /// unreachable from a test without an adapter.
 struct ShapeCtx<'a> {
     font_system: &'a mut FontSystem,
-    swash_cache: &'a mut SwashCache,
     atlas: &'a mut GlyphAtlas,
     scale_factor: f32,
+    /// 文字の滑らか表示で描くか。太らせる段は字の色で決まる — スパンに当たる字は
+    /// スパンの色、他は `color`。
+    smoothing: bool,
+    color: [f32; 4],
+    spans: &'a [ColorSpan],
     preferred_family: &'a Option<String>,
     preferred_monospace_family: &'a Option<String>,
 }
@@ -536,11 +580,11 @@ fn shape_run(
             let physical = glyph.physical(((x + ls_off) * scale, pen_y * scale), scale);
             ls_off += typo.letter_spacing;
 
-            if let Some(entry) = ctx.atlas.get_or_insert(
-                physical.cache_key,
-                ctx.swash_cache,
-                ctx.font_system,
-            ) {
+            let smoothing = ctx.smoothing.then(|| {
+                let color = span_color(ctx.spans, glyph.start as u32, glyph.end as u32).unwrap_or(ctx.color);
+                thicken_level(f32::from_bits(physical.cache_key.font_size_bits), color)
+            });
+            if let Some(entry) = ctx.atlas.get_or_insert(physical.cache_key, smoothing, ctx.font_system) {
                 let gx = (physical.x as f32 + entry.offset_x) / scale;
                 let gy = (physical.y as f32 - entry.offset_y) / scale;
 
@@ -614,7 +658,6 @@ impl TextRenderer {
         // `TextShaper` so a headless caller resolves text through exactly the
         // same rules — see `TextShaper::new`.
         let shaper = TextShaper::new();
-        let swash_cache = SwashCache::new();
         let atlas = GlyphAtlas::new();
 
         // Atlas texture
@@ -731,7 +774,6 @@ impl TextRenderer {
 
         Self {
             shaper,
-            swash_cache,
             atlas,
             pipeline,
             atlas_texture,
@@ -739,6 +781,7 @@ impl TextRenderer {
             instance_buffer,
             instance_capacity,
             scale_factor: 1.0,
+            smoothing: cfg!(target_os = "macos"),
             glyph_cache: std::collections::HashMap::new(),
             last_run: None,
             cell_glyphs: std::collections::HashMap::new(),
@@ -846,7 +889,7 @@ impl TextRenderer {
                 // 重なる (WezTerm も同じく縮める)。
                 let span = if cell.flags.contains(CellFlags::WIDE) { 2.0 * cell_w } else { cell_w };
                 let (glyphs, advance) =
-                    self.cell_glyph(cell.ch, bold, italic, font_size, cell_h, family, family_hash);
+                    self.cell_glyph(cell.ch, bold, italic, color, font_size, cell_h, family, family_hash);
                 let fit = fit_to_cell(advance, span);
                 for g in glyphs {
                     let mut g = *g;
@@ -883,15 +926,18 @@ impl TextRenderer {
         ch: char,
         bold: bool,
         italic: bool,
+        color: [f32; 4],
         font_size: f32,
         cell_h: f32,
         family: Option<&str>,
         family_hash: u64,
     ) -> (&[GlyphInstance], f32) {
+        let font_px = font_size * self.pixel_scale();
         let key = CellGlyphKey {
             ch,
             bold,
             italic,
+            smoothing: self.smoothing.then(|| thicken_level(font_px, color)),
             font_bits: font_size.to_bits(),
             line_bits: cell_h.to_bits(),
             family: family_hash,
@@ -905,11 +951,14 @@ impl TextRenderer {
                 ..Typography::default()
             };
             let run_key = run_cache_key(text, font_size, None, bold, true, family, Some(1), typo);
+            let run_key = weigh_key(run_key, self.smoothing, font_px, color, &[]);
             let mut ctx = ShapeCtx {
                 font_system: &mut self.shaper.font_system,
-                swash_cache: &mut self.swash_cache,
                 atlas: &mut self.atlas,
                 scale_factor: self.scale_factor,
+                smoothing: self.smoothing,
+                color,
+                spans: &[],
                 preferred_family: &self.shaper.preferred_family,
                 preferred_monospace_family: &self.shaper.preferred_monospace_family,
             };
@@ -1001,6 +1050,19 @@ impl TextRenderer {
             self.atlas.clear();
             self.clear_shaped(); // glyph size/pos baked at the old scale
         }
+    }
+
+    /// macOS の文字の滑らか表示と同じに描くか: ヒンティングせず、字の色で決まる量
+    /// ([`thicken_level`]) だけ外形を太らせる。macOS では既定で入、他では切。
+    /// 変わったかを返す。
+    pub fn set_font_smoothing(&mut self, on: bool) -> bool {
+        if on == self.smoothing {
+            return false;
+        }
+        self.smoothing = on;
+        // 段ごとの字形はアトラスに残るので、捨てるのは組んだ結果だけでよい。
+        self.clear_shaped();
+        true
     }
 
     /// Self-heal after glyph-atlas exhaustion. The atlas is a fixed-size texture
@@ -1146,13 +1208,16 @@ impl TextRenderer {
         let key = run_cache_key(
             text, font_size, max_width, bold, monospace, family_override, max_lines, typo,
         );
+        let key = weigh_key(key, self.smoothing, font_size * self.pixel_scale(), color.to_array(), spans);
         // Borrowed field-by-field so `glyph_cache` stays independently borrowable
         // — the whole point of `ShapeCtx` over a `&mut self` method.
         let mut ctx = ShapeCtx {
             font_system: &mut self.shaper.font_system,
-            swash_cache: &mut self.swash_cache,
             atlas: &mut self.atlas,
             scale_factor: self.scale_factor,
+            smoothing: self.smoothing,
+            color: color.to_array(),
+            spans,
             preferred_family: &self.shaper.preferred_family,
             preferred_monospace_family: &self.shaper.preferred_monospace_family,
         };
@@ -1232,13 +1297,16 @@ impl TextRenderer {
         let key = run_cache_key(
             text, font_size, max_width, bold, monospace, family_override, max_lines, typo,
         );
+        let key = weigh_key(key, self.smoothing, font_size * self.pixel_scale(), color.to_array(), spans);
         // Borrowed field-by-field so `glyph_cache` stays independently borrowable
         // — the whole point of `ShapeCtx` over a `&mut self` method.
         let mut ctx = ShapeCtx {
             font_system: &mut self.shaper.font_system,
-            swash_cache: &mut self.swash_cache,
             atlas: &mut self.atlas,
             scale_factor: self.scale_factor,
+            smoothing: self.smoothing,
+            color: color.to_array(),
+            spans,
             preferred_family: &self.shaper.preferred_family,
             preferred_monospace_family: &self.shaper.preferred_monospace_family,
         };
@@ -1307,13 +1375,15 @@ impl TextRenderer {
             let cx = right - cell.column as f32 * column - font_size;
             let cy = y + cell.row as f32 * step;
             let form: &str = cell.form.encode_utf8(&mut buf);
+            let tint = span_color(spans, cell.byte_start as u32, cell.byte_end as u32);
+            // 太らせる量が字の色で決まるので、スパンの色で組む。
+            let ink = tint.map_or(color, |[r, g, b, a]| Color::linear(r, g, b, a));
             let (mut gs, hits) = self.prepare_text_with_hits_spans(
-                form, cx, cy, font_size, color, &[], None, bold, false, family_override, None, one,
+                form, cx, cy, font_size, ink, &[], None, bold, false, family_override, None, one,
             );
             // 字幅が升目より狭い字 (かな・記号) は、升目の真ん中へ寄せる。
             let advance = hits.first().map_or(font_size, |h| h.w);
             let dx = (font_size - advance) * 0.5;
-            let tint = span_color(spans, cell.byte_start as u32, cell.byte_end as u32);
             let (pivot_x, pivot_y) = (cx + font_size * 0.5, cy + font_size * 0.5);
             for g in gs.iter_mut() {
                 g.position[0] += dx;
@@ -1587,7 +1657,6 @@ mod shaping_cache_tests {
     struct Fixture {
         cache: HashMap<u64, ShapedRun>,
         font_system: FontSystem,
-        swash_cache: SwashCache,
         atlas: GlyphAtlas,
         family: Option<String>,
         mono_family: Option<String>,
@@ -1602,7 +1671,6 @@ mod shaping_cache_tests {
             Self {
                 cache: HashMap::new(),
                 font_system: FontSystem::new(),
-                swash_cache: SwashCache::new(),
                 atlas,
                 family: None,
                 mono_family: None,
@@ -1625,9 +1693,11 @@ mod shaping_cache_tests {
             let key = run_cache_key(text, font_size, None, bold, false, None, max_lines, typo);
             let mut ctx = ShapeCtx {
                 font_system: &mut self.font_system,
-                swash_cache: &mut self.swash_cache,
                 atlas: &mut self.atlas,
                 scale_factor: 1.0,
+                smoothing: false,
+                color: [1.0; 4],
+                spans: &[],
                 preferred_family: &self.family,
                 preferred_monospace_family: &self.mono_family,
             };
@@ -1680,9 +1750,11 @@ mod shaping_cache_tests {
             let key = run_cache_key(text, font_size, Some(width), false, false, None, None, typo);
             let mut ctx = ShapeCtx {
                 font_system: &mut self.font_system,
-                swash_cache: &mut self.swash_cache,
                 atlas: &mut self.atlas,
                 scale_factor: 1.0,
+                smoothing: false,
+                color: [1.0; 4],
+                spans: &[],
                 preferred_family: &self.family,
                 preferred_monospace_family: &self.mono_family,
             };
@@ -1911,9 +1983,11 @@ mod shaping_cache_tests {
         let key = run_cache_key(text, font_size, Some(width), false, false, None, Some(max_lines), typo);
         let mut ctx = ShapeCtx {
             font_system: &mut f.font_system,
-            swash_cache: &mut f.swash_cache,
             atlas: &mut f.atlas,
             scale_factor: 1.0,
+            smoothing: false,
+            color: [1.0; 4],
+            spans: &[],
             preferred_family: &f.family,
             preferred_monospace_family: &f.mono_family,
         };
@@ -2045,4 +2119,86 @@ mod color_span_tests {
 /// 0.5px までは丸めの差として許す (セル幅は字送りを端数ごと測った値)。
 fn fit_to_cell(advance: f32, span: f32) -> Option<f32> {
     (advance > span + 0.5 && span > 0.0).then(|| span / advance)
+}
+
+#[cfg(test)]
+mod thicken_tests {
+    //! **字を太らせる量** — macOS の文字の滑らか表示 (Core Text) を測った値に合わせる。
+    use super::*;
+    use std::collections::HashMap;
+
+    const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+    /// Core Text で測った太らせる量 (px): 14 px で白 0.44・黒 0.16・赤 0.23・緑 0.37・
+    /// 青 0.16、28 px で白 0.60 (頭打ち)・黒 0.33。
+    #[test]
+    fn the_amount_follows_core_text() {
+        let px = |size, color| f32::from(thicken_level(size, color)) / THICKEN_STEPS;
+        for (size, color, want) in [
+            (14.0, WHITE, 0.44),
+            (14.0, BLACK, 0.16),
+            (14.0, [1.0, 0.0, 0.0, 1.0], 0.23),
+            (14.0, [0.0, 1.0, 0.0, 1.0], 0.37),
+            (14.0, [0.0, 0.0, 1.0, 1.0], 0.16),
+            (28.0, WHITE, 0.60),
+            (28.0, BLACK, 0.33),
+        ] {
+            let got = px(size, color);
+            assert!((got - want).abs() <= 0.02, "{size}px {color:?}: {got} px, Core Text {want} px");
+        }
+    }
+
+    fn shape(
+        cache: &mut HashMap<u64, ShapedRun>,
+        font_system: &mut FontSystem,
+        atlas: &mut GlyphAtlas,
+        none: &Option<String>,
+        color: [f32; 4],
+    ) -> u64 {
+        let typo = Typography::default();
+        let key = run_cache_key("|", 14.0, None, false, false, None, None, typo);
+        let key = weigh_key(key, true, 14.0, color, &[]);
+        let mut ctx = ShapeCtx {
+            font_system,
+            atlas,
+            scale_factor: 1.0,
+            smoothing: true,
+            color,
+            spans: &[],
+            preferred_family: none,
+            preferred_monospace_family: none,
+        };
+        ensure_shaped(cache, &mut ctx, key, "|", 0.0, 0.0, 14.0, None, false, false, None, None, typo);
+        key
+    }
+
+    /// 字形の塗られた量 (覆い率の合計)。
+    fn ink(atlas: &GlyphAtlas, g: &GlyphInstance) -> f32 {
+        let n = atlas.size as f32;
+        let [u, v, w, h] = g.uv_rect.map(|c| (c * n).round() as usize);
+        let mut sum = 0.0;
+        for y in v..v + h {
+            for x in u..u + w {
+                sum += f32::from(atlas.pixels[(y * atlas.size as usize + x) * 4 + 3]) / 255.0;
+            }
+        }
+        sum
+    }
+
+    /// 明るい字は暗い字より太い字形になる。段が同じになる色どうしは、組んだ結果を
+    /// 使い回す (色ごとに組み直さない)。
+    #[test]
+    fn light_text_gets_a_thicker_glyph_than_dark() {
+        let (mut cache, mut fs, mut atlas, none) = (HashMap::new(), FontSystem::new(), GlyphAtlas::new(), None);
+        let white = shape(&mut cache, &mut fs, &mut atlas, &none, WHITE);
+        let black = shape(&mut cache, &mut fs, &mut atlas, &none, BLACK);
+        assert_ne!(white, black);
+        let near_white = shape(&mut cache, &mut fs, &mut atlas, &none, [0.98, 0.98, 0.98, 1.0]);
+        assert_eq!(near_white, white, "the same step must reuse the shaped run");
+        assert_eq!(cache.len(), 2);
+
+        let (w, b) = (ink(&atlas, &cache[&white].glyphs[0]), ink(&atlas, &cache[&black].glyphs[0]));
+        assert!(w > b * 1.1, "white ink {w} should exceed black ink {b}");
+    }
 }

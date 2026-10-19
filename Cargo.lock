@@ -3324,6 +3324,7 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "sabitori-core",
+ "swash",
  "tracing",
  "ttf-parser 0.25.1",
  "wgpu",

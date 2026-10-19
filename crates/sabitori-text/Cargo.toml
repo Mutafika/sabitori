@@ -22,6 +22,7 @@ builtin-font-latin = []  # Hack Regular      302KB / gzip 144KB  (MIT + Bitstrea
 [dependencies]
 sabitori-core.workspace = true
 cosmic-text.workspace = true
+swash.workspace = true
 etagere.workspace = true
 wgpu.workspace = true
 bytemuck = { workspace = true }

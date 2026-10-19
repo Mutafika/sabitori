@@ -1,6 +1,9 @@
-use cosmic_text::{CacheKey, SwashCache, SwashContent};
+use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashContent, SwashImage};
 use etagere::{size2, AllocId, BucketedAtlasAllocator};
 use std::collections::HashMap;
+use swash::scale::image::Content;
+use swash::scale::{Render, ScaleContext, Source, StrikeWith};
+use swash::zeno::{Angle, Format, Mask, Origin, Point, Transform, Vector, Verb};
 
 const ATLAS_SIZE: i32 = 2048;
 
@@ -25,7 +28,10 @@ pub struct GlyphEntry {
 /// GPU glyph atlas using shelf-packing.
 pub struct GlyphAtlas {
     allocator: BucketedAtlasAllocator,
-    cache: HashMap<CacheKey, GlyphEntry>,
+    /// 字形と描き方 ([`GlyphAtlas::get_or_insert`] の `smoothing`) ごと。
+    cache: HashMap<(CacheKey, Option<u8>), GlyphEntry>,
+    /// 字形を描く swash の作業場。
+    scaler: ScaleContext,
     pub pixels: Vec<u8>, // RGBA
     pub size: u32,
     /// Rows of `pixels` written since the last upload, as an **inclusive**
@@ -65,6 +71,7 @@ impl GlyphAtlas {
         Self {
             allocator: BucketedAtlasAllocator::new(size2(s, s)),
             cache: HashMap::new(),
+            scaler: ScaleContext::new(),
             pixels: vec![0; size as usize * size as usize * 4],
             size,
             // Fully dirty to start: the texture has never been written, so the
@@ -125,17 +132,21 @@ impl GlyphAtlas {
     }
 
     /// Get or rasterize a glyph into the atlas.
+    ///
+    /// `smoothing`: `None` は cosmic-text と同じ描き方 (ヒンティングあり)。`Some(段)` は
+    /// macOS の文字の滑らか表示と同じ描き方 — ヒンティングせず、外形を段
+    /// ([`crate::renderer::thicken_level`]) だけ太らせる。
     pub fn get_or_insert(
         &mut self,
         cache_key: CacheKey,
-        swash_cache: &mut SwashCache,
-        font_system: &mut cosmic_text::FontSystem,
+        smoothing: Option<u8>,
+        font_system: &mut FontSystem,
     ) -> Option<GlyphEntry> {
-        if let Some(entry) = self.cache.get(&cache_key) {
+        if let Some(entry) = self.cache.get(&(cache_key, smoothing)) {
             return Some(*entry);
         }
 
-        let image = swash_cache.get_image(font_system, cache_key).as_ref()?;
+        let image = &rasterize(&mut self.scaler, font_system, cache_key, smoothing)?;
         let width = image.placement.width as i32;
         let height = image.placement.height as i32;
 
@@ -233,8 +244,140 @@ impl GlyphAtlas {
             color: matches!(image.content, SwashContent::Color),
         };
 
-        self.cache.insert(cache_key, entry);
+        self.cache.insert((cache_key, smoothing), entry);
         Some(entry)
+    }
+}
+
+/// 字形を描く。`smoothing` が `None` なら cosmic-text の `SwashCache::get_image` と
+/// 同じ (字形の選び方・ヒンティング・端数の位置・偽の斜体)。`Some(段)` なら Core Text
+/// と同じくヒンティングせず、外形を [`widen`] で太らせる。色の付いた字形 (絵文字) は
+/// 太らせない。
+fn rasterize(
+    scaler: &mut ScaleContext,
+    font_system: &mut FontSystem,
+    key: CacheKey,
+    smoothing: Option<u8>,
+) -> Option<SwashImage> {
+    let font = font_system.get_font(key.font_id)?;
+    let mut scaler = scaler
+        .builder(font.as_swash())
+        .size(f32::from_bits(key.font_size_bits))
+        .hint(smoothing.is_none())
+        .build();
+    let offset = Vector::new(key.x_bin.as_float(), key.y_bin.as_float());
+    let skew = key
+        .flags
+        .contains(CacheKeyFlags::FAKE_ITALIC)
+        .then(|| Transform::skew(Angle::from_degrees(14.0), Angle::from_degrees(0.0)));
+    let color = [Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit)];
+    let Some(level) = smoothing else {
+        return Render::new(&[color[0], color[1], Source::Outline])
+            .format(Format::Alpha)
+            .offset(offset)
+            .transform(skew)
+            .render(&mut scaler, key.glyph_id);
+    };
+    if let Some(image) = Render::new(&color).format(Format::Alpha).offset(offset).transform(skew).render(&mut scaler, key.glyph_id) {
+        return Some(image);
+    }
+    let mut outline = scaler.scale_outline(key.glyph_id)?;
+    let verbs = outline.verbs().to_vec();
+    widen(outline.points_mut(), &verbs, f32::from(level) / crate::renderer::THICKEN_STEPS / 2.0);
+    if let Some(t) = &skew {
+        outline.transform(t);
+    }
+    // swash の `Render` と同じ呼び方で描く。`Mask::render` は原点を左下に取ると上端を
+    // 字の高さぶん低く返す (zeno 0.3)。
+    let mut image = SwashImage::new();
+    image.placement = Mask::new(outline.path())
+        .format(Format::Alpha)
+        .origin(Origin::BottomLeft)
+        .render_offset(offset)
+        .inspect(|format, w, h| image.data.resize(format.buffer_size(w, h), 0))
+        .render_into(&mut image.data, None);
+    image.source = Source::Outline;
+    image.content = Content::Mask;
+    Some(image)
+}
+
+/// 外形を Core Text の文字の滑らか表示と同じ形に太らせる: 一辺 `2 * s` の正方形との
+/// ミンコフスキー和 (縦と横に別々に `s` ずつ広げる)。辺は外向きの法線 `n` に沿って
+/// `s × (|nx| + |ny|)` 動く — 縦横の辺は `s`、45° の辺は `s√2`。どの向きにも同じだけ
+/// 広げる swash の `embolden` では、曲線と斜めの線の太り方が Core Text より 2〜3 割
+/// 足りない (字ごとに測って比べた)。
+///
+/// 点 (制御点も) は、前後の辺をそれぞれの量だけ動かした線の交わる所へ移す。尖った
+/// 角で遠くへ飛ばないよう、動かす量は `3s` まで。
+fn widen(points: &mut [Point], verbs: &[Verb], s: f32) {
+    if s <= 0.0 {
+        return;
+    }
+    // 輪郭ごとの点の範囲。
+    let mut contours = Vec::new();
+    let (mut at, mut start) = (0, None);
+    for verb in verbs {
+        match verb {
+            Verb::MoveTo => {
+                contours.extend(start.replace(at).map(|st| st..at));
+                at += 1;
+            }
+            Verb::LineTo => at += 1,
+            Verb::QuadTo => at += 2,
+            Verb::CurveTo => at += 3,
+            Verb::Close => contours.extend(start.take().map(|st| st..at)),
+        }
+    }
+    contours.extend(start.map(|st| st..at));
+    let contours: Vec<_> = contours.into_iter().filter(|c| c.end <= points.len()).collect();
+    // 外側がどちら回りか (字全体の面積の符号)。外向きの法線はそれで決まる。
+    let mut area = 0.0;
+    for c in &contours {
+        let pts = &points[c.clone()];
+        for (k, a) in pts.iter().enumerate() {
+            let b = pts[(k + 1) % pts.len()];
+            area += a.x * b.y - b.x * a.y;
+        }
+    }
+    let out = if area > 0.0 { 1.0 } else { -1.0 };
+    let normal = |a: Point, b: Point| {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = dx.hypot(dy);
+        (len > 1e-4).then(|| Point::new(out * dy / len, -out * dx / len))
+    };
+    let reach = |n: Point| s * (n.x.abs() + n.y.abs());
+    for c in contours {
+        let pts: Vec<Point> = points[c.clone()].to_vec();
+        let n = pts.len();
+        if n < 3 {
+            continue;
+        }
+        for (k, &p) in pts.iter().enumerate() {
+            // 同じ位置に重なった点は飛ばして、前後の辺を取る。
+            let apart = |q: &Point| (q.x - p.x).abs() + (q.y - p.y).abs() > 1e-4;
+            let prev = (1..n).map(|d| pts[(k + n - d) % n]).find(apart);
+            let next = (1..n).map(|d| pts[(k + d) % n]).find(apart);
+            let (Some(n1), Some(n2)) = (prev.and_then(|q| normal(q, p)), next.and_then(|q| normal(p, q))) else {
+                continue;
+            };
+            let (h1, h2) = (reach(n1), reach(n2));
+            let det = n1.x * n2.y - n1.y * n2.x;
+            let mut v = if det.abs() > 1e-3 {
+                Point::new((h1 * n2.y - n1.y * h2) / det, (n1.x * h2 - n2.x * h1) / det)
+            } else if n1.x * n2.x + n1.y * n2.y > 0.0 {
+                // 前後の辺がまっすぐ続く。
+                let h = (h1 + h2) / 2.0;
+                Point::new(n1.x * h, n1.y * h)
+            } else {
+                // 折り返し (針のような先): 動かさない。
+                continue;
+            };
+            let len = v.x.hypot(v.y);
+            if len > 3.0 * s {
+                v = Point::new(v.x * 3.0 * s / len, v.y * 3.0 * s / len);
+            }
+            points[c.start + k] = Point::new(p.x + v.x, p.y + v.y);
+        }
     }
 }
 
@@ -254,7 +397,6 @@ mod tests {
     fn insert(
         atlas: &mut GlyphAtlas,
         fs: &mut FontSystem,
-        sc: &mut SwashCache,
         text: &str,
         size: f32,
     ) -> usize {
@@ -267,7 +409,7 @@ mod tests {
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
                 let physical = glyph.physical((0.0, run.line_y), 1.0);
-                if atlas.get_or_insert(physical.cache_key, sc, fs).is_some() {
+                if atlas.get_or_insert(physical.cache_key, None, fs).is_some() {
                     n += 1;
                 }
             }
@@ -282,7 +424,6 @@ mod tests {
     #[test]
     fn inserting_a_glyph_marks_only_its_own_rows() {
         let mut fs = FontSystem::new();
-        let mut sc = SwashCache::new();
         let mut atlas = GlyphAtlas::new();
 
         // A fresh atlas is fully dirty — the texture has never been written.
@@ -290,7 +431,7 @@ mod tests {
         atlas.mark_uploaded();
         assert_eq!(atlas.dirty_rows(), None, "mark_uploaded must clear the band");
 
-        assert!(insert(&mut atlas, &mut fs, &mut sc, "A", 12.0) >= 1);
+        assert!(insert(&mut atlas, &mut fs, "A", 12.0) >= 1);
         let (min_y, max_y) = atlas
             .dirty_rows()
             .expect("inserting a glyph must mark rows dirty");
@@ -308,14 +449,13 @@ mod tests {
     #[test]
     fn a_second_glyph_widens_the_band_instead_of_replacing_it() {
         let mut fs = FontSystem::new();
-        let mut sc = SwashCache::new();
         let mut atlas = GlyphAtlas::new();
         atlas.mark_uploaded();
 
-        assert!(insert(&mut atlas, &mut fs, &mut sc, "A", 12.0) >= 1);
+        assert!(insert(&mut atlas, &mut fs, "A", 12.0) >= 1);
         let first = atlas.dirty_rows().expect("first insert must dirty rows");
         // Much taller → a different shelf, i.e. different rows.
-        assert!(insert(&mut atlas, &mut fs, &mut sc, "B", 96.0) >= 1);
+        assert!(insert(&mut atlas, &mut fs, "B", 96.0) >= 1);
         let both = atlas.dirty_rows().expect("second insert must dirty rows");
 
         assert!(
@@ -339,13 +479,12 @@ mod tests {
     #[test]
     fn the_band_covers_every_written_row() {
         let mut fs = FontSystem::new();
-        let mut sc = SwashCache::new();
         let mut atlas = GlyphAtlas::new();
         atlas.mark_uploaded();
 
         // Two very different heights → two shelves, far apart in y.
-        assert!(insert(&mut atlas, &mut fs, &mut sc, "日本語テキスト", 14.0) >= 1);
-        assert!(insert(&mut atlas, &mut fs, &mut sc, "Wg", 64.0) >= 1);
+        assert!(insert(&mut atlas, &mut fs, "日本語テキスト", 14.0) >= 1);
+        assert!(insert(&mut atlas, &mut fs, "Wg", 64.0) >= 1);
         let (min_y, max_y) = atlas.dirty_rows().expect("inserts must dirty rows");
 
         let stride = atlas.size as usize * 4;
@@ -373,6 +512,81 @@ mod tests {
         );
     }
 
+    /// 1 行の覆い率を、字形の原点からの x (画素の真ん中) と組で返す。`y` は原点から
+    /// 上向きの行。
+    fn row(atlas: &GlyphAtlas, e: &GlyphEntry, y: i32) -> Vec<(f32, f32)> {
+        let n = atlas.size as f32;
+        let (u, v) = ((e.uv_rect[0] * n).round() as usize, (e.uv_rect[1] * n).round() as usize);
+        let r = (e.offset_y as i32 - y) as usize;
+        (0..e.width as usize)
+            .map(|i| {
+                let a = atlas.pixels[((v + r) * atlas.size as usize + u + i) * 4 + 3];
+                (e.offset_x + i as f32 + 0.5, f32::from(a) / 255.0)
+            })
+            .collect()
+    }
+
+    /// 太らせた縦の線は、頼んだ量だけ太り、左右に同じだけ広がる。
+    #[test]
+    fn a_thickened_stem_grows_evenly_on_both_sides() {
+        let mut fs = FontSystem::new();
+        let mut atlas = GlyphAtlas::new();
+        let metrics = Metrics::new(28.0, 28.0 * 1.4);
+        let mut buffer = Buffer::new(&mut fs, metrics);
+        buffer.set_size(&mut fs, Some(f32::MAX), None);
+        buffer.set_text(&mut fs, "|", Attrs::new(), Shaping::Advanced);
+        buffer.shape_until_scroll(&mut fs, false);
+        let key = buffer.layout_runs().next().unwrap().glyphs[0].physical((0.0, 0.0), 1.0).cache_key;
+
+        let thin = atlas.get_or_insert(key, Some(0), &mut fs).unwrap();
+        // 16 段 = 0.5 px。
+        let thick = atlas.get_or_insert(key, Some(16), &mut fs).unwrap();
+        let y = thin.offset_y as i32 - thin.height as i32 / 2;
+        let (a, b) = (row(&atlas, &thin, y), row(&atlas, &thick, y));
+        let width = |r: &[(f32, f32)]| r.iter().map(|p| p.1).sum::<f32>();
+        let middle = |r: &[(f32, f32)]| r.iter().map(|p| p.0 * p.1).sum::<f32>() / width(r);
+        let grew = width(&b) - width(&a);
+        assert!((grew - 0.5).abs() < 0.1, "the stem grew {grew} px, asked 0.5");
+        let moved = middle(&b) - middle(&a);
+        assert!(moved.abs() < 0.2, "the stem's middle moved {moved} px");
+    }
+
+    /// 閉じた多角形 1 つ。
+    fn polygon(pts: &[(f32, f32)]) -> (Vec<Point>, Vec<Verb>) {
+        let points = pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
+        let mut verbs = vec![Verb::MoveTo];
+        verbs.extend(std::iter::repeat(Verb::LineTo).take(pts.len() - 1));
+        verbs.push(Verb::Close);
+        (points, verbs)
+    }
+
+    /// 縦横の辺は `s` ずつ外へ。回る向きが逆でも同じ (外側の向きは面積の符号で決める)。
+    #[test]
+    fn widening_moves_square_edges_out_by_s() {
+        for pts in [[(0.0, 0.0), (4.0, 0.0), (4.0, 2.0), (0.0, 2.0)], [(0.0, 0.0), (0.0, 2.0), (4.0, 2.0), (4.0, 0.0)]] {
+            let (mut points, verbs) = polygon(&pts);
+            widen(&mut points, &verbs, 0.25);
+            let xs: Vec<f32> = points.iter().map(|p| p.x).collect();
+            let ys: Vec<f32> = points.iter().map(|p| p.y).collect();
+            assert_eq!(xs.iter().cloned().fold(f32::MAX, f32::min), -0.25);
+            assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 4.25);
+            assert_eq!(ys.iter().cloned().fold(f32::MAX, f32::min), -0.25);
+            assert_eq!(ys.iter().cloned().fold(f32::MIN, f32::max), 2.25);
+        }
+    }
+
+    /// 45° の辺は `s√2` 外へ (縦と横に `s` ずつ広げた形)。Core Text は斜めの線と曲線を
+    /// こう太らせる。
+    #[test]
+    fn widening_moves_diagonal_edges_out_by_s_root_2() {
+        let (mut points, verbs) = polygon(&[(2.0, 0.0), (0.0, 2.0), (-2.0, 0.0), (0.0, -2.0)]);
+        widen(&mut points, &verbs, 0.25);
+        // 右上の辺 x + y = 2 は x + y = 2 + 0.5 へ (法線の向きに 0.25√2 × √2)。
+        for p in &points[..2] {
+            assert!((p.x + p.y - 2.5).abs() < 1e-5, "{p:?}");
+        }
+    }
+
     /// `clear` zeroes every pixel, so every row must go back to the GPU — not
     /// just whatever band happened to be pending. Marking less leaves stale
     /// bitmaps on the texture after a self-heal flush, and the reallocated
@@ -394,7 +608,6 @@ mod tests {
     #[test]
     fn exhausts_then_self_heals() {
         let mut fs = FontSystem::new();
-        let mut sc = SwashCache::new();
         // Tiny atlas: a few dozen glyphs overflow it (no need to shape
         // thousands to fill the real 2048²).
         let mut atlas = GlyphAtlas::with_size(128);
@@ -403,7 +616,7 @@ mod tests {
         // Same letters at many sizes → many distinct cache keys → overflow.
         let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         for size in 8..48 {
-            insert(&mut atlas, &mut fs, &mut sc, text, size as f32);
+            insert(&mut atlas, &mut fs, text, size as f32);
             if atlas.exhausted {
                 break;
             }
@@ -418,7 +631,7 @@ mod tests {
         atlas.clear();
         assert!(!atlas.exhausted);
         assert_eq!(atlas.cache.len(), 0);
-        let n = insert(&mut atlas, &mut fs, &mut sc, "AB", 12.0);
+        let n = insert(&mut atlas, &mut fs, "AB", 12.0);
         assert!(n >= 1, "a cleared atlas must accept glyphs again");
     }
 }

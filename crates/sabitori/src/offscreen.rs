@@ -194,6 +194,12 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 /// 幅の区分ごとの上書き (`.at(..)`) は畳まない — 紙の幅で当てたいなら、先に
 /// [`sabitori_core::element::apply_size_rules`]`(&mut view, sheet.width)` を呼ぶ。
 pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
+    render_with(view, sheet, cfg!(target_os = "macos"))
+}
+
+/// [`render`] の、文字の滑らか表示 ([`sabitori_text::TextRenderer::set_font_smoothing`])
+/// を選べる版。画面と同じく、macOS では入が既定。
+fn render_with(view: &Element, sheet: Sheet, smoothing: bool) -> Result<Rendered, RenderError> {
     let (device, queue) = headless_device().ok_or(RenderError::NoGpu)?;
     // 読み戻す前提なので、画面と同じ sRGB で描く。
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -203,6 +209,7 @@ pub fn render(view: &Element, sheet: Sheet) -> Result<Rendered, RenderError> {
     let mut ui = sabitori_gpu::UiOverlayRenderer::new(&device, format);
     let mut text = sabitori_text::TextRenderer::new(&device, format, ui.globals_bind_group_layout());
     text.set_scale_factor(scale);
+    text.set_font_smoothing(smoothing);
     // 実行時に積まれたフォント (#75 の 13) はここでも積む。入れないと、
     // **画面では出ている字が帳票だけ豆腐になる**。
     for font in crate::fonts::all() {
@@ -1525,30 +1532,34 @@ mod tests {
     }
 
     /// 同じ字を `ground` の上に `ink` で描いた画像。
-    fn glyph_shot(ink: Color, ground: Option<Color>, sheet: Color) -> Rendered {
+    fn glyph_shot(ink: Color, ground: Option<Color>, sheet: Color, smoothing: bool) -> Rendered {
         let line = text("Allowed by auto mode 0Oil1 字").pos(4.0, 4.0).font_size(14.0).color(ink);
         let view = match ground {
             Some(g) => div().w(Px(240.0)).h(Px(24.0)).bg(g).child(line),
             None => div().w(Px(240.0)).h(Px(24.0)).child(line),
         };
-        render(&view, Sheet::px(240.0, 24.0).background(sheet)).expect("描けなかった")
+        render_with(&view, Sheet::px(240.0, 24.0).background(sheet), smoothing).expect("描けなかった")
     }
 
     /// **字の縁は sRGB の値のまま地と混ぜた濃さになる** (#165)。CoreText などの普通の
     /// 描き方と同じで、黒地の白い字と白地の黒い字は**ちょうど裏返し**になる (どの
     /// 画素でも 2 つを足すと 255)。以前は縁を光の量で混ぜた上に明るい字の縁を持ち
     /// 上げていたので、黒地の白い字は縁が太ってにじみ、白地の黒い字は縁が薄くやせた。
+    ///
+    /// 文字の滑らか表示 (macOS の既定) では太らせる量が字の色で違うので裏返しに
+    /// ならない。ここは混ぜ方だけを見るので切って描く。
     #[test]
     fn glyph_edges_blend_like_srgb_values_on_any_ground() {
         gpu_or_skip!();
-        let on_black = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK);
-        let on_white = glyph_shot(Color::BLACK, Some(Color::WHITE), Color::WHITE);
+        let on_black = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK, false);
+        let on_white = glyph_shot(Color::BLACK, Some(Color::WHITE), Color::WHITE, false);
         // 灰色の字を暗い灰色の地に: 縁の値は地と字の値の間を、覆い率の割合で取る。
         let (ground, ink) = (0x20_u8, 0xa0_u8);
         let gray = glyph_shot(
             Color::from_srgb8(ink, ink, ink, 255),
             Some(Color::from_srgb8(ground, ground, ground, 255)),
             Color::BLACK,
+            false,
         );
         let mut edges = 0;
         for y in 0..on_black.height {
@@ -1567,12 +1578,37 @@ mod tests {
         assert!(edges > 100, "前提: 縁の画素がある ({edges})");
     }
 
+    /// **文字の滑らか表示では、字を Mac と同じだけ太らせる** (macOS の既定)。太らせる
+    /// 量は字の色で決まり、明るい字ほど太い — 黒地の白い字は、白地の黒い字より濃く
+    /// なる。切ったときの 2 つは同じ濃さ (裏返し、上のテスト)。
+    #[test]
+    fn light_text_is_thickened_more_than_dark_text() {
+        gpu_or_skip!();
+        let ink = |smoothing: bool| {
+            let on_black = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK, smoothing);
+            let on_white = glyph_shot(Color::BLACK, Some(Color::WHITE), Color::WHITE, smoothing);
+            let (mut white, mut black) = (0.0, 0.0);
+            for y in 0..on_black.height {
+                for x in 0..on_black.width {
+                    white += f32::from(on_black.pixel(x, y).unwrap()[1]) / 255.0;
+                    black += 1.0 - f32::from(on_white.pixel(x, y).unwrap()[1]) / 255.0;
+                }
+            }
+            (white, black)
+        };
+        let (white, black) = ink(false);
+        let (thick_white, thick_black) = ink(true);
+        assert!(thick_black > black * 1.05, "黒い字も太る ({black} → {thick_black})");
+        assert!(thick_white > thick_black * 1.1, "白い字の方が太る (白 {thick_white} / 黒 {thick_black})");
+        assert!((white - black).abs() < white * 0.02, "太らせなければ同じ濃さ (白 {white} / 黒 {black})");
+    }
+
     /// 地の分からない明るい字は、暗い地の上とみなす (背景を持つ祖先が無い字)。
     #[test]
     fn light_text_on_an_unknown_ground_is_drawn_as_on_a_dark_one() {
         gpu_or_skip!();
-        let known = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK);
-        let unknown = glyph_shot(Color::WHITE, None, Color::BLACK);
+        let known = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK, true);
+        let unknown = glyph_shot(Color::WHITE, None, Color::BLACK, true);
         for y in 0..known.height {
             for x in 0..known.width {
                 let (k, u) = (known.pixel(x, y).unwrap()[1] as i32, unknown.pixel(x, y).unwrap()[1] as i32);
