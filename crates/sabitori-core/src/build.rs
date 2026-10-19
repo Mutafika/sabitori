@@ -2871,8 +2871,11 @@ fn dim_to_px(d: Dimension) -> f32 {
 
 /// 子が見る地の色 ([`TextDraw::backdrop`]、#165)。親の地の上に自分の背景を重ねる。
 ///
-/// 不透明な背景ならその色。半透明なら親の地と混ぜる (GPU と同じく光の量で)。親の
-/// 地が分からない半透明と、場所で色が変わるグラデーションは分からない (`None`)。
+/// 不透明な背景ならその色。半透明なら親の地と混ぜる (GPU と同じく光の量で)。
+///
+/// 親の地が分からない半透明は、半分より濃ければ自分の色を地とみなす — 見えている
+/// 地の大半はこの色だから (透ける窓の地の色を壁紙の上に敷いた端末など)。薄い
+/// 半透明と、場所で色が変わるグラデーションは分からない (`None`)。
 fn backdrop_under(parent: Option<Color>, fill: Color, has_gradient: bool) -> Option<Color> {
     if has_gradient {
         return None;
@@ -2883,7 +2886,11 @@ fn backdrop_under(parent: Option<Color>, fill: Color, has_gradient: bool) -> Opt
     if fill.a >= 1.0 {
         return Some(fill);
     }
-    parent.map(|p| fill.over(p))
+    match parent {
+        Some(p) => Some(fill.over(p)),
+        None if fill.a >= 0.5 => Some(fill.with_alpha(1.0)),
+        None => None,
+    }
 }
 
 fn apply_opacity(color: Color, opacity: f32) -> Color {
@@ -6075,12 +6082,21 @@ mod backdrop_tests {
         assert_eq!(backdrops(&faded), vec![Some(mixed)]);
     }
 
+    /// 下の分からない半透明でも、半分より濃ければその色を地とみなす。透ける窓の端末
+    /// (地の色を不透明度 0.62 で壁紙の上に敷く) の字は、暗い地の上として描く。
+    #[test]
+    fn a_mostly_opaque_background_over_nothing_is_the_ground() {
+        let term = Color::from_hex("#1e1e1e");
+        let window = div().bg(term.with_alpha(0.62)).child(text("透ける窓"));
+        assert_eq!(backdrops(&window), vec![Some(term)]);
+    }
+
     /// 分からない地は `None` (描く側が字の明るさから推す) — 背景が 1 つも無い、
-    /// 下の分からない半透明、場所で色の変わるグラデーションと画像。
+    /// 下の分からない薄い半透明、場所で色の変わるグラデーションと画像。
     #[test]
     fn an_unknown_ground_is_none() {
         assert_eq!(backdrops(&div().child(text("地なし"))), vec![None]);
-        let veil = div().bg(Color::WHITE.with_alpha(0.5)).child(text("下が分からない半透明"));
+        let veil = div().bg(Color::WHITE.with_alpha(0.3)).child(text("下が分からない薄い半透明"));
         assert_eq!(backdrops(&veil), vec![None]);
         let gradient = div()
             .bg(Color::BLACK)
