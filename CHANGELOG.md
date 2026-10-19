@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-19
+
 ### Added
 
 - **macOS では、字を Mac の文字の滑らか表示 (Core Text) と同じに描く** ([#165](https://github.com/Mutafika/sabitori/issues/165))。
@@ -52,7 +54,6 @@
   レイアウトは整数に丸めてあっても、スクロール量・`translate`・`scale` はその後に足されるので、字形が
   画素の途中に来てアトラスが線形補間で読まれていた。格子 ([#103](https://github.com/Mutafika/sabitori/issues/103))
   と同じく、`text()` と縦書きの字も物理画素に丸めて置く (回した字は除く)。
-
 - **隙間なく並べた四角の継ぎ目に、地の色が細い線になって透けていた** ([#163](https://github.com/Mutafika/sabitori/issues/163))。
   縁を 0.75px の幅でぼかしていたため、縁が画素の境目に乗っていても、内側の画素が塗り切られず、
   境目の両側から地が透けていた (1 段ずつ四角で組んだドット絵の横縞、敷き詰めたセルの継ぎ目)。
@@ -4870,7 +4871,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.45.0...HEAD
+[0.45.0]: https://github.com/Mutafika/sabitori/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Mutafika/sabitori/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Mutafika/sabitori/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Mutafika/sabitori/compare/v0.41.1...v0.42.0
