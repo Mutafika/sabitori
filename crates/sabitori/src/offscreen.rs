@@ -1523,5 +1523,114 @@ mod tests {
         assert!(is_red(out.pixel(20, 20).unwrap()), "手を加えていない方まで消えた");
         assert_eq!(out.pixel(70, 20).unwrap()[..3], [255, 255, 255], "id のグループが消えていない");
     }
-}
 
+    /// 同じ字を `ground` の上に `ink` で描いた画像。
+    fn glyph_shot(ink: Color, ground: Option<Color>, sheet: Color) -> Rendered {
+        let line = text("Allowed by auto mode 0Oil1 字").pos(4.0, 4.0).font_size(14.0).color(ink);
+        let view = match ground {
+            Some(g) => div().w(Px(240.0)).h(Px(24.0)).bg(g).child(line),
+            None => div().w(Px(240.0)).h(Px(24.0)).child(line),
+        };
+        render(&view, Sheet::px(240.0, 24.0).background(sheet)).expect("描けなかった")
+    }
+
+    /// **字の縁は sRGB の値のまま地と混ぜた濃さになる** (#165)。CoreText などの普通の
+    /// 描き方と同じで、黒地の白い字と白地の黒い字は**ちょうど裏返し**になる (どの
+    /// 画素でも 2 つを足すと 255)。以前は縁を光の量で混ぜた上に明るい字の縁を持ち
+    /// 上げていたので、黒地の白い字は縁が太ってにじみ、白地の黒い字は縁が薄くやせた。
+    #[test]
+    fn glyph_edges_blend_like_srgb_values_on_any_ground() {
+        gpu_or_skip!();
+        let on_black = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK);
+        let on_white = glyph_shot(Color::BLACK, Some(Color::WHITE), Color::WHITE);
+        // 灰色の字を暗い灰色の地に: 縁の値は地と字の値の間を、覆い率の割合で取る。
+        let (ground, ink) = (0x20_u8, 0xa0_u8);
+        let gray = glyph_shot(
+            Color::from_srgb8(ink, ink, ink, 255),
+            Some(Color::from_srgb8(ground, ground, ground, 255)),
+            Color::BLACK,
+        );
+        let mut edges = 0;
+        for y in 0..on_black.height {
+            for x in 0..on_black.width {
+                let w = on_black.pixel(x, y).unwrap()[1] as i32;
+                let b = on_white.pixel(x, y).unwrap()[1] as i32;
+                assert!((w + b - 255).abs() <= 3, "({x}, {y}) 黒地の白 {w} と白地の黒 {b} が裏返しでない");
+                let want = ground as f32 + w as f32 / 255.0 * (ink - ground) as f32;
+                let got = gray.pixel(x, y).unwrap()[1] as f32;
+                assert!((got - want).abs() <= 3.0, "({x}, {y}) 灰色の字の縁 {got} (期待 {want})");
+                if (40..215).contains(&w) {
+                    edges += 1;
+                }
+            }
+        }
+        assert!(edges > 100, "前提: 縁の画素がある ({edges})");
+    }
+
+    /// 地の分からない明るい字は、暗い地の上とみなす (背景を持つ祖先が無い字)。
+    #[test]
+    fn light_text_on_an_unknown_ground_is_drawn_as_on_a_dark_one() {
+        gpu_or_skip!();
+        let known = glyph_shot(Color::WHITE, Some(Color::BLACK), Color::BLACK);
+        let unknown = glyph_shot(Color::WHITE, None, Color::BLACK);
+        for y in 0..known.height {
+            for x in 0..known.width {
+                let (k, u) = (known.pixel(x, y).unwrap()[1] as i32, unknown.pixel(x, y).unwrap()[1] as i32);
+                assert!((k - u).abs() <= 2, "({x}, {y}) 地が分かる {k} / 分からない {u}");
+            }
+        }
+    }
+
+    /// **字は物理画素の上に置く** (#165)。レイアウトは整数に丸めてあっても、スクロールの
+    /// 端数や `translate` はその後に足されるので、字の左上が画素の途中に来る。そのまま
+    /// 置くとアトラスが線形補間で読まれて字がにじむ (格子は #103 で丸めていた)。
+    #[test]
+    fn text_glyphs_land_on_whole_device_pixels() {
+        gpu_or_skip!();
+        let mut tr = text_renderer().unwrap();
+        let typo = sabitori_core::Typography::default();
+        for scale in [1.0_f32, 2.0, 1.25] {
+            tr.set_scale_factor(scale);
+            let on_pixels = |gs: &[sabitori_text::GlyphInstance], what: &str| {
+                assert!(!gs.is_empty(), "{what}: 字が無い");
+                for g in gs.iter().filter(|g| g.rotation == 0.0) {
+                    for v in g.position {
+                        let px = v * scale;
+                        assert!((px - px.round()).abs() < 1e-3, "{what} (倍率 {scale}): 画素の途中 {px}");
+                    }
+                }
+            };
+            // 2 回目はシェーピングのキャッシュから (組んだときと違う端数の位置へ)。
+            for (x, y) in [(10.3, 5.7), (20.55, 7.1)] {
+                let white = Color::WHITE;
+                let gs = tr.prepare_text_spans("Allowed 字", x, y, 14.0, white, &[], None, false, false, None, None, typo);
+                on_pixels(&gs, "横書き");
+                let (gs, _) =
+                    tr.prepare_text_with_hits_spans("Allowed 字", x, y, 14.0, white, &[], None, false, false, None, None, typo);
+                on_pixels(&gs, "当たり付き");
+                let (gs, _) = tr.prepare_vertical("縦書き、ゃ", x, y, 40.0, 200.0, 14.0, white, &[], false, None, typo);
+                on_pixels(&gs, "縦書き");
+            }
+        }
+    }
+
+    /// 格子のセルが自分の地の色を持てば、字の縁はその色の上として描く。持たないセルは
+    /// 要素の地を後から入れる (`fill_backdrop`)。
+    #[test]
+    fn grid_glyphs_take_their_cells_background_as_ground() {
+        gpu_or_skip!();
+        use sabitori_core::{CellFlags, CellGrid};
+        let mut tr = text_renderer().unwrap();
+        let red = Color::from_hex("#ff0000");
+        let mut g = CellGrid::new(4, 1, Color::WHITE);
+        g.put_str(0, 0, "a", Color::WHITE, Some(red), CellFlags::NONE);
+        g.put_str(1, 0, "b", Color::WHITE, None, CellFlags::NONE);
+        let mut gs = prep(&mut tr, &g, 0.0, None);
+        assert_eq!(gs.len(), 2);
+        assert_eq!(gs[0].backdrop, red.to_array());
+        assert_eq!(gs[1].backdrop[3], 0.0, "地の色が無いセルは分からないまま");
+        sabitori_text::fill_backdrop(&mut gs, Some(Color::BLACK));
+        assert_eq!(gs[0].backdrop, red.to_array(), "セルの地は上書きしない");
+        assert_eq!(gs[1].backdrop, Color::BLACK.to_array());
+    }
+}

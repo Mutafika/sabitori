@@ -310,6 +310,7 @@ pub fn text_to_glyphs(d: &TextDraw, tr: &mut TextRenderer) -> Vec<GlyphInstance>
     // Rotation is applied *after* shaping so the shaping cache stays
     // angle-independent — the same string at a new angle is still a cache hit.
     sabitori_text::rotate_glyphs(&mut glyphs, (d.position.x, d.position.y), d.rotation);
+    sabitori_text::fill_backdrop(&mut glyphs, d.backdrop);
     glyphs
 }
 
@@ -451,6 +452,7 @@ fn cell_grid_to_glyphs(
         d.font_family.as_deref(),
         d.cache_key,
     );
+    sabitori_text::fill_backdrop(&mut produced, d.backdrop);
     if let Some(c) = clip {
         let arr = clip_to_array(&c);
         for g in produced.iter_mut() {
@@ -593,6 +595,7 @@ fn render_list_to_gpu_with_hits_impl(
                     (d.position.x, d.position.y),
                     d.rotation,
                 );
+                sabitori_text::fill_backdrop(&mut produced, d.backdrop);
                 if let Some(c) = clip {
                     let arr = clip_to_array(&c);
                     for g in produced.iter_mut() {
@@ -1582,6 +1585,7 @@ impl OrderedFrame {
                             move_glyphs(&mut produced, &bytes, &d.content, m);
                         }
                         sabitori_text::rotate_glyphs(&mut produced, (d.position.x, d.position.y), d.rotation);
+                        sabitori_text::fill_backdrop(&mut produced, d.backdrop);
                         if let Some(c) = clip {
                             let arr = clip_to_array(&c);
                             for g in produced.iter_mut() {
@@ -1616,6 +1620,7 @@ impl OrderedFrame {
                     }
                     // 回すのはグリフだけ。当たりの箱は回さない (render_list_to_gpu_with_hits と同じ)。
                     sabitori_text::rotate_glyphs(&mut produced, (d.position.x, d.position.y), d.rotation);
+                    sabitori_text::fill_backdrop(&mut produced, d.backdrop);
                     if let Some(c) = clip {
                         let arr = clip_to_array(&c);
                         for g in produced.iter_mut() {
@@ -1862,6 +1867,7 @@ mod ordered_tests {
             clip_rect: [0.0; 4],
             is_color: 0.0,
             rotation: 0.0,
+            backdrop: [0.0; 4],
         };
         let mut glyphs = [g, g, g];
         let motions = [GlyphMotion::default(), GlyphMotion { dy: 5.0, ..Default::default() }];
@@ -2058,6 +2064,7 @@ mod tests {
             owner: None,
             glyph_motion: None,
             vertical: false,
+            backdrop: None,
         }
     }
 
@@ -2127,6 +2134,7 @@ mod tests {
             owner: None,
             glyph_motion: None,
             vertical: false,
+            backdrop: None,
         };
         // top を -200 までスクロール、高さ 300 → bottom=100 は viewport 内 → 描く。
         // 旧 font_size*1.5(=24px) 近似だと top=-200 の rect は viewport 外 → 誤 cull。
@@ -2453,6 +2461,7 @@ mod hit_layout_tests {
             owner: None,
             glyph_motion: None,
             vertical: false,
+            backdrop: None,
         }
     }
 
