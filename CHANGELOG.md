@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-19
+
 ### Added
 
 - **`DeclarativeApp::on_reopen(has_visible_windows)`: 動いている最中に、もう一度開かれたこと (macOS)**。
@@ -4881,7 +4883,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/Mutafika/sabitori/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Mutafika/sabitori/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Mutafika/sabitori/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Mutafika/sabitori/compare/v0.42.0...v0.43.0
