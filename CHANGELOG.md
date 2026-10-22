@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-10-23
+
 ### Fixed
 
 - **テキスト欄で、打った字が次の 1 打で消えることがあった**。空の欄で `select_all` した後や、⇧← で選んで
@@ -4890,7 +4892,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.1...HEAD
+[0.46.1]: https://github.com/Mutafika/sabitori/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/Mutafika/sabitori/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Mutafika/sabitori/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Mutafika/sabitori/compare/v0.43.0...v0.44.0
