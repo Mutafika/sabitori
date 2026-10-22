@@ -243,17 +243,24 @@ impl TextInputInner {
         }
     }
 
+    // 文字を変える操作は、選択の起点を捨てる。幅の無い選択 (起点がキャレットと同じ。
+    // 空の欄の select_all や、⇧← の後の ⇧→ で残る) の起点を持ったまま書き換えると、
+    // 入れた字が選ばれたままになって次の 1 打で消え、⌫ は後ろの字を消す。
+
     pub fn insert_char(&mut self, c: char) {
         self.text.insert(self.cursor_pos, c);
         self.cursor_pos += c.len_utf8();
+        self.selection_start = None;
     }
 
     pub fn insert_str(&mut self, s: &str) {
         self.text.insert_str(self.cursor_pos, s);
         self.cursor_pos += s.len();
+        self.selection_start = None;
     }
 
     pub fn backspace(&mut self) {
+        self.selection_start = None;
         if self.cursor_pos > 0 {
             // Find the previous character boundary
             let prev = self.text[..self.cursor_pos]
@@ -267,6 +274,7 @@ impl TextInputInner {
     }
 
     pub fn delete(&mut self) {
+        self.selection_start = None;
         if self.cursor_pos < self.text.len() {
             let next = self.text[self.cursor_pos..]
                 .char_indices()
@@ -695,12 +703,14 @@ impl TextInputInner {
     }
 
     /// Delete the selected text and collapse the cursor.
+    ///
+    /// 幅の無い選択 (消す物が無い) でも起点は捨てる — 続けて入れる字が選ばれないように。
     pub fn delete_selection(&mut self) {
         if let Some((lo, hi)) = self.selection_range() {
             self.text.drain(lo..hi);
             self.cursor_pos = lo;
-            self.selection_start = None;
         }
+        self.selection_start = None;
     }
 
     pub fn select_all(&mut self) {
@@ -1917,6 +1927,46 @@ mod nav_tests {
         s.text = text.to_string();
         s.cursor_pos = cursor;
         s
+    }
+
+    /// 空の欄で全部を選んでから打つ。起点 (0) がキャレットと重なった「幅の無い選択」が
+    /// 残ると、1 字目を入れた途端にそれが選ばれ、2 字目で消えていた。
+    #[test]
+    fn typing_after_select_all_on_an_empty_field_keeps_every_letter() {
+        let mut s = field("", 0);
+        s.select_all();
+        for ch in "smb".chars() {
+            s.on_char(ch);
+        }
+        assert_eq!(s.text, "smb");
+        assert_eq!(s.selection_range(), None);
+    }
+
+    /// ⇧← で選んで ⇧→ で戻した (選択の幅が 0) 後も同じ。打った字も貼った字も残る。
+    #[test]
+    fn a_selection_shrunk_to_nothing_does_not_swallow_the_next_letters() {
+        let mut s = field("ab", 2);
+        assert!(s.on_key(Key::Left, with_shift(Modifiers::default())));
+        assert!(s.on_key(Key::Right, with_shift(Modifiers::default())));
+        assert_eq!(s.selection_range(), None);
+        s.on_char('c');
+        s.on_char('d');
+        assert_eq!(s.text, "abcd");
+        s.on_paste("ef");
+        s.on_char('g');
+        assert_eq!(s.text, "abcdefg");
+    }
+
+    /// 幅の無い選択のまま ⌫ を押すと、前の字を順に消す (後ろの字を消さない)。
+    #[test]
+    fn backspace_after_a_shrunk_selection_deletes_backwards() {
+        let mut s = field("abcd", 2);
+        assert!(s.on_key(Key::Left, with_shift(Modifiers::default())));
+        assert!(s.on_key(Key::Right, with_shift(Modifiers::default())));
+        assert!(s.on_key(Key::Backspace, Modifiers::default()));
+        assert!(s.on_key(Key::Backspace, Modifiers::default()));
+        assert_eq!(s.text, "cd");
+        assert_eq!(s.cursor_pos, 0);
     }
 
     /// 英語は空白で切れる。 ⌥← は単語の先頭、 ⌥→ は単語の末尾。
