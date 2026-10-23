@@ -77,9 +77,60 @@ pub(crate) enum CopyFocus {
     Elsewhere,
 }
 
+/// 押した点の下にある欄の種類。`pointerup` の中で、どちらの隠し入力要素に
+/// 焦点を当てるかを決める。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldUnder {
+    /// 欄の上ではない。
+    None,
+    /// ふつうの欄 → 隠し `<textarea>`。
+    Plain,
+    /// 伏字の欄 → 隠し `<input type="password">`。
+    Secure,
+}
+
+/// `point` の下にある欄の種類。`secure` は `fields` のうち伏字のもの。
+///
+/// 伏字の欄を textarea で受けると、ブラウザはそこがパスワード欄だと知らない。
+/// `<input type="password">` に焦点があるあいだブラウザがしていること
+/// (IME を切る、macOS で他のアプリに打鍵を見せない) が起きない。
+pub(crate) fn field_under(
+    point: sabitori_core::Point,
+    fields: &[sabitori_core::Rect],
+    secure: &[sabitori_core::Rect],
+) -> FieldUnder {
+    // 伏字の欄の矩形は `fields` にも入っているので、先に見る。
+    if secure.iter().any(|r| r.contains(point)) {
+        FieldUnder::Secure
+    } else if fields.iter().any(|r| r.contains(point)) {
+        FieldUnder::Plain
+    } else {
+        FieldUnder::None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{copy_to_route, is_printable};
+    use super::{copy_to_route, field_under, is_printable, FieldUnder};
+    use sabitori_core::{Point, Rect};
+
+    /// 伏字の欄を押したら、ふつうの欄ではなくパスワードの入力要素へ。
+    #[test]
+    fn a_press_on_a_secure_field_goes_to_the_password_input() {
+        let user = Rect::new(0.0, 0.0, 200.0, 30.0);
+        let pass = Rect::new(0.0, 40.0, 200.0, 30.0);
+        let fields = [user, pass];
+        let secure = [pass];
+        let at = |y| field_under(Point::new(10.0, y), &fields, &secure);
+        assert_eq!(at(10.0), FieldUnder::Plain, "ユーザー名の欄");
+        assert_eq!(at(50.0), FieldUnder::Secure, "パスワードの欄");
+        assert_eq!(at(100.0), FieldUnder::None, "欄の外");
+        assert_eq!(
+            field_under(Point::new(10.0, 50.0), &fields, &[]),
+            FieldUnder::Plain,
+            "伏字の欄が無ければ、同じ矩形もふつうの欄",
+        );
+    }
 
     /// 画面の選択の、コピーの打鍵だけを回す (#111)。
     #[test]

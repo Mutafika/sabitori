@@ -34,6 +34,9 @@ impl<A: DeclarativeApp> Host<A> {
     fn reap(&mut self, event_loop: &ActiveEventLoop) {
         self.windows.retain(|w| !w.closed);
         if self.windows.is_empty() {
+            // ループを抜けたあともプロセスが続くアプリがある。立てたまま返さない。
+            #[cfg(target_os = "macos")]
+            crate::macos_secure_input::set(false);
             event_loop.exit();
         }
     }
@@ -134,6 +137,11 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
             flow = more_urgent(flow, event_loop.control_flow());
         }
         self.reap(event_loop);
+        // 伏字の欄に打っているあいだ、他のアプリに打鍵を見せない。状態はプロセスで
+        // 1 つなので、窓ごとではなくここで全部の窓を見て決める — 窓ごとに決めると、
+        // 後ろの窓の「要らない」が前の窓の「要る」を毎周回打ち消す。
+        #[cfg(target_os = "macos")]
+        crate::macos_secure_input::set(self.windows.iter().any(|w| w.wants_secure_input()));
         if self.windows.is_empty() {
             return;
         }

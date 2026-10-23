@@ -73,6 +73,7 @@ fn platform_modules_keep_their_own_gate() {
     for (m, expected) in [
         ("macos_drag", "target_os=\"macos\""),
         ("macos_blur", "target_os=\"macos\""),
+        ("macos_secure_input", "target_os=\"macos\""),
         ("ios_keyboard", "target_os=\"ios\""),
         ("web_ime", "target_arch=\"wasm32\""),
         ("web_history", "target_arch=\"wasm32\""),
