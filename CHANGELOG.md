@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-10-23
+
 ### Fixed
 
 - **伏字の欄 (`TextInputState::new_secure`) に打った打鍵が、macOS で他のアプリから見えていた**。OS の
@@ -4904,7 +4906,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.2...HEAD
+[0.46.2]: https://github.com/Mutafika/sabitori/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/Mutafika/sabitori/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/Mutafika/sabitori/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Mutafika/sabitori/compare/v0.44.0...v0.45.0
