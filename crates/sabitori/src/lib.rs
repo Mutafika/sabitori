@@ -70,6 +70,9 @@ pub mod macos_drag;
 pub mod macos_blur;
 #[cfg(target_os = "macos")]
 mod macos_ime;
+/// 伏字の欄に焦点があるあいだ、他のアプリに打鍵を見せない。
+#[cfg(target_os = "macos")]
+mod macos_secure_input;
 /// 焦点の無い別窓にも指の動きを届ける (ホバー)。
 #[cfg(target_os = "macos")]
 mod macos_track;

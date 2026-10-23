@@ -1929,27 +1929,26 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 {
                     crate::web_ime::ensure_attached();
 
-                    let field_rects: Vec<sabitori_core::Rect> = self
-                        .last_build
-                        .as_ref()
-                        .map(|b| {
-                            b.hit_regions
-                                .iter()
-                                .filter(|r| {
-                                    r.id
-                                        .as_deref()
-                                        .is_some_and(|id| self.managed_text_field(id).is_some())
-                                })
-                                .map(|r| r.rect)
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    // 伏字の欄は別に渡す — そちらはパスワードの入力要素で受ける。
+                    let mut field_rects: Vec<sabitori_core::Rect> = Vec::new();
+                    let mut secure_rects: Vec<sabitori_core::Rect> = Vec::new();
+                    for r in self.last_build.iter().flat_map(|b| &b.hit_regions) {
+                        let Some(field) = r.id.as_deref().and_then(|id| self.managed_text_field(id)) else {
+                            continue;
+                        };
+                        field_rects.push(r.rect);
+                        if field.is_secure() {
+                            secure_rects.push(r.rect);
+                        }
+                    }
                     crate::web_ime::set_fields(field_rects);
+                    crate::web_ime::set_secure_fields(secure_rects);
 
                     let on_a_field = self
                         .focused_id
                         .as_deref()
                         .is_some_and(|id| self.managed_text_field(id).is_some());
+                    crate::web_ime::set_secure(self.focused_field_is_secure());
                     crate::web_ime::set_active(on_a_field, self.managed_ime_area());
 
                     for e in crate::web_ime::drain() {
@@ -3309,6 +3308,15 @@ impl<A: DeclarativeApp> AppState<A> {
             .as_deref()
             .and_then(|id| self.managed_text_field(id))
             .is_some_and(|f| f.is_secure())
+    }
+
+    /// 他のアプリに打鍵を見せたくないか — 伏字の欄に焦点があり、窓が前にいる。
+    ///
+    /// 窓が後ろに回ったら `false`。OS の「セキュアな入力」を立てたままにすると、
+    /// 他のアプリの打鍵の監視まで止まったままになる ([`crate::macos_secure_input`])。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn wants_secure_input(&self) -> bool {
+        self.focused_field_is_secure() && self.window.as_ref().is_some_and(|w| w.has_focus())
     }
 
     /// フォーカス中の要素が登録済みなら、 そこへイベントを流す。 消費したら `true`。

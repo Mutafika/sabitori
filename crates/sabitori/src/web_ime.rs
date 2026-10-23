@@ -34,6 +34,15 @@
 //! ものを移したもの) が、その場合「今の画面のテキスト欄を全部列挙する関数」を
 //! 手で保守することになる。ランタイムは `register_managed` で欄を知っている
 //! ので、列挙が要らない。
+//!
+//! # 伏字の欄は `<input type="password">` で受ける
+//!
+//! 隠し textarea だけだと、ブラウザは伏字の欄もふつうの文字欄として扱う。
+//! ブラウザは `<input type="password">` に焦点があるあいだ、IME を切り、macOS
+//! では「セキュアな入力」を立てて**他のアプリに打鍵を見せない**。textarea では
+//! そのどちらも起きない。なので伏字の欄に焦点があるあいだは、同じ形の隠し
+//! `<input type="password">` の方に焦点を当てる。打った文字を汲む道 (`input` /
+//! `keydown`) は両方に同じものを張ってある。
 
 #![cfg(target_arch = "wasm32")]
 
@@ -51,6 +60,10 @@ thread_local! {
     static BRIDGE: RefCell<Option<Bridge>> = const { RefCell::new(None) };
     /// 今のフレームの、管理テキスト欄の画面矩形 (論理 px)。
     static FIELDS: RefCell<Vec<Rect>> = const { RefCell::new(Vec::new()) };
+    /// [`FIELDS`] のうち伏字の欄。押したらパスワードの入力要素へ焦点を当てる。
+    static SECURE_FIELDS: RefCell<Vec<Rect>> = const { RefCell::new(Vec::new()) };
+    /// 焦点のある欄が伏字か。[`set_active`] がどちらの要素に焦点を当てるかを決める。
+    static SECURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// 今の選択文字列と、それを切り取れるか。ランタイムが毎フレーム更新する。
     ///
     /// `copy` / `cut` の DOM イベントは**同期で**答えないといけないので、
@@ -68,6 +81,8 @@ thread_local! {
 
 struct Bridge {
     textarea: web_sys::HtmlTextAreaElement,
+    /// 伏字の欄の打鍵を受ける隠し `<input type="password">`。
+    password: web_sys::HtmlInputElement,
     /// canvas の `pointerup` を張れたか。canvas はランタイムの初期化中に
     /// body へ足されるので、最初の呼び出しではまだ居ないことがある。
     /// 張れるまで毎フレーム試す — ここを 1 回で諦めると、**押しても
@@ -100,6 +115,16 @@ pub fn set_fields(rects: Vec<Rect>) {
     FIELDS.with(|f| *f.borrow_mut() = rects);
 }
 
+/// [`set_fields`] で渡した欄のうち、伏字のものの矩形を渡す。
+pub(crate) fn set_secure_fields(rects: Vec<Rect>) {
+    SECURE_FIELDS.with(|f| *f.borrow_mut() = rects);
+}
+
+/// 焦点のある欄が伏字かを渡す。[`set_active`] より先に呼ぶ。
+pub(crate) fn set_secure(secure: bool) {
+    SECURE.with(|s| s.set(secure));
+}
+
 /// 今の選択文字列を渡す (`copy` / `cut` が同期で読む)。
 ///
 /// `cuttable` が `false` なら画面の視覚選択 = 読み取り専用なので、⌘X は
@@ -128,7 +153,8 @@ pub fn ensure_attached() {
         }
         if let Some(bridge) = guard.as_mut() {
             if !bridge.canvas_hooked {
-                bridge.canvas_hooked = hook_canvas(&bridge.textarea, &mut bridge._keep);
+                bridge.canvas_hooked =
+                    hook_canvas(&bridge.textarea, &bridge.password, &mut bridge._keep);
             }
         }
     });
@@ -138,11 +164,18 @@ pub fn ensure_attached() {
 ///
 /// 焦点が外れたら `blur()` する — 付けっぱなしだと、ブラウザがページの
 /// どこかにキャレットがあると思い続ける。
+///
+/// 焦点を当てるのは、欄が伏字 ([`set_secure`]) なら `<input type="password">`、
+/// そうでなければ textarea。
 pub fn set_active(active: bool, caret: Option<(f32, f32, f32, f32)>) {
     BRIDGE.with(|b| {
         let guard = b.borrow();
         let Some(bridge) = guard.as_ref() else { return };
-        let el: &web_sys::HtmlElement = bridge.textarea.as_ref();
+        let el: &web_sys::HtmlElement = if SECURE.with(|s| s.get()) {
+            bridge.password.as_ref()
+        } else {
+            bridge.textarea.as_ref()
+        };
         if active {
             // 変換候補ウィンドウは**入力要素の位置**に出るので、キャレットへ
             // 動かす。見えない要素だが、位置は候補窓に効く。
@@ -160,41 +193,84 @@ pub fn set_active(active: bool, caret: Option<(f32, f32, f32, f32)>) {
             // 回が出る (実際に headless Chrome で再現した)。欄に焦点がある間は
             // ここで取り返す。デスクトップのブラウザは操作の外でも focus できる
             // ので、これが効く。
-            if !is_focused(&bridge.textarea) {
+            //
+            // ふつうの欄から伏字の欄へ移ったときも、ここで焦点が乗り換わる。
+            if !is_focused(el) {
                 let _ = el.focus();
             }
-        } else if is_focused(&bridge.textarea) {
-            let _ = el.blur();
+        } else {
+            for other in [bridge.textarea.as_ref(), bridge.password.as_ref()] {
+                if is_focused(other) {
+                    let _ = other.blur();
+                }
+            }
         }
     });
 }
 
-fn is_focused(textarea: &web_sys::HtmlTextAreaElement) -> bool {
+fn is_focused(el: &web_sys::HtmlElement) -> bool {
     web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.active_element())
-        .is_some_and(|a| a.is_same_node(Some(textarea.as_ref())))
+        .is_some_and(|a| a.is_same_node(Some(el.as_ref())))
 }
 
 fn build() -> Option<Bridge> {
     let document = web_sys::window()?.document()?;
-    let body = document.body()?;
 
-    let textarea: web_sys::HtmlTextAreaElement =
-        document.create_element("textarea").ok()?.dyn_into().ok()?;
+    let textarea: web_sys::HtmlTextAreaElement = hidden_input(&document, "textarea")?.dyn_into().ok()?;
     textarea.set_id("sabitori-ime");
+    let password: web_sys::HtmlInputElement = hidden_input(&document, "input")?.dyn_into().ok()?;
+    password.set_type("password");
+    password.set_id("sabitori-ime-secure");
+
+    let mut keep: Vec<Closure<dyn FnMut(web_sys::Event)>> = Vec::new();
+    listen_typing(textarea.as_ref(), &mut keep);
+    listen_typing(password.as_ref(), &mut keep);
+    let target: &web_sys::EventTarget = textarea.as_ref();
+
+    // --- クリップボード (#76) -------------------------------------------
+    //
+    // textarea だけに張る。伏字の欄では選択を渡さない
+    // ([`AppState::clipboard_selection`]) ので、⌘C / ⌘X が password の方へ
+    // 回ってくることは無い。
+    keep.push(listen(target, "copy", |e| {
+        write_clipboard(&e);
+        clear_inputs();
+        if ROUTED_COPY.with(|r| r.replace(false)) {
+            focus_canvas();
+        }
+    }));
+    keep.push(listen(target, "cut", |e| {
+        crate::web_wake::wake();
+        if write_clipboard(&e) {
+            // **書けたときだけ**合図を立てる。順序が逆だと、書けなかった環境で
+            // 「切り取ったのにどこにも残らない」が復活する (issue #33)。
+            CUT_WRITTEN.with(|c| c.set(true));
+        }
+        clear_inputs();
+    }));
+
+    hook_window_copy(&textarea, &mut keep);
+
+    Some(Bridge { textarea, password, canvas_hooked: false, _keep: keep })
+}
+
+/// 見えない入力要素を 1 つ作って body に置く。
+fn hidden_input(document: &web_sys::Document, tag: &str) -> Option<web_sys::Element> {
+    let body = document.body()?;
+    let el = document.create_element(tag).ok()?;
     // `opacity: 0` で隠す (`display: none` や `visibility: hidden` だと
     // フォーカスできない = キーボードが出ない)。`font-size: 16px` は iOS が
     // それ未満の入力要素にフォーカスするとページを拡大するため。
     // `pointer-events: none` で、canvas のドラッグを邪魔しない。
-    textarea
-        .set_attribute(
-            "style",
-            "position: fixed; left: 0; top: 0; width: 1px; height: 1px; \
-             opacity: 0; pointer-events: none; border: 0; padding: 0; \
-             margin: 0; resize: none; z-index: 2147483647; font-size: 16px;",
-        )
-        .ok()?;
+    el.set_attribute(
+        "style",
+        "position: fixed; left: 0; top: 0; width: 1px; height: 1px; \
+         opacity: 0; pointer-events: none; border: 0; padding: 0; \
+         margin: 0; resize: none; z-index: 2147483647; font-size: 16px;",
+    )
+    .ok()?;
     // 補完・自動修正はこちらの文字列を勝手に書き換えるので全部切る。
     for (k, v) in [
         ("autocapitalize", "off"),
@@ -204,13 +280,14 @@ fn build() -> Option<Bridge> {
         ("aria-hidden", "true"),
         ("tabindex", "-1"),
     ] {
-        let _ = textarea.set_attribute(k, v);
+        let _ = el.set_attribute(k, v);
     }
-    body.append_child(&textarea).ok()?;
+    body.append_child(&el).ok()?;
+    Some(el)
+}
 
-    let mut keep: Vec<Closure<dyn FnMut(web_sys::Event)>> = Vec::new();
-    let target: &web_sys::EventTarget = textarea.as_ref();
-
+/// 打った文字を汲む listener を張る (textarea と password の両方に同じものを)。
+fn listen_typing(target: &web_sys::EventTarget, keep: &mut Vec<Closure<dyn FnMut(web_sys::Event)>>) {
     // --- 変換中 ---------------------------------------------------------
     keep.push(listen(target, "compositionupdate", |e| {
         let Some(ce) = e.dyn_ref::<web_sys::CompositionEvent>() else { return };
@@ -229,7 +306,7 @@ fn build() -> Option<Bridge> {
         if !text.is_empty() {
             push(InputEvent::ImeCommit { text });
         }
-        clear_textarea();
+        clear_inputs();
     }));
 
     // --- 変換を経ない入力 (ソフトキーボード・音声・貼り付け) ------------
@@ -249,7 +326,7 @@ fn build() -> Option<Bridge> {
             }
             // 貼り付けはここに来る (`paste` イベントより後で、確実に本文が入る)。
             "insertFromPaste" | "insertFromDrop" | "insertReplacementText" => {
-                let text = if data.is_empty() { textarea_value() } else { data };
+                let text = if data.is_empty() { value_of(&e) } else { data };
                 if !text.is_empty() {
                     push(InputEvent::Paste { text });
                 }
@@ -260,25 +337,7 @@ fn build() -> Option<Bridge> {
             // deleteContentBackward などは keydown 側で拾っているので無視。
             _ => {}
         }
-        clear_textarea();
-    }));
-
-    // --- クリップボード (#76) -------------------------------------------
-    keep.push(listen(target, "copy", |e| {
-        write_clipboard(&e);
-        clear_textarea();
-        if ROUTED_COPY.with(|r| r.replace(false)) {
-            focus_canvas();
-        }
-    }));
-    keep.push(listen(target, "cut", |e| {
-        crate::web_wake::wake();
-        if write_clipboard(&e) {
-            // **書けたときだけ**合図を立てる。順序が逆だと、書けなかった環境で
-            // 「切り取ったのにどこにも残らない」が復活する (issue #33)。
-            CUT_WRITTEN.with(|c| c.set(true));
-        }
-        clear_textarea();
+        clear_inputs();
     }));
 
     // --- 編集キー -------------------------------------------------------
@@ -353,14 +412,19 @@ fn build() -> Option<Bridge> {
         }
         push(key_event(key, mods));
     }));
+}
 
-    // --- 画面の選択の ⌘C (#111) ---------------------------------------------
-    //
-    // 焦点が canvas にあると、上の listener には何も来ない (winit が canvas の
-    // `keydown` の既定動作を止めるので、ブラウザの `copy` も起きない)。窓の
-    // **捕獲段階**で canvas より先に拾い、textarea に焦点を移して選択文字列を
-    // 全選択しておく。すると既定動作の `copy` が textarea で起き、上の `copy`
-    // listener が書く。canvas へは流さない (winit に止められないように)。
+/// 画面の選択の ⌘C (#111)。
+///
+/// 焦点が canvas にあると、欄の listener には何も来ない (winit が canvas の
+/// `keydown` の既定動作を止めるので、ブラウザの `copy` も起きない)。窓の
+/// **捕獲段階**で canvas より先に拾い、textarea に焦点を移して選択文字列を
+/// 全選択しておく。すると既定動作の `copy` が textarea で起き、textarea の `copy`
+/// listener が書く。canvas へは流さない (winit に止められないように)。
+fn hook_window_copy(
+    textarea: &web_sys::HtmlTextAreaElement,
+    keep: &mut Vec<Closure<dyn FnMut(web_sys::Event)>>,
+) {
     if let Some(window) = web_sys::window() {
         let ta = textarea.clone();
         let c = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -392,24 +456,24 @@ fn build() -> Option<Bridge> {
         // canvas に届かなくなる。
         let up = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
             if ROUTED_COPY.with(|r| r.replace(false)) {
-                clear_textarea();
+                clear_inputs();
                 focus_canvas();
             }
         });
         let _ = window.add_event_listener_with_callback_and_bool("keyup", up.as_ref().unchecked_ref(), true);
         keep.push(up);
     }
-
-    Some(Bridge { textarea, canvas_hooked: false, _keep: keep })
 }
 
 /// canvas を押したらフォーカスを当てる listener を張る。張れたら `true`。
 ///
 /// **このイベントの中で `focus()` すること。** iOS はユーザー操作の中で
 /// focus しないとソフトキーボードを出さない。ランタイムの次の tick からでは
-/// 遅い = タブレットで 1 文字も打てない。
+/// 遅い = タブレットで 1 文字も打てない。伏字の欄なら password の方に当てる —
+/// iOS はキーボードの種類 (予測変換の無い安全な入力) もこの時点の要素で決める。
 fn hook_canvas(
     textarea: &web_sys::HtmlTextAreaElement,
+    password: &web_sys::HtmlInputElement,
     keep: &mut Vec<Closure<dyn FnMut(web_sys::Event)>>,
 ) -> bool {
     let Some(canvas) = web_sys::window()
@@ -420,19 +484,26 @@ fn hook_canvas(
     };
 
     let ta = textarea.clone();
+    let pw = password.clone();
     let c = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+        use crate::web_keys::FieldUnder;
         let Some(pe) = e.dyn_ref::<web_sys::PointerEvent>() else { return };
-        let (x, y) = (pe.offset_x() as f32, pe.offset_y() as f32);
-        let over_field = FIELDS.with(|f| {
-            f.borrow()
-                .iter()
-                .any(|r| r.contains(sabitori_core::Point::new(x, y)))
+        let point = sabitori_core::Point::new(pe.offset_x() as f32, pe.offset_y() as f32);
+        let under = FIELDS.with(|f| {
+            SECURE_FIELDS.with(|s| crate::web_keys::field_under(point, &f.borrow(), &s.borrow()))
         });
-        let el: &web_sys::HtmlElement = ta.as_ref();
-        if over_field {
-            let _ = el.focus();
-        } else {
-            let _ = el.blur();
+        let (ta, pw): (&web_sys::HtmlElement, &web_sys::HtmlElement) = (ta.as_ref(), pw.as_ref());
+        match under {
+            FieldUnder::Plain => {
+                let _ = ta.focus();
+            }
+            FieldUnder::Secure => {
+                let _ = pw.focus();
+            }
+            FieldUnder::None => {
+                let _ = ta.blur();
+                let _ = pw.blur();
+            }
         }
     });
     let ok = canvas
@@ -487,12 +558,13 @@ fn key_event(key: Key, modifiers: Modifiers) -> InputEvent {
     InputEvent::KeyInput { key, pressed: true, modifiers }
 }
 
-/// textarea は**常に空**に保つ。溜めると、次の入力の `input` イベントで
-/// 前の文字列まで巻き込む。
-fn clear_textarea() {
+/// 隠し入力要素は**常に空**に保つ。溜めると、次の入力の `input` イベントで
+/// 前の文字列まで巻き込む。伏字の方は、打った文字を DOM に残さないためでもある。
+fn clear_inputs() {
     BRIDGE.with(|b| {
         if let Some(bridge) = b.borrow().as_ref() {
             bridge.textarea.set_value("");
+            bridge.password.set_value("");
         }
     });
 }
@@ -524,13 +596,16 @@ fn select_in_textarea(text: &str) {
     });
 }
 
-fn textarea_value() -> String {
-    BRIDGE.with(|b| {
-        b.borrow()
-            .as_ref()
-            .map(|bridge| bridge.textarea.value())
-            .unwrap_or_default()
-    })
+/// イベントが起きた入力要素 (textarea か password) の中身。
+fn value_of(e: &web_sys::Event) -> String {
+    let Some(target) = e.target() else { return String::new() };
+    if let Some(ta) = target.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        return ta.value();
+    }
+    target
+        .dyn_ref::<web_sys::HtmlInputElement>()
+        .map(|i| i.value())
+        .unwrap_or_default()
 }
 
 /// DOM の `KeyboardEvent.key` → sabitori の [`Key`]。
