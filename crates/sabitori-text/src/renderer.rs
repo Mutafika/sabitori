@@ -884,21 +884,19 @@ impl TextRenderer {
                 // セルは要素の地 (描く側が `fill_backdrop` で入れる)。
                 let backdrop = cell.bg.filter(|b| b.a >= 1.0).map_or([0.0; 4], Color::to_array);
                 let (cx, cy) = (col as f32 * cell_w, row as f32 * cell_h);
-                // 字形がセルより広いときは横に縮めて収める。端末は `⌘` を 1 セルの字と
+                // 字形がセルより広いときは小さく描いて収める。端末は `⌘` を 1 セルの字と
                 // 数えるが、HackGen などは全角幅の字形を持っていて、そのまま置くと隣の字に
-                // 重なる (WezTerm も同じく縮める)。ただし次のセルが空いていれば 2 セルまでは
-                // はみ出して描く: 重なる字が無いのに縮めると、`①` が半分の幅に潰れて読めない。
+                // 重なる。ただし次のセルが空いていれば 2 セルまでははみ出して描く: 重なる字が
+                // 無いのに縮めることはない。縮めるときは縦も同じ割合にする: 横だけ縮めると
+                // `①` が縦長の楕円に潰れ、中の数字まで読めない。小さい字の大きさで字形を
+                // 作り直すので、縮めた字も画素に揃ってにじまない。
                 let next_blank = cells.get(col + 1).is_some_and(|n| matches!(n.ch, ' ' | '\0'));
                 let span = if cell.flags.contains(CellFlags::WIDE) || next_blank { 2.0 * cell_w } else { cell_w };
-                let (glyphs, advance) =
-                    self.cell_glyph(cell.ch, bold, italic, color, font_size, cell_h, family, family_hash);
-                let fit = fit_to_cell(advance, span);
+                let advance = self.cell_glyph(cell.ch, bold, italic, color, font_size, cell_h, family, family_hash).1;
+                let size = fit_to_cell(advance, span).map_or(font_size, |k| font_size * k);
+                let (glyphs, _) = self.cell_glyph(cell.ch, bold, italic, color, size, cell_h, family, family_hash);
                 for g in glyphs {
                     let mut g = *g;
-                    if let Some(k) = fit {
-                        g.position[0] *= k;
-                        g.size[0] *= k;
-                    }
                     g.position = [g.position[0] + cx, g.position[1] + cy];
                     g.color = color;
                     g.backdrop = backdrop;
@@ -2112,9 +2110,9 @@ mod color_span_tests {
 }
 
 
-/// 1 セルぶんの字の字送り `advance` が `span` (セルの幅) からはみ出すなら、横に
-/// 縮める倍率を返す。字形をセルの左端からその倍率で縮めれば、字送りがセルに
-/// 収まる。はみ出さなければ `None`。
+/// 1 セルぶんの字の字送り `advance` が `span` (セルの幅) からはみ出すなら、字を
+/// 縮める倍率を返す。字の大きさにその倍率を掛けて描けば、字送りがセルに収まる。
+/// はみ出さなければ `None`。
 ///
 /// 見るのは字送りで、字形の矩形ではない。矩形は左右に 1px ほどの余白を持ち、
 /// `M` や `W` でも字送りより広いので、矩形で決めると格子のほぼ全部の字が縮む。
