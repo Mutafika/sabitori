@@ -15,6 +15,19 @@
 
 ## [Unreleased]
 
+### Security
+
+- **依存に、既知の脆弱性 (RustSec) を持つ版が入っていた**。`sabitori-net` が reqwest 経由で使う rustls に
+  5 件 (認証前の ServerHello で、後の接続の鍵交換を古い方式へ落とされる、など)、rustls-webpki と
+  webpki-roots に 1 件ずつ (信頼を外された中間証明書を受け入れる)、ほか tokio・crossbeam-epoch に 1 件ずつ。
+  どれも互換の範囲の版上げで直るので、`Cargo.lock` を上げた (rustls 0.23.46 / rustls-webpki 0.103.16 /
+  webpki-roots 1.0.11 / tokio 1.54.1 / crossbeam-epoch 0.9.21、あわせて yank された clipboard-win 5.4.1 →
+  5.4.3)。**利用側のアプリは自分の `Cargo.lock` で版が決まるので、この版に上げても自動では直らない。**
+  `cargo update -p rustls -p rustls-webpki -p webpki-roots -p tokio -p crossbeam-epoch` を流すこと。
+- `deny.toml` に `[advisories]` を書いてあったのに、CI は `check licenses` しか回していなかった。
+  `cargo deny check advisories` を PR ごとと毎日回す (`.github/workflows/advisories.yml`)。直せない残り
+  (ビルド時だけ通る quick-xml、上流待ちの保守終了 6 件) は、届かない理由と消える条件を付けて除外した。
+
 ## [0.46.2] - 2026-10-23
 
 ### Fixed

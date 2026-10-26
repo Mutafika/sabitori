@@ -1,0 +1,40 @@
+# 既知の脆弱性 (RustSec) を抱えた依存が Cargo.lock に入っていたら止める。
+#
+# 実際に起きたこと: deny.toml に [advisories] を書いてあったのに、CI は
+# `check licenses` しか回していなかった。v0.46.2 の時点で rustls に 5 件
+# (ServerHello で後の接続の鍵交換を落とされる、など)、webpki に 2 件の穴を
+# 抱えたままで、どれも `cargo update` だけで直るものだった。
+#
+# 公告はコードを変えなくても出るので、PR ごとに加えて毎日も回す。届かない・
+# 上流待ちのものは deny.toml の ignore に理由付きで足す。
+name: advisories
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # license.yml と同じ版に揃える。
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      # `--all-features` は hot-reload の依存も見るため (license.yml と同じ理由)。
+      # `--locked` は「この Cargo.lock に穴があるか」を見るため。外すと CI が
+      # 解決し直した別のツリーを検査してしまう。
+      - name: cargo deny check advisories
+        run: cargo deny --all-features --locked check advisories
