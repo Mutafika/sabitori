@@ -25,8 +25,8 @@ API が安定したら `1.0.0` を切る。
 > ([#68](https://github.com/Mutafika/sabitori/issues/68))。
 >
 > **判定は CHANGELOG の見出しでする。** `[Unreleased]` に `### Added` か
-> `### Changed（破壊的）` があるなら minor。`### Fixed` / `### Documentation`
-> だけなら patch。
+> `### Changed（破壊的）` があるなら minor。`### Fixed` / `### Security` /
+> `### Documentation` だけなら patch。
 
 ## 手順
 

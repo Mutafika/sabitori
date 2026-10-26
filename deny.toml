@@ -37,6 +37,13 @@ allow = [
 multiple-versions = "warn"
 wildcards = "deny"
 
+# 既知の脆弱性・保守終了の依存が入っていないこと。CI (advisories.yml) が PR ごとと
+# 毎日回す。コードを変えなくても、新しい公告が出た日に落ちる。
+#
+# ここに足すのは「届かない」か「上流が乗り換えるまで消せない」ものだけ。足すときは、
+# なぜ届かないか・何が乗り換えれば消えるかを書くこと。`cargo update` で直るものは
+# 足さずに直す (v0.46.2 まで、この検査を CI で回しておらず rustls と webpki の穴を
+# 抱えたままだった)。
 [advisories]
 version = 2
 yanked = "warn"
@@ -44,4 +51,28 @@ ignore = [
     # paste 1.0.15 — unmaintained, pulled in transitively via wgpu-hal → metal.
     # No fix available upstream until metal migrates off paste.
     { id = "RUSTSEC-2024-0436", reason = "transitive via wgpu-hal/metal; no upstream fix yet" },
+
+    # quick-xml 0.39 の計算量・確保量の 2 件。入口は wayland-scanner (proc-macro) だけで、
+    # ビルド時に crate 同梱の Wayland プロトコル定義を読む。外から来る XML は通らない。
+    # winit → smithay-client-toolkit が wayland-scanner を上げれば消える。
+    { id = "RUSTSEC-2026-0194", reason = "build-time only via wayland-scanner; parses bundled protocol XML" },
+    { id = "RUSTSEC-2026-0195", reason = "build-time only via wayland-scanner; parses bundled protocol XML" },
+
+    # rustybuzz / ttf-parser の保守終了 (既知の穴は無い)。入口は cosmic-text 0.12 と
+    # fontdb で、どちらも上流が harfrust / skrifa へ移った版でしか消えない。
+    # ttf-parser 0.25 は sabitori-text の dev-dependency (テストの CJK 判定) でもある。
+    { id = "RUSTSEC-2026-0206", reason = "via cosmic-text 0.12; goes away with a cosmic-text upgrade" },
+    { id = "RUSTSEC-2026-0192", reason = "via cosmic-text 0.12 / fontdb / ab_glyph; goes away with a cosmic-text upgrade" },
+
+    # unsafe-libyaml の保守終了 (既知の穴は無い)。serde_yaml 経由で、使うのは
+    # `Theme::load` (アプリが指定したテーマファイルを読む) だけ。serde_yaml を
+    # 別の YAML 実装へ替えれば消える。
+    { id = "RUSTSEC-2024-0449", reason = "via serde_yaml in Theme::load; goes away when serde_yaml is replaced" },
+
+    # zbus 5 系の部品が zbus 6 に統合されたことによる保守終了 (既知の穴は無い)。
+    # Linux の支援技術 (accesskit_unix → atspi) だけが引く。accesskit が zbus 6 に
+    # 上がれば消える。
+    { id = "RUSTSEC-2026-0370", reason = "Linux a11y via accesskit_unix; merged into zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "Linux a11y via accesskit_unix; merged into zbus 6" },
+    { id = "RUSTSEC-2026-0372", reason = "Linux a11y via accesskit_unix; merged into zbus 6" },
 ]
