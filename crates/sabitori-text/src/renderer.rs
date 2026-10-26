@@ -886,8 +886,10 @@ impl TextRenderer {
                 let (cx, cy) = (col as f32 * cell_w, row as f32 * cell_h);
                 // 字形がセルより広いときは横に縮めて収める。端末は `⌘` を 1 セルの字と
                 // 数えるが、HackGen などは全角幅の字形を持っていて、そのまま置くと隣の字に
-                // 重なる (WezTerm も同じく縮める)。
-                let span = if cell.flags.contains(CellFlags::WIDE) { 2.0 * cell_w } else { cell_w };
+                // 重なる (WezTerm も同じく縮める)。ただし次のセルが空いていれば 2 セルまでは
+                // はみ出して描く: 重なる字が無いのに縮めると、`①` が半分の幅に潰れて読めない。
+                let next_blank = cells.get(col + 1).is_some_and(|n| matches!(n.ch, ' ' | '\0'));
+                let span = if cell.flags.contains(CellFlags::WIDE) || next_blank { 2.0 * cell_w } else { cell_w };
                 let (glyphs, advance) =
                     self.cell_glyph(cell.ch, bold, italic, color, font_size, cell_h, family, family_hash);
                 let fit = fit_to_cell(advance, span);
