@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.46.3] - 2026-10-26
+
 ### Security
 
 - **依存に、既知の脆弱性 (RustSec) を持つ版が入っていた**。`sabitori-net` が reqwest 経由で使う rustls に
@@ -4919,7 +4921,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.2...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.3...HEAD
+[0.46.3]: https://github.com/Mutafika/sabitori/compare/v0.46.2...v0.46.3
 [0.46.2]: https://github.com/Mutafika/sabitori/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/Mutafika/sabitori/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/Mutafika/sabitori/compare/v0.45.0...v0.46.0
