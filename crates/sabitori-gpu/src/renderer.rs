@@ -831,16 +831,65 @@ impl GpuRenderer {
     }
 
     /// 描き終わったサーフェスを読み戻す。`present()` の**前**に呼ぶこと。
-    ///
-    /// wgpu は行の先頭を 256 バイトに揃えることを要求するので、幅によっては
-    /// 余白が挟まる。揃えずに読むと画像が斜めにずれる。サーフェスは
-    /// BGRA のことがあるので、その場合は並べ替えて RGBA で返す。
     fn capture_if_requested(&mut self, texture: &wgpu::Texture) {
         if !self.capture_pending {
             return;
         }
         self.capture_pending = false;
+        self.captured = self.read_back(texture);
+    }
 
+    /// 画面と同じ描き方で、画面ではなく**透明な地の画像**に 1 枚描いて読み戻す。大きさは
+    /// 画面と同じ。`draw` は [`Self::render_frame`] と同じ (上げる物は先に上げておく)。
+    ///
+    /// 窓の外へ持ち出すドラッグの絵を作るのに使う — 窓の中で描いていた物を、そのまま
+    /// OS に渡す。色は乗算済みのまま返る (地が透明なので、縁や半透明の所は色が暗い)。
+    pub fn render_offscreen(
+        &mut self,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
+    ) -> Option<CapturedFrame> {
+        let (width, height) = (self.surface_config.width, self.surface_config.height);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("sabitori_offscreen_frame"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("sabitori_offscreen_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sabitori_offscreen_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            draw(&mut pass, self);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.read_back(&texture)
+    }
+
+    /// テクスチャを RGBA として読み戻す。
+    ///
+    /// wgpu は行の先頭を 256 バイトに揃えることを要求するので、幅によっては
+    /// 余白が挟まる。揃えずに読むと画像が斜めにずれる。サーフェスは
+    /// BGRA のことがあるので、その場合は並べ替えて RGBA で返す。
+    fn read_back(&self, texture: &wgpu::Texture) -> Option<CapturedFrame> {
         let (width, height) = (texture.width(), texture.height());
         const ALIGN: u32 = 256;
         let unpadded = width * 4;
@@ -880,7 +929,7 @@ impl GpuRenderer {
         let _ = self.device.poll(wgpu::Maintain::Wait);
         if !matches!(rx.recv(), Ok(Ok(()))) {
             tracing::warn!("フレームを読み戻せなかった");
-            return;
+            return None;
         }
 
         let bgra = matches!(
@@ -903,7 +952,7 @@ impl GpuRenderer {
         drop(mapped);
         buffer.unmap();
 
-        self.captured = Some(CapturedFrame { width, height, rgba });
+        Some(CapturedFrame { width, height, rgba })
     }
 
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {

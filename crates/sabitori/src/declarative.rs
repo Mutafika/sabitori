@@ -700,6 +700,11 @@ pub trait DeclarativeApp: 'static {
     fn on_drop(&mut self, _data: &str, _target_id: &str) {}
 
     /// Called when a drag exits the window (for OS-level drag).
+    ///
+    /// macOS では、ここで絵を渡さずに OS のドラッグを始めると
+    /// ([`start_file_drag_movable`](crate::macos_drag::start_file_drag_movable) など)、
+    /// 窓の中で描いていた [`Self::drag_ghost`] がそのまま OS のドラッグの絵になる —
+    /// 窓の外へ出ても、掴んだ絵が変わらない。
     fn on_drag_out(&mut self, _data: &str) {}
 
     /// Return a ghost element to show while dragging.
@@ -1133,6 +1138,11 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     measure_cache: std::rc::Rc<std::cell::RefCell<crate::bridge::MeasureCache>>,
     last_frame: Instant,
     pub(crate) last_build: Option<BuildResult>,
+    /// 最後に描いたドラッグのゴーストだけを組んだ物と、組んだときのカーソル。窓の外へ
+    /// 持ち出すときに、これを画像にして OS のドラッグの絵にする (要素は複製できないので、
+    /// 描く物とは別に組んで取っておく)。
+    #[cfg(target_os = "macos")]
+    ghost_build: Option<(BuildResult, f32, f32)>,
     pub(crate) mouse_x: f32,
     pub(crate) mouse_y: f32,
     /// [`DeclarativeApp::take_focus_once`] から汲んだ「1 回だけ」の焦点要求。
@@ -1666,7 +1676,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 }
                 // If a drag is active, notify the app it left the window
                 if let Some((data, _source_id)) = self.drag_manager.drag_info() {
+                    // 掴んだ絵を OS のドラッグへ引き継ぐ (アプリがここで OS のドラッグを
+                    // 始めれば、その絵になる)
+                    #[cfg(target_os = "macos")]
+                    crate::macos_drag::set_drag_out_image(self.snapshot_ghost());
                     self.app.on_drag_out(&data);
+                    #[cfg(target_os = "macos")]
+                    crate::macos_drag::set_drag_out_image(None);
                     self.drag_manager.cancel();
                 }
                 self.app.on_cursor_left();
@@ -2732,6 +2748,8 @@ impl<A: DeclarativeApp> AppState<A> {
             )),
             last_frame: Instant::now(),
             last_build: None,
+            #[cfg(target_os = "macos")]
+            ghost_build: None,
             mouse_x: 0.0,
             mouse_y: 0.0,
             pending_focus_once: None,
@@ -3026,6 +3044,22 @@ impl<A: DeclarativeApp> AppState<A> {
         } else {
             None
         };
+        // 窓の外へ持ち出すときは、この絵をそのまま OS のドラッグの絵にする
+        // ([`Self::snapshot_ghost`])。描く物と同じく、窓いっぱいの箱の中に組む
+        #[cfg(target_os = "macos")]
+        {
+            self.ghost_build = if drag_ghost_element.is_some() {
+                self.app.drag_ghost(&ctx).map(|ghost| {
+                    let wrap = sabitori_core::div()
+                        .w(sabitori_core::Dimension::Px(w))
+                        .h(sabitori_core::Dimension::Px(h))
+                        .child(ghost);
+                    (build_tree_measured(&wrap, w, h, measurer), ctx.mouse_x, ctx.mouse_y)
+                })
+            } else {
+                None
+            };
+        }
         // Collect all overlay parts
         let mut overlay_parts: Vec<Element> = Vec::new();
         if let Some(el) = app_overlay { overlay_parts.push(el); }
@@ -3069,6 +3103,44 @@ impl<A: DeclarativeApp> AppState<A> {
         }
 
         FrameBuild { build_result, overlay_build }
+    }
+
+    /// 最後に描いたドラッグのゴーストだけを、画面と同じ描き方で画像にする (窓の外へ持ち出す
+    /// ドラッグの絵)。ゴーストが無い・描けなければ `None`。
+    #[cfg(target_os = "macos")]
+    fn snapshot_ghost(&mut self) -> Option<crate::macos_drag::DragOutImage> {
+        let (build, mouse_x, mouse_y) = self.ghost_build.take()?;
+        let mut tr = self.text_renderer.take()?;
+        // `tr` は取り出したので、どの道でも戻すこと (戻さないと次の枚から描けない)
+        let shot = match self.renderer.as_mut() {
+            Some(renderer) => {
+                let mut lists: Vec<(&sabitori_core::render_list::RenderList, bool)> =
+                    vec![(&build.render_list, false)];
+                lists.extend(build.layer_lists.iter().map(|(_, l)| (l, false)));
+                lists.push((&build.overlay_list, false));
+                let mut frame = OrderedFrame::extract(&lists, &mut tr);
+                let device = renderer.device.clone();
+                let queue = renderer.queue.clone();
+                let mut r = UiRenderers {
+                    images: self.image_renderer.as_mut(),
+                    rings: self.ring_renderer.as_mut(),
+                    lines: self.line_renderer.as_mut(),
+                    text: &mut tr,
+                    groups: self.group_renderer.as_mut(),
+                    fills: self.fill_renderer.as_mut(),
+                };
+                frame.upload(renderer, &mut r, &device, &queue);
+                renderer
+                    .render_offscreen(|pass, gpu| frame.draw(gpu, &r, pass))
+                    .map(|shot| (shot, renderer.surface_config.format.is_srgb(), renderer.scale_factor))
+            }
+            None => None,
+        };
+        self.text_renderer = Some(tr);
+        // 次の枚は描く物を上げ直すので、ここで上げた物は残らない
+        self.dirty = true;
+        let (shot, srgb, scale) = shot?;
+        crate::macos_drag::drag_out_image(&shot.rgba, shot.width, shot.height, srgb, scale, (mouse_x, mouse_y))
     }
 
     /// Record the build this frame was drawn from and hand it to the app in the
