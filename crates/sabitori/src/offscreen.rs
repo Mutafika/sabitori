@@ -709,9 +709,10 @@ mod tests {
         tr.prepare_cell_grid(g, 0..g.rows, x, 0.0, 8.0, 18.0, 14.0, 1.0, None, key)
     }
 
-    /// **セルより広い字形は、セルの中に縮めて置く。** 端末は `⌘` を 1 セルと数えるが、
-    /// 全角幅の字形を持つ字体があり、そのまま置くと隣の字に重なっていた。全角の
-    /// セル (`WIDE`) の字は 2 セルぶん使えるので縮めない。
+    /// **セルより広い字形は、隣の字に重なるならセルの中に縮めて置く。** 端末は `⌘` を
+    /// 1 セルと数えるが、全角幅の字形を持つ字体があり、そのまま置くと隣の字に重なって
+    /// いた。次のセルが空いていれば重なる字が無いので、2 セルまで縮めずに描く (縮めると
+    /// `①` が半分の幅に潰れて読めない)。全角のセル (`WIDE`) の字も 2 セルぶん使える。
     #[test]
     fn glyphs_wider_than_their_cell_are_squeezed_into_it() {
         gpu_or_skip!();
@@ -722,10 +723,24 @@ mod tests {
             let r = gs.iter().map(|g| g.position[0] + g.size[0]).fold(f32::NEG_INFINITY, f32::max);
             (l, r)
         };
+        let cell = |ch| GridCell { ch, fg: Color::BLACK, bg: None, flags: CellFlags::NONE };
         let mut g = CellGrid::new(4, 1, Color::BLACK);
-        g.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::NONE });
-        let (l, r) = ink(&prep(&mut tr, &g, 0.0, None));
+        g.set(1, 0, cell('あ'));
+        g.set(2, 0, cell('x'));
+        // `x` の字形を除いて、`あ` だけの幅を見る (字形の真ん中で分ける)。
+        let gs: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
+        let (l, r) = ink(&gs);
         assert!(l >= 8.0 - 0.01 && r <= 16.5, "1 セル (8..16) に収まっていない: {l}..{r}");
+        // 次のセルが空いていれば、そこまではみ出して描く。
+        let mut open = CellGrid::new(4, 1, Color::BLACK);
+        open.set(1, 0, cell('あ'));
+        let (l, r) = ink(&prep(&mut tr, &open, 0.0, None));
+        assert!(l >= 8.0 - 0.01 && r - l > 9.0 && r <= 24.5, "空いた隣のセルまで使っていない: {l}..{r}");
+        // 右端の列には次のセルが無い。
+        let mut edge = CellGrid::new(4, 1, Color::BLACK);
+        edge.set(3, 0, cell('あ'));
+        let (l, r) = ink(&prep(&mut tr, &edge, 0.0, None));
+        assert!(l >= 24.0 - 0.01 && r <= 32.5, "右端のセル (24..32) に収まっていない: {l}..{r}");
         let mut wide = CellGrid::new(4, 1, Color::BLACK);
         wide.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE });
         wide.set(2, 0, GridCell { ch: ' ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE_SPACER });
