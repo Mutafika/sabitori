@@ -188,12 +188,8 @@ fn fetch_assets(assets: Vec<FontAsset>) {
     for (i, asset) in assets.into_iter().enumerate() {
         let (slots, flushed) = (Rc::clone(&slots), Rc::clone(&flushed));
         wasm_bindgen_futures::spawn_local(async move {
-            let got = match sabitori_net::http::get(asset.url).send().await {
-                Ok(res) if res.ok() => Some(res.bytes().to_vec()),
-                Ok(res) => {
-                    log::warn!("フォントを取れなかった: {} ({})", asset.url, res.status());
-                    None
-                }
+            let got = match fetch_font(asset.url).await {
+                Ok(bytes) => Some(bytes),
                 Err(e) => {
                     log::warn!("フォントを取れなかった: {} ({e})", asset.url);
                     None
@@ -210,6 +206,31 @@ fn fetch_assets(assets: Vec<FontAsset>) {
             }
         });
     }
+}
+
+/// ブラウザの fetch で 1 本取る。
+///
+/// `sabitori-net` を通さないのは、feature `net` を切ったアプリでも宣言した
+/// フォントは届く必要があるため。取りに行くのはアプリ自身のファイルで、
+/// ブラウザが CSS のフォントを読むのと同じ扱い (暗号も本人確認もブラウザがやる)。
+#[cfg(target_arch = "wasm32")]
+async fn fetch_font(url: &str) -> Result<Vec<u8>, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let window = web_sys::window().ok_or("no window")?;
+    let resp: web_sys::Response = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("{e:?}"))?
+        .dyn_into()
+        .map_err(|_| "not a Response".to_string())?;
+    if !resp.ok() {
+        return Err(resp.status().to_string());
+    }
+    let buf = JsFuture::from(resp.array_buffer().map_err(|e| format!("{e:?}"))?)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    Ok(js_sys::Uint8Array::new(&buf).to_vec())
 }
 
 /// 積まれたフォント。**捨てずに持つ** — 画面外に描く ([`crate::offscreen`]) ときも

@@ -370,7 +370,7 @@ sabitori (umbrella)
 ├── sabitori-widgets   Stateful widgets (state structs + Element functions)
 ├── sabitori-window    winit runtime / EmbeddedRunner
 ├── sabitori-markdown  Markdown → Element conversion
-└── sabitori-net       HTTP fetch (reqwest / wasm fetch)
+└── sabitori-net       HTTP fetch (reqwest / wasm fetch). Pulled in by sabitori only with feature `net` (off by default)
 ```
 
 `sabitori-reel` sits outside the umbrella: it renders a scene — an `Element` tree as a pure function of the frame — offscreen to a PNG sequence or an MP4 (via `ffmpeg`), for programmatic motion-graphics video. Motion blur, rotating / blurring / masking whole subtrees, per-glyph motion, paths, vertical text, SVG and video clips are all available; see the crate docs for a minimal scene.

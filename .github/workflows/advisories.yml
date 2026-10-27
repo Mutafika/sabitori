@@ -1,7 +1,7 @@
 # 既知の脆弱性 (RustSec) を抱えた依存が Cargo.lock に入っていたら止める。
 #
 # 実際に起きたこと: deny.toml に [advisories] を書いてあったのに、CI は
-# `check licenses` しか回していなかった。v0.46.2 の時点で rustls に 5 件
+# `check licenses` しか回していなかった。v0.46.2 の時点で rustls に 4 件
 # (ServerHello で後の接続の鍵交換を落とされる、など)、webpki に 2 件の穴を
 # 抱えたままで、どれも `cargo update` だけで直るものだった。
 #
