@@ -739,13 +739,18 @@ mod tests {
         let full = prep(&mut tr, &open, 0.0, None);
         let (l, r) = ink(&full);
         assert!(l >= 8.0 - 0.01 && r - l > 9.0 && r <= 24.5, "空いた隣のセルまで使っていない: {l}..{r}");
-        // 縮めた字は形を保ったまま小さくなり、上下の中央に残る。
+        // 縮めた字は形を保ったまま小さくなり、上下の中央に残る。等倍では矩形が画素に
+        // 丸まり、8px ほどの字だと 1px で縦横比が 1 割以上ぶれるので、4 倍で測る。
         let shape = |gs: &[sabitori_text::GlyphInstance]| {
             let (l, r) = ink(gs);
             let t = gs.iter().map(|g| g.position[1]).fold(f32::INFINITY, f32::min);
             let b = gs.iter().map(|g| g.position[1] + g.size[1]).fold(f32::NEG_INFINITY, f32::max);
             ((r - l) / (b - t), b - t, (t + b) / 2.0)
         };
+        tr.set_scale_factor(4.0);
+        let small: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
+        let full = prep(&mut tr, &open, 0.0, None);
+        tr.set_scale_factor(1.0);
         let ((aspect_s, h_s, mid_s), (aspect_f, h_f, mid_f)) = (shape(&small), shape(&full));
         assert!(h_s < h_f * 0.8, "縦が縮んでいない: {h_s} (元は {h_f})");
         assert!((aspect_s - aspect_f).abs() < aspect_f * 0.25, "形が変わっている: 縦横比 {aspect_s} (元は {aspect_f})");
