@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-27
+
 ### Added
 
 - **`GpuRenderer::render_offscreen`: 画面と同じ描き方で、画面ではなく透明な地の画像に 1 枚描いて読み戻す**。
@@ -4954,7 +4956,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.5...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/Mutafika/sabitori/compare/v0.46.5...v0.47.0
 [0.46.5]: https://github.com/Mutafika/sabitori/compare/v0.46.4...v0.46.5
 [0.46.4]: https://github.com/Mutafika/sabitori/compare/v0.46.3...v0.46.4
 [0.46.3]: https://github.com/Mutafika/sabitori/compare/v0.46.2...v0.46.3
