@@ -30,6 +30,22 @@ builtin-font-latin = ["sabitori-text/builtin-font-latin"]
 # 出しても実行時コストは無いが、依存を持ち込まないよう既定では off。
 hot-reload = ["dep:subsecond", "dep:dioxus-cli-config", "dep:tungstenite", "dep:serde_json"]
 
+# URL の画像を取りに行く (`ViewContext::image_url` / `image_url_max` / `image_data`)。
+# 既定では off。off のままだと、それらに URL を渡しても取りに行かず、読めなかった
+# 画像として扱う (起動して最初の 1 回だけ、どうすれば取りに行くかをログに出す)。
+#
+# 既定で off なのは、native では HTTP と TLS の一式 (reqwest / hyper / rustls) を
+# 抱えることになり、その穴がフレームワークの責任になるため。v0.47.0 までは
+# 通信しないアプリにもこれが必ず入っていて、v0.46.2 までは rustls の穴も一緒に
+# 配っていた。
+# wasm はブラウザの fetch を呼ぶだけだが、「URL を取りに行くかどうか」が
+# 対象ごとに違うと web でだけ動くアプリができるので、同じスイッチにしてある。
+#
+# `font_asset!` で宣言したフォント (wasm では起動時に取りに行く) は、これと
+# 関係なく取りに行く。アプリ自身のファイルで、ブラウザが CSS のフォントを
+# 読むのと同じ扱い。
+net = ["dep:sabitori-net"]
+
 [dependencies]
 sabitori-core.workspace = true
 sabitori-gpu.workspace = true
@@ -41,7 +57,7 @@ sabitori-text.workspace = true
 sabitori-scene.workspace = true
 sabitori-input.workspace = true
 sabitori-window.workspace = true
-sabitori-net.workspace = true
+sabitori-net = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true }
 winit.workspace = true
@@ -87,6 +103,9 @@ web-sys = { workspace = true, features = [
     "History", "Location",
     # ファイルを選ぶ / 保存する (#77)。
     "HtmlInputElement", "HtmlAnchorElement", "FileList", "File", "Blob", "Url",
+    # `font_asset!` のフォントを取る (fonts.rs)。feature `net` とは別に、ブラウザの
+    # fetch を直に呼ぶ。
+    "Response",
 ] }
 console_error_panic_hook.workspace = true
 console_log.workspace = true

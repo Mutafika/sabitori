@@ -43,7 +43,7 @@
 //! | wasm | `spawn_local` (同じスレッド) | `Send` は要らない |
 //!
 //! native で tokio に載せるのは、**reactor を要する future をそのまま渡せる
-//! ようにする**ため。`reqwest` の非同期クライアント ([`sabitori_net`] の
+//! ようにする**ため。`reqwest` の非同期クライアント (`sabitori-net` の
 //! HTTP もこれ) は tokio の上でしか進まないので、素のスレッドで
 //! `pollster::block_on` すると動かない。
 //!

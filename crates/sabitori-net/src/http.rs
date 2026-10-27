@@ -381,6 +381,17 @@ mod tests {
         assert_eq!(Method::Delete.as_str(), "DELETE");
     }
 
+    /// 量子計算機に強い鍵交換を**先に**出すこと (Cargo.toml の rustls の
+    /// `prefer-post-quantum`)。外しても対応はしたままなので、Cloudflare のように
+    /// 向こうから選び直させるサーバーとは繋がり方が変わらず、気づけない。
+    /// 多くのサーバーは最初に出した X25519 で決めてしまう。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn post_quantum_key_exchange_is_offered_first() {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        assert_eq!(provider.kx_groups[0].name(), rustls::NamedGroup::X25519MLKEM768);
+    }
+
     /// **「繋がらない」と「HTTP エラー」を混ぜないこと。** アプリはこの区別で
     /// 「ネットワークを確認してください」と「入力が正しくありません」を
     /// 出し分ける。

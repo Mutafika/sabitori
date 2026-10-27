@@ -19,7 +19,21 @@ serde_json = { version = "1", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # cookies: Cookie セッションの業務 API (#63)。クライアントを使い回して jar を
 # 保たないと、ログインで受け取ったセッションが次のリクエストへ渡らない。
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies"] }
+#
+# rustls: 暗号のやり取りは rustls (TLS 1.3)、**証明書が本物かは OS に聞く**
+# (rustls-platform-verifier: macOS / iOS は Security.framework、Windows は CryptoAPI、
+# Linux はディストリの証明書ストア)。0.12 の `rustls-tls` は信頼する発行元の一覧
+# (webpki-roots) を自前で抱えていて、v0.46.2 ではその一覧が古いせいで、信頼を
+# 外された中間証明書を受け入れていた (RUSTSEC-2026-0381 / 0382)。OS に聞けば
+# 一覧は OS の更新で新しくなり、会社で足した社内の証明書もそのまま通る。
+#
+# `native-tls` (暗号まで OS) にしないのは、macOS / iOS では Apple が非推奨にした
+# SecureTransport を使い、TLS 1.2 止まりになるため。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies"] }
+# 量子計算機に強い鍵交換 (X25519MLKEM768) を**先に**出す。reqwest は rustls の既定の
+# feature を切っているので、このままだと対応はしても優先順位が最後になり、ふつうの
+# サーバーとは X25519 で決まる。feature を足すためだけの依存 (コードからは使わない)。
+rustls = { version = "0.23", default-features = false, features = ["prefer-post-quantum"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

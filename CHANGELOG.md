@@ -15,6 +15,31 @@
 
 ## [Unreleased]
 
+### Changed（破壊的）
+
+- **URL の画像を取りに行くのは feature `net` を入れたときだけになった (既定は off)**。`ViewContext::image_url` /
+  `image_url_max` / `image_data` に URL を渡しても、`net` が無ければ取りに行かず、読めなかった画像として扱う
+  (起動して最初の 1 回だけ、書き方をログに出す)。URL の画像を使うアプリは
+  `sabitori = { ..., features = ["net"] }` を足すこと。これまでは通信しないアプリにも HTTP と TLS の一式
+  (reqwest / hyper / rustls) が必ずビルドされて入っていて、v0.46.3 で直した rustls の穴も一緒に配っていた。
+  `net` が無ければ、native のビルドからそれらが消える。wasm も同じスイッチにしてある (web でだけ動くアプリを
+  作らないため)。
+  - `font_asset!` で宣言したフォント (wasm では起動時に取りに行く) は、`net` と関係なく取りに行く。アプリ自身の
+    ファイルなので、`sabitori-net` を通さずブラウザの fetch を直に呼ぶ。
+  - `sabitori-net` を直に依存に入れているアプリ (`sabitori_net::http` を使う業務 API など) は何も変わらない。
+
+### Security
+
+- **HTTPS の相手の証明書が本物かを、OS に確かめてもらうようにした** (`sabitori-net`)。reqwest を 0.13 に上げ、
+  rustls-platform-verifier を使う: macOS / iOS は Security.framework、Windows は CryptoAPI、Linux はディストリの
+  証明書ストア。これまでは信頼する発行元の一覧 (webpki-roots) を自前で抱えていて、v0.46.2 ではその一覧が
+  古いせいで、信頼を外された中間証明書を受け入れていた (RUSTSEC-2026-0381 / 0382)。一覧は OS の更新で新しく
+  なり、会社などで OS に足した証明書もそのまま通る。暗号のやり取りは今まで通り rustls (TLS 1.3) で、暗号の
+  部品は ring から aws-lc-rs に替わり、量子計算機に強い鍵交換 (X25519MLKEM768) を最初に出すようにした
+  (ring はこれを持たず、これまでは使えなかった)。
+  - OS の TLS (`native-tls`) にしなかったのは、macOS / iOS では Apple が非推奨にした SecureTransport を使い、
+    TLS 1.2 止まりになるため。
+
 ## [0.47.0] - 2026-10-27
 
 ### Added
@@ -55,7 +80,7 @@
 ### Security
 
 - **依存に、既知の脆弱性 (RustSec) を持つ版が入っていた**。`sabitori-net` が reqwest 経由で使う rustls に
-  5 件 (認証前の ServerHello で、後の接続の鍵交換を古い方式へ落とされる、など)、rustls-webpki と
+  4 件 (認証前の ServerHello で、後の接続の鍵交換を古い方式へ落とされる、など)、rustls-webpki と
   webpki-roots に 1 件ずつ (信頼を外された中間証明書を受け入れる)、ほか tokio・crossbeam-epoch に 1 件ずつ。
   どれも互換の範囲の版上げで直るので、`Cargo.lock` を上げた (rustls 0.23.46 / rustls-webpki 0.103.16 /
   webpki-roots 1.0.11 / tokio 1.54.1 / crossbeam-epoch 0.9.21、あわせて yank された clipboard-win 5.4.1 →

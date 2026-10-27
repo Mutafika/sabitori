@@ -66,6 +66,13 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked
 
+      # feature `net` (URL の画像を取りに行く) は既定で off なので、上の 3 つでは
+      # 取りに行く側のコードがコンパイルすらされない。sabitori だけ足して回す。
+      - name: feature net (sabitori)
+        run: |
+          cargo test -p sabitori --features net --lib --locked --no-fail-fast
+          cargo clippy -p sabitori --all-targets --features net --locked
+
   wasm:
     runs-on: ubuntu-latest
     steps:
@@ -78,3 +85,7 @@ jobs:
       # templates/wasm の手順が前提にしているのはこれが通ること。
       - name: wasm ビルド
         run: cargo build -p sabitori --target wasm32-unknown-unknown --locked
+
+      # 既定で off の feature `net` を入れたときも通ること (上の test ジョブと同じ理由)。
+      - name: wasm ビルド (feature net)
+        run: cargo build -p sabitori --target wasm32-unknown-unknown --features net --locked

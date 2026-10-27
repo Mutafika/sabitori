@@ -370,7 +370,7 @@ sabitori (umbrella)
 ├── sabitori-widgets   状態を持つウィジェット（状態 struct + Element 関数）
 ├── sabitori-window    winit ランタイム / EmbeddedRunner
 ├── sabitori-markdown  Markdown → Element 変換
-└── sabitori-net       HTTP fetch（reqwest / wasm fetch）
+└── sabitori-net       HTTP fetch（reqwest / wasm fetch）。sabitori からは feature `net` で入る（既定 off）
 ```
 
 `sabitori-reel` は umbrella の外にある別のクレート。フレーム番号を受け取って `Element` のツリーを返す関数を「場面」として、窓を開かずに 1 コマずつ描き、PNG の連番か MP4 (`ffmpeg` を使う) に書き出す。コードで作るモーショングラフィックス動画用。モーションブラー、中身ごと回す・ぼかす・マスクする、1 字ずつの動き、パス、縦書き、SVG、動画素材が使える。最小の場面はクレートの doc にある。
