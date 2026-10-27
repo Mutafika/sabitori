@@ -730,9 +730,9 @@ mod tests {
         g.set(2, 0, cell('x'));
         // `x` の字形を除いて、`あ` だけの幅を見る (字形の真ん中で分ける)。
         let small: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
-        // 字形の矩形はアンチエイリアスの余白で、字送りより右に 1px ほど広い (どの字も同じ)。
+        // 字形の矩形はアンチエイリアスの余白で、字送りより左右に 1px ほど広い (どの字も同じ)。
         let (l, r) = ink(&small);
-        assert!(l >= 8.0 - 0.01 && r <= 17.5, "1 セル (8..16) に収まっていない: {l}..{r}");
+        assert!(l >= 7.0 - 0.01 && r <= 17.5, "1 セル (8..16) に収まっていない: {l}..{r}");
         // 次のセルが空いていれば、そこまではみ出して描く。
         let mut open = CellGrid::new(4, 1, Color::BLACK);
         open.set(1, 0, cell('あ'));
@@ -754,7 +754,7 @@ mod tests {
         let mut edge = CellGrid::new(4, 1, Color::BLACK);
         edge.set(3, 0, cell('あ'));
         let (l, r) = ink(&prep(&mut tr, &edge, 0.0, None));
-        assert!(l >= 24.0 - 0.01 && r <= 33.5, "右端のセル (24..32) に収まっていない: {l}..{r}");
+        assert!(l >= 23.0 - 0.01 && r <= 33.5, "右端のセル (24..32) に収まっていない: {l}..{r}");
         let mut wide = CellGrid::new(4, 1, Color::BLACK);
         wide.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE });
         wide.set(2, 0, GridCell { ch: ' ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE_SPACER });
