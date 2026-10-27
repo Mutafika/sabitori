@@ -15,6 +15,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Element::backdrop_blur(material)`: 要素 1 つの箱の後ろだけをぼかす (macOS)**。窓の後ろのデスクトップや
+  他の窓が、その箱の形 (位置・大きさ・角の丸み・不透明度) で磨りガラス越しのように見える。これまでは窓全体か
+  上の帯 (`backdrop_blur_top_strip_height`) しかぼかせず、画面いっぱいの透明な窓に浮かべるドックやポップアップは
+  不透明な板にするしかなかった。ぼかすのは OS (`NSVisualEffectView`) で、箱ごとに 1 枚を窓の描画の下に敷き、
+  毎フレーム箱に合わせて動かす (スライドやフェードにも付いてくる)。要素自身の塗りはその上に描くので、透ける色にする。
+  別窓 (`extra_windows`) でも効く。macOS 以外では何もしない。
+- **`BuildResult::backdrops`** (`BackdropRegion` の並び): 組んだ木の中で後ろをぼかす箱。
+
+### Changed
+
+- **`BackdropBlur` を `sabitori-core` へ移した** (`sabitori::BackdropBlur` はそのまま使える)。要素に付ける
+  ために core から見える必要があった。`PartialEq` / `Eq` も付けた。
+
 ## [0.50.0] - 2026-10-30
 
 ### Added

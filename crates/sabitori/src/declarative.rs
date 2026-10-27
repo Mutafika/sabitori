@@ -138,19 +138,7 @@ impl Default for ExtraWindow {
     }
 }
 
-/// Backdrop-blur material for translucent panel windows. macOS-specific in
-/// effect — on other platforms the trait method returning `Some(_)` is a
-/// no-op. Variants mirror the AppKit `NSVisualEffectMaterial` enum.
-#[derive(Clone, Copy, Debug)]
-pub enum BackdropBlur {
-    Hud,
-    Menu,
-    Sidebar,
-    UnderWindow,
-    HeaderView,
-    Popover,
-    Titlebar,
-}
+pub use sabitori_core::element::BackdropBlur;
 
 /// UI input-capture snapshot, pushed by the runtime to
 /// [`DeclarativeApp::on_ui_capture`] before pointer / wheel events are
@@ -1090,6 +1078,9 @@ struct ExtraWindowState {
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
     scene_3d: bool,
+    /// 要素の後ろのぼかしの板 (主窓と同じ)。
+    #[cfg(target_os = "macos")]
+    backdrop_views: crate::macos_blur::BackdropViews,
 }
 
 /// Every renderer a window needs, built in one place.
@@ -1168,6 +1159,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 描く物とは別に組んで取っておく)。
     #[cfg(target_os = "macos")]
     ghost_build: Option<(BuildResult, f32, f32)>,
+    /// 要素の後ろのぼかし ([`sabitori_core::Element::backdrop_blur`]) の板。
+    #[cfg(target_os = "macos")]
+    backdrop_views: crate::macos_blur::BackdropViews,
     pub(crate) mouse_x: f32,
     pub(crate) mouse_y: f32,
     /// [`DeclarativeApp::take_focus_once`] から汲んだ「1 回だけ」の焦点要求。
@@ -2106,6 +2100,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // 外付け overlay の描画と当たり領域を畳み込む。**scene_app と
                 // 同じ関数を通す** — 手で書くと片方が忘れられる (#84)。
                 crate::runtime_shared::absorb_overlay(&mut build_result, overlay_build);
+                #[cfg(target_os = "macos")]
+                if let Some(window) = self.window.as_ref() {
+                    self.backdrop_views.sync(window, &build_result.backdrops);
+                }
 
                 // 層 0 → 上げた層 → 上掛け を、**木の順に** 1 つのパスで描く。
                 // 以前は層ごとに「矩形 → 画像 → … → 文字」と種類でまとめて描いていたので、
@@ -2637,6 +2635,8 @@ impl<A: DeclarativeApp> AppState<A> {
             last_cursor: None,
             pinch: None,
             scene_3d: spec.scene_3d,
+            #[cfg(target_os = "macos")]
+            backdrop_views: Default::default(),
         });
     }
 
@@ -2801,6 +2801,8 @@ impl<A: DeclarativeApp> AppState<A> {
             last_build: None,
             #[cfg(target_os = "macos")]
             ghost_build: None,
+            #[cfg(target_os = "macos")]
+            backdrop_views: Default::default(),
             mouse_x: 0.0,
             mouse_y: 0.0,
             pending_focus_once: None,
@@ -5453,6 +5455,8 @@ impl<A: DeclarativeApp> AppState<A> {
         let mut build_result = build_result;
         // はみ出しの目印 (#95)。地の上 (= 書いた物の後ろ) に積む。
         self.overflow_debug.flag_on_top(&mut build_result);
+        #[cfg(target_os = "macos")]
+        extra.backdrop_views.sync(&extra.window, &build_result.backdrops);
 
         // 主窓と同じく**木の順に** 1 つのパスで描く (層 0 → 上げた層 → 上掛け)。
         // 以前は層を寄せて種類ごとにまとめて描き、上掛け (`.overlay()`) は描いていなかった。

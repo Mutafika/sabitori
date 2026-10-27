@@ -176,6 +176,21 @@ pub struct LayoutOverflow {
     pub clip: Option<Rect>,
 }
 
+/// 後ろをぼかす箱 ([`Element::backdrop_blur`])。ぼかすのは OS なので、描画命令
+/// とは別に [`BuildResult::backdrops`] で窓側へ渡す。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropRegion {
+    /// 箱 (画面座標。見た目の `translate` / `scale` を含む)。
+    pub rect: Rect,
+    /// 角の丸み (`scale` を掛け、箱に収めた後)。
+    pub corner_radii: Corners<f32>,
+    /// 祖先から畳んだ不透明度。
+    pub opacity: f32,
+    pub material: crate::element::BackdropBlur,
+    /// 祖先の切る入れ物が見せている範囲。`None` = 切られていない。
+    pub clip: Option<Rect>,
+}
+
 /// The result of [`build_tree`].
 pub struct BuildResult {
     /// Flat list of draw commands (rects + text) in painter order (back to front).
@@ -200,6 +215,8 @@ pub struct BuildResult {
     pub probe_positions: std::collections::HashMap<String, f32>,
     /// 親からはみ出した子。見つけた順 (根に近い方から)。[`LayoutOverflow`] を参照。
     pub overflows: Vec<LayoutOverflow>,
+    /// 後ろをぼかす箱。描いた順 (奥から)。[`BackdropRegion`] を参照。
+    pub backdrops: Vec<BackdropRegion>,
 }
 
 impl BuildResult {
@@ -637,6 +654,7 @@ fn build_tree_impl(
     let mut scroll_measures = std::collections::HashMap::new();
     let mut element_counter: usize = 0;
     let mut probe_positions = std::collections::HashMap::new();
+    let mut backdrops = Vec::new();
 
     emit_commands(
         &taffy,
@@ -649,6 +667,7 @@ fn build_tree_impl(
         &mut overlay_list,
         &mut hit_regions,
         &mut overlay_hit_regions,
+        &mut backdrops,
         &mut scroll_measures,
         &mut element_counter,
         false,
@@ -704,6 +723,7 @@ fn build_tree_impl(
         scroll_measures,
         probe_positions,
         overflows,
+        backdrops,
     }
 }
 
@@ -1638,6 +1658,7 @@ fn emit_commands(
     overlay_list: &mut RenderList,
     hit_regions: &mut Vec<HitRegion>,
     overlay_hit_regions: &mut Vec<HitRegion>,
+    backdrops: &mut Vec<BackdropRegion>,
     scroll_measures: &mut std::collections::HashMap<String, ScrollMeasure>,
     element_counter: &mut usize,
     in_overlay: bool,
@@ -1666,7 +1687,7 @@ fn emit_commands(
     });
     emit_commands_inner(
         taffy, element, taffy_node, parent_x, parent_y, parent_opacity, render_lists, overlay_list,
-        hit_regions, overlay_hit_regions, scroll_measures, element_counter, in_overlay, parent_layer,
+        hit_regions, overlay_hit_regions, backdrops, scroll_measures, element_counter, in_overlay, parent_layer,
         parent_no_select, parent_scale, parent_clip, parent_disabled, probes, probe_positions,
         anchor_positions, masks, parent_scroll, parent_owner, parent_backdrop,
     );
@@ -1692,6 +1713,7 @@ fn emit_commands_inner(
     overlay_list: &mut RenderList,
     hit_regions: &mut Vec<HitRegion>,
     overlay_hit_regions: &mut Vec<HitRegion>,
+    backdrops: &mut Vec<BackdropRegion>,
     scroll_measures: &mut std::collections::HashMap<String, ScrollMeasure>,
     element_counter: &mut usize,
     in_overlay: bool,
@@ -1839,7 +1861,7 @@ fn emit_commands_inner(
                 emit_commands(
                     taffy, child_elem, child_taffy,
                     abs_x, abs_y, effective_opacity, render_lists, overlay_list,
-                    hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay, layer,
+                    hit_regions, overlay_hit_regions, backdrops, scroll_measures, element_counter, use_overlay, layer,
                     no_select, scale,
                     parent_clip,
                     disabled,
@@ -1922,6 +1944,16 @@ fn emit_commands_inner(
             grain: Grain { amount: style.grain.amount * effective_opacity, ..style.grain },
             rotation: style.rotation,
         }));
+    }
+    if let Some(material) = style.backdrop_blur {
+        backdrops.push(BackdropRegion {
+            rect,
+            corner_radii: scale_corners(style.corner_radius, scale)
+                .clamped_to_size(rect.size.width, rect.size.height),
+            opacity: effective_opacity,
+            material,
+            clip: parent_clip,
+        });
     }
 
     // Emit text draw for Text and Button elements
@@ -2319,7 +2351,7 @@ fn emit_commands_inner(
                 abs_x + child_offset_x * scale, abs_y + child_offset_y * scale,
                 effective_opacity,
                 render_lists, overlay_list,
-                hit_regions, overlay_hit_regions, scroll_measures, element_counter, use_overlay, layer,
+                hit_regions, overlay_hit_regions, backdrops, scroll_measures, element_counter, use_overlay, layer,
                 no_select, scale,
                 child_clip,
                 disabled,
@@ -2456,7 +2488,7 @@ fn emit_commands_inner(
                 taffy, mask_el, *mask_node,
                 abs_x, abs_y, 1.0,
                 render_lists, overlay_list,
-                &mut hits, &mut overlay_hits, &mut measures, &mut counter, use_overlay, layer,
+                &mut hits, &mut overlay_hits, &mut Vec::new(), &mut measures, &mut counter, use_overlay, layer,
                 true, scale,
                 None,
                 disabled,
@@ -6118,5 +6150,65 @@ mod backdrop_tests {
             _ => None,
         });
         assert_eq!(draw.unwrap().backdrop, Some(dark));
+    }
+}
+
+/// 後ろをぼかす箱 ([`Element::backdrop_blur`])。
+#[cfg(test)]
+mod backdrop_blur_tests {
+    use super::*;
+    use crate::element::{div, BackdropBlur, Dimension::Px};
+
+    #[test]
+    fn a_blurred_box_reports_where_it_is_drawn() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div()
+                .pos(20.0, 30.0)
+                .w(Px(100.0))
+                .h(Px(50.0))
+                .rounded_px(12.0)
+                .backdrop_blur(BackdropBlur::Popover),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        assert_eq!(b.backdrops.len(), 1, "{:?}", b.backdrops);
+        let r = &b.backdrops[0];
+        assert_eq!(r.rect, Rect::new(20.0, 30.0, 100.0, 50.0));
+        assert_eq!(r.corner_radii, Corners::all(12.0));
+        assert_eq!(r.opacity, 1.0);
+        assert_eq!(r.material, BackdropBlur::Popover);
+        assert_eq!(r.clip, None);
+    }
+
+    /// 祖先の不透明度と拡大は、描く箱と同じく掛かる (ドックのフェードと
+    /// ホバーの拡大でぼかしが箱からずれない)。
+    #[test]
+    fn ancestor_opacity_and_scale_carry_over() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().w(Px(200.0)).h(Px(100.0)).opacity(0.5).scaled(2.0).child(
+                div().w(Px(200.0)).h(Px(100.0)).rounded_px(10.0).backdrop_blur(BackdropBlur::Hud),
+            ),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        let r = &b.backdrops[0];
+        assert_eq!(r.opacity, 0.5);
+        assert_eq!(r.rect, Rect::new(-100.0, -50.0, 400.0, 200.0));
+        assert_eq!(r.corner_radii, Corners::all(20.0));
+    }
+
+    #[test]
+    fn a_box_inside_a_clip_carries_the_clip() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().w(Px(100.0)).h(Px(100.0)).overflow_hidden().child(
+                div().w(Px(100.0)).h(Px(200.0)).backdrop_blur(BackdropBlur::Menu),
+            ),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+        assert_eq!(b.backdrops[0].clip, Some(Rect::new(0.0, 0.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn boxes_without_it_report_nothing() {
+        let root = div().w(Px(400.0)).h(Px(300.0)).bg(crate::Color::WHITE).child(div().w(Px(10.0)).h(Px(10.0)));
+        assert!(build_tree(&root, 400.0, 300.0).backdrops.is_empty());
     }
 }

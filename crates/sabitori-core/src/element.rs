@@ -586,6 +586,23 @@ pub enum BlendMode {
     Multiply,
 }
 
+/// Backdrop-blur material for translucent panel windows. macOS-specific in
+/// effect — on other platforms the trait method returning `Some(_)` is a
+/// no-op. Variants mirror the AppKit `NSVisualEffectMaterial` enum.
+///
+/// 窓全体 (sabitori の `DeclarativeApp::backdrop_blur`) にも、要素 1 つの箱
+/// ([`Element::backdrop_blur`]) にも使う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackdropBlur {
+    Hud,
+    Menu,
+    Sidebar,
+    UnderWindow,
+    HeaderView,
+    Popover,
+    Titlebar,
+}
+
 /// Shape of a box's gradient fill (`background` → `gradient_end`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GradientKind {
@@ -715,6 +732,8 @@ pub struct ElementStyle {
     pub blend: BlendMode,
     /// 中身ごと描いた絵を拡大縮小する倍率 ([`Element::zoom`])。1 = そのまま。
     pub zoom: f32,
+    /// 箱の後ろ (窓の後ろにある物) をぼかす素材 ([`Element::backdrop_blur`])。
+    pub backdrop_blur: Option<BackdropBlur>,
     /// 文字の 1 字ずつの動き ([`Element::glyph_motion`])。字の番号 (`chars()` の順) で引く。
     pub glyph_motion: Option<std::sync::Arc<[GlyphMotion]>>,
     /// 縦書き ([`Element::vertical`])。
@@ -949,6 +968,7 @@ impl Default for ElementStyle {
             blur: 0.0,
             blend: BlendMode::Normal,
             zoom: 1.0,
+            backdrop_blur: None,
             glyph_motion: None,
             vertical: false,
             translate_x: 0.0,
@@ -2159,6 +2179,23 @@ impl Element {
     /// 幅が大きいほど重い (画面全体の大きさで 2 回描き直す)。
     pub fn blur(mut self, px: f32) -> Self {
         self.style.blur = px;
+        self
+    }
+
+    /// 箱の**後ろ**をぼかす — 窓の後ろに見えているデスクトップや他の窓を、
+    /// 磨りガラス越しのように見せる。[`blur`](Self::blur) が要素の中身をぼかす
+    /// のに対し、こちらは中身の下に敷く。
+    ///
+    /// ぼかすのは OS (macOS の `NSVisualEffectView`) で、窓の描画の下に箱の形
+    /// (位置・大きさ・角の丸み・不透明度) で敷く。そのため:
+    /// - 窓が透明 (sabitori の `DeclarativeApp::transparent`) でないと見えない。
+    /// - 要素自身の塗りはぼかしの**上**に描くので、透けて見える色にする
+    ///   (不透明な塗りだとぼかしは隠れる)。
+    /// - 箱が回る・中身ごと拡大する ([`rotate`](Self::rotate) / [`zoom`](Self::zoom))
+    ///   ときは、ぼかしは元の箱のまま。角の丸みは 4 隅で一番大きいものを使う。
+    /// - macOS 以外では何もしない。
+    pub fn backdrop_blur(mut self, material: BackdropBlur) -> Self {
+        self.style.backdrop_blur = Some(material);
         self
     }
 

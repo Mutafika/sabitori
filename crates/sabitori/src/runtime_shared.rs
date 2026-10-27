@@ -302,6 +302,8 @@ pub(crate) fn absorb_overlay(build: &mut BuildResult, overlay: Option<BuildResul
     }
     build.hit_regions.splice(0..0, hits);
     build.overflows.extend(ext.overflows);
+    // 上掛けは上に描くので、ぼかしも後ろ (= 手前) に積む。
+    build.backdrops.extend(ext.backdrops);
 }
 
 #[cfg(test)]
@@ -342,6 +344,24 @@ mod tests {
             })
             .collect();
         assert_eq!(colors, vec![red, green, blue]);
+    }
+
+    /// 外付けの上掛けの木で後ろをぼかす箱 ([`sabitori_core::Element::backdrop_blur`]) も
+    /// 窓に敷く。地の木の分の後ろ (= 手前) に積む。
+    #[test]
+    fn an_external_overlays_blurred_boxes_are_kept_after_the_bases() {
+        use sabitori_core::BackdropBlur;
+        let mut base = build(&div().w(Px(400.0)).h(Px(300.0)).child(
+            div().w(Px(10.0)).h(Px(10.0)).backdrop_blur(BackdropBlur::Hud),
+        ));
+        let over = build(&div().w(Px(400.0)).h(Px(300.0)).child(
+            div().w(Px(20.0)).h(Px(20.0)).backdrop_blur(BackdropBlur::Menu),
+        ));
+
+        absorb_overlay(&mut base, Some(over));
+
+        let materials: Vec<BackdropBlur> = base.backdrops.iter().map(|r| r.material).collect();
+        assert_eq!(materials, vec![BackdropBlur::Hud, BackdropBlur::Menu]);
     }
 
     /// ★**overlay の当たり領域は、地とぶつからない番号を持つ** ([#84])。

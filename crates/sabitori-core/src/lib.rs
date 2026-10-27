@@ -38,7 +38,7 @@ pub use element::{
 pub use element::{Anchor, Placement};
 // 文字ごとの前景色 (`Element::color_spans`)。
 pub use element::ColorSpan;
-pub use element::{BlendMode, GlyphMotion, GradientKind, Grain};
+pub use element::{BackdropBlur, BlendMode, GlyphMotion, GradientKind, Grain};
 // 等幅の文字の格子 (#102)。
 pub use element::{cell_grid, CellGridKind};
 // grid と、 flex に足りていなかった揃え。 `Display` だけは crate root に出さない —
@@ -53,7 +53,7 @@ pub use element::{
 };
 pub use render_list::{GroupDraw, GooDraw, PathFillDraw, RenderCommand, RenderList, RectDraw, RingDraw, TextDraw, ImageDraw};
 pub use build::{
-    build_tree, build_tree_measured, BuildResult, CaretPos, HitRegion, ScrollMeasure, TextMeasure,
+    build_tree, build_tree_measured, BackdropRegion, BuildResult, CaretPos, HitRegion, ScrollMeasure, TextMeasure,
     TextShape,
 };
 pub use tui::{
