@@ -711,8 +711,9 @@ mod tests {
 
     /// **セルより広い字形は、隣の字に重なるならセルの中に縮めて置く。** 端末は `⌘` を
     /// 1 セルと数えるが、全角幅の字形を持つ字体があり、そのまま置くと隣の字に重なって
-    /// いた。次のセルが空いていれば重なる字が無いので、2 セルまで縮めずに描く (縮めると
-    /// `①` が半分の幅に潰れて読めない)。全角のセル (`WIDE`) の字も 2 セルぶん使える。
+    /// いた。縮めるときは縦も同じ割合にして、上下の中央に置く (横だけ縮めると `①` が
+    /// 縦長の楕円に潰れて読めない)。次のセルが空いていれば重なる字が無いので、2 セル
+    /// まで縮めずに描く。全角のセル (`WIDE`) の字も 2 セルぶん使える。
     #[test]
     fn glyphs_wider_than_their_cell_are_squeezed_into_it() {
         gpu_or_skip!();
@@ -728,19 +729,37 @@ mod tests {
         g.set(1, 0, cell('あ'));
         g.set(2, 0, cell('x'));
         // `x` の字形を除いて、`あ` だけの幅を見る (字形の真ん中で分ける)。
-        let gs: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
-        let (l, r) = ink(&gs);
-        assert!(l >= 8.0 - 0.01 && r <= 16.5, "1 セル (8..16) に収まっていない: {l}..{r}");
+        let small: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
+        // 字形の矩形はアンチエイリアスの余白で、字送りより左右に 1px ほど広い (どの字も同じ)。
+        let (l, r) = ink(&small);
+        assert!(l >= 7.0 - 0.01 && r <= 17.5, "1 セル (8..16) に収まっていない: {l}..{r}");
         // 次のセルが空いていれば、そこまではみ出して描く。
         let mut open = CellGrid::new(4, 1, Color::BLACK);
         open.set(1, 0, cell('あ'));
-        let (l, r) = ink(&prep(&mut tr, &open, 0.0, None));
+        let full = prep(&mut tr, &open, 0.0, None);
+        let (l, r) = ink(&full);
         assert!(l >= 8.0 - 0.01 && r - l > 9.0 && r <= 24.5, "空いた隣のセルまで使っていない: {l}..{r}");
+        // 縮めた字は形を保ったまま小さくなり、上下の中央に残る。等倍では矩形が画素に
+        // 丸まり、8px ほどの字だと 1px で縦横比が 1 割以上ぶれるので、4 倍で測る。
+        let shape = |gs: &[sabitori_text::GlyphInstance]| {
+            let (l, r) = ink(gs);
+            let t = gs.iter().map(|g| g.position[1]).fold(f32::INFINITY, f32::min);
+            let b = gs.iter().map(|g| g.position[1] + g.size[1]).fold(f32::NEG_INFINITY, f32::max);
+            ((r - l) / (b - t), b - t, (t + b) / 2.0)
+        };
+        tr.set_scale_factor(4.0);
+        let small: Vec<_> = prep(&mut tr, &g, 0.0, None).into_iter().filter(|g| g.position[0] + g.size[0] / 2.0 < 16.0).collect();
+        let full = prep(&mut tr, &open, 0.0, None);
+        tr.set_scale_factor(1.0);
+        let ((aspect_s, h_s, mid_s), (aspect_f, h_f, mid_f)) = (shape(&small), shape(&full));
+        assert!(h_s < h_f * 0.8, "縦が縮んでいない: {h_s} (元は {h_f})");
+        assert!((aspect_s - aspect_f).abs() < aspect_f * 0.25, "形が変わっている: 縦横比 {aspect_s} (元は {aspect_f})");
+        assert!((mid_s - mid_f).abs() < 1.5, "上下の中央から外れている: {mid_s} (元は {mid_f})");
         // 右端の列には次のセルが無い。
         let mut edge = CellGrid::new(4, 1, Color::BLACK);
         edge.set(3, 0, cell('あ'));
         let (l, r) = ink(&prep(&mut tr, &edge, 0.0, None));
-        assert!(l >= 24.0 - 0.01 && r <= 32.5, "右端のセル (24..32) に収まっていない: {l}..{r}");
+        assert!(l >= 23.0 - 0.01 && r <= 33.5, "右端のセル (24..32) に収まっていない: {l}..{r}");
         let mut wide = CellGrid::new(4, 1, Color::BLACK);
         wide.set(1, 0, GridCell { ch: 'あ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE });
         wide.set(2, 0, GridCell { ch: ' ', fg: Color::BLACK, bg: None, flags: CellFlags::WIDE_SPACER });
