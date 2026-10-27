@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.46.5] - 2026-10-27
+
 ### Fixed
 
 - **格子 (`cell_grid`) でセルより広い字形を縮めるとき、横にだけ縮めていたので形が潰れていた**。`①〜④` のように
@@ -4936,7 +4938,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.4...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.46.5...HEAD
+[0.46.5]: https://github.com/Mutafika/sabitori/compare/v0.46.4...v0.46.5
 [0.46.4]: https://github.com/Mutafika/sabitori/compare/v0.46.3...v0.46.4
 [0.46.3]: https://github.com/Mutafika/sabitori/compare/v0.46.2...v0.46.3
 [0.46.2]: https://github.com/Mutafika/sabitori/compare/v0.46.1...v0.46.2
