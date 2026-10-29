@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-29
+
 ### Changed（破壊的）
 
 - **別窓のホイール (`ExtraInput::Wheel`) に、回した時のカーソルの位置 (`x` / `y`、別窓の論理 px) と修飾キー
@@ -4997,7 +4999,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/Mutafika/sabitori/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Mutafika/sabitori/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/Mutafika/sabitori/compare/v0.46.5...v0.47.0
 [0.46.5]: https://github.com/Mutafika/sabitori/compare/v0.46.4...v0.46.5
