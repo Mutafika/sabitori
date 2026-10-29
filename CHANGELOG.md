@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-30
+
 ### Added
 
 - **`DeclarativeApp::resize_handles`: 窓の縁と角の内側に、大きさを変える持ち手を置く** (既定は置かない)。中身を窓の
@@ -5018,7 +5020,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/Mutafika/sabitori/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Mutafika/sabitori/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Mutafika/sabitori/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/Mutafika/sabitori/compare/v0.46.5...v0.47.0
