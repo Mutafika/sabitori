@@ -886,10 +886,22 @@ mod tests {
                         assert!((px - px.round()).abs() < 1e-3, "{pass} (倍率 {scale}): 画素の途中 {px}");
                     }
                 }
-                // 丸めても行末の字はそのセルの中 (積み重ならない)。
-                let last = out.iter().map(|gl| gl.position[0]).fold(0.0_f32, f32::max);
-                // 72 字なので最後は 72 列目 (添字 71)。
-                assert!(last >= 10.3 + 71.0 * 7.83 - 1.0 && last <= 10.3 + 72.0 * 7.83, "{pass}: 行末 {last}");
+            }
+            // 丸めても積み重ならない: 同じ字を並べると、どの字も 1 つ目から列の数 × セル幅
+            // だけ離れたまま (字ごとに丸めるので 1 画素まで)。同じ字どうしで比べるのは、
+            // 字の矩形がセルの左へ出る量が字体で違うため — 行末の字を絶対位置で見ていた時は、
+            // CI の字体が替わって矩形が 1.2px 左へ出ただけで落ちた。
+            let mut same = CellGrid::new(80, 1, Color::BLACK);
+            same.put_str(0, 0, &"c".repeat(72), Color::BLACK, None, CellFlags::NONE);
+            for pass in ["組む", "使い回す"] {
+                let out = tr.prepare_cell_grid(&same, 0..1, 10.3, 5.7, 7.83, 18.2, 13.0, 1.0, None, Some(10));
+                let mut xs: Vec<f32> = out.iter().map(|gl| gl.position[0]).collect();
+                xs.sort_by(f32::total_cmp);
+                assert_eq!(xs.len(), 72, "{pass}");
+                for (i, x) in xs.iter().enumerate() {
+                    let drift = (x - xs[0]) - i as f32 * 7.83;
+                    assert!(drift.abs() <= 1.0 / scale + 1e-3, "{pass} (倍率 {scale}): {i} 列目が {drift} ずれる");
+                }
             }
         }
     }
