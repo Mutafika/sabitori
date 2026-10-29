@@ -783,6 +783,17 @@ pub trait DeclarativeApp: 'static {
     /// 効くのは macOS の主窓だけ (他の OS・[`ExtraWindow`] は標準のまま)。
     fn titlebar(&self) -> Titlebar { Titlebar::Native }
 
+    /// 窓の縁と角の内側に、大きさを変える持ち手を置く。既定は置かない (`None`)。
+    ///
+    /// 中身を窓の上端まで広げた窓 ([`Titlebar::Unified`] / [`Titlebar::Custom`]) は、
+    /// macOS で縁の外側からつかみにくい (内側の細い所でしか効かない)。持ち手を置くと、
+    /// 縁の内側の帯と下の角の内側の四角でカーソルが大きさ変えの矢印になり、押すと
+    /// アプリには渡さずに窓の大きさを変える。持ち手の上の部品はホバーも押下も受けない
+    /// ので、縁に寄せた部品と重ならない大きさにすること (上の角を広げないのはそのため)。
+    /// 効くのは主窓だけで、フルスクリーン中は置かない。詳しくは
+    /// [`ResizeHandles`](crate::ResizeHandles)。
+    fn resize_handles(&self) -> Option<crate::ResizeHandles> { None }
+
     /// macOS-only hook, called once with the underlying winit `Window`
     /// right after creation. Use this to set platform-specific properties
     /// winit doesn't expose: `NSWindow.level`, `collectionBehavior`,
@@ -1216,6 +1227,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 直後に窓へ渡して空にする (ドラッグは押下を処理しているその場でないと始まらない)。
     /// テストでは [`crate::testing::Harness::take_window_gesture`] が読む。
     pub(crate) window_gesture: Option<WindowGesture>,
+    /// 窓の縁の持ち手を引っぱっている最中 (macOS。押した時の枠とカーソルの位置)。
+    #[cfg(target_os = "macos")]
+    window_resize: Option<crate::window_resize::Drag>,
     /// Active 2-finger pinch, if any.
     pinch: Option<PinchGesture>,
     /// トラックパッドのピンチ (`WindowEvent::PinchGesture`) の累積倍率。
@@ -1654,6 +1668,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if self.primary_input == PrimaryInput::Touch {
                     return;
                 }
+                // 縁の持ち手を引っぱっている間は窓の枠だけ動かす (中身には渡さない)。
+                // 位置は画面の上のカーソルから取る — 窓が動くので窓の中の座標は当てにならない。
+                #[cfg(target_os = "macos")]
+                if let Some(drag) = self.window_resize.as_ref() {
+                    if let Some(w) = self.window.as_ref() {
+                        crate::window_resize::update(w, drag);
+                    }
+                    return;
+                }
                 // 論理座標に直す。renderer が無い間は前の値のまま
                 // (`pointer_moved_to` への代入が no-op になる)。
                 let (x, y) = match self.renderer.as_ref() {
@@ -1715,8 +1738,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 self.press_primary();
                 // 窓のつかみどころを押したなら、この押下を処理しているうちに窓へ渡す
                 // (macOS のドラッグは「今処理中の押下」を OS に渡して始める)。
-                if let (Some(gesture), Some(w)) = (self.window_gesture.take(), self.window.as_ref()) {
-                    crate::titlebar::perform(w, gesture);
+                if let (Some(gesture), Some(w)) = (self.window_gesture.take(), self.window.clone()) {
+                    match gesture {
+                        // macOS は OS に頼めないので、押した所から自分で引っぱる
+                        #[cfg(target_os = "macos")]
+                        WindowGesture::Resize(edge) => {
+                            self.window_resize = crate::window_resize::begin(&w, edge);
+                        }
+                        _ => crate::titlebar::perform(&w, gesture),
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1730,6 +1760,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // Primary mouse button released — release ownership.
                 if self.primary_input == PrimaryInput::Mouse {
                     self.primary_input = PrimaryInput::None;
+                }
+                // 縁の持ち手を離した。押下はアプリに渡していないので、離しも渡さない。
+                #[cfg(target_os = "macos")]
+                if self.window_resize.take().is_some() {
+                    self.update_hover();
+                    return;
                 }
                 self.release_primary();
             }
@@ -2818,6 +2854,8 @@ impl<A: DeclarativeApp> AppState<A> {
             selection_redraw: false,
             deferred_click: None,
             window_gesture: None,
+            #[cfg(target_os = "macos")]
+            window_resize: None,
             last_capture: UiCapture::default(),
             closed: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2844,6 +2882,9 @@ impl<A: DeclarativeApp> AppState<A> {
         h: f32,
         measurer: &dyn sabitori_core::build::TextMeasure,
     ) -> FrameBuild {
+        // 窓の縁の持ち手の当たり判定に使う (論理 px)
+        self.last_viewport_w = w;
+        self.last_viewport_h = h;
         // ファイル選択の結果を、`view()` を呼ぶ**前**に配る (#77)。
         //
         // ダイアログの完了は OS / ブラウザ起点で、フレームとも時間とも同期
@@ -3643,6 +3684,12 @@ impl<A: DeclarativeApp> AppState<A> {
     pub(crate) fn press_primary(&mut self) {
         // 前の押下の離しが来なかった (窓の外で離した等) なら、待っていたクリックは捨てる。
         self.deferred_click = None;
+        // 窓の縁の持ち手が一番先 (OS の縁と同じく、下の部品より手前)。押下は窓が
+        // 引き取り、アプリにも要素にも渡さない。
+        if let Some(edge) = self.resize_edge_at(self.mouse_x, self.mouse_y) {
+            self.window_gesture = Some(WindowGesture::Resize(edge));
+            return;
+        }
         // ★帯が一番先。帯は中身の上に重なっているので、後ろへ渡すと**掴んだだけで
         // 下の物が押される**（一覧なら絵が選ばれ、行の並びならその行が開く）。
         if self.bars.press(
@@ -5007,6 +5054,17 @@ impl<A: DeclarativeApp> AppState<A> {
         crate::runtime_shared::hit_id_at(build, x, y)
     }
 
+    /// `(x, y)` が窓の縁の持ち手 ([`DeclarativeApp::resize_handles`]) のどれに当たるか。
+    /// 頼まれていない・フルスクリーン中なら `None`。
+    fn resize_edge_at(&self, x: f32, y: f32) -> Option<crate::ResizeEdge> {
+        let handles = self.app.resize_handles()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.window.as_ref().is_some_and(|w| w.fullscreen().is_some()) {
+            return None;
+        }
+        crate::window_resize::edge_at(handles, x, y, self.last_viewport_w, self.last_viewport_h)
+    }
+
     /// `(x, y)` で押下を受ける最前面の領域が、窓のつかみどころ (`.window_drag()`) か。
     /// 中の押せる物 (タブ等) や手前の層 (menu・modal) が上に居れば、そちらが先に当たる。
     fn window_drag_at(&self, x: f32, y: f32) -> bool {
@@ -5038,6 +5096,16 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 解決そのものは [`crate::runtime_shared::resolve_hover`]（scene ランタイムと
     /// 共通）で、ここが足すのは本文中リンクの上書きだけ。
     pub(crate) fn update_hover(&mut self) {
+        if let Some(edge) = self.resize_edge_at(self.mouse_x, self.mouse_y) {
+            self.tooltip_state.on_hover_change(None, None, self.mouse_x, self.mouse_y);
+            if self.hovered_id.is_some() {
+                self.app.on_hover_change(None);
+            }
+            self.hovered_id = None;
+            self.apply_cursor(Some(edge.cursor()));
+            self.push_ui_capture();
+            return;
+        }
         let mut hit = self
             .last_build
             .as_ref()

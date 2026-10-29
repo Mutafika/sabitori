@@ -105,6 +105,8 @@ pub(crate) fn winit_cursor(cursor: Cursor) -> winit::window::CursorIcon {
         Cursor::NotAllowed => CursorIcon::NotAllowed,
         Cursor::ResizeEw => CursorIcon::EwResize,
         Cursor::ResizeNs => CursorIcon::NsResize,
+        Cursor::ResizeNwse => CursorIcon::NwseResize,
+        Cursor::ResizeNesw => CursorIcon::NeswResize,
     }
 }
 
@@ -475,6 +477,8 @@ mod tests {
             (Cursor::NotAllowed, CursorIcon::NotAllowed),
             (Cursor::ResizeEw, CursorIcon::EwResize),
             (Cursor::ResizeNs, CursorIcon::NsResize),
+            (Cursor::ResizeNwse, CursorIcon::NwseResize),
+            (Cursor::ResizeNesw, CursorIcon::NeswResize),
         ];
         for (from, to) in pairs {
             assert_eq!(winit_cursor(from), to, "{from:?} のマッピングが違う");

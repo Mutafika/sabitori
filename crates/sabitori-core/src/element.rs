@@ -1306,6 +1306,10 @@ pub enum Cursor {
     ResizeEw,
     /// Vertical resize (`ns-resize`) cursor — 上下に分割したペインの仕切り。
     ResizeNs,
+    /// 左上 ↔ 右下の斜めの大きさ変え (`nwse-resize`) — 窓の左上・右下の角。
+    ResizeNwse,
+    /// 右上 ↔ 左下の斜めの大きさ変え (`nesw-resize`) — 窓の右上・左下の角。
+    ResizeNesw,
 }
 
 #[derive(Clone, Debug)]
