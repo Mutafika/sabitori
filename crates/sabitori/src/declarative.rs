@@ -59,7 +59,7 @@ fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
 /// 別窓の中でも、ポインタは主窓と同じ判断で効く: ホバー (`ctx.hovered` と
 /// `.hover()` / `.active()` の見た目、`.cursor()`)、管理スクロール (`.scroll(id)` を
 /// ホイールで動かす、`.scrollbar_grab()` の帯を掴む)。キーは主窓と同じ道に来る。
-/// 押した所とカーソルの下で受けなかったホイールは [`ExtraInput`] でアプリへ。
+/// 押した所・カーソルの下で受けなかったホイール・トラックパッドのピンチは [`ExtraInput`] でアプリへ。
 /// まだ無いもの: hover の ばね (`transition`)、tooltip、ドラッグ、テキスト選択。
 #[derive(Clone, Debug)]
 pub struct ExtraWindow {
@@ -102,9 +102,21 @@ pub enum ExtraInput {
     ///
     /// カーソルの下の管理スクロール (`.scroll(id)`) が受けた分は来ない (主窓の
     /// `on_scroll_xy` と同じ)。
-    Wheel { dx: f32, dy: f32 },
+    ///
+    /// `x` / `y` は回した時のカーソルの位置 (別窓の論理 px、左上が原点)、`modifiers` は
+    /// その時の修飾キー。Cmd+ホイールでカーソルの所を軸に拡大する、が書ける (主窓の
+    /// `InputEvent::Wheel` と同じ材料)。
+    Wheel { dx: f32, dy: f32, x: f32, y: f32, modifiers: Modifiers },
     /// 主ボタンを押した。`id` はその位置にある一番手前の `.id()` (無ければ `None`)。
     Click { id: Option<String>, x: f32, y: f32 },
+    /// トラックパッドのピンチを始めた。`x` / `y` はカーソルの位置 (主窓の
+    /// [`DeclarativeApp::on_pinch_start`] と同じく、トラックパッドは中心を持たないので)。
+    PinchStart { x: f32, y: f32 },
+    /// ピンチの途中。`scale` は**つまみ始めからの累積倍率** (1.0 から。主窓の
+    /// [`DeclarativeApp::on_pinch`] と同じ規約)。
+    Pinch { scale: f32, x: f32, y: f32 },
+    /// ピンチを終えた (指を離した・取り消された)。
+    PinchEnd,
 }
 
 impl Default for ExtraWindow {
@@ -970,7 +982,7 @@ pub trait DeclarativeApp: 'static {
     /// window handle (e.g. global event monitor wake-up). Default no-op.
     fn set_extra_window(&mut self, _key: &str, _window: std::sync::Arc<Window>) {}
 
-    /// 別窓でのクリックと、管理スクロールが受けなかったホイール ([`ExtraInput`])。
+    /// 別窓でのクリック、管理スクロールが受けなかったホイール、ピンチ ([`ExtraInput`])。
     /// キー入力は主窓と同じ道に来るのでここには来ない。ホバーと `.scroll(id)` は
     /// ランタイムが持つので、ここで受けなくても効く。既定は何もしない。
     fn on_extra_input(&mut self, _key: &str, _input: ExtraInput) {}
@@ -1061,6 +1073,8 @@ struct ExtraWindowState {
     pointer: crate::extra_pointer::ExtraPointer,
     /// 最後に OS へ送ったカーソル (同じものを送り直さない)。
     last_cursor: Option<sabitori_core::Cursor>,
+    /// この窓の上で続いているトラックパッドのピンチ (累積倍率)。窓ごとに持つ。
+    pinch: Option<crate::input_router::TrackpadPinch>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
@@ -2585,6 +2599,7 @@ impl<A: DeclarativeApp> AppState<A> {
             last_build: None,
             pointer: Default::default(),
             last_cursor: None,
+            pinch: None,
             scene_3d: spec.scene_3d,
         });
     }
@@ -5095,8 +5110,8 @@ impl<A: DeclarativeApp> AppState<A> {
     /// Dispatch winit events for an extra window: resize / redraw, keys
     /// (forwarded to the primary), and the pointer — hover, managed
     /// scroll and grabbed bars run through the extra's own
-    /// [`ExtraPointer`](crate::extra_pointer::ExtraPointer); clicks and
-    /// unconsumed wheel reach the app as [`ExtraInput`].
+    /// [`ExtraPointer`](crate::extra_pointer::ExtraPointer); clicks,
+    /// unconsumed wheel and trackpad pinch reach the app as [`ExtraInput`].
     fn handle_extra_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -5184,7 +5199,45 @@ impl<A: DeclarativeApp> AppState<A> {
                     return;
                 }
                 let key = extra.key.clone();
-                self.app.on_extra_input(&key, ExtraInput::Wheel { dx, dy });
+                let (x, y) = extra.pointer.mouse;
+                let modifiers = self.modifiers;
+                self.app.on_extra_input(&key, ExtraInput::Wheel { dx, dy, x, y, modifiers });
+                self.dirty = true;
+                self.request_redraw_all();
+            }
+            // トラックパッドのピンチ。主窓と同じく増分を累積倍率に直して渡す。
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                let Some(extra) = self.extras.get_mut(&id) else { return };
+                let key = extra.key.clone();
+                let (x, y) = extra.pointer.mouse;
+                // 終わりは無条件に通す (始まっていれば)。
+                if matches!(
+                    phase,
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                ) {
+                    if extra.pinch.take().is_some() {
+                        self.app.on_extra_input(&key, ExtraInput::PinchEnd);
+                        self.dirty = true;
+                        self.request_redraw_all();
+                    }
+                    return;
+                }
+                // `Started` を取りこぼしても始められるように (主窓と同じ)。
+                let started = extra.pinch.is_none();
+                let pinch = extra
+                    .pinch
+                    .get_or_insert_with(crate::input_router::TrackpadPinch::started);
+                let scale = if matches!(phase, winit::event::TouchPhase::Started) {
+                    None
+                } else {
+                    pinch.apply(delta)
+                };
+                if started {
+                    self.app.on_extra_input(&key, ExtraInput::PinchStart { x, y });
+                }
+                if let Some(scale) = scale {
+                    self.app.on_extra_input(&key, ExtraInput::Pinch { scale, x, y });
+                }
                 self.dirty = true;
                 self.request_redraw_all();
             }
