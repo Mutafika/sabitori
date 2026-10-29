@@ -117,6 +117,9 @@ pub enum WindowGesture {
     /// ダブルクリック。macOS はシステム設定の「ウインドウのタイトルバーをダブル
     /// クリックで」に従い (拡大 / しまう / 何もしない)、他の OS は最大化を切り替える。
     DoubleClick,
+    /// 窓の縁・角の持ち手 ([`crate::DeclarativeApp::resize_handles`]) を押した。
+    /// その縁から窓の大きさを変える。
+    Resize(crate::ResizeEdge),
 }
 
 /// `gesture` を窓に掛ける。**押下を処理しているその場で**呼ぶこと — macOS の
@@ -128,7 +131,19 @@ pub(crate) fn perform(window: &Window, gesture: WindowGesture) {
             let _ = window.drag_window();
         }
         WindowGesture::DoubleClick => double_click(window),
+        // macOS は OS に頼めないので、ランタイムが押した所から自分で引っぱる
+        // (`window_resize::begin`)。ここに来るのはそれ以外の OS。
+        #[cfg(not(target_os = "macos"))]
+        WindowGesture::Resize(edge) => crate::window_resize::start_os_resize(window, edge),
+        #[cfg(target_os = "macos")]
+        WindowGesture::Resize(_) => {}
     }
+}
+
+/// winit の窓の `NSWindow`。
+#[cfg(target_os = "macos")]
+pub(crate) fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    macos::ns_window(window)
 }
 
 #[cfg(target_os = "macos")]

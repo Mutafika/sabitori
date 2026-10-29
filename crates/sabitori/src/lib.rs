@@ -100,6 +100,8 @@ pub mod web_wake;
 pub use declarative::{BackdropBlur, DeclarativeApp, ExtraInput, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
 mod titlebar;
 pub use titlebar::{Titlebar, WindowGesture};
+mod window_resize;
+pub use window_resize::{ResizeEdge, ResizeHandles};
 pub use tasks::Tasks;
 pub use scene_app::SceneApp;
 pub use scene_app::run_scene;
