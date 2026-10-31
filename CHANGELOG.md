@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-31
+
 ### Added
 
 - **`Element::backdrop_blur(material)`: 要素 1 つの箱の後ろだけをぼかす (macOS)**。窓の後ろのデスクトップや
@@ -5035,7 +5037,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/Mutafika/sabitori/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Mutafika/sabitori/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Mutafika/sabitori/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Mutafika/sabitori/compare/v0.47.0...v0.48.0
