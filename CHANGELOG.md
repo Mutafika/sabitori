@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-11-02
+
 ### Added
 
 - **`ExtraWindow::resize_handles`: 別窓にも、縁と角の内側に大きさを変える持ち手を置ける** (既定は置かない)。形と
@@ -5053,7 +5055,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/Mutafika/sabitori/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Mutafika/sabitori/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Mutafika/sabitori/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Mutafika/sabitori/compare/v0.48.0...v0.49.0
