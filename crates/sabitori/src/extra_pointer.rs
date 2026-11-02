@@ -52,6 +52,21 @@ impl ExtraPointer {
         changed || repaint
     }
 
+    /// 指が窓の縁の持ち手 (`ExtraWindow::resize_handles`) の上に来た。下の物はホバー
+    /// せず (帯の明かりも消す)、カーソルは `cursor` (大きさ変えの矢印)。主窓の持ち手と同じ。
+    /// 描き直しが要るなら `true`。
+    pub(crate) fn over_handle(&mut self, x: f32, y: f32, cursor: Cursor) -> bool {
+        self.mouse = (x, y);
+        self.cursor = Some(cursor);
+        let (_, bar) = self.bars.moved(None, &mut self.scroll_states, x, y);
+        self.hovered.take().is_some() || bar
+    }
+
+    /// 帯を掴んでいる (離すまで)。
+    pub(crate) fn holding_bar(&self) -> bool {
+        self.bars.held().is_some()
+    }
+
     /// 指が窓の外へ出た。ホバーを外す。描き直しが要るなら `true`。
     pub(crate) fn left(&mut self) -> bool {
         // 帯を掴んだまま外へ出ても掴んだまま (離しで放す)。
@@ -226,6 +241,23 @@ mod tests {
         assert_eq!(p.hovered, None);
         assert_eq!(p.cursor, None);
         assert!(!p.left(), "2 回目は何も変わらない");
+    }
+
+    #[test]
+    fn a_resize_handle_takes_the_hover_from_the_content_under_it() {
+        let mut p = ExtraPointer::default();
+        let build = frame(&mut p, |_| button_view());
+        p.moved(Some(&build), 20.0, 20.0);
+        // ボタンは窓の左の縁まで来ている。縁の帯の上ではボタンはホバーしない
+        assert!(p.over_handle(2.0, 20.0, Cursor::ResizeEw), "ホバーが外れたので描き直す");
+        assert_eq!(p.hovered, None);
+        assert_eq!(p.cursor, Some(Cursor::ResizeEw));
+        assert_eq!(p.mouse, (2.0, 20.0), "押した時の位置に使う");
+        assert!(!p.over_handle(2.0, 21.0, Cursor::ResizeEw), "乗ったまま動いても描き直さない");
+        // 帯の内側へ戻ればボタンに戻る
+        assert!(p.moved(Some(&build), 20.0, 20.0));
+        assert_eq!(p.hovered.as_deref(), Some("close"));
+        assert_eq!(p.cursor, Some(Cursor::Pointer));
     }
 
     #[test]

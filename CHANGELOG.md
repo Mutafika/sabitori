@@ -15,6 +15,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`ExtraWindow::resize_handles`: 別窓にも、縁と角の内側に大きさを変える持ち手を置ける** (既定は置かない)。形と
+  効き方は主窓の `DeclarativeApp::resize_handles` と同じ — 縁の内側の帯と下の 2 つの角の内側の四角でカーソルが
+  大きさ変えの矢印になり、押すとアプリには渡さずにその縁から窓の大きさを変える。持ち手の上の部品はホバーも押下も
+  受けない。掴める帯 (`.scrollbar_grab()`) を掴んでいる間 (掴んだまま縁を横切る) とフルスクリーン中は効かない。
+  枠の無い板 (`decorations: false`。Quick Look のような) を人に伸ばし縮みさせたい時に置く。
+
+### Changed（破壊的）
+
+- **`ExtraInput` に `Resized { width, height }` が増えた** (別窓の大きさが変わった。論理 px)。持ち手や OS で人が
+  変えた時も、`extra_windows()` の大きさを変えて変わった時も来る。人が変えた大きさを覚える、大きさに合わせて
+  中身を作り直す、に使う。`ExtraInput` を `match` で受けている所は、新しい変種の腕 (か `_ => {}`) を足す。
+- **`ExtraWindow` に `resize_handles` が増えた**。`..ExtraWindow::default()` を付けずに全部の欄を書いて作って
+  いる所は、`resize_handles: None` を足す。
+
 ## [0.51.0] - 2026-10-31
 
 ### Added

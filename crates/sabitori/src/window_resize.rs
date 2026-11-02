@@ -1,4 +1,5 @@
-//! 窓の縁と角の内側に置く、大きさを変える持ち手 ([`crate::DeclarativeApp::resize_handles`])。
+//! 窓の縁と角の内側に置く、大きさを変える持ち手 ([`crate::DeclarativeApp::resize_handles`]。
+//! 別窓は [`crate::ExtraWindow::resize_handles`])。
 //!
 //! macOS の窓は縁の少し外側からもつかめるはずだが、中身を窓の上端まで広げた窓
 //! ([`crate::Titlebar::Unified`] / [`crate::Titlebar::Custom`]) では外側がほとんど効かず、
