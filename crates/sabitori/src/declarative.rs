@@ -59,7 +59,8 @@ fn apply_window_icon(window: &winit::window::Window, png: &[u8]) {
 /// 別窓の中でも、ポインタは主窓と同じ判断で効く: ホバー (`ctx.hovered` と
 /// `.hover()` / `.active()` の見た目、`.cursor()`)、管理スクロール (`.scroll(id)` を
 /// ホイールで動かす、`.scrollbar_grab()` の帯を掴む)。キーは主窓と同じ道に来る。
-/// 押した所・カーソルの下で受けなかったホイール・トラックパッドのピンチは [`ExtraInput`] でアプリへ。
+/// 押した所・カーソルの下で受けなかったホイール・トラックパッドのピンチ・窓の大きさの変化は
+/// [`ExtraInput`] でアプリへ。
 /// まだ無いもの: hover の ばね (`transition`)、tooltip、ドラッグ、テキスト選択。
 #[derive(Clone, Debug)]
 pub struct ExtraWindow {
@@ -89,6 +90,11 @@ pub struct ExtraWindow {
     pub active: bool,
     /// ほかの窓より前の層に置く (Quick Look のように主窓の上に浮かせる板)。
     pub on_top: bool,
+    /// 縁の内側に大きさを変える持ち手を置く (主窓の [`DeclarativeApp::resize_handles`] と
+    /// 同じ形・同じ効き方)。枠の無い板 (`decorations: false`) を人に伸ばし縮みさせたい
+    /// ときに置く。`None` (既定) なら置かない。変わった大きさは [`ExtraInput::Resized`] で
+    /// 届く。
+    pub resize_handles: Option<crate::ResizeHandles>,
 }
 
 /// 別窓 (extra window) で起きた入力のうち、アプリに渡すもの。
@@ -117,6 +123,10 @@ pub enum ExtraInput {
     Pinch { scale: f32, x: f32, y: f32 },
     /// ピンチを終えた (指を離した・取り消された)。
     PinchEnd,
+    /// 窓の大きさが変わった (論理 px)。縁の持ち手 ([`ExtraWindow::resize_handles`]) や OS で
+    /// 人が変えた時も、`extra_windows()` の大きさを変えて変わった時も来る。持ち手を
+    /// 引っぱっている間は、動くたびに来る。
+    Resized { width: f32, height: f32 },
 }
 
 impl Default for ExtraWindow {
@@ -134,6 +144,7 @@ impl Default for ExtraWindow {
             scene_3d: false,
             active: true,
             on_top: false,
+            resize_handles: None,
         }
     }
 }
@@ -981,7 +992,7 @@ pub trait DeclarativeApp: 'static {
     /// window handle (e.g. global event monitor wake-up). Default no-op.
     fn set_extra_window(&mut self, _key: &str, _window: std::sync::Arc<Window>) {}
 
-    /// 別窓でのクリック、管理スクロールが受けなかったホイール、ピンチ ([`ExtraInput`])。
+    /// 別窓でのクリック、管理スクロールが受けなかったホイール、ピンチ、大きさの変化 ([`ExtraInput`])。
     /// キー入力は主窓と同じ道に来るのでここには来ない。ホバーと `.scroll(id)` は
     /// ランタイムが持つので、ここで受けなくても効く。既定は何もしない。
     fn on_extra_input(&mut self, _key: &str, _input: ExtraInput) {}
@@ -1074,6 +1085,11 @@ struct ExtraWindowState {
     last_cursor: Option<sabitori_core::Cursor>,
     /// この窓の上で続いているトラックパッドのピンチ (累積倍率)。窓ごとに持つ。
     pinch: Option<crate::input_router::TrackpadPinch>,
+    /// `ExtraWindow::resize_handles` の写し (宣言し直すたびに更新)。
+    resize_handles: Option<crate::ResizeHandles>,
+    /// 縁の持ち手を引っぱっている最中 (macOS。主窓の `window_resize` と同じ)。
+    #[cfg(target_os = "macos")]
+    resize: Option<crate::window_resize::Drag>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
     /// `extra_windows()` list every frame.
@@ -1081,6 +1097,19 @@ struct ExtraWindowState {
     /// 要素の後ろのぼかしの板 (主窓と同じ)。
     #[cfg(target_os = "macos")]
     backdrop_views: crate::macos_blur::BackdropViews,
+}
+
+impl ExtraWindowState {
+    /// `(x, y)` が窓の縁の持ち手 ([`ExtraWindow::resize_handles`]) のどれに当たるか。
+    /// 頼まれていない・フルスクリーン中・帯を掴んでいる間 (掴んだまま縁を横切る) は `None`。
+    fn resize_edge_at(&self, x: f32, y: f32) -> Option<crate::ResizeEdge> {
+        let handles = self.resize_handles?;
+        if self.pointer.holding_bar() || self.window.fullscreen().is_some() {
+            return None;
+        }
+        let size = self.window.inner_size().to_logical::<f32>(self.window.scale_factor());
+        crate::window_resize::edge_at(handles, x, y, size.width, size.height)
+    }
 }
 
 /// Every renderer a window needs, built in one place.
@@ -2634,6 +2663,9 @@ impl<A: DeclarativeApp> AppState<A> {
             pointer: Default::default(),
             last_cursor: None,
             pinch: None,
+            resize_handles: spec.resize_handles,
+            #[cfg(target_os = "macos")]
+            resize: None,
             scene_3d: spec.scene_3d,
             #[cfg(target_os = "macos")]
             backdrop_views: Default::default(),
@@ -2671,7 +2703,8 @@ impl<A: DeclarativeApp> AppState<A> {
         for (spec, reuse) in specs.into_iter().zip(plan.reuse) {
             match reuse.then(|| by_key.get(&spec.key)).flatten() {
                 Some(id) => {
-                    let Some(extra) = self.extras.get(id) else { continue };
+                    let Some(extra) = self.extras.get_mut(id) else { continue };
+                    extra.resize_handles = spec.resize_handles;
                     // Resize before moving: on macOS a window whose new
                     // frame lands on a different display gets its
                     // backing scale re-evaluated on the move, and doing
@@ -5204,6 +5237,14 @@ impl<A: DeclarativeApp> AppState<A> {
                     }
                     if let Some(extra) = self.extras.get(&id) {
                         extra.window.request_redraw();
+                        // アプリにも知らせる (人が変えた大きさを覚える、中身を描き直す等)。
+                        let key = extra.key.clone();
+                        let logical = size.to_logical::<f32>(extra.window.scale_factor());
+                        self.app.on_extra_input(
+                            &key,
+                            ExtraInput::Resized { width: logical.width, height: logical.height },
+                        );
+                        self.dirty = true;
                     }
                 }
             }
@@ -5237,9 +5278,20 @@ impl<A: DeclarativeApp> AppState<A> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(extra) = self.extras.get_mut(&id) {
+                    // 縁の持ち手を引っぱっている間は窓の枠だけ動かす (主窓と同じ)。
+                    #[cfg(target_os = "macos")]
+                    if let Some(drag) = extra.resize.as_ref() {
+                        crate::window_resize::update(&extra.window, drag);
+                        return;
+                    }
                     let s = extra.window.scale_factor() as f32;
                     let (x, y) = (position.x as f32 / s, position.y as f32 / s);
-                    if extra.pointer.moved(extra.last_build.as_ref(), x, y) {
+                    // 持ち手の上では下の物はホバーせず、大きさ変えの矢印 (主窓と同じ)。
+                    let repaint = match extra.resize_edge_at(x, y) {
+                        Some(edge) => extra.pointer.over_handle(x, y, edge.cursor()),
+                        None => extra.pointer.moved(extra.last_build.as_ref(), x, y),
+                    };
+                    if repaint {
                         extra.window.request_redraw();
                     }
                     crate::runtime_shared::apply_cursor(
@@ -5317,12 +5369,24 @@ impl<A: DeclarativeApp> AppState<A> {
                 ..
             } => {
                 let Some(extra) = self.extras.get_mut(&id) else { return };
-                // 帯が一番先 (主窓と同じ — 帯は中身の上に重なっている)。
+                let (x, y) = extra.pointer.mouse;
+                // 縁の持ち手が一番先 (主窓と同じ — OS の縁と同じく、下の部品より手前)。
+                // 押下は窓が引き取り、アプリにも要素にも渡さない。
+                if let Some(edge) = extra.resize_edge_at(x, y) {
+                    // macOS は OS に頼めないので、押した所から自分で引っぱる
+                    #[cfg(target_os = "macos")]
+                    {
+                        extra.resize = crate::window_resize::begin(&extra.window, edge);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    crate::window_resize::start_os_resize(&extra.window, edge);
+                    return;
+                }
+                // 次が帯 (主窓と同じ — 帯は中身の上に重なっている)。
                 if extra.pointer.grab_bar(extra.last_build.as_ref()) {
                     extra.window.request_redraw();
                     return;
                 }
-                let (x, y) = extra.pointer.mouse;
                 let key = extra.key.clone();
                 let pt = sabitori_core::Point::new(x, y);
                 // 窓のつかみどころ (`.window_drag()`) の空いた所なら、主窓と同じく
@@ -5353,6 +5417,11 @@ impl<A: DeclarativeApp> AppState<A> {
                 ..
             } => {
                 let Some(extra) = self.extras.get_mut(&id) else { return };
+                // 縁の持ち手を離した。押下はアプリに渡していないので、離しも渡さない。
+                #[cfg(target_os = "macos")]
+                if extra.resize.take().is_some() {
+                    return;
+                }
                 if extra.pointer.release() {
                     extra.window.request_redraw();
                 }
