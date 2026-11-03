@@ -500,7 +500,11 @@ impl MenuBarState {
             .flex_row()
             .items_center()
             .justify_content(JustifyContent::SpaceBetween)
-            .child(text(&item.label).font_size(style.font_size).color(fg));
+            .child(crate::context_menu_widget::label_with_swatch(
+                text(&item.label).font_size(style.font_size).color(fg),
+                item.swatch,
+                style.item_height,
+            ));
 
         if submenu_arrow {
             row = row.child(text("\u{25B6}").font_size(9.0).color(style.shortcut_fg));
@@ -667,6 +671,37 @@ mod tests {
         s.handle_click("__menubar:file", &m);
         let overlay = s.overlay(&m, 800.0, 600.0, None, &style).expect("open");
         assert_eq!(overlay.id.as_deref(), Some("__menubar-backdrop"));
+    }
+
+    fn find<'a>(e: &'a Element, id: &str) -> Option<&'a Element> {
+        if e.id.as_deref() == Some(id) {
+            return Some(e);
+        }
+        e.children.iter().find_map(|c| find(c, id))
+    }
+
+    /// `with_swatch` の行は、名前をその色の帯に載せて描く (右クリックメニューと同じ)。
+    #[test]
+    fn a_swatch_item_lays_its_colour_behind_the_label() {
+        let red = Color::new(1.0, 0.0, 0.0, 0.25);
+        let m = vec![MenuDef::new(
+            "tag",
+            "Tag",
+            vec![
+                MenuItemDef::action("red", "Red").with_swatch(red),
+                MenuItemDef::action("none", "None"),
+            ],
+        )];
+        let style = MenuBarStyle::default_dark();
+        let mut s = MenuBarState::new();
+        s.handle_click("__menubar:tag", &m);
+        let overlay = s.overlay(&m, 800.0, 600.0, None, &style).expect("open");
+        let label_of = |id: &str| {
+            let row = find(&overlay, &format!("{ITEM_PREFIX}{id}")).expect("row");
+            row.children[0].style.background
+        };
+        assert_eq!(label_of("red"), red);
+        assert_ne!(label_of("none"), red);
     }
 
     #[test]
