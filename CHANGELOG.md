@@ -15,6 +15,20 @@
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-11-03
+
+### Added
+
+- **`MenuItemDef::with_swatch(color)`: メニューの行の名前の後ろに、蛍光ペンのような色の帯を敷ける**。色を選ぶ
+  メニューで、それぞれの色の見え方を選ぶ前に見せるため。色は渡したまま塗る (濃さは渡す側の alpha で決める)。
+  帯は名前より左右に少しはみ出し、行より低い。その余白の分だけ左へずらしてあるので、名前の位置は帯の無い行と
+  同じ。右クリックメニュー (`ContextMenuState`) とメニューバー (`MenuBarState`) の両方で効く。
+
+### Changed（破壊的）
+
+- **`MenuItemDef` に `swatch: Option<Color>` が増えた**。全部の欄を書いて作っている所は `swatch: None` を足す。
+  `action()` / `separator()` で作っている所はそのまま。
+
 ## [0.52.0] - 2026-11-02
 
 ### Added
@@ -5055,7 +5069,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/Mutafika/sabitori/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Mutafika/sabitori/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Mutafika/sabitori/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Mutafika/sabitori/compare/v0.49.0...v0.50.0
