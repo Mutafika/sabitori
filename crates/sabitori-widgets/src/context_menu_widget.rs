@@ -14,6 +14,8 @@ pub struct MenuItemDef {
     /// action items. Rendered by `MenuBarState`; `ContextMenuState`
     /// currently ignores it.
     pub submenu: Vec<MenuItemDef>,
+    /// A colour laid as a band behind the label — see [`Self::with_swatch`].
+    pub swatch: Option<Color>,
 }
 
 impl MenuItemDef {
@@ -26,7 +28,17 @@ impl MenuItemDef {
             enabled: true,
             separator: false,
             submenu: Vec::new(),
+            swatch: None,
         }
+    }
+
+    /// Lay a band of `color` behind the label, like a highlighter — for
+    /// items that pick a colour, so each choice shows what it looks like.
+    /// The colour is drawn as given (pass the alpha you want); the label
+    /// stays exactly where it sits on a row without a swatch.
+    pub fn with_swatch(mut self, color: Color) -> Self {
+        self.swatch = Some(color);
+        self
     }
 
     /// Set a keyboard shortcut label (e.g. "Cmd+C").
@@ -62,7 +74,29 @@ impl MenuItemDef {
             enabled: false,
             separator: true,
             submenu: Vec::new(),
+            swatch: None,
         }
+    }
+}
+
+/// How far a swatch band reaches past the label text on each side.
+const SWATCH_PAD: f32 = 6.0;
+
+/// A menu row's label, on its swatch band when the item has one. The band is
+/// `row_h - 8` tall and pulled left by its own padding, so the text lands
+/// exactly where an unswatched label does.
+pub(crate) fn label_with_swatch(label: Element, swatch: Option<Color>, row_h: f32) -> Element {
+    match swatch {
+        None => label,
+        Some(c) => div()
+            .ml(Px(-SWATCH_PAD))
+            .px_pad(Px(SWATCH_PAD))
+            .h(Px(row_h - 8.0))
+            .rounded_px(4.0)
+            .flex_row()
+            .items_center()
+            .bg(c)
+            .child(label),
     }
 }
 
@@ -186,9 +220,11 @@ impl ContextMenuState {
                     .items_center()
                     .justify_content(JustifyContent::SpaceBetween);
 
-                let label_el = text(&item.label)
-                    .font_size(13.0)
-                    .color(label_color);
+                let label_el = label_with_swatch(
+                    text(&item.label).font_size(13.0).color(label_color),
+                    item.swatch,
+                    item_h,
+                );
 
                 if item.shortcut.is_empty() {
                     row = row.child(label_el);

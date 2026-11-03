@@ -1070,12 +1070,28 @@ impl sabitori::DeclarativeApp for MenuApp {
     fn on_right_click(&mut self, id: &str, x: f32, y: f32) {
         use sabitori_widgets::MenuItemDef as M;
         self.right_clicked.push(id.to_string());
-        self.menu.show(x, y, vec![M::action("menu:copy", "Copy"), M::action("menu:paste", "Paste")]);
+        self.menu.show(
+            x,
+            y,
+            vec![
+                M::action("menu:copy", "Copy"),
+                M::action("menu:paste", "Paste"),
+                M::action("menu:red", "Red").with_swatch(SWATCH),
+            ],
+        );
     }
 
     fn on_click(&mut self, id: &str) {
         self.clicked.push(id.to_string());
         self.menu.dismiss();
+    }
+
+    fn is_animating(&self) -> bool {
+        self.menu.opacity.value() != self.menu.opacity.target()
+    }
+
+    fn tick(&mut self, dt: f32) {
+        self.menu.tick(dt);
     }
 }
 
@@ -1104,6 +1120,41 @@ fn right_clicking_another_thing_with_the_menu_open_reaches_it() {
     h.right_click_at(b.origin.x + 200.0, b.origin.y + 20.0);
     h.frame();
     assert_eq!(h.app().right_clicked, ["a", "b"], "幕に当たっている");
+}
+
+/// `MenuApp` の "Red" に敷く色。ほかに同じ色で塗る物は無い。
+const SWATCH: sabitori::Color = sabitori::Color::new(1.0, 0.27, 0.23, 0.25);
+
+/// 塗った面のうち `SWATCH` のもの (メニューは手前の層に描かれる)。
+fn swatch_bands(h: &Harness<MenuApp>) -> Vec<sabitori::Rect> {
+    let b = h.build();
+    b.render_list
+        .rects()
+        .chain(b.overlay_list.rects())
+        .filter(|r| r.fill_color == SWATCH)
+        .map(|r| r.rect)
+        .collect()
+}
+
+/// ★`with_swatch` の行は、名前の後ろに色の帯が敷かれる。帯は名前より左右に
+/// はみ出し、名前そのものは色の無い行と同じ位置に居る。
+#[test]
+fn a_swatch_lays_a_band_behind_the_label_without_moving_it() {
+    let mut h = menu_app();
+    h.right_click("a");
+    h.settle(); // 出始めは透明から浮かび上がる。色を比べるのは出きってから
+
+    let red = h.text_rect("Red").expect("Red が無い");
+    let copy = h.text_rect("Copy").expect("Copy が無い");
+    assert_eq!(red.origin.x, copy.origin.x, "色の付いた名前が横にずれた");
+
+    let bands = swatch_bands(&h);
+    assert_eq!(bands.len(), 1, "帯は Red の行に 1 本だけ: {bands:?}");
+    let band = bands[0];
+    assert!(band.contains(red.center()), "帯が名前の後ろに無い: {band:?} / {red:?}");
+    assert!(band.origin.x < red.origin.x && right(band) > right(red), "帯が名前より短い");
+    let row = h.rect_of("menu:red").unwrap();
+    assert!(band.size.height < row.size.height, "帯が行いっぱいに塗られた");
 }
 
 /// 左クリックは今までどおり幕が受ける (外を押したら閉じるだけで、下の物は押されない)。
