@@ -15,6 +15,14 @@
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-11-04
+
+### Fixed
+
+- **⌘Q で終わる時も、開いていた窓のアプリの `Drop` が走る**。macOS の「終了」(⌘Q・Dock の終了・AppleScript の
+  `quit`) では、winit が窓を閉じたあと片付けずにプロセスを終えるので、アプリの `Drop` が走っていなかった (窓を
+  閉じた時は走る)。終わる直前の状態 (窓の位置・大きさ、まだ書いていない設定) を書き残せるようになった。
+
 ## [0.53.0] - 2026-11-03
 
 ### Added
@@ -5069,7 +5077,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.53.1...HEAD
+[0.53.1]: https://github.com/Mutafika/sabitori/compare/v0.53.0...v0.53.1
 [0.53.0]: https://github.com/Mutafika/sabitori/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Mutafika/sabitori/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Mutafika/sabitori/compare/v0.50.0...v0.51.0
