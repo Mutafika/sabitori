@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-11-04
+
 ### Added
 
 - **`titlebar_buttons`: 自前で描くタイトルバー (`Titlebar::Custom`) に、窓のボタンを並べる部品**
@@ -5118,7 +5120,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.53.1...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/Mutafika/sabitori/compare/v0.53.1...v0.54.0
 [0.53.1]: https://github.com/Mutafika/sabitori/compare/v0.53.0...v0.53.1
 [0.53.0]: https://github.com/Mutafika/sabitori/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Mutafika/sabitori/compare/v0.51.0...v0.52.0
