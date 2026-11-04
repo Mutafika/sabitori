@@ -178,6 +178,10 @@ name = "unified_titlebar"
 path = "../../examples/unified_titlebar.rs"
 
 [[example]]
+name = "custom_titlebar"
+path = "../../examples/custom_titlebar.rs"
+
+[[example]]
 name = "tui_demo"
 path = "../../examples/tui_demo.rs"
 

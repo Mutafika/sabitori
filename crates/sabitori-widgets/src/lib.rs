@@ -63,6 +63,7 @@ mod split_pane;
 mod style_animator;
 mod table;
 mod text_input;
+mod titlebar_buttons;
 mod toast;
 mod tooltip;
 mod tree_view;
@@ -102,6 +103,10 @@ pub use table::{
 };
 pub use text_input::{
     text_area, text_input, PendingMove, PreeditState, TextInputState, TextInputStyle,
+};
+pub use titlebar_buttons::{
+    titlebar_button_id, titlebar_buttons, TitlebarButton, TitlebarButtons, TitlebarButtonsStyle,
+    TitlebarIcon,
 };
 pub use toast::{ToastKind, ToastManager};
 pub use tooltip::TooltipState;

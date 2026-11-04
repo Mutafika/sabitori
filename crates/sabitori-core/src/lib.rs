@@ -24,7 +24,7 @@ pub use scrollbar::ScrollbarStyle;
 // Re-export key element API items at crate root for convenience.
 pub use element::{
     arc, div, goo, text, button, image, polyline, ArcKind, GooKind, Cursor, Element, ElementKind, HighlightSpec,
-    ImageData, LinkRange, ObjectFit, PolylineKind, Role, ScrollOwner, Typography,
+    ImageData, LinkRange, ObjectFit, PolylineKind, Role, ScrollOwner, Typography, WindowAction,
 };
 pub use element::{Dimension, Px, Percent, Auto, DimensionExt};
 // レイアウト基本型。 `sabitori-style::props` が別々に定義していたものを 0.4.0 で
@@ -188,6 +188,20 @@ impl SizeClass {
     }
 }
 
+/// 窓の今の状態 ([`ViewContext::window_state`])。OS 側の操作 (タイトルバーの
+/// ダブルクリック・ショートカット・画面の端へのスナップ) で変わった分も入る。
+///
+/// 後から項目が増えても壊れないよう、外の crate では `WindowState::default()` から
+/// 作って欄を書き換える。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WindowState {
+    /// フルスクリーン中。
+    pub fullscreen: bool,
+    /// 拡大している (macOS の「拡大/縮小」・Windows の最大化)。
+    pub maximized: bool,
+}
+
 /// Context passed to `DeclarativeApp::view()` each frame.
 /// Contains viewport info, mouse state, and hovered element ID.
 pub struct ViewContext<'a> {
@@ -206,6 +220,11 @@ pub struct ViewContext<'a> {
     /// フルスクリーン中 (信号ボタンは帯から消え、画面の上端に寄せると出る OS の帯へ
     /// 移る) は `None`。フルスクリーンの出入りで変わるので毎フレーム読む。
     pub window_controls: Option<Rect>,
+    /// 窓が今フルスクリーンか・拡大しているか。帯に自前で描いた窓の操作ボタンが
+    /// 見た目を変える (拡大中は □ を「元に戻す」に、フルスクリーン中は隠す) のに読む。
+    /// 窓を持たないホスト (testing harness) では全部 `false`。web はフルスクリーン
+    /// だけが入る。
+    pub window_state: WindowState,
     /// ID of the currently hovered element (if any).
     pub hovered: Option<String>,
     /// ID of the currently focused element (if any).
@@ -730,6 +749,7 @@ mod view_context_tests {
             height: 600.0,
             safe_area: Edges::default(),
             window_controls: None,
+            window_state: WindowState::default(),
             hovered: None,
             focused: None,
             mouse_x: 0.0,

@@ -62,11 +62,15 @@ pub enum Titlebar {
     /// (Windows のように右端へ置く等)。
     ///
     /// - `ctx.window_controls` は常に `None` (帯の部品は左端から並べてよい)
-    /// - ボタンの動作は [`crate::DeclarativeApp::set_window`] で受け取った窓へ
-    ///   (`set_minimized` / `set_maximized`)。閉じるは
-    ///   [`crate::DeclarativeApp::take_close_request`] — OS の閉じるボタンと同じ道を通る
+    /// - ボタンは sabitori-widgets の `titlebar_buttons` で並べるのが早い
+    ///   (− □ ✕ や赤・黄・緑の丸のプリセットがあり、絵も機能も差し替えられる)。
+    ///   自分で描くなら、ボタンに [`Element::window_action`] を付ければランタイムが
+    ///   窓に掛ける (閉じるは OS の閉じるボタンと同じ道)。アプリは窓を持たなくていい
+    /// - 拡大しているか・フルスクリーンかは `ctx.window_state` で読む
     /// - フルスクリーン中だけは信号ボタンを戻す。画面の上端に寄せると出る OS の帯で
     ///   フルスクリーンを抜けられるように
+    ///
+    /// [`Element::window_action`]: sabitori_core::element::Element::window_action
     Custom {
         /// 帯の高さ (論理 px)。フルスクリーンを抜けたとき OS の帯をこの高さへ戻す。
         height: f32,
@@ -137,6 +141,57 @@ pub(crate) fn perform(window: &Window, gesture: WindowGesture) {
         WindowGesture::Resize(edge) => crate::window_resize::start_os_resize(window, edge),
         #[cfg(target_os = "macos")]
         WindowGesture::Resize(_) => {}
+    }
+}
+
+/// 窓の今の状態 ([`sabitori_core::ViewContext::window_state`])。
+pub(crate) fn window_state(window: &Window) -> sabitori_core::WindowState {
+    let mut state = sabitori_core::WindowState::default();
+    state.fullscreen = window.fullscreen().is_some();
+    state.maximized = is_maximized(window);
+    state
+}
+
+/// 拡大しているか。macOS は winit の `is_maximized` (= `isZoomed`) を当てにしない —
+/// [`macos::is_zoomed`] を参照。
+fn is_maximized(window: &Window) -> bool {
+    // フルスクリーンの枠も画面を埋めるので、埋め方では見ない (OS の答えのまま)。
+    #[cfg(target_os = "macos")]
+    if let (None, Some(ns_window)) = (window.fullscreen(), macos::ns_window(window)) {
+        return macos::is_zoomed(&ns_window);
+    }
+    window.is_maximized()
+}
+
+/// 拡大と元に戻すを行き来する。macOS は緑のボタンと同じ `zoom:` を直に送る —
+/// winit の `set_maximized` は「今拡大しているか」を `isZoomed` で決めて覚えるので、
+/// それが外れる画面 ([`macos::is_zoomed`]) では覚えた値がずれ、フルスクリーンを
+/// 抜けたときに勝手に拡大し直す。
+fn toggle_maximized(window: &Window) {
+    #[cfg(target_os = "macos")]
+    if let Some(ns_window) = macos::ns_window(window) {
+        macos::zoom(&ns_window);
+        return;
+    }
+    window.set_maximized(!window.is_maximized());
+}
+
+/// 窓の操作ボタン ([`Element::window_action`]) が頼んだことを窓に掛ける。閉じる
+/// ([`WindowAction::Close`]) はここでは何もしない — 窓を落とすのはランタイム
+/// (OS の閉じるボタンと同じ道)。
+///
+/// [`Element::window_action`]: sabitori_core::element::Element::window_action
+pub(crate) fn perform_action(window: &Window, action: sabitori_core::WindowAction) {
+    use sabitori_core::WindowAction;
+    match action {
+        WindowAction::Minimize => window.set_minimized(true),
+        WindowAction::ToggleMaximize => toggle_maximized(window),
+        // macOS はこれで OS のフルスクリーン (専用の操作スペース) に入る。
+        WindowAction::ToggleFullscreen => window.set_fullscreen(match window.fullscreen() {
+            Some(_) => None,
+            None => Some(winit::window::Fullscreen::Borderless(None)),
+        }),
+        WindowAction::Close => {}
     }
 }
 
@@ -344,6 +399,78 @@ mod macos {
         }
     }
 
+    /// 拡大しているか。`isZoomed` に加えて、画面の使える所 (`visibleFrame`) を窓が
+    /// 埋めているかも見る。
+    ///
+    /// メニューバーを自動で隠す画面では `visibleFrame` がメニューバーの所まで含む。
+    /// `zoom:` は一度そこまで広げるが、OS が窓をメニューバーの下へ押し込むので、
+    /// 拡大したままなのに枠が「標準の拡大の枠」と食い違い、`isZoomed` が `false` に
+    /// 戻る (macOS 26 で確認。5120×2160 の画面で、窓は 2160 → 2136 に縮められた)。
+    pub(super) fn is_zoomed(window: &NSWindow) -> bool {
+        if window.isZoomed() {
+            return true;
+        }
+        let Some(screen) = window.screen() else {
+            return false;
+        };
+        let (frame, visible) = (window.frame(), screen.visibleFrame());
+        // メニューバーの高さぶんまでは足りなくてよい (ノッチのある画面は 37pt 前後)。
+        const MENU_BAR_SLACK: f64 = 40.0;
+        let near = |a: f64, b: f64| (a - b).abs() <= 1.0;
+        near(frame.origin.x, visible.origin.x)
+            && near(frame.size.width, visible.size.width)
+            && near(frame.origin.y, visible.origin.y)
+            && frame.size.height <= visible.size.height + 1.0
+            && frame.size.height >= visible.size.height - MENU_BAR_SLACK
+    }
+
+    std::thread_local! {
+        /// 拡大する前の枠 (窓番号ごと)。[`zoom`] が元に戻すのに使う。
+        static UNZOOMED: std::cell::RefCell<std::collections::HashMap<isize, NSRect>> =
+            std::cell::RefCell::default();
+    }
+
+    /// 緑のボタンと同じ拡大 / 元に戻す。
+    ///
+    /// AppKit の `zoom:` は「今拡大しているか」を `isZoomed` で決める。それが外れる画面
+    /// ([`is_zoomed`]) では、拡大した窓に送っても**もう一度拡大するだけ**で戻らない
+    /// (OS がまたメニューバーの下へ押し込むので、見た目は何も起きない)。だから拡大する
+    /// 前の枠を覚えておき、AppKit が拡大に気付いていないときはそこへ自分で戻す。
+    pub(super) fn zoom(window: &NSWindow) {
+        let number = window.windowNumber();
+        if is_zoomed(window) {
+            let saved = UNZOOMED.with(|m| m.borrow_mut().remove(&number));
+            if !window.isZoomed() {
+                // 覚えていない (OS の操作で拡大した) なら、画面の真ん中に 2/3 の大きさで。
+                let frame = saved.unwrap_or_else(|| centered(window));
+                window.setFrame_display_animate(frame, true, true);
+                return;
+            }
+        } else {
+            UNZOOMED.with(|m| m.borrow_mut().insert(number, window.frame()));
+        }
+        let nil: Option<&AnyObject> = None;
+        // SAFETY: 送り手 (sender) に nil を取る NSWindow の操作。
+        unsafe {
+            let _: () = msg_send![window, zoom: nil];
+        }
+    }
+
+    /// 画面の使える所の真ん中に、その 2/3 の大きさ (最小の大きさは下回らない)。
+    fn centered(window: &NSWindow) -> NSRect {
+        let visible = window.screen().map_or(window.frame(), |s| s.visibleFrame());
+        let min = window.minSize();
+        let w = (visible.size.width * 2.0 / 3.0).max(min.width);
+        let h = (visible.size.height * 2.0 / 3.0).max(min.height);
+        NSRect::new(
+            objc2_foundation::NSPoint::new(
+                visible.origin.x + (visible.size.width - w) * 0.5,
+                visible.origin.y + (visible.size.height - h) * 0.5,
+            ),
+            objc2_foundation::NSSize::new(w, h),
+        )
+    }
+
     /// システム設定の「ウインドウのタイトルバーをダブルクリックで」に従う。
     /// 一度も設定を触っていなければ値が無く、そのときの既定は拡大 (Warp と同じ扱い)。
     pub(super) fn double_click(window: &NSWindow) {
@@ -368,9 +495,8 @@ mod macos {
                 }
                 Some("None") => {}
                 // "Maximize" (拡大)・"Fill" (画面いっぱい)・未設定 は拡大で受ける。
-                _ => {
-                    let _: () = msg_send![window, performZoom: nil];
-                }
+                // 窓のボタンの拡大と同じ道 (`isZoomed` が外れる画面でも戻せる)。
+                _ => zoom(window),
             }
         }
     }
