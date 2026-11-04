@@ -41,6 +41,14 @@ impl<A: DeclarativeApp> Host<A> {
         }
     }
 
+    /// アプリが終わる。残っている窓を全部落とし、窓を閉じた時と同じくアプリの `Drop` を
+    /// 走らせる — 開いていた窓の状態 (タブ・位置など) を書き残す最後の機会。
+    fn quit(&mut self) {
+        self.windows.clear();
+        #[cfg(target_os = "macos")]
+        crate::macos_secure_input::set(false);
+    }
+
     /// アプリが頼んだ窓を作る。頼んだ窓から少しずつずらして置く。作ったら `true`。
     fn open_requested(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let mut opened = Vec::new();
@@ -127,6 +135,12 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
         }
     }
 
+    /// ループが終わる。⌘Q (macOS の「終了」) では、winit は窓を閉じてここを呼んだあと、
+    /// 片付けずにプロセスを終える — 窓を持ったままだとアプリの `Drop` が走らない。
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.quit();
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // 窓ごとに次に起きたい時刻を聞き、いちばん早いものにする。何も言わない窓
         // (閉じた・間引いた) は「待つ」扱い — 前の窓が置いた値を読まないよう毎回戻す。
@@ -189,6 +203,33 @@ mod tests {
         assert_eq!(more_urgent(later, ControlFlow::Wait), later);
         assert_eq!(more_urgent(soon, ControlFlow::Poll), ControlFlow::Poll);
         assert_eq!(more_urgent(ControlFlow::Wait, ControlFlow::Wait), ControlFlow::Wait);
+    }
+
+    /// 落ちた数を数えるアプリ。
+    struct Counted(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl DeclarativeApp for Counted {
+        fn view(&self, _ctx: &crate::ViewContext) -> sabitori_core::Element {
+            sabitori_core::div()
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// ★終わる時 (⌘Q) は、開いている窓のアプリが全部落ちる (`Drop` が走る)。
+    #[test]
+    fn quitting_drops_every_window_s_app() {
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut host = Host::new(Counted(dropped.clone()));
+        host.windows.push(AppState::new(Counted(dropped.clone())));
+        assert_eq!(dropped.get(), 0);
+        host.quit();
+        assert_eq!(dropped.get(), 2);
+        assert!(host.windows.is_empty());
     }
 
     #[test]
