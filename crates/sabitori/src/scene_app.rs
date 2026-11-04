@@ -1222,6 +1222,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     safe_area: self.window.as_ref().map(|win| sabitori_window::safe_area(win)).unwrap_or_default(),
                     // scene のランタイムは `titlebar()` を見ない (窓は標準のタイトルバー)。
                     window_controls: None,
+                    window_state: self
+                        .window
+                        .as_deref()
+                        .map_or_else(Default::default, crate::titlebar::window_state),
                     hovered: self.hovered_id.clone(),
                     focused: self.focused_id.clone(),
                     mouse_x: self.mouse_x,

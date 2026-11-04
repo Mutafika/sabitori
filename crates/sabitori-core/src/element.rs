@@ -462,6 +462,22 @@ pub struct LinkRange {
     pub color: Color,
 }
 
+/// 押すと窓そのものに起きること ([`Element::window_action`])。タイトルバーを自前で
+/// 描く窓 (`Titlebar::Custom`・`decorations()` が `false`) の、最小化・拡大・閉じる
+/// ボタン用。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowAction {
+    /// しまう (Dock・タスクバーへ)。
+    Minimize,
+    /// 拡大と元の大きさを行き来する。
+    ToggleMaximize,
+    /// フルスクリーンに入る / 抜ける。
+    ToggleFullscreen,
+    /// 閉じる。OS の閉じるボタンと同じ道を通る — アプリの `Drop` も走り、
+    /// 最後の窓ならアプリが終わる。
+    Close,
+}
+
 /// 支援技術に伝える、 この要素の役割。
 ///
 /// GPU で全部自前描画している以上、 OS から見ると窓の中身はただのピクセルで、
@@ -1247,6 +1263,8 @@ pub struct Element {
     /// 窓のつかみどころ ([`Element::window_drag`])。ここの空いた所を押すと、
     /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) が始まる。
     pub window_drag: bool,
+    /// 押すと窓そのものを操作する ([`Element::window_action`])。
+    pub window_action: Option<WindowAction>,
     /// 右クリックを下へ通す ([`Element::right_click_through`])。コンテキストメニューの幕。
     pub right_click_through: bool,
     /// 窓の幅の区分ごとの上書き ([`Element::at`])。ランタイムが `view()` の直後に
@@ -1694,6 +1712,7 @@ pub fn div() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -1818,6 +1837,7 @@ pub fn text(content: impl Into<TextContent>) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -1861,6 +1881,7 @@ pub fn polyline() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -1919,6 +1940,7 @@ pub fn goo(a: crate::Rect, b: crate::Rect) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -1968,6 +1990,7 @@ pub fn arc() -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -2001,6 +2024,7 @@ pub fn image(key: impl Into<String>, data: ImageData) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -2067,6 +2091,7 @@ pub fn button(label: impl Into<TextContent>) -> Element {
         cursor: None,
         no_select: false,
         window_drag: false,
+        window_action: None,
         right_click_through: false,
         size_rules: Vec::new(),
         mask: None,
@@ -3979,6 +4004,30 @@ impl Element {
     /// 効くのは宣言的ランタイム (`run_declarative`) の主窓。
     pub fn window_drag(mut self) -> Self {
         self.window_drag = true;
+        self
+    }
+
+    /// **押すと窓そのものを操作する。** 最小化・拡大・フルスクリーン・閉じる
+    /// ([`WindowAction`]) を、アプリが窓を持たずに頼める — ランタイムがクリックの
+    /// その場で窓に掛ける。閉じるは OS の閉じるボタンと同じ道 (アプリの `Drop` も走る)。
+    ///
+    /// クリックの扱いは普通のボタンと同じで、`.id()` が要る (id の無い要素は
+    /// 押す先にならない)。`on_click(id)` も今まで通り届くので、押されたことを
+    /// アプリが知りたければそこで見る。
+    ///
+    /// 決まった見た目 (− □ ✕ や丸 3 つ) で良ければ、sabitori-widgets の
+    /// `titlebar_buttons` がこれを付けたボタンを並べる。
+    ///
+    /// ```ignore
+    /// div().id("min").w(Px(40.0)).h(Px(38.0))
+    ///     .window_action(WindowAction::Minimize)
+    ///     .child(text("−"))
+    /// ```
+    ///
+    /// 効くのは宣言的ランタイム (`run_declarative`) の窓 (主窓と別窓)。web は
+    /// フルスクリーンだけが効き、他は何もしない。
+    pub fn window_action(mut self, action: WindowAction) -> Self {
+        self.window_action = Some(action);
         self
     }
 

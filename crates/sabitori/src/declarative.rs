@@ -22,6 +22,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::bridge::{OrderedFrame, UiRenderers};
 use crate::titlebar::{Titlebar, WindowGesture};
+use sabitori_core::{WindowAction, WindowState};
 
 /// 主窓を複数持つ ([`DeclarativeApp::take_new_windows`])。
 #[cfg(not(target_arch = "wasm32"))]
@@ -661,7 +662,9 @@ pub trait DeclarativeApp: 'static {
     /// 主窓を閉じたい。`true` を返すと、OS の閉じるボタン (`CloseRequested`) と同じく
     /// この窓を閉じる — アプリの `Drop` も走る。最後の窓ならアプリが終わる
     /// ([`Self::take_new_windows`])。[`Titlebar::Custom`] の帯に自分で描いた
-    /// 閉じるボタン用。毎周回読むので、返したら旗を下ろすこと。
+    /// 閉じるボタン用 (ボタンに `.window_action(WindowAction::Close)` を付けても同じ道を
+    /// 通るので、閉じる前に何かするのでなければそちらが早い)。毎周回読むので、返したら
+    /// 旗を下ろすこと。
     fn take_close_request(&mut self) -> bool { false }
 
     /// 同じプロセスで**主窓をもう 1 つ**開く。返したアプリはそれぞれ自分の主窓を持ち、
@@ -1168,6 +1171,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     window_title: String,
     /// テスト用: `ctx.safe_area` を窓から読まずにこの値にする（`Harness::set_safe_area`）。
     pub(crate) safe_area_override: Option<sabitori_core::Edges<f32>>,
+    /// テスト用: `ctx.window_state` を窓から読まずにこの値にする（`Harness::set_window_state`）。
+    pub(crate) window_state_override: Option<WindowState>,
     renderer: Option<GpuRenderer>,
     text_renderer: Option<TextRenderer>,
     image_renderer: Option<sabitori_gpu::ImageRenderer>,
@@ -1250,6 +1255,10 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// 直後に窓へ渡して空にする (ドラッグは押下を処理しているその場でないと始まらない)。
     /// テストでは [`crate::testing::Harness::take_window_gesture`] が読む。
     pub(crate) window_gesture: Option<WindowGesture>,
+    /// 窓の操作 (`.window_action(..)`) を押して頼まれたもの。本物の窓ではその場で
+    /// 窓に掛けるので残らない。窓の無い Harness ではここに残り、
+    /// [`crate::testing::Harness::take_window_action`] が読む。
+    pub(crate) window_action: Option<WindowAction>,
     /// 窓の縁の持ち手を引っぱっている最中 (macOS。押した時の枠とカーソルの位置)。
     #[cfg(target_os = "macos")]
     window_resize: Option<crate::window_resize::Drag>,
@@ -2820,6 +2829,7 @@ impl<A: DeclarativeApp> AppState<A> {
             #[cfg(not(target_arch = "wasm32"))]
             window_title: String::new(),
             safe_area_override: None,
+            window_state_override: None,
             renderer: None,
             text_renderer: None,
             image_renderer: None,
@@ -2889,6 +2899,7 @@ impl<A: DeclarativeApp> AppState<A> {
             selection_redraw: false,
             deferred_click: None,
             window_gesture: None,
+            window_action: None,
             #[cfg(target_os = "macos")]
             window_resize: None,
             last_capture: UiCapture::default(),
@@ -3019,6 +3030,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 .or_else(|| self.window.as_ref().map(|win| sabitori_window::safe_area(win)))
                 .unwrap_or_default(),
             window_controls: self.window_controls(),
+            window_state: self.window_state(),
             hovered: self.hovered_id.clone(),
             focused: self.focused_id.clone(),
             mouse_x: self.mouse_x,
@@ -3701,6 +3713,11 @@ impl<A: DeclarativeApp> AppState<A> {
     /// (解放) から呼ばれる。
     fn dispatch_click(&mut self, target: Option<&str>, click_count: u32, x: f32, y: f32) {
         if let Some(id) = target {
+            // 窓の操作ボタン (`.window_action(..)`) なら窓に掛ける。クリックそのものは
+            // いつも通りアプリへも配る (押されたことを知りたいアプリ用)。
+            if let Some(action) = self.window_action_of(id) {
+                self.apply_window_action(action);
+            }
             // `Element::click` で登録された処理が先。 その後で従来の
             // `on_click(id)` も呼ぶ (併用しても壊れない)。
             self.run_action(id);
@@ -5127,6 +5144,38 @@ impl<A: DeclarativeApp> AppState<A> {
         self.app.titlebar().window_controls()
     }
 
+    /// 窓の今の状態 ([`ViewContext::window_state`])。Harness が上書きしていればそれ。
+    fn window_state(&self) -> WindowState {
+        if let Some(state) = self.window_state_override {
+            return state;
+        }
+        self.window
+            .as_deref()
+            .map_or_else(WindowState::default, crate::titlebar::window_state)
+    }
+
+    /// `id` の要素に付いた窓の操作 (`.window_action(..)`)。
+    fn window_action_of(&self, id: &str) -> Option<WindowAction> {
+        self.last_build
+            .as_ref()?
+            .hit_regions
+            .iter()
+            .filter(|r| r.id.as_deref() == Some(id))
+            .find_map(|r| r.window_action)
+    }
+
+    /// 窓の操作をこの窓に掛ける。閉じるは OS の閉じるボタンと同じ道 (`closed`)。
+    /// 窓の無い Harness では掛けずに残す ([`crate::testing::Harness::take_window_action`])。
+    fn apply_window_action(&mut self, action: WindowAction) {
+        if action == WindowAction::Close {
+            self.closed = true;
+        }
+        match self.window.as_deref() {
+            Some(window) => crate::titlebar::perform_action(window, action),
+            None => self.window_action = Some(action),
+        }
+    }
+
     /// ポインタ直下のホバー / tooltip / cursor を引き直し、変化をアプリへ通知する。
     /// 解決そのものは [`crate::runtime_shared::resolve_hover`]（scene ランタイムと
     /// 共通）で、ここが足すのは本文中リンクの上書きだけ。
@@ -5405,6 +5454,19 @@ impl<A: DeclarativeApp> AppState<A> {
                     .last_build
                     .as_ref()
                     .and_then(|b| crate::runtime_shared::hit_id_at(b, x, y));
+                // 窓の操作ボタン (`.window_action(..)`) なら、その別窓に掛ける。閉じるは
+                // OS の閉じるボタン (`CloseRequested`) と同じく主窓ごと — 別窓を 1 枚だけ
+                // 消すのは、アプリが `Click` を受けて `extra_windows()` から外す。
+                let action = hit.as_deref().and_then(|hit| {
+                    extra.last_build.as_ref()?.hit_regions.iter()
+                        .filter(|r| r.id.as_deref() == Some(hit))
+                        .find_map(|r| r.window_action)
+                });
+                match action {
+                    Some(WindowAction::Close) => self.closed = true,
+                    Some(action) => crate::titlebar::perform_action(&extra.window, action),
+                    None => {}
+                }
                 // 離すまで `.active()` の見た目にする。
                 extra.pointer.pressed = hit.clone();
                 self.app.on_extra_input(&key, ExtraInput::Click { id: hit, x, y });
@@ -5485,6 +5547,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 safe_area: sabitori_window::safe_area(&extra.window),
                 // 別窓は標準のタイトルバーのまま (`titlebar()` は主窓だけ)。
                 window_controls: None,
+                window_state: crate::titlebar::window_state(&extra.window),
                 hovered: extra.pointer.hovered.clone(),
                 // 焦点は主窓が持つ (キーは主窓の道へ流れる)。
                 focused: None,

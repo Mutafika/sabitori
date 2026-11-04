@@ -542,6 +542,19 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.window_gesture.take()
     }
 
+    /// 窓の操作ボタン (`.window_action(..)`) を押して頼まれたことを取り出す。本物の窓
+    /// ではランタイムがその場で窓に掛けるが、Harness には窓が無いのでここに残る
+    /// (閉じるだけは本物と同じく窓を閉じる側にも回る)。取り出すと空になる。
+    pub fn take_window_action(&mut self) -> Option<sabitori_core::WindowAction> {
+        self.state.window_action.take()
+    }
+
+    /// `ctx.window_state` (フルスクリーンか・拡大しているか) をこの値にする。
+    /// 次の [`Self::frame`] から効く。Harness には窓が無いので、既定は全部 `false`。
+    pub fn set_window_state(&mut self, state: sabitori_core::WindowState) {
+        self.state.window_state_override = Some(state);
+    }
+
     /// 右ボタンを座標で押して離す。 `on_input` に
     /// `PointerPressed` / `PointerReleased { button: Some(Right) }` が届き、
     /// 押下が消費されなければ `on_right_click(id, x, y)` が鳴る (空白なら `""`)。

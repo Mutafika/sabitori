@@ -70,6 +70,9 @@ pub struct HitRegion {
     /// 窓のつかみどころ (`.window_drag()`)。ここが押下の最前面なら、ランタイムは
     /// クリックの代わりに窓のドラッグ (ダブルクリックなら拡大) を始める。
     pub window_drag: bool,
+    /// 押すと窓そのものを操作する (`.window_action(..)`)。ランタイムはこの領域の
+    /// クリックで窓に掛ける (クリック自体も今まで通りアプリへ届く)。無効なら `None`。
+    pub window_action: Option<crate::element::WindowAction>,
     /// 右クリックを下へ通す (`.right_click_through()`)。ランタイムは右クリックの
     /// 宛先を探すときこの領域を飛ばす (左クリックとホバーは受ける)。
     pub right_click_through: bool,
@@ -2193,6 +2196,7 @@ fn emit_commands_inner(
                 drag_data: if disabled { None } else { element.drag_data.clone() },
                 drop_zone: element.drop_zone && !disabled,
                 window_drag: element.window_drag && !disabled,
+                window_action: if disabled { None } else { element.window_action },
                 right_click_through: element.right_click_through,
                 // 無効なら、明示指定を押しのけて NotAllowed。押せないものに
                 // 手のカーソルが出るのが一番紛らわしい。
@@ -4676,6 +4680,35 @@ mod a11y_tests {
         let tab = b.hit_regions.iter().position(|r| r.id.as_deref() == Some("tab")).unwrap();
         assert!(tab < bar, "タブがつかみどころより奥にいる");
         assert!(!region(&b, "tab").window_drag, "子へ印が移っている");
+    }
+
+    /// 窓の操作 (`.window_action(..)`) は付けた要素の領域にだけ載り、つかみどころの
+    /// 帯の中でも手前に来る (押せば窓が動かずにボタンが押される)。無効なら載らない。
+    #[test]
+    fn window_action_rides_on_its_own_region() {
+        use crate::element::WindowAction;
+        let root = div().w(Px(400.0)).h(Px(300.0)).child(
+            div().window_drag().w(Px(400.0)).h(Px(38.0)).flex_row().children([
+                div().id("min").w(Px(40.0)).h(Px(38.0)).window_action(WindowAction::Minimize),
+                div()
+                    .id("close")
+                    .w(Px(40.0))
+                    .h(Px(38.0))
+                    .window_action(WindowAction::Close)
+                    .disabled(true),
+                div().id("plain").w(Px(40.0)).h(Px(38.0)),
+            ]),
+        );
+        let b = build_tree(&root, 400.0, 300.0);
+
+        assert_eq!(region(&b, "min").window_action, Some(WindowAction::Minimize));
+        assert!(region(&b, "min").clickable);
+        assert_eq!(region(&b, "close").window_action, None, "無効なのに窓を閉じる");
+        assert_eq!(region(&b, "plain").window_action, None);
+        let bar = b.hit_regions.iter().position(|r| r.window_drag).unwrap();
+        let min = b.hit_regions.iter().position(|r| r.id.as_deref() == Some("min")).unwrap();
+        assert!(min < bar, "ボタンがつかみどころより奥にいる");
+        assert_eq!(b.hit_regions[bar].window_action, None, "親の帯へ印が移っている");
     }
 
     /// 右クリックを下へ通す印 (`.right_click_through()`) は、付けた要素の領域にだけ載る。

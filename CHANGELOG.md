@@ -15,6 +15,47 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`titlebar_buttons`: 自前で描くタイトルバー (`Titlebar::Custom`) に、窓のボタンを並べる部品**
+  (sabitori-widgets)。ボタン 1 個は「名前・絵・押すと起きること」の組 (`TitlebarButton`) で、起きることは
+  窓の操作 (最小化・拡大・フルスクリーン・閉じる) かアプリの操作 (`on_click("{id}:{key}")` で受ける) のどちらか。
+  並びと見た目をまとめた `TitlebarButtons` にプリセットが 2 つある。
+  - `TitlebarButtons::windows(theme, height)` — 帯の右端に − □ ✕ (帯の高さいっぱいの四角、閉じるは赤)
+  - `TitlebarButtons::traffic_lights()` — 帯の左端に赤・黄・緑の丸 (絵は指が乗ったときだけ)
+
+  中身はただの `Vec` で、`insert` / `push` / `remove` / `edit(key, ..)` で足す・外す・絵や機能を差し替える。
+  絵は組み込みの線 (□ は拡大中に「元に戻す」へ、フルスクリーンの四隅は中で内向きに変わる)・文字・SVG の `d`
+  (座標系の大きさによらず同じ太さの線) から選ぶ。フルスクリーン中に隠すかは機能で決まる (最小化・拡大・閉じるは
+  OS の信号ボタンが戻る macOS でだけ隠す。フルスクリーンのボタンは隠さない)。例は `examples/custom_titlebar.rs`。
+  今まではアプリごとに − □ ✕ の見た目・フルスクリーン中に隠す判定・クリックの振り分けを書き写していた。
+- **`Element::window_action(WindowAction)`: 押すと窓そのものを操作する要素**。`WindowAction` は
+  `Minimize` / `ToggleMaximize` / `ToggleFullscreen` / `Close`。ランタイムがクリックのその場で窓に掛けるので、
+  アプリは窓のハンドルも `set_minimized` 等の振り分けも持たなくていい。閉じるは OS の閉じるボタンと同じ道
+  (アプリの `Drop` も走る)。クリックは今まで通りアプリの `on_click` にも届く。`.id()` が要る。宣言的ランタイムの
+  主窓と別窓で効く (別窓の閉じるは、OS の閉じるボタンと同じく主窓ごと)。
+- **`ViewContext::window_state` (`WindowState { fullscreen, maximized }`)**: 窓が今フルスクリーンか・拡大して
+  いるか。OS 側の操作 (帯のダブルクリック・ショートカット) で変わった分も入る。`WindowState` は
+  `#[non_exhaustive]` で、外の crate では `WindowState::default()` から作って欄を書き換える。
+- **`Harness::take_window_action()` / `Harness::set_window_state(state)`**: 窓の操作ボタンが頼んだことを
+  取り出す・`ctx.window_state` を決める (Harness には窓が無いので)。
+
+### Changed（破壊的）
+
+- **`ViewContext` に `window_state: WindowState` が増えた**。全部の欄を書いて作っている所 (テスト等) は
+  `window_state: Default::default()` を足す。
+- **`HitRegion` に `window_action: Option<WindowAction>`、`Element` に同名の欄が増えた**。全部の欄を書いて
+  作っている所は `window_action: None` を足す。
+
+### Fixed
+
+- **macOS: メニューバーを自動で隠す画面で、拡大した窓を帯のダブルクリックで元に戻せなかった**。その画面では
+  `visibleFrame` がメニューバーの所まで含むので、拡大した窓は OS にメニューバーの下へ押し込まれ、AppKit が
+  「拡大していない」と判断する (`isZoomed` が `false`)。そのため 2 回目の `zoom` はもう一度拡大するだけで、見た目は
+  何も起きなかった。拡大する前の枠を覚えておき、AppKit が拡大に気付いていない時はそこへ戻す。窓のボタンの拡大
+  (`WindowAction::ToggleMaximize`) も同じ道を通る。拡大しているかの判定 (`ctx.window_state.maximized`) も、
+  `isZoomed` に加えて画面の使える所を埋めているかで見る。
+
 ## [0.53.1] - 2026-11-04
 
 ### Fixed
