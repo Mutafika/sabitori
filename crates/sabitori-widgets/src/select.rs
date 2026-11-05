@@ -180,17 +180,14 @@ impl DropdownState {
             self.open = false;
             return DropdownEvent::Closed;
         }
-        if let Some(rest) = clicked_id.strip_prefix(self.id.as_str()) {
-            if let Some(idx_str) = rest.strip_prefix("::item:") {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    if self.open && idx < self.items.len() {
+        if let Some(rest) = clicked_id.strip_prefix(self.id.as_str())
+            && let Some(idx_str) = rest.strip_prefix("::item:")
+                && let Ok(idx) = idx_str.parse::<usize>()
+                    && self.open && idx < self.items.len() {
                         self.selected = idx;
                         self.open = false;
                         return DropdownEvent::Selected(idx);
                     }
-                }
-            }
-        }
         DropdownEvent::Ignored
     }
 
@@ -252,7 +249,7 @@ impl DropdownState {
 
         Some(
             div()
-                .id(&self.backdrop_id())
+                .id(self.backdrop_id())
                 .w(Px(viewport_w))
                 .h(Px(viewport_h))
                 .pos(0.0, 0.0)

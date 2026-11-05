@@ -1,4 +1,4 @@
-/// Sabitori File Manager — built entirely with the declarative Element API.
+//! Sabitori File Manager — built entirely with the declarative Element API.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -335,7 +335,7 @@ impl FilerApp {
         let home = std::env::var("SABITORI_START_DIR").ok()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
-            .unwrap_or_else(|| file_browser::home_dir());
+            .unwrap_or_else(file_browser::home_dir);
         let tab = Tab::new(home, false, SortBy::Name, SortOrder::Ascending);
         Self {
             tabs: vec![tab],
@@ -514,11 +514,10 @@ impl FilerApp {
         }
     }
     fn ql_update_if_open(&mut self) {
-        if self.ql_open {
-            if let Some(f) = self.selected_file() {
+        if self.ql_open
+            && let Some(f) = self.selected_file() {
                 let p = f.path.clone(); self.ql_show(&p);
             }
-        }
     }
 
     // ── File operations ──
@@ -553,7 +552,7 @@ impl FilerApp {
             // macOS: use osascript to move to Trash (safer than rm)
             let _ = std::process::Command::new("osascript")
                 .arg("-e")
-                .arg(&format!(
+                .arg(format!(
                     "tell application \"Finder\" to delete POSIX file \"{}\"",
                     path.display()
                 ))
@@ -591,25 +590,22 @@ impl FilerApp {
     }
 
     fn start_rename(&mut self) {
-        if let Some(&real_idx) = self.tab().selected.iter().next() {
-            if self.tab().selected.len() == 1 {
+        if let Some(&real_idx) = self.tab().selected.iter().next()
+            && self.tab().selected.len() == 1 {
                 let name = self.tab().files[real_idx].name.clone();
                 self.renaming = Some((real_idx, name));
             }
-        }
     }
 
     fn confirm_rename(&mut self) {
-        if let Some((real_idx, ref new_name)) = self.renaming {
-            if let Some(file) = self.tab().files.get(real_idx) {
-                if !new_name.is_empty() && new_name != &file.name {
+        if let Some((real_idx, ref new_name)) = self.renaming
+            && let Some(file) = self.tab().files.get(real_idx)
+                && !new_name.is_empty() && new_name != &file.name {
                     let new_path = file.path.parent().unwrap().join(new_name);
                     let _ = std::fs::rename(&file.path, &new_path);
                     let (sh, sb, so) = (self.show_hidden, self.sort_by, self.sort_order);
                     self.tab_mut().refresh(sh, sb, so);
                 }
-            }
-        }
         self.renaming = None;
     }
 
@@ -623,7 +619,7 @@ impl FilerApp {
         let t = self.theme();
         let text_pri = c(t.text_pri);
         let text_sec = c(t.text_sec);
-        let primary = c(t.primary);
+        let _primary = c(t.primary);
         let menu_bg = c(t.elevated);
         let has_sel = !self.tab().selected.is_empty();
         let has_clip = !self.clipboard.is_empty();
@@ -921,7 +917,7 @@ impl FilerApp {
         let opacity_slider = div().flex_col().gap(6.0).shrink(0.0).children([
             div().flex_row().justify_between().children([
                 text("Opacity").font_size(12.0).color(text_sec),
-                text(&format!("{:.0}%", self.bg_opacity * 100.0)).font_size(12.0).color(primary),
+                text(format!("{:.0}%", self.bg_opacity * 100.0)).font_size(12.0).color(primary),
             ]),
             div().id("opacity-track").h(Px(24.0)).shrink(0.0)
                 .flex_row().items_center()
@@ -971,8 +967,8 @@ impl DeclarativeApp for FilerApp {
 
     fn overlay_view(&self, ctx: &ViewContext) -> Option<Element> {
         // Conflict resolution modal
-        if let Some(ref modal) = self.conflict_modal {
-            if modal.current < modal.conflicts.len() {
+        if let Some(ref modal) = self.conflict_modal
+            && modal.current < modal.conflicts.len() {
                 let t = self.theme();
                 let primary = c(t.primary);
                 let text_pri = c(t.text_pri);
@@ -1000,16 +996,16 @@ impl DeclarativeApp for FilerApp {
                     .flex_col().gap(16.0)
                     .children([
                         // Title
-                        text(&format!("\"{} \" already exists", conflict.name))
+                        text(format!("\"{} \" already exists", conflict.name))
                             .font_size(14.0).color(text_pri).bold(),
                         // Description
-                        text(&format!(
+                        text(format!(
                             "A file with the same name exists in \"{}\".\nWhat would you like to do?",
                             conflict.dest_dir.file_name().unwrap_or_default().to_string_lossy()
                         )).font_size(12.0).color(text_sec),
                         // Remaining count
                         if remaining > 1 {
-                            text(&format!("{remaining} conflicts remaining"))
+                            text(format!("{remaining} conflicts remaining"))
                                 .font_size(11.0).color(text_sec.with_alpha(0.6))
                         } else { div() },
                         // Buttons
@@ -1046,15 +1042,14 @@ impl DeclarativeApp for FilerApp {
                         .children([panel])
                 );
             }
-        }
 
         // Context menu
         if self.ctx_menu.is_some() {
             return Some(self.context_menu(ctx));
         }
         // Drag ghost
-        if let Some(ref drag) = self.drag {
-            if drag.active {
+        if let Some(ref drag) = self.drag
+            && drag.active {
                 let t = self.theme();
                 let primary = c(t.primary);
                 let text_pri = c(t.text_pri);
@@ -1094,7 +1089,7 @@ impl DeclarativeApp for FilerApp {
                             .flex_row().items_center().justify_center()
                             .ml(Px(show_max as f32 * 2.0))
                             .children([
-                                text(&format!("+{}", count - show_max))
+                                text(format!("+{}", count - show_max))
                                     .font_size(10.0).color(Color::WHITE).bold(),
                             ]),
                     );
@@ -1118,7 +1113,6 @@ impl DeclarativeApp for FilerApp {
                         ]),
                 );
             }
-        }
         // External file hover: show ghost for incoming drag
         if !self.hover_files.is_empty() {
             let t = self.theme();
@@ -1137,7 +1131,7 @@ impl DeclarativeApp for FilerApp {
                     path: path.clone(),
                     is_dir: path.is_dir(),
                     is_hidden: name.starts_with('.'),
-                    is_symlink: path.symlink_metadata().map_or(false, |m| m.is_symlink()),
+                    is_symlink: path.symlink_metadata().is_ok_and(|m| m.is_symlink()),
                     size: path.metadata().map_or(0, |m| m.len()),
                     modified: path.metadata().ok().and_then(|m| m.modified().ok()),
                 };
@@ -1162,7 +1156,7 @@ impl DeclarativeApp for FilerApp {
                         .bg(primary).rounded_px(10.0)
                         .flex_row().items_center().justify_center()
                         .ml(Px(8.0))
-                        .children([text(&format!("+{}", count - 4)).font_size(10.0).color(Color::WHITE).bold()]),
+                        .children([text(format!("+{}", count - 4)).font_size(10.0).color(Color::WHITE).bold()]),
                 );
             }
 
@@ -1223,28 +1217,24 @@ impl DeclarativeApp for FilerApp {
         // スクロールのばねはランタイムが回す (`.scroll(id)` に付けた時点で
         // 位置も速度もランタイムの持ち物)。 ここで tick する必要は無い。
         // Clear toast after 2 seconds
-        if let Some((_, time)) = &self.toast {
-            if time.elapsed().as_secs_f32() > 2.0 {
+        if let Some((_, time)) = &self.toast
+            && time.elapsed().as_secs_f32() > 2.0 {
                 self.toast = None;
                 self.tick_changed = true;
             }
-        }
         // Clear stale drag after 5 seconds
-        if let Some(ref drag) = self.drag {
-            if drag.created.elapsed().as_secs() > 5 {
+        if let Some(ref drag) = self.drag
+            && drag.created.elapsed().as_secs() > 5 {
                 self.drag = None;
                 self.tick_changed = true;
             }
-        }
         // Poll mouse position during external file hover (OS drag doesn't send CursorMoved)
         #[cfg(target_os = "macos")]
-        if !self.hover_files.is_empty() {
-            if let Some(ref window) = self.window {
-                if let Some(pos) = sabitori::macos_drag::get_mouse_position(window) {
+        if !self.hover_files.is_empty()
+            && let Some(ref window) = self.window
+                && let Some(pos) = sabitori::macos_drag::get_mouse_position(window) {
                     self.hover_mouse = pos;
                 }
-            }
-        }
     }
 
     fn view(&self, ctx: &ViewContext) -> Element {
@@ -1361,11 +1351,11 @@ impl DeclarativeApp for FilerApp {
                         .rounded_px(4.0)
                         .flex_row().items_center()
                         .children([
-                            text(*name).font_size(12.0).color(if is_last { text_pri } else if is_hovered { text_pri } else { text_sec }),
+                            text(*name).font_size(12.0).color(if is_last || is_hovered { text_pri } else { text_sec }),
                         ]),
                 );
             }
-            crumbs.push(text(&format!("  {file_count}")).font_size(10.0).color(text_sec.with_alpha(0.3)));
+            crumbs.push(text(format!("  {file_count}")).font_size(10.0).color(text_sec.with_alpha(0.3)));
 
             div().flex_1().flex_row().items_center().gap(1.0).children(crumbs)
         };
@@ -1516,15 +1506,15 @@ impl DeclarativeApp for FilerApp {
             let col_header = div().h(Px(COL_HEADER_H)).shrink(0.0).bg(elevated).flex_col().children([
                 div().flex_1().flex_row().items_center().px_pad(Px(12.0)).children([
                     div().id("sort-name").flex_1().flex_row().items_center().children([
-                        text(&format!("Name{sn}")).font_size(12.0)
+                        text(format!("Name{sn}")).font_size(12.0)
                             .color(if self.sort_by == SortBy::Name { primary } else { text_sec }),
                     ]),
                     div().id("sort-size").w(Px(80.0)).shrink(0.0).flex_row().items_center().children([
-                        text(&format!("Size{ss}")).font_size(12.0)
+                        text(format!("Size{ss}")).font_size(12.0)
                             .color(if self.sort_by == SortBy::Size { primary } else { text_sec }),
                     ]),
                     div().id("sort-mod").w(Px(130.0)).shrink(0.0).flex_row().items_center().children([
-                        text(&format!("Modified{sm}")).font_size(12.0)
+                        text(format!("Modified{sm}")).font_size(12.0)
                             .color(if self.sort_by == SortBy::Modified { primary } else { text_sec }),
                     ]),
                 ]),
@@ -1544,7 +1534,7 @@ impl DeclarativeApp for FilerApp {
                 let id = format!("f-{fi}");
                 let is_selected = tab.selected.contains(&real_idx);
                 let is_hovered = ctx.hovered.as_deref() == Some(id.as_str());
-                let is_drag_active = self.drag.as_ref().map_or(false, |d| d.active);
+                let is_drag_active = self.drag.as_ref().is_some_and(|d| d.active);
                 let is_drop_target = is_drag_active && is_hovered && file.is_dir;
                 let is_being_dragged = is_drag_active && is_selected;
 
@@ -1618,7 +1608,7 @@ impl DeclarativeApp for FilerApp {
             let avail_w = ctx.width - self.sidebar_width - 7.0 - GP * 2.0
                 - if self.show_settings { SETTINGS_W + 1.0 } else { 0.0 };
             let cols = ((avail_w + GG) / (GW + GG)).floor().max(1.0) as usize;
-            let total_rows = (tab.filtered.len() + cols - 1) / cols;
+            let total_rows = tab.filtered.len().div_ceil(cols);
             let row_h = GH + GG;
             let (first_row, visible_rows) = ctx.visible_range(FILE_SCROLL_ID, row_h);
 
@@ -1737,23 +1727,20 @@ impl DeclarativeApp for FilerApp {
             match id {
                 "conflict-replace" => {
                     let apply_all = self.conflict_modal.as_ref().and_then(|m| m.apply_all);
-                    if apply_all.is_some() {
-                        if let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::Replace); }
-                    }
+                    if apply_all.is_some()
+                        && let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::Replace); }
                     self.resolve_conflict(ConflictChoice::Replace);
                 }
                 "conflict-keep" => {
                     let apply_all = self.conflict_modal.as_ref().and_then(|m| m.apply_all);
-                    if apply_all.is_some() {
-                        if let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::KeepBoth); }
-                    }
+                    if apply_all.is_some()
+                        && let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::KeepBoth); }
                     self.resolve_conflict(ConflictChoice::KeepBoth);
                 }
                 "conflict-skip" => {
                     let apply_all = self.conflict_modal.as_ref().and_then(|m| m.apply_all);
-                    if apply_all.is_some() {
-                        if let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::Skip); }
-                    }
+                    if apply_all.is_some()
+                        && let Some(ref mut m) = self.conflict_modal { m.apply_all = Some(ConflictChoice::Skip); }
                     self.resolve_conflict(ConflictChoice::Skip);
                 }
                 "conflict-apply-all" => {
@@ -1848,17 +1835,15 @@ impl DeclarativeApp for FilerApp {
             return;
         }
         if let Some(idx_str) = id.strip_prefix("tab-") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                if idx < self.tabs.len() { self.active_tab = idx; }
-            }
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && idx < self.tabs.len() { self.active_tab = idx; }
             return;
         }
 
         // Theme
         if let Some(idx_str) = id.strip_prefix("theme-") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                if idx < THEMES.len() { self.theme_idx = idx; self.bg_opacity = THEMES[idx].bg_opacity; }
-            }
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && idx < THEMES.len() { self.theme_idx = idx; self.bg_opacity = THEMES[idx].bg_opacity; }
             return;
         }
 
@@ -1899,17 +1884,16 @@ impl DeclarativeApp for FilerApp {
 
         // Sidebar bookmarks
         if let Some(idx_str) = id.strip_prefix("sb-") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                if let Some((_, path)) = self.bookmarks.get(idx) {
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && let Some((_, path)) = self.bookmarks.get(idx) {
                     let p = path.clone(); self.navigate_to(p);
                 }
-            }
             return;
         }
 
         // Files
-        if let Some(idx_str) = id.strip_prefix("f-") {
-            if let Ok(fi) = idx_str.parse::<usize>() {
+        if let Some(idx_str) = id.strip_prefix("f-")
+            && let Ok(fi) = idx_str.parse::<usize>() {
                 if fi >= self.tab().filtered.len() { return; }
                 // 1 打目で選択 (と drag の起点)。 2 打目で開くのは `on_double_click` —
                 // 回数は runtime が数える (#58)。 以前はここで `Instant` を持って
@@ -1926,7 +1910,6 @@ impl DeclarativeApp for FilerApp {
                     created: std::time::Instant::now(),
                 });
             }
-        }
     }
 
     /// ファイル行のダブルクリック: フォルダなら入る、 ファイルなら開く。
@@ -1953,8 +1936,8 @@ impl DeclarativeApp for FilerApp {
 
     fn on_right_click(&mut self, id: &str, x: f32, y: f32) {
         // If right-clicking a file, select it first
-        if let Some(idx_str) = id.strip_prefix("f-") {
-            if let Ok(fi) = idx_str.parse::<usize>() {
+        if let Some(idx_str) = id.strip_prefix("f-")
+            && let Ok(fi) = idx_str.parse::<usize>() {
                 let tab = self.tab();
                 if fi < tab.filtered.len() {
                     let real_idx = tab.filtered[fi];
@@ -1968,7 +1951,6 @@ impl DeclarativeApp for FilerApp {
                 self.ctx_menu = Some(CtxMenu { x, y, on_file: true });
                 return;
             }
-        }
         // Right-click on empty area
         self.ctx_menu = Some(CtxMenu { x, y, on_file: false });
     }
@@ -1981,8 +1963,8 @@ impl DeclarativeApp for FilerApp {
             self.sidebar_width = x.clamp(MIN_SIDEBAR_W, MAX_SIDEBAR_W);
         }
         // Drag detection: activate after 3px threshold from click position
-        if let Some(ref mut drag) = self.drag {
-            if !drag.active {
+        if let Some(ref mut drag) = self.drag
+            && !drag.active {
                 let dx = x - drag.start_x;
                 let dy = y - drag.start_y;
                 if (dx * dx + dy * dy) > 25.0 { // 5px threshold
@@ -2000,7 +1982,6 @@ impl DeclarativeApp for FilerApp {
                     let _ = &paths;
                 }
             }
-        }
     }
 
     fn on_pointer_up(&mut self) {
@@ -2008,8 +1989,8 @@ impl DeclarativeApp for FilerApp {
         self.sidebar_dragging = false;
 
         // Drop: if dragging, check target
-        if let Some(drag) = self.drag.take() {
-            if drag.active && !drag.file_indices.is_empty() {
+        if let Some(drag) = self.drag.take()
+            && drag.active && !drag.file_indices.is_empty() {
                 let dropped = self.handle_drop(&drag.file_indices);
                 if !dropped {
                     // No valid drop target — show clipboard toast
@@ -2019,7 +2000,6 @@ impl DeclarativeApp for FilerApp {
                     self.toast = Some((msg, std::time::Instant::now()));
                 }
             }
-        }
     }
 
     fn set_window(&mut self, window: std::sync::Arc<winit::window::Window>) {
@@ -2028,9 +2008,9 @@ impl DeclarativeApp for FilerApp {
 
     fn on_cursor_left(&mut self) {
         // If dragging files and cursor leaves the window → start OS-level drag
-        if let Some(drag) = self.drag.take() {
-            if drag.active {
-                if let Some(ref window) = self.window {
+        if let Some(drag) = self.drag.take()
+            && drag.active
+                && let Some(ref window) = self.window {
                     let tab = self.tab();
                     let paths: Vec<PathBuf> = drag.file_indices.iter()
                         .filter_map(|&i| tab.files.get(i).map(|f| f.path.clone()))
@@ -2041,9 +2021,7 @@ impl DeclarativeApp for FilerApp {
                     #[cfg(not(target_os = "macos"))]
                     let _ = (window, &path_refs);
                 }
-            }
             // Always clear drag when cursor leaves
-        }
     }
 
     fn on_file_hover(&mut self, path: PathBuf) {
@@ -2135,7 +2113,8 @@ impl DeclarativeApp for FilerApp {
 
         if let InputEvent::KeyInput { key, pressed: true, modifiers, .. } = event {
             match key {
-                Key::Backspace => {
+                // ⌘⌫ はゴミ箱へ (下の腕)。素の ⌫ だけが上のフォルダへ
+                Key::Backspace if !modifiers.meta => {
                     if let Some(parent) = self.tab().path.parent().map(|p| p.to_path_buf()) {
                         self.navigate_to(parent);
                     }
@@ -2143,17 +2122,15 @@ impl DeclarativeApp for FilerApp {
                 }
                 Key::Enter => {
                     let tab = self.tab();
-                    if let Some(&real_idx) = tab.selected.iter().next() {
-                        if tab.selected.len() == 1 {
-                            if let Some(file) = tab.files.get(real_idx) {
+                    if let Some(&real_idx) = tab.selected.iter().next()
+                        && tab.selected.len() == 1
+                            && let Some(file) = tab.files.get(real_idx) {
                                 if file.is_dir {
                                     let p = file.path.clone(); self.navigate_to(p);
                                 } else {
                                     let _ = std::process::Command::new("open").arg(&file.path).spawn();
                                 }
                             }
-                        }
-                    }
                     return true;
                 }
                 Key::Down => {

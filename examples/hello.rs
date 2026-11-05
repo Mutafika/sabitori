@@ -103,12 +103,11 @@ impl SabitoriApp for HelloApp {
         let start_x = (width - (card_w * 3.0 + gap * 2.0)) / 2.0;
         let start_y = 80.0;
 
-        for i in 0..6 {
+        for (i, &accent) in card_colors.iter().enumerate() {
             let col = i % 3;
             let row = i / 3;
             let x = start_x + col as f32 * (card_w + gap);
             let y = start_y + row as f32 * (card_h + gap);
-            let accent = card_colors[i];
 
             // Card (interactive)
             let border = accent.with_alpha(0.5);

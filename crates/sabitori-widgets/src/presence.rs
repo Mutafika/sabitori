@@ -45,8 +45,8 @@ impl PresenceAnimator {
     }
 
     fn scan_tree(&mut self, element: &Element) {
-        if element.animate_presence {
-            if let Some(ref id) = element.id {
+        if element.animate_presence
+            && let Some(ref id) = element.id {
                 let entry = self.entries.entry(id.clone()).or_insert_with(|| {
                     PresenceEntry {
                         progress: Animated::new(0.0).with_spring(Spring {
@@ -60,7 +60,6 @@ impl PresenceAnimator {
                 entry.present_this_frame = true;
                 entry.progress.set_target(1.0); // animate in
             }
-        }
         for child in &element.children {
             self.scan_tree(child);
         }
@@ -68,14 +67,12 @@ impl PresenceAnimator {
 
     /// Apply presence animation to elements: set opacity based on animation progress.
     pub fn apply(&self, element: &mut Element) {
-        if element.animate_presence {
-            if let Some(ref id) = element.id {
-                if let Some(entry) = self.entries.get(id) {
+        if element.animate_presence
+            && let Some(ref id) = element.id
+                && let Some(entry) = self.entries.get(id) {
                     let p = entry.progress.value();
                     element.style.opacity *= p;
                 }
-            }
-        }
         for child in &mut element.children {
             self.apply(child);
         }
@@ -89,7 +86,7 @@ impl PresenceAnimator {
 
     /// Check if an element is currently animating (entering or exiting).
     pub fn is_animating(&self, id: &str) -> bool {
-        self.entries.get(id).map_or(false, |e| {
+        self.entries.get(id).is_some_and(|e| {
             let p = e.progress.value();
             let t = if e.present_this_frame { 1.0 } else { 0.0 };
             (p - t).abs() > 0.01
@@ -115,5 +112,11 @@ impl PresenceAnimator {
             let t = if e.present_this_frame { 1.0 } else { 0.0 };
             e.progress.running || (p - t).abs() > 0.01
         })
+    }
+}
+
+impl Default for PresenceAnimator {
+    fn default() -> Self {
+        Self::new()
     }
 }

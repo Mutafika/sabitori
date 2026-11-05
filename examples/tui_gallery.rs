@@ -1465,7 +1465,7 @@ impl Gallery {
         }).collect();
 
         // Blinking cursor at end
-        let cursor_on = ((elapsed * 2.0) as u32) % 2 == 0;
+        let cursor_on = ((elapsed * 2.0) as u32).is_multiple_of(2);
         let all_done = elapsed > 6.0;
 
         let mut children = vec![
@@ -1765,7 +1765,7 @@ impl Gallery {
         let eased = EasingFunction::EaseOutCubic.eval(trans_t);
         let kind = self.transition_kind % 4;
 
-        let is_even = self.transition_view % 2 == 0;
+        let is_even = self.transition_view.is_multiple_of(2);
         let (color, label) = if is_even {
             (a.cyan, "View A")
         } else {

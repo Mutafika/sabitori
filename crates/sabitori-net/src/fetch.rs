@@ -22,13 +22,11 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
 
     // ローカル API 宛だけ bearer を足す (この関数だけの約束。上の doc を参照)。
     #[cfg(not(target_arch = "wasm32"))]
-    if local_host(url) {
-        if let Ok(t) = std::env::var("SABITORI_LOCAL_BEARER") {
-            if !t.is_empty() {
+    if local_host(url)
+        && let Ok(t) = std::env::var("SABITORI_LOCAL_BEARER")
+            && !t.is_empty() {
                 req = req.header("authorization", format!("Bearer {t}"));
             }
-        }
-    }
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.ok() {

@@ -11,7 +11,6 @@ struct LayoutApp {
 
 struct LayoutNode {
     taffy_id: LayoutNodeId,
-    style_props: StyleProps,
     visual: VisualStyle,
     hover_visual: Option<VisualStyle>,
     active_visual: Option<VisualStyle>,
@@ -59,7 +58,6 @@ impl SabitoriApp for LayoutApp {
                 let idx = nodes.len();
                 nodes.push(LayoutNode {
                     taffy_id,
-                    style_props: $style,
                     visual: $visual,
                     hover_visual: None,
                     active_visual: None,
@@ -158,7 +156,6 @@ impl SabitoriApp for LayoutApp {
                     shadow_offset: Point::new(0.0, 4.0),
                     shadow_blur: 16.0,
                     shadow_spread: 2.0,
-                    ..Default::default()
                 }
             );
             nodes[card].interactive = true;

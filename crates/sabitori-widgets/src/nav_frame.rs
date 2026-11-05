@@ -416,7 +416,6 @@ pub fn nav_menu_button_id(id: &str) -> String {
 ///   本文の側はアプリが持つ
 ///
 /// 見出し・足元を置くなら [`nav_frame_with`]。
-#[allow(clippy::too_many_arguments)]
 pub fn nav_frame<A: 'static>(
     ctx: &ViewContext,
     id: &str,
@@ -441,7 +440,6 @@ pub fn nav_frame<A: 'static>(
 ///     ]));
 /// nav_frame_with(ctx, "nav", &self.nav, &style, &groups, &self.page, on_select, page, slots)
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn nav_frame_with<A: 'static>(
     ctx: &ViewContext,
     id: &str,
@@ -567,7 +565,6 @@ pub fn nav_frame_with<A: 'static>(
 }
 
 /// 引き出し (幕 + 左から出るパネル)。`.overlay()` で本文より手前に出す。
-#[allow(clippy::too_many_arguments)]
 fn drawer<A: 'static>(
     ctx: &ViewContext,
     id: &str,
@@ -641,7 +638,6 @@ fn column(
 }
 
 /// サイドバー / 引き出しの中身: 見出し付きの一覧。
-#[allow(clippy::too_many_arguments)]
 fn list<A: 'static>(
     ctx: &ViewContext,
     id: &str,

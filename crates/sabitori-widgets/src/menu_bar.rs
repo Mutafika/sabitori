@@ -229,8 +229,8 @@ impl MenuBarState {
                 return Some(item.id.clone());
             }
             // Then items inside the open submenu.
-            if let Some(parent_idx) = self.submenu_open {
-                if let Some(item) = menu.items[parent_idx]
+            if let Some(parent_idx) = self.submenu_open
+                && let Some(item) = menu.items[parent_idx]
                     .submenu
                     .iter()
                     .find(|it| !it.separator && it.id == rest)
@@ -241,7 +241,6 @@ impl MenuBarState {
                     self.close();
                     return Some(item.id.clone());
                 }
-            }
             return None;
         }
         None
@@ -257,12 +256,11 @@ impl MenuBarState {
         let Some(id) = hovered_id else { return };
 
         if let Some(rest) = id.strip_prefix(LABEL_PREFIX) {
-            if let Some(idx) = menus.iter().position(|m| m.id == rest) {
-                if idx != open_idx {
+            if let Some(idx) = menus.iter().position(|m| m.id == rest)
+                && idx != open_idx {
                     self.open = Some(idx);
                     self.submenu_open = None;
                 }
-            }
             return;
         }
         if let Some(rest) = id.strip_prefix(ITEM_PREFIX) {

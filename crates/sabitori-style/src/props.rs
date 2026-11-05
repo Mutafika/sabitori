@@ -11,7 +11,7 @@
 //!
 //! 構造も derive もほぼ同一で、 分けている理由が無かったので core に寄せた。
 
-use sabitori_core::{Color, Corners, Point};
+use sabitori_core::{Color, Corners};
 use serde::{Deserialize, Serialize};
 
 // レイアウト基本型は core が正。 ここは再輸出だけ。

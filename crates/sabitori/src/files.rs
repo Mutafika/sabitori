@@ -207,18 +207,16 @@ mod macos {
                 .collect();
             let refs: Vec<&NSString> = exts.iter().map(|s| &**s).collect();
             #[allow(deprecated)]
-            unsafe {
-                panel.setAllowedFileTypes(Some(&NSArray::from_slice(&refs)))
-            };
+            panel.setAllowedFileTypes(Some(&NSArray::from_slice(&refs)));
         }
         // 1 = NSModalResponseOK
-        if unsafe { panel.runModal() } != 1 {
+        if panel.runModal() != 1 {
             return PickResult::Cancelled;
         }
-        let urls = unsafe { panel.URLs() };
+        let urls = panel.URLs();
         let mut out = Vec::new();
         for url in urls.iter() {
-            let Some(path) = (unsafe { url.path() }) else { continue };
+            let Some(path) = url.path() else { continue };
             let path = std::path::PathBuf::from(path.to_string());
             match std::fs::read(&path) {
                 Ok(bytes) => out.push(PickedFile {
@@ -245,11 +243,11 @@ mod macos {
         };
         let panel = NSSavePanel::savePanel(mtm);
         panel.setNameFieldStringValue(&NSString::from_str(name));
-        if unsafe { panel.runModal() } != 1 {
+        if panel.runModal() != 1 {
             return false;
         }
-        let Some(url) = (unsafe { panel.URL() }) else { return false };
-        let Some(path) = (unsafe { url.path() }) else { return false };
+        let Some(url) = panel.URL() else { return false };
+        let Some(path) = url.path() else { return false };
         match std::fs::write(path.to_string(), bytes) {
             Ok(()) => true,
             Err(e) => {

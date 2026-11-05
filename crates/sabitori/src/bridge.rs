@@ -114,6 +114,12 @@ impl MeasureCache {
     }
 }
 
+impl Default for MeasureCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Wraps a `&mut TextRenderer` + persistent cache for `TextMeasure`.
 pub struct TextRendererMeasurer<'a> {
     renderer: RefCell<&'a mut TextRenderer>,
@@ -396,8 +402,8 @@ fn push_intersected_clip(
     clip_stack.push(merged);
 }
 
-/// 1 つの TextDraw のレイアウト結果 (selection hit-test 用)。 reading-order index
-/// + 元の content + 各 glyph の hitbox (advance space)。 declarative runtime が
+/// 1 つの TextDraw のレイアウト結果 (selection hit-test 用)。 reading-order index、
+/// 元の content、各 glyph の hitbox (advance space) を持つ。 declarative runtime が
 /// mouse 座標から文字位置を解決するのに使う。
 #[derive(Clone, Debug)]
 pub struct TextHitLayout {
@@ -477,12 +483,13 @@ pub fn render_list_to_gpu(
 /// に加えて、 各 TextDraw の `TextHitLayout` を reading-order で返す。 declarative
 /// runtime が selection の hit-test / 描画 / clipboard 抽出に使う。
 #[deprecated(since = "0.41.0", note = "種類ごとにまとめて描くと、重なった下の要素の文字や画像が上の箱に透ける (#126)。木の順に描く `bridge::OrderedFrame` を使う")]
-pub fn render_list_to_gpu_with_hits(
-    list: &RenderList,
-    tr: &mut TextRenderer,
-) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>, Vec<TextHitLayout>) {
+pub fn render_list_to_gpu_with_hits(list: &RenderList, tr: &mut TextRenderer) -> GpuDataWithHits {
     render_list_to_gpu_with_hits_impl(list, tr, &mut Vec::new())
 }
+
+/// [`render_list_to_gpu_with_hits`] が返すもの: 箱・グリフ・輪・線と、文字ごとの当たり。
+type GpuDataWithHits =
+    (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>, Vec<TextHitLayout>);
 
 /// [`render_list_to_gpu_with_hits`] that also collects goo, positioned in the returned rect
 /// sequence (see [`GooSlot`]).
@@ -490,7 +497,7 @@ fn render_list_to_gpu_with_hits_impl(
     list: &RenderList,
     tr: &mut TextRenderer,
     goo: &mut Vec<GooSlot>,
-) -> (Vec<RectInstance>, Vec<GlyphInstance>, Vec<RingInstance>, Vec<LineInstance>, Vec<TextHitLayout>) {
+) -> GpuDataWithHits {
     // Self-heal a full glyph atlas before shaping this frame's text: if it
     // overflowed last frame (dropped glyphs → blank/missing text), flush it now
     // so the visible glyph set re-rasterizes fresh. See `maybe_recover_atlas`.
@@ -521,9 +528,8 @@ fn render_list_to_gpu_with_hits_impl(
             RenderCommand::PathFill(_) => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.rect) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.rect) { continue; }
                 let mut inst = rect_to_instance(d);
                 if let Some(c) = clip {
                     inst.clip_rect = clip_to_array(&c);
@@ -618,9 +624,8 @@ fn render_list_to_gpu_with_hits_impl(
             }
             RenderCommand::Goo(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.bounds()) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.bounds()) { continue; }
                 let mut inst = goo_to_instance(d);
                 if let Some(c) = clip {
                     inst.clip_rect = clip_to_array(&c);
@@ -630,9 +635,8 @@ fn render_list_to_gpu_with_hits_impl(
             }
             RenderCommand::Polyline(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if polyline_clipped(&c, &d.points) { continue; }
-                }
+                if let Some(c) = clip
+                    && polyline_clipped(&c, &d.points) { continue; }
                 let mut insts = polyline_to_instances(d);
                 if let Some(c) = clip {
                     let arr = clip_to_array(&c);
@@ -644,9 +648,8 @@ fn render_list_to_gpu_with_hits_impl(
             }
             RenderCommand::CellGrid(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.rect()) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.rect()) { continue; }
                 glyphs.extend(cell_grid_to_glyphs(d, tr, clip));
             }
             RenderCommand::Image(_) => {}
@@ -702,9 +705,8 @@ fn render_list_to_gpu_with_rings_impl(
             RenderCommand::PathFill(_) => {}
             RenderCommand::Rect(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.rect) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.rect) { continue; }
                 let mut inst = rect_to_instance(d);
                 if let Some(c) = clip {
                     inst.clip_rect = clip_to_array(&c);
@@ -732,9 +734,8 @@ fn render_list_to_gpu_with_rings_impl(
             }
             RenderCommand::Text(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &text_cull_rect(d)) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &text_cull_rect(d)) { continue; }
                 let mut produced = text_to_glyphs(d, tr);
                 if let Some(c) = clip {
                     let arr = clip_to_array(&c);
@@ -746,9 +747,8 @@ fn render_list_to_gpu_with_rings_impl(
             }
             RenderCommand::Goo(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.bounds()) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.bounds()) { continue; }
                 let mut inst = goo_to_instance(d);
                 if let Some(c) = clip {
                     inst.clip_rect = clip_to_array(&c);
@@ -758,9 +758,8 @@ fn render_list_to_gpu_with_rings_impl(
             }
             RenderCommand::Polyline(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if polyline_clipped(&c, &d.points) { continue; }
-                }
+                if let Some(c) = clip
+                    && polyline_clipped(&c, &d.points) { continue; }
                 let mut insts = polyline_to_instances(d);
                 if let Some(c) = clip {
                     let arr = clip_to_array(&c);
@@ -772,9 +771,8 @@ fn render_list_to_gpu_with_rings_impl(
             }
             RenderCommand::CellGrid(d) => {
                 let clip = clip_stack.last().copied();
-                if let Some(c) = clip {
-                    if is_clipped(&c, &d.rect()) { continue; }
-                }
+                if let Some(c) = clip
+                    && is_clipped(&c, &d.rect()) { continue; }
                 glyphs.extend(cell_grid_to_glyphs(d, tr, clip));
             }
             RenderCommand::Image(_) => {
@@ -1017,8 +1015,8 @@ pub fn draw_ui_layer(
     pass: &mut wgpu::RenderPass<'_>,
     globals_bg: &wgpu::BindGroup,
 ) {
-    if let Some(img_r) = r.images.as_deref_mut() {
-        if !lists.images.is_empty() {
+    if let Some(img_r) = r.images.as_deref_mut()
+        && !lists.images.is_empty() {
             for b in &lists.images {
                 img_r.ensure_texture(
                     device, queue, &b.key,
@@ -1033,7 +1031,6 @@ pub fn draw_ui_layer(
                 globals_bg,
             );
         }
-    }
     if let Some(ring_r) = r.rings.as_deref_mut() {
         ring_r.render_rings(device, queue, &lists.rings, pass, globals_bg);
     }
@@ -2369,14 +2366,15 @@ mod measure_key_tests {
     use super::measure_key;
     use sabitori_core::element::{TextAlign, Typography};
 
-    fn base() -> (String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography) {
+    /// 計測の鍵を作る材料 (本文・大きさ・太字・等幅・書体・幅・行数・字組み)。
+    type KeyParts = (String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography);
+
+    fn base() -> KeyParts {
         ("予約".to_string(), 14.0, false, false, None, u32::MAX, None, Typography::default())
     }
 
     fn key_of(
-        (content, size, bold, mono, family, width, lines, typo): (
-            String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography,
-        ),
+        (content, size, bold, mono, family, width, lines, typo): KeyParts,
     ) -> u64 {
         measure_key(&content, size, bold, mono, family.as_deref(), width, lines, typo)
     }
@@ -2391,7 +2389,9 @@ mod measure_key_tests {
     #[test]
     fn everything_that_changes_the_measurement_changes_the_key() {
         let baseline = key_of(base());
-        let cases: [(&str, fn(&mut (String, f32, bool, bool, Option<String>, u32, Option<u32>, Typography))); 10] = [
+        // 何を変えたかの名前と、変える操作。
+        type Case = (&'static str, fn(&mut KeyParts));
+        let cases: [Case; 10] = [
             ("本文", |b| b.0 = "返却".into()),
             ("文字の大きさ", |b| b.1 = 15.0),
             ("太字", |b| b.2 = true),

@@ -1,4 +1,4 @@
-# タグを打つ前に、build / test / clippy / wasm が通っていることを保証する。
+# タグを打つ前に、build / test / clippy / wasm / MSRV が通っていることを保証する。
 #
 # 実際に起きたこと: v0.11.2 の直前に「cargo clippy が止まる」を直すだけの
 # コミットが要った (8814563)。タグで使う利用者 (mearie / naruhodo /
@@ -60,18 +60,64 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --locked --no-fail-fast
 
-      # deny になっている lint (approx_constant など) でだけ落ちる。既存の
-      # warning は数が多いので -D warnings にはしない — 全部潰すまで赤いままの
-      # ゲートは、誰も読まなくなるゲートなので。
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --locked
-
-      # feature `net` (URL の画像を取りに行く) は既定で off なので、上の 3 つでは
+      # feature `net` (URL の画像を取りに行く) は既定で off なので、上の 2 つでは
       # 取りに行く側のコードがコンパイルすらされない。sabitori だけ足して回す。
       - name: feature net (sabitori)
+        run: cargo test -p sabitori --features net --lib --locked --no-fail-fast
+
+  # 警告は 0 件を保つ (`-D warnings`)。v0.54.0 までは 270 件ほど溜まっていて
+  # -D にできず、新しく足した警告も埋もれていた。
+  #
+  # clippy の版は固定する。stable を追うと、新しい lint が入った日に何も変えて
+  # いない PR が赤くなる。上げるときは手元で同じ版の clippy を回して直してから、
+  # ここの版を書き換える。
+  #
+  # native (Linux)・feature net・wasm の 3 通りを見る。どれかでしか使わないコード
+  # (wasm だけの初期化、macOS だけの窓の操作) は、他の target で「使っていない」に
+  # なるため。macOS だけのコードはここでは見えないので、手元 (macOS) の clippy で見る。
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: システム依存 (winit / arboard)
         run: |
-          cargo test -p sabitori --features net --lib --locked --no-fail-fast
-          cargo clippy -p sabitori --all-targets --features net --locked
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo clippy (feature net)
+        run: cargo clippy -p sabitori --all-targets --features net --locked -- -D warnings
+      - name: cargo clippy (wasm)
+        run: cargo clippy -p sabitori --target wasm32-unknown-unknown --locked -- -D warnings
+
+  # `rust-version` (Cargo.toml) が本当に守れていること。v0.54.0 までは 1.85 と
+  # 名乗っていたが、どこでも検査しておらず、各 crate も受け取っていなかった
+  # (`rust-version.workspace = true` が無かった)。依存の版を上げて、その依存が
+  # もっと新しい Rust を要るようになったときもここで分かる。
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - name: システム依存 (winit / arboard)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config
+      - name: cargo check (Rust 1.88)
+        run: cargo check --workspace --all-targets --locked
 
   wasm:
     runs-on: ubuntu-latest

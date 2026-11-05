@@ -3,7 +3,11 @@ name = "sabitori-reel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Programmatic motion-graphics video for Sabitori: render a scene as a pure function of the frame, offscreen, to a PNG sequence."
+
+[lints]
+workspace = true
 
 [features]
 # 3D stage behind the UI overlay, rendered by `seimei` (PBR + shadows) onto the

@@ -1,19 +1,19 @@
-/// CAD widgets demo — the Phase-0/2c widget set for hosting a CAD app:
-///
-/// * MenuBar (G1): File / Edit / View with dropdown, hover-to-switch,
-///   one-level submenu, shortcuts, separators.
-/// * NumericInput (G2): drag horizontally to change the value, click to
-///   type (Enter commits, Escape cancels). min/max/step/suffix.
-/// * checkbox (G3) and collapsing_section (G4) form builders.
-/// * A `scroll(id) + flex_1()` list — no explicit height (G5 fix).
-/// * FocusManager: two text fields with click-to-focus, Tab cycling,
-///   Enter submit, IME routing.
-/// * ColorPickerState: palette grid + RGB numeric fine-tuning.
-/// * DropdownState: element-id driven ComboBox (inline menu mode).
-/// * DatePickerState: ◀▶ month nav + calendar grid.
-/// * SliderState + labeled_slider, and labeled_progress_bar bound to it.
-///
-/// Run: `cargo run --example cad_widgets`
+//! CAD widgets demo — the Phase-0/2c widget set for hosting a CAD app:
+//!
+//! * MenuBar (G1): File / Edit / View with dropdown, hover-to-switch,
+//!   one-level submenu, shortcuts, separators.
+//! * NumericInput (G2): drag horizontally to change the value, click to
+//!   type (Enter commits, Escape cancels). min/max/step/suffix.
+//! * checkbox (G3) and collapsing_section (G4) form builders.
+//! * A `scroll(id) + flex_1()` list — no explicit height (G5 fix).
+//! * FocusManager: two text fields with click-to-focus, Tab cycling,
+//!   Enter submit, IME routing.
+//! * ColorPickerState: palette grid + RGB numeric fine-tuning.
+//! * DropdownState: element-id driven ComboBox (inline menu mode).
+//! * DatePickerState: ◀▶ month nav + calendar grid.
+//! * SliderState + labeled_slider, and labeled_progress_bar bound to it.
+//!
+//! Run: `cargo run --example cad_widgets`
 
 use sabitori::*;
 use std::collections::HashSet;
@@ -116,7 +116,7 @@ impl CadDemo {
         }
     }
 
-    fn text_row<'a>(&self, ctx: &ViewContext, label: &str, id: &str, t: &'a AppTheme) -> Element {
+    fn text_row(&self, ctx: &ViewContext, label: &str, id: &str, t: &AppTheme) -> Element {
         // 0.4.0 で text_input が 1 本になった。 以前は `form_text_input` に
         // cursor_pos_px として 0 をベタ書きし (呼び出し側が幅を測れなかったため)、
         // 点滅も諦めて is_focused を渡していた。 いまは ctx の実フォント計測で
@@ -148,12 +148,12 @@ impl CadDemo {
             ])
     }
 
-    fn numeric_row<'a>(
+    fn numeric_row(
         &self,
         label: &str,
         id: &str,
         state: &NumericInputState,
-        t: &'a AppTheme,
+        t: &AppTheme,
     ) -> Element {
         let display = if state.editing {
             state.edit.display_text_with_preedit()
@@ -301,7 +301,7 @@ impl DeclarativeApp for CadDemo {
                 collapsing_section(
                     "sec-date", "着工日 (DatePicker)", date_open, t.text_primary, t.surface,
                     vec![
-                        text(&format!("選択中: {}", self.start_date.formatted()))
+                        text(format!("選択中: {}", self.start_date.formatted()))
                             .font_size(11.0)
                             .color(t.text_secondary),
                         self.start_date.view(hovered, &DatePickerStyle::default_dark()),
@@ -314,7 +314,7 @@ impl DeclarativeApp for CadDemo {
                         text("クリック → 直接入力 (Enter確定/Escキャンセル)").font_size(11.0).color(t.text_secondary),
                     ],
                 ),
-                text(&format!("最後の操作: {}", self.last_action))
+                text(format!("最後の操作: {}", self.last_action))
                     .font_size(11.0)
                     .color(t.text_secondary),
             ]);
@@ -330,7 +330,7 @@ impl DeclarativeApp for CadDemo {
                     .items_center()
                     .bg(if i % 2 == 0 { t.surface } else { Color::TRANSPARENT })
                     .child(
-                        text(&format!("要素 {i:02} — 壁 W-{i:03}"))
+                        text(format!("要素 {i:02} — 壁 W-{i:03}"))
                             .font_size(12.0)
                             .color(t.text_primary),
                     )
@@ -424,11 +424,10 @@ impl DeclarativeApp for CadDemo {
         }
         match id {
             "chk-grid" => self.show_grid = !self.show_grid,
-            "sec-wall" | "sec-info" | "sec-meta" | "sec-color" | "sec-date" => {
-                if !self.open_sections.remove(id) {
+            "sec-wall" | "sec-info" | "sec-meta" | "sec-color" | "sec-date"
+                if !self.open_sections.remove(id) => {
                     self.open_sections.insert(id.to_string());
                 }
-            }
             _ => {}
         }
     }

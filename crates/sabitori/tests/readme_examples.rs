@@ -59,7 +59,7 @@ impl DeclarativeApp for App {
             .justify_center()
             .gap(16.0)
             .children([
-                text(&format!("Clicks: {}", self.clicks))
+                text(format!("Clicks: {}", self.clicks))
                     .font_size(24.0)
                     .color(Color::from_hex("#c0caf5")),
                 button("Click Me")

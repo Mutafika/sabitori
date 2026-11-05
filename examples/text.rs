@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use sabitori::{Color, GlyphInstance, RectInstance, TextRenderer};
 use winit::application::ApplicationHandler;
@@ -11,7 +10,6 @@ struct TextApp {
     window: Option<Arc<Window>>,
     renderer: Option<sabitori::GpuRenderer>,
     text_renderer: Option<TextRenderer>,
-    last_frame: Instant,
 }
 
 impl ApplicationHandler for TextApp {
@@ -285,7 +283,6 @@ fn main() {
         window: None,
         renderer: None,
         text_renderer: None,
-        last_frame: Instant::now(),
     };
     event_loop.run_app(&mut app).unwrap();
 }

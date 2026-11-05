@@ -161,7 +161,6 @@ impl SplitPaneStyle {
             divider: theme.border,
             divider_hover: theme.primary,
             divider_active: theme.primary,
-            ..Self::default_dark()
         }
     }
 

@@ -519,7 +519,7 @@ pub fn segment_control(
         .map(|(i, label)| {
             let seg_id = format!("{id_prefix}-{i}");
             let is_selected = i == selected;
-            let is_hovered = hovered.map_or(false, |h| h == seg_id);
+            let is_hovered = hovered.is_some_and(|h| h == seg_id);
 
             let seg_bg = if is_selected {
                 selected_bg

@@ -110,7 +110,7 @@ impl SplashPreset {
                     (0.0, 0.0, 1.0)
                 } else if i == chars_visible {
                     // Cursor blink
-                    let blink = ((elapsed * 3.0) as u32) % 2 == 0;
+                    let blink = ((elapsed * 3.0) as u32).is_multiple_of(2);
                     (0.0, 0.0, if blink { 0.5 } else { 0.0 })
                 } else {
                     (0.0, 0.0, 0.0)
@@ -170,12 +170,12 @@ impl SplashPreset {
                     // Rapid random flicker
                     let hash = ((fi * 13.37 + elapsed * 50.0) as u32) % 7;
                     let alpha = if hash < 3 { 1.0 } else { 0.0 };
-                    let jx = ((fi * 7.0 + elapsed * 30.0).sin() * 5.0) as f32;
+                    let jx = (fi * 7.0 + elapsed * 30.0).sin() * 5.0;
                     (jx, 0.0, alpha)
                 } else if t < 0.6 {
                     // Settle with occasional flicker
                     let hash = ((fi * 17.0 + elapsed * 20.0) as u32) % 10;
-                    let jx = if hash < 2 { ((fi + elapsed * 10.0).sin() * 3.0) as f32 } else { 0.0 };
+                    let jx = if hash < 2 { (fi + elapsed * 10.0).sin() * 3.0 } else { 0.0 };
                     (jx, 0.0, 1.0)
                 } else {
                     (0.0, 0.0, 1.0)

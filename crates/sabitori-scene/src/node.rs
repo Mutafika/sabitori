@@ -112,16 +112,14 @@ impl UiNode {
 
     /// Get the effective style based on interaction state.
     pub fn effective_style(&self) -> &NodeStyle {
-        if self.pressed {
-            if let Some(ref s) = self.active_style {
+        if self.pressed
+            && let Some(ref s) = self.active_style {
                 return s;
             }
-        }
-        if self.hovered {
-            if let Some(ref s) = self.hover_style {
+        if self.hovered
+            && let Some(ref s) = self.hover_style {
                 return s;
             }
-        }
         &self.style
     }
 

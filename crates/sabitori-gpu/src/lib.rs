@@ -25,7 +25,7 @@ pub use goo_renderer::{GooRenderer, GooSlot};
 pub use group_renderer::GroupRenderer;
 pub use instance::{FillVertex, GooInstance, GroupInstance, LineInstance, RectInstance, RingInstance};
 pub use line_renderer::LineRenderer;
-pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, RenderPhase};
+pub use renderer::{capture_wanted, CapturedFrame, GpuInitError, GpuRenderer, RenderPhase, UnmetLimit};
 pub use ring_renderer::RingRenderer;
 pub use texture_budget::TextureBudget;
 pub use ui_overlay::UiOverlayRenderer;

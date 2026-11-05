@@ -219,11 +219,10 @@ impl FocusManager {
         if !self.fields.contains_key(id) {
             return false;
         }
-        if let Some(prev) = self.focused.take() {
-            if let Some(f) = self.fields.get(&prev) {
+        if let Some(prev) = self.focused.take()
+            && let Some(f) = self.fields.get(&prev) {
                 f.set_focused(false);
             }
-        }
         if let Some(f) = self.fields.get(id) {
             f.set_focused(true);
         }
@@ -234,11 +233,10 @@ impl FocusManager {
 
     /// Drop focus (click-away, Escape, dialog close …).
     pub fn blur(&mut self) {
-        if let Some(prev) = self.focused.take() {
-            if let Some(f) = self.fields.get_mut(&prev) {
+        if let Some(prev) = self.focused.take()
+            && let Some(f) = self.fields.get_mut(&prev) {
                 f.set_focused(false);
             }
-        }
     }
 
     /// Interpret a left-press hit (`hit_region_at(...).id`): a registered
@@ -390,11 +388,10 @@ impl FocusManager {
     /// キャレットを「見えている」状態に戻す。 打鍵やフォーカス移動のたびに呼ぶ。
     /// 入力中にキャレットが消えていると、 どこに文字が入るのか分からなくなる。
     fn restart_blink(&mut self) {
-        if let Some(id) = self.focused.clone() {
-            if let Some(f) = self.fields.get_mut(&id) {
+        if let Some(id) = self.focused.clone()
+            && let Some(f) = self.fields.get_mut(&id) {
                 f.with_mut(|i| i.blink = 0.0);
             }
-        }
     }
 
     /// Advance the blink phase. Call once per frame.

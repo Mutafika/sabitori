@@ -224,7 +224,7 @@ impl DatePickerState {
             .justify_between()
             .children([
                 nav(format!("{}:prev", self.prefix), "\u{25C0}"), // ◀
-                text(&format!("{}年 {}月", self.view_year, self.view_month))
+                text(format!("{}年 {}月", self.view_year, self.view_month))
                     .font_size(style.font_size + 1.0)
                     .bold()
                     .color(style.header_fg)
@@ -290,7 +290,7 @@ impl DatePickerState {
                     .justify_center()
                     .shrink(0.0)
                     .child(
-                        text(&d.to_string())
+                        text(d.to_string())
                             .font_size(style.font_size)
                             .color(fg)
                             .shrink(0.0),

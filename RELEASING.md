@@ -43,10 +43,19 @@ API が安定したら `1.0.0` を切る。
 
    ```sh
    cargo build --workspace --all-targets --locked
-   cargo test  --workspace --locked
-   cargo clippy --workspace --all-targets --locked
+   cargo test  --workspace --locked --no-fail-fast
+   cargo clippy --workspace --all-targets --locked -- -D warnings
+   cargo clippy -p sabitori --target wasm32-unknown-unknown --locked -- -D warnings
    cargo build -p sabitori --target wasm32-unknown-unknown --locked
+   cargo +1.88 check --workspace --all-targets --locked   # MSRV (rust-version)
    ```
+
+   > clippy の警告は 0 件を保つ (CI も `-D warnings`)。CI の clippy は Linux で
+   > 回るので、**macOS だけのコードは手元の clippy でしか見えない**。逆に Linux /
+   > wasm でだけ「使っていない」になるものは、手元では
+   > `cargo clippy --workspace --exclude sabitori-net --all-targets --target x86_64-unknown-linux-gnu`
+   > で先に見られる (`sabitori-net` は TLS の C ライブラリが要り、macOS から Linux
+   > 向けには組めないので外す)。
 
    > wasm を毎回見るのは、**native だけ通って web が落ちる**形が実際にあった
    > から。v0.11.2 は wasm の初期化に `LineRenderer` が無く、web でだけ

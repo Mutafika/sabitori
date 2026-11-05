@@ -60,7 +60,7 @@ impl DeclarativeApp for HotReloadDemo {
                 text(HEADLINE)
                     .font_size(28.0)
                     .color(Color::from_hex(FG)),
-                text(&format!("clicks: {}", self.clicks))
+                text(format!("clicks: {}", self.clicks))
                     .font_size(48.0)
                     .color(Color::from_hex(ACCENT)),
                 button("Click me").id("bump").accent(Color::from_hex(ACCENT)),

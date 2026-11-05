@@ -321,7 +321,6 @@ pub fn parse_svg(d: &str) -> Result<Vec<PathCmd>, String> {
 }
 
 /// SVG の円弧 (端点で書く形) を 3 次ベジェに直す (SVG 1.1 付録 F.6)。
-#[allow(clippy::too_many_arguments)]
 fn arc_to_cubics(
     p0: (f32, f32),
     rx: f32,
@@ -360,8 +359,8 @@ fn arc_to_cubics(
     let cx = cp * cx1 - sp * cy1 + (p0.0 + p1.0) * 0.5;
     let cy = sp * cx1 + cp * cy1 + (p0.1 + p1.1) * 0.5;
     let angle = |ux: f32, uy: f32, vx: f32, vy: f32| {
-        let a = (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
-        a
+        
+        (ux * vy - uy * vx).atan2(ux * vx + uy * vy)
     };
     let ux = (x1 - cx1) / rx;
     let uy = (y1 - cy1) / ry;

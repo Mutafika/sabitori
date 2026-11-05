@@ -162,11 +162,10 @@ impl TableState {
 
     pub fn set_rows(&mut self, rows: Vec<Vec<Cell>>) {
         self.rows = rows;
-        if let Some(sel) = self.selected {
-            if sel >= self.rows.len() {
+        if let Some(sel) = self.selected
+            && sel >= self.rows.len() {
                 self.selected = None;
             }
-        }
     }
 
     /// 選択を 1 つ下へ。 未選択なら先頭。
@@ -432,7 +431,7 @@ fn header(
                 .font_size(style.font_size)
                 .color(style.header_fg);
             sized(div(), c, plan.mins[col])
-                .id(&table_header_id(id, col))
+                .id(table_header_id(id, col))
                 .role(Role::ColumnHeader)
                 .no_select()
                 .label(&c.label)

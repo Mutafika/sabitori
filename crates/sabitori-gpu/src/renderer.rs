@@ -34,13 +34,16 @@ pub(crate) fn choose_alpha_mode(
     }
 }
 
+/// 上限 1 つを `wgpu::Limits` から読む関数。
+type LimitOf = fn(&wgpu::Limits) -> u32;
+
 /// The limits sabitori genuinely needs from a GPU, whatever the platform
 /// baseline says.
 ///
 /// * 2048² is the glyph atlas ([`sabitori_text`]).
 /// * rect.wgsl passes 34 inter-stage components — above the WebGL2 baseline's
 ///   own default of 31, so this one has to be asked for explicitly.
-const MINIMUM_LIMITS: &[(&str, u32, fn(&wgpu::Limits) -> u32)] = &[
+const MINIMUM_LIMITS: &[(&str, u32, LimitOf)] = &[
     ("max_texture_dimension_2d", 2048, |l| l.max_texture_dimension_2d),
     ("max_inter_stage_shader_components", 34, |l| {
         l.max_inter_stage_shader_components
@@ -82,9 +85,10 @@ fn resolve_limits(adapter: &wgpu::Adapter, baseline: wgpu::Limits) -> wgpu::Limi
     pick_limits(baseline, available)
 }
 
-/// A limit sabitori needs that the adapter does not offer.
+/// A limit sabitori needs that the adapter does not offer
+/// ([`GpuInitError::DeviceRejected`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct UnmetLimit {
+pub struct UnmetLimit {
     pub name: &'static str,
     pub needed: u32,
     pub have: u32,
@@ -316,6 +320,9 @@ impl GpuRenderer {
     /// 上限が足りない)。panic だと canvas が真っ白なまま console にしか出ないので、
     /// **画面にメッセージを出せる形**で返す。[`GpuInitError`] の `Display` は
     /// そのまま利用者に見せられる。
+    // wasm の wgpu の Device / Queue は Send でも Sync でもない (スレッドが無い) が、
+    // native と同じく `GpuContext` で Arc に包んで配る。
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     pub async fn try_new_async_with_alpha(
         window: Arc<winit::window::Window>,
         transparent: bool,
@@ -577,6 +584,9 @@ impl GpuRenderer {
     }
 
     /// Async 版の raw handle 初期化。
+    // wasm の wgpu の Device / Queue は Send でも Sync でもない (スレッドが無い) が、
+    // native と同じく `GpuContext` で Arc に包んで配る。
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     pub async fn new_from_raw_async(
         surface_target: wgpu::SurfaceTargetUnsafe,
         width: u32,
@@ -942,7 +952,7 @@ impl GpuRenderer {
             let start = (row * padded) as usize;
             let line = &mapped[start..start + unpadded as usize];
             if bgra {
-                for px in line.chunks_exact(4) {
+                for px in line.as_chunks::<4>().0 {
                     rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
                 }
             } else {
@@ -1292,7 +1302,7 @@ impl GpuRenderer {
 
         // Upload overlay rects (appended after base)
         if overlay_count > 0 {
-            let offset = (base_count * std::mem::size_of::<RectInstance>()) as u64;
+            let offset = std::mem::size_of_val(base_rects) as u64;
             self.queue
                 .write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(overlay_rects));
         }
@@ -1604,7 +1614,7 @@ impl GpuRenderer {
                 .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(base_rects));
         }
         if overlay_count > 0 {
-            let offset = (base_count * std::mem::size_of::<RectInstance>()) as u64;
+            let offset = std::mem::size_of_val(base_rects) as u64;
             self.queue
                 .write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(overlay_rects));
         }
@@ -1721,6 +1731,50 @@ fn goo_marks(layers: &[Vec<GooSlot>], rect_bases: &[u32]) -> (Vec<GooInstance>, 
         out.push(marks);
     }
     (instances, out)
+}
+
+impl crate::RectTarget for GpuRenderer {
+    fn upload_rect_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, rects: &[RectInstance]) {
+        if rects.is_empty() {
+            return;
+        }
+        if rects.len() > self.instance_capacity {
+            self.instance_capacity = rects.len().next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_instance_buffer"),
+                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+    }
+
+    fn upload_goo_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, goo: &[GooInstance]) {
+        self.goo_renderer.upload(&self.device, &self.queue, goo);
+    }
+
+    fn draw_rect_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        self.draw_rect_run(pass, range);
+    }
+
+    fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if !range.is_empty() {
+            self.goo_renderer.draw(pass, &self.globals_bind_group, range);
+        }
+    }
+
+    fn globals(&self) -> &wgpu::BindGroup {
+        &self.globals_bind_group
+    }
+
+    fn target_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
 }
 
 #[cfg(test)]
@@ -1866,49 +1920,5 @@ mod tests {
         let at: Vec<Vec<(u32, u32)>> =
             marks.iter().map(|l| l.iter().map(|m| (m.at, m.index)).collect()).collect();
         assert_eq!(at, vec![vec![(0, 0)], vec![(5, 1)]]);
-    }
-}
-
-impl crate::RectTarget for GpuRenderer {
-    fn upload_rect_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, rects: &[RectInstance]) {
-        if rects.is_empty() {
-            return;
-        }
-        if rects.len() > self.instance_capacity {
-            self.instance_capacity = rects.len().next_power_of_two();
-            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("rect_instance_buffer"),
-                size: (self.instance_capacity * std::mem::size_of::<RectInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        self.queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
-    }
-
-    fn upload_goo_instances(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, goo: &[GooInstance]) {
-        self.goo_renderer.upload(&self.device, &self.queue, goo);
-    }
-
-    fn draw_rect_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
-        self.draw_rect_run(pass, range);
-    }
-
-    fn draw_goo_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
-        if !range.is_empty() {
-            self.goo_renderer.draw(pass, &self.globals_bind_group, range);
-        }
-    }
-
-    fn globals(&self) -> &wgpu::BindGroup {
-        &self.globals_bind_group
-    }
-
-    fn target_size(&self) -> (u32, u32) {
-        (self.surface_config.width, self.surface_config.height)
-    }
-
-    fn scale_factor(&self) -> f32 {
-        self.scale_factor
     }
 }

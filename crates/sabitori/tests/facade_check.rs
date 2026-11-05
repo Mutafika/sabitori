@@ -34,8 +34,8 @@ fn everything_an_app_writes_is_reachable_from_the_facade() {
     // モーダル (#75 の 7・16)
     let modal_state = ModalState::new();
     assert!(!modal_state.is_open());
-    let _builder: fn(&ViewContext, &str, &ModalState, &ModalStyle, &str, Vec<Element>) -> Option<Element> =
-        modal;
+    type ModalFn = fn(&ViewContext, &str, &ModalState, &ModalStyle, &str, Vec<Element>) -> Option<Element>;
+    let _builder: ModalFn = modal;
 
     // 表 (#75 の 3)
     let _cell = Cell::text("R-0042");

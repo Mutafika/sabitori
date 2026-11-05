@@ -490,7 +490,7 @@ fn widget_card(stars: u32, sw: f32) -> Element {
 
     let star_row = div().w_full().flex_row().items_center().justify_between().children([
         text("GitHub stars").font_size(13.0).color(hex(TEXT_MID)),
-        text(&format!("★ {stars}")).mono().font_size(13.0).color(hex(ACCENT_AMBER)),
+        text(format!("★ {stars}")).mono().font_size(13.0).color(hex(ACCENT_AMBER)),
     ]);
 
     let chip = div()

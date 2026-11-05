@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sabitori::{
-    Animated, AnimationMode, Color, GlyphInstance, RectInstance, Spring, TextRenderer,
+    Animated, Color, GlyphInstance, RectInstance, Spring, TextRenderer,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -197,7 +197,7 @@ impl ApplicationHandler for AnimApp {
 
                 let bg = Color::from_hex("#1a1a2e");
                 let surface = Color::from_hex("#22223a");
-                let border = Color::from_hex("#3a3a55");
+                let _border = Color::from_hex("#3a3a55");
                 let text_color = Color::from_hex("#e8e8f0");
                 let text_sub = Color::from_hex("#9090a8");
 

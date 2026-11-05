@@ -1,8 +1,7 @@
-/// Declarative API demo — build UI with just div()/text()/button() builders.
-/// Now with hover detection and ID-based click events.
+//! Declarative API demo — build UI with just div()/text()/button() builders.
+//! Now with hover detection and ID-based click events.
 
 use sabitori::*;
-use sabitori::element::*;
 
 struct MyApp {
     clicks: u32,
@@ -93,7 +92,7 @@ impl DeclarativeApp for MyApp {
                         .justify_center()
                         .gap(12.0)
                         .children([
-                            text(&format!("Clicks: {}", self.clicks))
+                            text(format!("Clicks: {}", self.clicks))
                                 .font_size(18.0)
                                 .color(text_c),
                             button("Click Me")

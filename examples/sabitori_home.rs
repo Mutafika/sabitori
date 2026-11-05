@@ -283,7 +283,7 @@ fn live_badge(t: f32, fps: f32) -> Element {
         .border(1.0, hex(BORDER))
         .children([
             div().w(Px(7.0)).h(Px(7.0)).rounded_px(3.5).bg(hex(ACCENT_GREEN)).glow_sm(hex(ACCENT_GREEN)).opacity(pulse),
-            text(&format!("{fps:.0} FPS")).mono().font_size(10.5).font_weight(600).letter_spacing(1.0).color(hex(TEXT_MID)),
+            text(format!("{fps:.0} FPS")).mono().font_size(10.5).font_weight(600).letter_spacing(1.0).color(hex(TEXT_MID)),
         ])
 }
 fn cta_primary(id: &str, label: &str) -> Element {
@@ -675,20 +675,21 @@ fn sdf_viewport(t: f32) -> Element {
     let cx = |i: usize| x0 + sw * i as f32 + gap * i as f32 + sw / 2.0;
     let label = |i: usize, s: &str| div().absolute().pos(cx(i) - 40.0, cy + 42.0).w(Px(80.0)).flex_row().justify_center().children([text(s).mono().font_size(10.0).color(hex(TEXT_DIM))]);
 
-    let mut kids: Vec<Element> = Vec::new();
-    // glow orb
-    kids.push(div().absolute().pos(cx(0) - 16.0, cy - 16.0).w(Px(32.0)).h(Px(32.0)).rounded_px(16.0).bg(hex(ACCENT_CYAN)).glow(hex(ACCENT_CYAN), 22.0 + 20.0 * pulse));
-    // gradient tile
-    kids.push(div().absolute().pos(cx(1) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(14.0).gradient(hex(ACCENT_BLUE), hex(ACCENT_PURPLE), 45.0).glow_sm(hex(ACCENT_BLUE)));
-    // drop shadow
-    kids.push(div().absolute().pos(cx(2) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(14.0).bg(hex(SURFACE_HI)).border(1.0, hex(BORDER)).shadow_md(hex("#000000aa")));
-    // rounded ring
-    kids.push(div().absolute().pos(cx(3) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(30.0).border(2.0, hex(ACCENT_GREEN)).glow_sm(hex(ACCENT_GREEN)).opacity(0.55 + 0.45 * pulse));
-    kids.push(label(0, "glow"));
-    kids.push(label(1, "gradient"));
-    kids.push(label(2, "shadow"));
-    kids.push(label(3, "rounded"));
-    kids.push(vp_caption("one GPU pass · no raster images"));
+    let kids: Vec<Element> = vec![
+        // glow orb
+        div().absolute().pos(cx(0) - 16.0, cy - 16.0).w(Px(32.0)).h(Px(32.0)).rounded_px(16.0).bg(hex(ACCENT_CYAN)).glow(hex(ACCENT_CYAN), 22.0 + 20.0 * pulse),
+        // gradient tile
+        div().absolute().pos(cx(1) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(14.0).gradient(hex(ACCENT_BLUE), hex(ACCENT_PURPLE), 45.0).glow_sm(hex(ACCENT_BLUE)),
+        // drop shadow
+        div().absolute().pos(cx(2) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(14.0).bg(hex(SURFACE_HI)).border(1.0, hex(BORDER)).shadow_md(hex("#000000aa")),
+        // rounded ring
+        div().absolute().pos(cx(3) - 30.0, cy - 30.0).w(Px(60.0)).h(Px(60.0)).rounded_px(30.0).border(2.0, hex(ACCENT_GREEN)).glow_sm(hex(ACCENT_GREEN)).opacity(0.55 + 0.45 * pulse),
+        label(0, "glow"),
+        label(1, "gradient"),
+        label(2, "shadow"),
+        label(3, "rounded"),
+        vp_caption("one GPU pass · no raster images"),
+    ];
     viewport(kids)
 }
 
@@ -726,7 +727,7 @@ fn type_viewport(t: f32) -> Element {
         text("bold").font_size(19.0).font_weight(700).color(hex(TEXT_HI)),
     ]);
     let ls_label = div().absolute().pos(0.0, 158.0).w(Px(VW)).flex_row().justify_center().children([
-        text(&format!("letter_spacing: {tracking:.1}px")).mono().font_size(11.0).color(hex(ACCENT_AMBER)),
+        text(format!("letter_spacing: {tracking:.1}px")).mono().font_size(11.0).color(hex(ACCENT_AMBER)),
     ]);
     viewport(vec![word, weights, ls_label, vp_caption("cosmic-text · weight · tracking")])
 }
@@ -850,7 +851,7 @@ fn dash_panel(t: f32) -> Element {
     let bar = div().w(Px(inner)).flex_col().gap(6.0).children([
         div().w_full().flex_row().justify_between().children([
             text("Quarterly goal").font_size(11.5).color(hex(TEXT_MID)),
-            text(&format!("{:.0}%", goal * 100.0)).mono().font_size(11.5).color(hex(ACCENT_CYAN)),
+            text(format!("{:.0}%", goal * 100.0)).mono().font_size(11.5).color(hex(ACCENT_CYAN)),
         ]),
         div().w_full().h(Px(6.0)).rounded_px(3.0).bg(hex(SURFACE_HI)).children([
             div().w(Px(inner * goal)).h(Px(6.0)).rounded_px(3.0).gradient(hex(ACCENT_BLUE), hex(ACCENT_CYAN), 0.0),
@@ -925,7 +926,7 @@ fn player_panel(t: f32) -> Element {
         div().absolute().pos(trackw * prog - 6.0, 0.0).w(Px(12.0)).h(Px(12.0)).rounded_px(6.0).bg(hex(TEXT_HI)).glow_sm(hex(ACCENT_PINK)),
     ]);
     let times = div().w(Px(trackw)).flex_row().justify_between().children([
-        text(&format!("{}:{:02}", cur / 60, cur % 60)).mono().font_size(10.5).color(hex(TEXT_DIM)),
+        text(format!("{}:{:02}", cur / 60, cur % 60)).mono().font_size(10.5).color(hex(TEXT_DIM)),
         text("3:40").mono().font_size(10.5).color(hex(TEXT_DIM)),
     ]);
     let btn = |glyph: &str, big: bool| {
@@ -1264,7 +1265,6 @@ fn widget_chips() -> Element {
     div().w(Px(940.0)).flex_row().wrap().justify_center().gap(8.0).children(chips)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn widgets_section(ctx: &ViewContext, theme: &DropdownState, hovered: Option<&str>, anim_on: bool, table_sel: usize, input: &TextInputState) -> Element {
     div().flex_col().items_center().gap(18.0).children([
         eyebrow("A REAL TOOLKIT · CLICK THE DROPDOWN · FLIP THE TOGGLE · TYPE IN THE FIELD"),
@@ -1340,6 +1340,12 @@ impl Home {
             5 => code(),
             _ => start(),
         }
+    }
+}
+
+impl Default for Home {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1501,11 +1507,10 @@ impl DeclarativeApp for Home {
             if let Ok(i) = rest.parse::<usize>() {
                 self.goto(i);
             }
-        } else if let Some(rest) = id.strip_prefix("feat-") {
-            if let Ok(i) = rest.parse::<usize>() {
+        } else if let Some(rest) = id.strip_prefix("feat-")
+            && let Ok(i) = rest.parse::<usize>() {
                 self.feat_sel = i;
             }
-        }
     }
 
     fn on_hover_change(&mut self, id: Option<&str>) {
