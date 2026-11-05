@@ -67,26 +67,26 @@ pub fn write_text(text: &str) -> bool {
     }
 }
 
-/// テスト中の「クリップボード」。 **実クリップボードには触らない。**
-///
-/// 2 つ理由がある。 `cargo test` を回しただけで開発者のクリップボードが黙って
-/// 書き換わるのは事故だし、 CI (ヘッドレス) にはそもそもクリップボードが無い
-/// ので、 実物を叩くテストは環境で結果が変わる。
-///
-/// この差し替えが効くのは **`sabitori` 自身の unit test だけ** (`cfg(test)` は
-/// crate 単位)。 `tests/` の integration test からは実物が見えるので、
-/// クリップボードの中身を assert するテストは unit test 側に置くこと。
 #[cfg(test)]
 thread_local! {
+    /// テスト中の「クリップボード」。 **実クリップボードには触らない。**
+    ///
+    /// 2 つ理由がある。 `cargo test` を回しただけで開発者のクリップボードが黙って
+    /// 書き換わるのは事故だし、 CI (ヘッドレス) にはそもそもクリップボードが無い
+    /// ので、 実物を叩くテストは環境で結果が変わる。
+    ///
+    /// この差し替えが効くのは **`sabitori` 自身の unit test だけ** (`cfg(test)` は
+    /// crate 単位)。 `tests/` の integration test からは実物が見えるので、
+    /// クリップボードの中身を assert するテストは unit test 側に置くこと。
     static TEST_CLIPBOARD: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// テスト用: 書き込みが成功するかどうか。 `false` にすると
-/// [`write_text`] が「書けなかった」を返す (wasm や、 arboard がハンドルを
-/// 開けない環境の再現)。
 #[cfg(test)]
 thread_local! {
+    /// テスト用: 書き込みが成功するかどうか。 `false` にすると
+    /// [`write_text`] が「書けなかった」を返す (wasm や、 arboard がハンドルを
+    /// 開けない環境の再現)。
     static TEST_WRITABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 

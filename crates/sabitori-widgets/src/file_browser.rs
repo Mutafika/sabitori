@@ -51,7 +51,7 @@ pub fn read_directory(
                 return None;
             }
             let meta = entry.metadata().ok()?;
-            let is_symlink = entry.file_type().ok().map_or(false, |ft| ft.is_symlink());
+            let is_symlink = entry.file_type().ok().is_some_and(|ft| ft.is_symlink());
             Some(FileEntry {
                 path: entry.path(),
                 name,
@@ -253,7 +253,7 @@ pub fn dir_to_tree_node(path: &Path) -> crate::TreeNode {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                !name.starts_with('.') && e.metadata().ok().map_or(false, |m| m.is_dir())
+                !name.starts_with('.') && e.metadata().ok().is_some_and(|m| m.is_dir())
             })
             .map(|e| {
                 let child_name = e.file_name().to_string_lossy().to_string();
@@ -263,7 +263,7 @@ pub fn dir_to_tree_node(path: &Path) -> crate::TreeNode {
                 if let Ok(sub) = std::fs::read_dir(e.path()) {
                     let has_subdirs = sub.filter_map(|s| s.ok()).any(|s| {
                         !s.file_name().to_string_lossy().starts_with('.')
-                            && s.metadata().ok().map_or(false, |m| m.is_dir())
+                            && s.metadata().ok().is_some_and(|m| m.is_dir())
                     });
                     if has_subdirs {
                         // Add a placeholder child so expand arrow shows
@@ -273,7 +273,7 @@ pub fn dir_to_tree_node(path: &Path) -> crate::TreeNode {
                 child
             })
             .collect();
-        children.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        children.sort_by_key(|a| a.label.to_lowercase());
         node = node.with_children(children);
     }
 

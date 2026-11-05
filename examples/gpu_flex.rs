@@ -1,14 +1,14 @@
-/// GPU Flex — Sabitori performance showcase
-/// Things that would be impossible or janky in CSS/DOM:
-/// - 10,000 particles at 120fps
-/// - Real-time gravity + collision physics
-/// - Mouse-repulsion force field
-/// - Every element is a GPU-instanced SDF rounded rect
+//! GPU Flex — Sabitori performance showcase
+//! Things that would be impossible or janky in CSS/DOM:
+//! - 10,000 particles at 120fps
+//! - Real-time gravity + collision physics
+//! - Mouse-repulsion force field
+//! - Every element is a GPU-instanced SDF rounded rect
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use sabitori::{Color, GlyphInstance, RectInstance, TextRenderer};
+use sabitori::{Color, RectInstance, TextRenderer};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -244,8 +244,8 @@ impl ApplicationHandler for GpuFlexApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let winit::keyboard::Key::Character(ch) = &event.logical_key {
+                if event.state == ElementState::Pressed
+                    && let winit::keyboard::Key::Character(ch) = &event.logical_key {
                         match ch.as_str() {
                             "1" => self.mode = 0,
                             "2" => self.mode = 1,
@@ -267,7 +267,6 @@ impl ApplicationHandler for GpuFlexApp {
                             _ => {}
                         }
                     }
-                }
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();

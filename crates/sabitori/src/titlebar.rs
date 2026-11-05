@@ -83,7 +83,8 @@ impl Titlebar {
     const CONTROL_GAP: f32 = 6.0;
     const CONTROL_SIZE: f32 = 14.0;
 
-    /// 帯の高さ。中身を窓の上端から描く形 (`Unified` / `Custom`) だけ。
+    /// 帯の高さ。中身を窓の上端から描く形 (`Unified` / `Custom`) だけ。効くのは macOS だけ。
+    #[cfg(target_os = "macos")]
     pub(crate) fn unified_height(self) -> Option<f32> {
         match self {
             Titlebar::Native => None,

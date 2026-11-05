@@ -200,7 +200,7 @@ pub fn get_mouse_position(window: &winit::window::Window) -> Option<(f32, f32)> 
         // Get mouse location in screen coordinates
         let screen_loc = NSEvent::mouseLocation();
         // Convert to window coordinates
-        let win_rect = NSRect::new(screen_loc, NSSize::new(0.0, 0.0));
+        let _win_rect = NSRect::new(screen_loc, NSSize::new(0.0, 0.0));
         let win_loc = ns_window.convertPointFromScreen(screen_loc);
 
         // Flip Y (AppKit is bottom-up, we need top-down)
@@ -338,7 +338,7 @@ fn start_drag(
 
             let item = NSDraggingItem::initWithPasteboardWriter(
                 NSDraggingItem::alloc(),
-                &ProtocolObject::from_ref(&*url),
+                ProtocolObject::from_ref(&*url),
             );
             let (img, frame): (Retained<NSImage>, NSRect) = match (&ghost, preview_img.as_ref()) {
                 // 窓の中と同じ所を掴んだまま。ゴーストは掴んだ物みんなを描いているので、
@@ -403,7 +403,7 @@ fn start_drag(
         let _session = ns_view.beginDraggingSessionWithItems_event_source(
             &ns_array,
             &event,
-            &ProtocolObject::from_ref(&*source),
+            ProtocolObject::from_ref(&*source),
         );
 
         true
@@ -453,7 +453,7 @@ mod tests {
         let png = image::load_from_memory(&g.png).unwrap().to_rgba8();
         assert_eq!(png.dimensions(), (10, 6));
         assert_eq!(png.get_pixel(0, 0).0, [255, 255, 255, 128], "乗算を戻す");
-        assert!(drag_out_image(&vec![0; 16], 2, 2, false, 1.0, (0.0, 0.0)).is_none(), "何も無い");
+        assert!(drag_out_image(&[0; 16], 2, 2, false, 1.0, (0.0, 0.0)).is_none(), "何も無い");
     }
 
     #[test]

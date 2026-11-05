@@ -371,7 +371,7 @@ impl TextShape<'_> {
         self
     }
 
-    pub fn family(mut self, v: Option<&str>) -> TextShape<'_> {
+    pub fn family(self, v: Option<&str>) -> TextShape<'_> {
         TextShape { font_family: v, ..self }
     }
 
@@ -734,7 +734,6 @@ fn build_tree_impl(
 /// 同じ色の続きを矩形 1 つにまとめ、下線・取り消し線も矩形で出す。字形は
 /// [`RenderCommand::CellGrid`] 1 つにまとめて描画側へ渡す (文字単位でキャッシュ
 /// して `col * cell_w` に置くのは描画側の仕事)。
-#[allow(clippy::too_many_arguments)]
 fn emit_cell_grid(
     target: &mut RenderList,
     cg: &crate::element::CellGridKind,
@@ -840,7 +839,6 @@ fn path_segment(element: &Element, index: usize) -> String {
 ///
 /// 親の padding の中へ出るのは数えない — 本文を padding の溝まで広げて
 /// スクロールの帯をそこへ置く、のような意図した使い方がある (modal の本文)。
-#[allow(clippy::too_many_arguments)]
 fn collect_overflows<'a>(
     taffy: &TaffyTree<TextNodeContext>,
     element: &'a Element,
@@ -1277,7 +1275,6 @@ fn collect_anchor_targets(element: &Element, out: &mut std::collections::HashSet
 /// 位置の計算は [`emit_commands`] と同じ式 — スケール、`translate`、
 /// スクロール量まで揃えないと、スクロールした一覧の中のトリガーで
 /// メニューだけ置いていかれる。
-#[allow(clippy::too_many_arguments)]
 fn collect_anchor_boxes(
     taffy: &TaffyTree<TextNodeContext>,
     element: &Element,
@@ -1310,11 +1307,10 @@ fn collect_anchor_boxes(
     let abs_x = slot_x + (layout.size.width * parent_scale - w) * 0.5;
     let abs_y = slot_y + (layout.size.height * parent_scale - h) * 0.5;
 
-    if let Some(id) = element.id.as_deref() {
-        if wanted.contains(id) {
+    if let Some(id) = element.id.as_deref()
+        && wanted.contains(id) {
             rects.insert(id.to_string(), Rect::new(abs_x, abs_y, w, h));
         }
-    }
     if let Some(a) = style.anchor.as_deref() {
         pending.push((taffy_node, a.clone()));
     }
@@ -1455,7 +1451,6 @@ fn fade_links(links: &Option<Vec<crate::element::LinkRange>>, opacity: f32) -> O
 
 /// パス ([`crate::element::path`]) を描く: 塗りは `PathFill`、線は `Polyline` (途中まで・
 /// 点線は折れ線の長さで切る)。座標は箱の左上から (`view_box` があれば箱いっぱいに)。
-#[allow(clippy::too_many_arguments)]
 fn emit_path(
     target: &mut RenderList,
     p: &crate::path::PathKind,
@@ -1530,14 +1525,13 @@ fn layout_masks(
     if element.style.hidden {
         return;
     }
-    if let Some(mask) = element.mask.as_deref() {
-        if let Ok(l) = taffy.layout(node) {
+    if let Some(mask) = element.mask.as_deref()
+        && let Ok(l) = taffy.layout(node) {
             let (w, h) = (l.size.width, l.size.height);
             let mask_node = create_taffy_node(taffy, mask, &measurer, false, false);
             compute_layout_for(taffy, mask_node, w, h, measurer);
             out.insert(node, mask_node);
         }
-    }
     let kids = taffy.children(node).unwrap_or_default();
     for (child, &child_node) in element.children.iter().zip(kids.iter()) {
         layout_masks(taffy, child, child_node, measurer, out);
@@ -1634,11 +1628,10 @@ fn record_probes(
     let style = &element.style;
     let abs_x = parent_x + layout.location.x + style.translate_x;
     let abs_y = parent_y + layout.location.y + style.translate_y;
-    if let Some(id) = element.id.as_deref() {
-        if probes.contains(id) {
+    if let Some(id) = element.id.as_deref()
+        && probes.contains(id) {
             probe_positions.insert(id.to_string(), abs_y);
         }
-    }
     let children = taffy.children(taffy_node).unwrap_or_default();
     for (i, child) in element.children.iter().enumerate() {
         if let Some(&node) = children.get(i) {
@@ -1649,7 +1642,6 @@ fn record_probes(
 
 /// 層の境目 ([`Element::layer`] で番号が上がる要素) では、祖先の切り抜きをその層にも積む
 /// (切り抜きは祖先の層に積まれているので、そのままだと上の層の中身は切られない)。
-#[allow(clippy::too_many_arguments)]
 fn emit_commands(
     taffy: &TaffyTree<TextNodeContext>,
     element: &Element,
@@ -1704,7 +1696,6 @@ fn emit_commands(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_commands_inner(
     taffy: &TaffyTree<TextNodeContext>,
     element: &Element,
@@ -1848,13 +1839,11 @@ fn emit_commands_inner(
         // 大きさ 0 の要素そのものも probe には答える。高さ 0 の目印（「ここへ飛ぶ」
         // アンカー、塊の終わりの印）は probe の典型的な使い道で、描くものが無い
         // からといって位置まで消すと、`probe_positions` から**黙って欠ける**。
-        if !probes.is_empty() {
-            if let Some(id) = element.id.as_deref() {
-                if probes.contains(id) {
+        if !probes.is_empty()
+            && let Some(id) = element.id.as_deref()
+                && probes.contains(id) {
                     probe_positions.insert(id.to_string(), abs_y);
                 }
-            }
-        }
         let taffy_children = taffy.children(taffy_node).unwrap_or_default();
         let z_order = paint_order(&element.children);
         for k in 0..element.children.len() {
@@ -2152,13 +2141,11 @@ fn emit_commands_inner(
     // answer "where is X" for elements the clip would otherwise erase. `rect` is
     // the pre-clip, scroll-adjusted absolute box, so the caller can convert it to
     // content space with the container's own rect + scroll offset.
-    if !probes.is_empty() {
-        if let Some(id) = element.id.as_deref() {
-            if probes.contains(id) {
+    if !probes.is_empty()
+        && let Some(id) = element.id.as_deref()
+            && probes.contains(id) {
                 probe_positions.insert(id.to_string(), rect.origin.y);
             }
-        }
-    }
 
     let clickable = element.on_click.is_some() || element.id.is_some() || element.drag_data.is_some();
     let hoverable = element.on_hover.is_some() || element.hover_style.is_some() || element.id.is_some() || element.tooltip.is_some() || element.drop_zone;
@@ -2239,8 +2226,8 @@ fn emit_commands_inner(
         if clip_rect.size.width <= 0.0 || clip_rect.size.height <= 0.0 {
             // Still record the scroll measure (content extent from the taffy
             // layouts) so managed scroll state doesn't go stale.
-            if style.overflow == Overflow::Scroll {
-                if let Some(ref id) = element.id {
+            if style.overflow == Overflow::Scroll
+                && let Some(ref id) = element.id {
                     let taffy_children = taffy.children(taffy_node).unwrap_or_default();
                     let mut content_w: f32 = 0.0;
                     let mut content_h: f32 = 0.0;
@@ -2267,7 +2254,6 @@ fn emit_commands_inner(
                         grab: None,
                     });
                 }
-            }
             for child in &element.children {
                 count_elements(child, element_counter);
             }
@@ -3097,7 +3083,7 @@ mod tests {
                 .commands
                 .iter()
                 .filter_map(|c| match c {
-                    RenderCommand::Rect(r) => Some(r.clone()),
+                    RenderCommand::Rect(r) => Some(*r),
                     _ => None,
                 })
                 .collect()
@@ -3214,7 +3200,7 @@ mod tests {
                     clip_stack.pop();
                 }
                 RenderCommand::Rect(d) => {
-                    out.push((clip_stack.last().copied(), d.clone()));
+                    out.push((clip_stack.last().copied(), *d));
                 }
                 _ => {}
             }

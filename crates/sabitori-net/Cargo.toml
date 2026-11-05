@@ -3,7 +3,11 @@ name = "sabitori-net"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Async URL → ImageData resolver + cache for Sabitori"
+
+[lints]
+workspace = true
 
 [features]
 # JSON の組み立て / 読み取り。業務 API を叩くなら普通は要るが、画像を取るだけの

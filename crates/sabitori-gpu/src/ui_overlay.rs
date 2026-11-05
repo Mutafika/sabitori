@@ -234,7 +234,7 @@ impl UiOverlayRenderer {
             queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(base));
         }
         if !overlay.is_empty() {
-            let offset = (base.len() * std::mem::size_of::<RectInstance>()) as u64;
+            let offset = std::mem::size_of_val(base) as u64;
             queue.write_buffer(&self.instance_buffer, offset, bytemuck::cast_slice(overlay));
         }
         self.base_count = base.len() as u32;

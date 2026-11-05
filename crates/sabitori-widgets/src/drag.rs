@@ -115,11 +115,10 @@ impl DragManager {
     /// Tick — cancel stale drags that have been active for more than 5 seconds.
     /// This prevents orphaned drag states if a release event is missed.
     pub fn tick(&mut self, _dt: f32) {
-        if let DragState::Active { created, .. } = &self.state {
-            if created.elapsed().as_secs_f32() > 5.0 {
+        if let DragState::Active { created, .. } = &self.state
+            && created.elapsed().as_secs_f32() > 5.0 {
                 self.state = DragState::None;
             }
-        }
     }
 }
 

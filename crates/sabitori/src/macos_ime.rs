@@ -47,17 +47,15 @@ fn resync_if_source_changed(mtm: MainThreadMarker) {
     if !LAST_SOURCE.with(|l| source_changed(&mut l.borrow_mut(), current)) {
         return;
     }
-    if let Some(ctx) = unsafe { NSTextInputContext::currentInputContext(mtm) } {
-        unsafe {
-            ctx.deactivate();
-            ctx.activate();
-        }
+    if let Some(ctx) = NSTextInputContext::currentInputContext(mtm) {
+        ctx.deactivate();
+        ctx.activate();
     }
 }
 
 fn current_source(mtm: MainThreadMarker) -> Option<String> {
-    let ctx = unsafe { NSTextInputContext::currentInputContext(mtm) }?;
-    unsafe { ctx.selectedKeyboardInputSource() }.map(|s| s.to_string())
+    let ctx = NSTextInputContext::currentInputContext(mtm)?;
+    ctx.selectedKeyboardInputSource().map(|s| s.to_string())
 }
 
 /// 入力ソースが前回から変わったか。変わっていれば `last` を更新する。

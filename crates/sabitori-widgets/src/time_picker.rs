@@ -201,12 +201,11 @@ impl TimePickerState {
             }
             return None;
         }
-        if let Some(m) = rest.strip_prefix(":m:").and_then(|v| v.parse::<u32>().ok()) {
-            if m < 60 && m % self.minute_step == 0 {
+        if let Some(m) = rest.strip_prefix(":m:").and_then(|v| v.parse::<u32>().ok())
+            && m < 60 && m % self.minute_step == 0 {
                 self.minute = m;
                 return Some(self.selected());
             }
-        }
         None
     }
 

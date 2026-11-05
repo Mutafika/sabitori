@@ -22,8 +22,10 @@ impl Default for AnimationMode {
 
 /// Repeat behavior for animations.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Default)]
 pub enum RepeatMode {
     /// Play once and stop.
+    #[default]
     Once,
     /// Loop N times (0 = infinite).
     Loop(u32),
@@ -31,11 +33,6 @@ pub enum RepeatMode {
     PingPong(u32),
 }
 
-impl Default for RepeatMode {
-    fn default() -> Self {
-        Self::Once
-    }
-}
 
 /// A single keyframe in a keyframe animation.
 #[derive(Clone, Debug)]

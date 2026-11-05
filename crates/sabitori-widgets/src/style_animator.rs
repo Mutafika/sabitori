@@ -80,11 +80,8 @@ impl AnimatedStyle {
 /// Extract a spring from the element's transition declarations.
 fn spring_from_transitions(element: &Element) -> Spring {
     for t in &element.transitions {
-        match t.kind {
-            TransitionKind::Spring { stiffness, damping } => {
-                return Spring { stiffness, damping, mass: 1.0 };
-            }
-            _ => {}
+        if let TransitionKind::Spring { stiffness, damping } = t.kind {
+            return Spring { stiffness, damping, mass: 1.0 };
         }
     }
     // Default spring for easing-based transitions
@@ -119,8 +116,8 @@ impl StyleAnimator {
         hovered_id: &Option<String>,
         pressed_id: &Option<String>,
     ) {
-        if let Some(ref id) = element.id {
-            if !element.transitions.is_empty() {
+        if let Some(ref id) = element.id
+            && !element.transitions.is_empty() {
                 let is_hovered = hovered_id.as_deref() == Some(id.as_str());
                 let is_pressed = pressed_id.as_deref() == Some(id.as_str());
                 let spring = spring_from_transitions(element);
@@ -159,7 +156,6 @@ impl StyleAnimator {
                     entry.font_size.set_target(element.style.font_size);
                 }
             }
-        }
         for child in &element.children {
             self.update_recursive(child, hovered_id, pressed_id);
         }
@@ -167,8 +163,8 @@ impl StyleAnimator {
 
     /// Apply animated values back onto elements, overwriting their style fields.
     pub fn apply(&self, element: &mut Element) {
-        if let Some(ref id) = element.id {
-            if let Some(state) = self.states.get(id) {
+        if let Some(ref id) = element.id
+            && let Some(state) = self.states.get(id) {
                 element.style.background = state.bg.value();
                 element.style.border_color = state.border_color.value();
                 element.style.color = state.color.value();
@@ -176,7 +172,6 @@ impl StyleAnimator {
                 element.style.border_width = state.border_width.value();
                 element.style.font_size = state.font_size.value();
             }
-        }
         for child in &mut element.children {
             self.apply(child);
         }
@@ -197,5 +192,11 @@ impl StyleAnimator {
     /// Returns true if any animation is still running.
     pub fn is_animating(&self) -> bool {
         self.states.values().any(|s| s.is_running())
+    }
+}
+
+impl Default for StyleAnimator {
+    fn default() -> Self {
+        Self::new()
     }
 }

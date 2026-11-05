@@ -1,9 +1,9 @@
-/// Sabitori GPU Effects Demo
-/// 4 practical effects that CSS can't match:
-/// 1. Mouse-following spotlight glow (Stripe-style)
-/// 2. Magnetic snap buttons
-/// 3. Gravity dropdown
-/// 4. Fluid menu indicator
+//! Sabitori GPU Effects Demo
+//! 4 practical effects that CSS can't match:
+//! 1. Mouse-following spotlight glow (Stripe-style)
+//! 2. Magnetic snap buttons
+//! 3. Gravity dropdown
+//! 4. Fluid menu indicator
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -230,7 +230,7 @@ impl MagneticButtons {
     }
 
     fn render(
-        &self, mx: f32, my: f32,
+        &self, _mx: f32, _my: f32,
         rects: &mut Vec<RectInstance>, glyphs: &mut Vec<GlyphInstance>, tr: &mut TextRenderer,
         area_x: f32, area_y: f32,
     ) {
@@ -271,7 +271,6 @@ impl MagneticButtons {
 struct GravityDropdown {
     open: bool,
     items: Vec<GravItem>,
-    trigger_y: f32,
 }
 
 struct GravItem {
@@ -296,7 +295,6 @@ impl GravityDropdown {
                     settled: false,
                 }
             }).collect(),
-            trigger_y: 0.0,
         }
     }
 
@@ -478,7 +476,7 @@ impl FluidMenu {
     }
 
     fn render(
-        &self, mx: f32, my: f32,
+        &self, _mx: f32, _my: f32,
         rects: &mut Vec<RectInstance>, glyphs: &mut Vec<GlyphInstance>, tr: &mut TextRenderer,
         area_x: f32, area_y: f32,
     ) {
@@ -559,8 +557,6 @@ struct EffectsApp {
     magnetic: MagneticButtons,
     gravity_dropdown: GravityDropdown,
     fluid_menu: FluidMenu,
-    // Layout
-    active_section: usize,
 }
 
 impl EffectsApp {
@@ -575,7 +571,6 @@ impl EffectsApp {
             magnetic: MagneticButtons::new(),
             gravity_dropdown: GravityDropdown::new(),
             fluid_menu: FluidMenu::new(),
-            active_section: 0,
         }
     }
 
@@ -630,7 +625,7 @@ impl ApplicationHandler for EffectsApp {
                     }
 
                     // Fluid menu click
-                    let menu_area_y = self.section_y(3);
+                    let _menu_area_y = self.section_y(3);
                     if let Some(idx) = self.fluid_menu.hover_idx {
                         self.fluid_menu.set_active(idx);
                     }

@@ -530,8 +530,8 @@ impl<A: SabitoriApp> AppState<A> {
                 }
 
                 // Update pressed-node drag tracking while the primary contact is held.
-                if self.pointer.primary_pressed() {
-                    if let Some(pressed_id) = self.pressed_node {
+                if self.pointer.primary_pressed()
+                    && let Some(pressed_id) = self.pressed_node {
                         let still_over = self
                             .tree
                             .nodes
@@ -546,7 +546,6 @@ impl<A: SabitoriApp> AppState<A> {
                             true,
                         );
                     }
-                }
             }
             InputEvent::PointerPressed {
                 position,
@@ -841,8 +840,8 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
                 let hit = self.tree.hit_test(position);
                 self.tree.update_hover(hit);
 
-                if self.pointer.primary_pressed() {
-                    if let Some(pressed_id) = self.pressed_node {
+                if self.pointer.primary_pressed()
+                    && let Some(pressed_id) = self.pressed_node {
                         let still_over = self
                             .tree
                             .nodes
@@ -853,7 +852,6 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
                             true,
                         );
                     }
-                }
             }
             InputEvent::PointerPressed {
                 id,

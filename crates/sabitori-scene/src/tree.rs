@@ -103,11 +103,10 @@ impl NodeTree {
 
     /// Fire click handler on a node.
     pub fn fire_click(&mut self, id: NodeId) {
-        if let Some(node) = self.nodes.get_mut(id) {
-            if let Some(ref mut handler) = node.on_click {
+        if let Some(node) = self.nodes.get_mut(id)
+            && let Some(ref mut handler) = node.on_click {
                 handler();
             }
-        }
     }
 
     /// Animate all nodes. Call once per frame.

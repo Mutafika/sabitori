@@ -4,7 +4,7 @@
 //! pair them with renderer functions from `sabitori_core::tui` for display.
 
 use sabitori_core::Color;
-use crate::{EasingFunction, Lerp};
+use crate::EasingFunction;
 
 // ---------------------------------------------------------------------------
 // TypewriterState
@@ -50,7 +50,7 @@ impl TypewriterState {
 
     pub fn cursor_visible(&self) -> bool {
         let count = self.visible_count();
-        count < self.full_text.len() && ((self.elapsed * self.cursor_blink_hz) as u32) % 2 == 0
+        count < self.full_text.len() && ((self.elapsed * self.cursor_blink_hz) as u32).is_multiple_of(2)
     }
 
     pub fn full_text(&self) -> &str { &self.full_text }
@@ -460,8 +460,8 @@ impl MotionState {
         };
 
         // Bounce on cross-axis
-        if let Some(ref b) = self.bounce {
-            if t > self.bounce_start {
+        if let Some(ref b) = self.bounce
+            && t > self.bounce_start {
                 let bt = (t - self.bounce_start) / (1.0 - self.bounce_start);
                 let osc = (-b.decay * bt).exp() * (bt * b.frequency).sin() * b.amplitude;
                 match self.direction {
@@ -469,7 +469,6 @@ impl MotionState {
                     Direction::Top | Direction::Bottom => dx += osc,
                 }
             }
-        }
 
         (dx.round(), dy.round())
     }

@@ -180,6 +180,9 @@ fn more_urgent(a: ControlFlow, b: ControlFlow) -> ControlFlow {
 
 /// OS から渡されたパスと開き直しの届け先。最後に焦点を持った窓、それが無ければ (閉じた・
 /// まだ焦点が来ていない) 窓ができている最初のもの。どれも窓が無ければ `None`。
+///
+/// OS からパスが渡されるのは macOS だけ。決め方は純粋なので、テストはどの OS でも回す。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn open_target<T: PartialEq>(ids: &[Option<T>], focused: Option<&T>) -> Option<usize> {
     focused
         .and_then(|f| ids.iter().position(|id| id.as_ref() == Some(f)))

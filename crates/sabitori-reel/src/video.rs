@@ -114,11 +114,10 @@ impl Video {
         // 落ちないよう少しだけ足す。
         let idx = (t * self.fps as f32 + 1e-3).floor() as u64;
         let mut st = self.state.borrow_mut();
-        if let Some((n, rgba)) = &st.last {
-            if *n == idx {
+        if let Some((n, rgba)) = &st.last
+            && *n == idx {
                 return Some((idx, rgba.clone()));
             }
-        }
         // 戻った・大きく飛んだ・まだ開いていない: その時刻から開き直す。
         let far = idx > st.next + self.fps as u64 * 2;
         if st.child.is_none() || idx < st.next || far {

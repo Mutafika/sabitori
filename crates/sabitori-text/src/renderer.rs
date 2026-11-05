@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sabitori_core::{Color, Typography};
-use wgpu::util::DeviceExt;
 
 use crate::atlas::GlyphAtlas;
 use crate::shaper::{apply_align, quantize_font_size, resolve_family, TextShaper};
@@ -422,7 +421,6 @@ fn run_cache_key(
 /// fractional coordinates no longer re-bins every frame. That is already
 /// how `prepare_text_styled` has always behaved, and it buys removing the
 /// dominant per-frame CPU cost.
-#[allow(clippy::too_many_arguments)]
 fn ensure_shaped(
     cache: &mut std::collections::HashMap<u64, ShapedRun>,
     ctx: &mut ShapeCtx<'_>,
@@ -457,7 +455,6 @@ fn ensure_shaped(
 ///
 /// This is the only place shaping happens. Callers go through
 /// [`TextRenderer::ensure_shaped`] so the result lands in the cache.
-#[allow(clippy::too_many_arguments)]
 fn shape_run(
     ctx: &mut ShapeCtx<'_>,
     text: &str,
@@ -507,7 +504,7 @@ fn shape_run(
     let owned;
     let final_text: &str = match max_lines {
         Some(n) if n > 0 => {
-            buffer.set_text(ctx.font_system, text, attrs.clone(), Shaping::Advanced);
+            buffer.set_text(ctx.font_system, text, attrs, Shaping::Advanced);
             apply_align(&mut buffer, typo.align);
             buffer.shape_until_scroll(ctx.font_system, false);
             if buffer.layout_runs().count() <= n as usize {
@@ -812,7 +809,6 @@ impl TextRenderer {
     /// `cache_key` があれば、**中身が前のフレームと同じ行**は組み直さずに前の字形を
     /// 使う。版番号のような「変えたら上げる」約束には頼らない — 毎フレーム格子を
     /// 作り直すアプリや、同じ要素に別の格子を渡すアプリでも、古い字が残らない。
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_cell_grid(
         &mut self,
         grid: &sabitori_core::CellGrid,
@@ -920,7 +916,6 @@ impl TextRenderer {
 
     /// 1 字ぶんの字形 (セルの左上からの相対位置)。無ければ 1 字だけシェーピングして
     /// 覚える。行の高さを `cell_h` にするので、字は行の中で上下の中央に来る。
-    #[allow(clippy::too_many_arguments)]
     fn cell_glyph(
         &mut self,
         ch: char,
@@ -1111,7 +1106,6 @@ impl TextRenderer {
     ///
     /// Kept on the renderer for convenience; the shaper is public
     /// (`renderer.shaper`) and needs no GPU, so headless hosts call it directly.
-    #[allow(clippy::too_many_arguments)]
     pub fn measure_text(
         &mut self,
         text: &str,
@@ -1184,7 +1178,6 @@ impl TextRenderer {
     /// **シェーピングのキャッシュは共有する** — 鍵に色は入っていないので、
     /// 同じ文字列なら色違いでも 1 回しか組まない。端末や差分表示のように
     /// 「1 行の中で色が何度も変わる」画面が、1 行 1 要素で書ける。
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_spans(
         &mut self,
         text: &str,
@@ -1275,7 +1268,6 @@ impl TextRenderer {
 
     /// [`TextRenderer::prepare_text_with_hits`] の**文字ごとに色を変えられる**版
     /// ([#78](https://github.com/Mutafika/sabitori/issues/78))。
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_with_hits_spans(
         &mut self,
         text: &str,
@@ -1345,7 +1337,6 @@ impl TextRenderer {
     /// [`sabitori_core::vertical`]。1 字ずつ横書きと同じ方法で組み、升目の真ん中に置く。
     ///
     /// グリフと、それぞれの本文のバイト範囲 (1 字ずつ動かすとき用) を返す。
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_vertical(
         &mut self,
         text: &str,
@@ -2043,8 +2034,7 @@ mod shaping_cache_tests {
         f.with_hits("Cache key", 0.0, 0.0, 28.0, None, td, false); // size
         assert_eq!(f.cache.len(), 3, "font size must not reuse");
 
-        let mut spaced = Typography::default();
-        spaced.letter_spacing = 2.0;
+        let spaced = Typography { letter_spacing: 2.0, ..Typography::default() };
         f.with_hits("Cache key", 0.0, 0.0, 14.0, None, spaced, false);
         assert_eq!(f.cache.len(), 4, "letter-spacing must not reuse");
 

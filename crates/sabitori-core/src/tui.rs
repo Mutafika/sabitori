@@ -161,7 +161,7 @@ pub fn key_hint(key: &str, label: &str, key_color: Color, label_color: Color) ->
         .gap(4.0)
         .items_center()
         .children([
-            text(&format!("[{key}]"))
+            text(format!("[{key}]"))
                 .mono()
                 .font_size(12.0)
                 .color(key_color)

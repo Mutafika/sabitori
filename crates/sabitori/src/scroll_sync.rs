@@ -260,7 +260,6 @@ impl WheelLatch {
     /// 位相つきでルーティングする。戻り値は [`route_wheel`] と同じ「管理コンテナが
     /// 消費したか」。`precise` は `InputEvent::Wheel` のそれ (刻みホイールなら
     /// `false`)。
-    #[allow(clippy::too_many_arguments)]
     pub fn route(
         &mut self,
         build: &BuildResult,
@@ -783,11 +782,10 @@ pub fn paint_bar_state(root: &mut Element, held: Option<&str>, hover: Option<&st
             if let Some(colour) = root.style.scrollbar_held {
                 root.style.scrollbar_thumb = Some(colour);
             }
-        } else if hover == Some(id) {
-            if let Some(colour) = root.style.scrollbar_hover {
+        } else if hover == Some(id)
+            && let Some(colour) = root.style.scrollbar_hover {
                 root.style.scrollbar_thumb = Some(colour);
             }
-        }
     }
     for child in root.children.iter_mut() {
         paint_bar_state(child, held, hover);

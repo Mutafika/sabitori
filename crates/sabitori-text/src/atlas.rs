@@ -555,7 +555,7 @@ mod tests {
     fn polygon(pts: &[(f32, f32)]) -> (Vec<Point>, Vec<Verb>) {
         let points = pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
         let mut verbs = vec![Verb::MoveTo];
-        verbs.extend(std::iter::repeat(Verb::LineTo).take(pts.len() - 1));
+        verbs.extend(std::iter::repeat_n(Verb::LineTo, pts.len() - 1));
         verbs.push(Verb::Close);
         (points, verbs)
     }

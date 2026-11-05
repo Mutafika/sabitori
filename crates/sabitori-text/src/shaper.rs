@@ -35,9 +35,10 @@ pub const FONT_SIZE_QUANTUM: f32 = 0.25;
 /// `Buffer`, the cosmic-text physical/atlas key, and the measured box all agree
 /// on one value.
 pub(crate) fn quantize_font_size(px: f32) -> f32 {
-    if !(px > 0.0) {
+    // leave 0 / negative / NaN untouched
+    if px.is_nan() || px <= 0.0 {
         return px;
-    } // leave 0 / negative / NaN untouched
+    }
     (px / FONT_SIZE_QUANTUM).round() * FONT_SIZE_QUANTUM
 }
 
@@ -381,7 +382,7 @@ impl TextShaper {
     /// `false` のままシェープすると cosmic-text の奥で panic する。 ホストが
     /// 起動時に確かめて、 自前の案内を出したいとき用。
     pub fn has_fonts(&self) -> bool {
-        self.font_system.db().len() > 0
+        !self.font_system.db().is_empty()
     }
 
     /// シェープに入る手前で止める。 メッセージは [`NO_FONTS`]。
@@ -427,7 +428,6 @@ impl TextShaper {
     /// The baseline comes from cosmic-text's `LayoutRun::line_y`, the same
     /// value the render path uses as the glyph pen origin — so a caller that
     /// places text by baseline lands exactly where sabitori would draw it.
-    #[allow(clippy::too_many_arguments)]
     pub fn measure_text(
         &mut self,
         text: &str,
@@ -531,7 +531,6 @@ impl TextShaper {
 
     /// **描かれる文字列** — `max_lines` で切ったとき、「…」を付けた後の形 (#110)。
     /// 切らずに収まるならそのまま。描く道 (`TextRenderer`) と同じ切り方を通る。
-    #[allow(clippy::too_many_arguments)]
     pub fn clamped_text(
         &mut self,
         text: &str,
@@ -721,7 +720,6 @@ impl TextShaper {
 /// `buffer` は `text` を幅 `width` で組み終えたもの (n 行に収まらないことは
 /// 呼ぶ側が確かめている)。描く道 (`TextRenderer`) と、描かずに結果の文字列だけ
 /// 欲しい道 ([`TextShaper::clamped_text`]) が同じこれを通る。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn clamp_last_line(
     font_system: &mut FontSystem,
     buffer: &Buffer,
@@ -919,10 +917,8 @@ mod tests {
     #[test]
     fn baseline_follows_half_the_added_leading() {
         let mut s = shaper();
-        let mut tight = Typography::default();
-        tight.line_height = Some(1.0);
-        let mut loose = Typography::default();
-        loose.line_height = Some(1.4);
+        let tight = Typography { line_height: Some(1.0), ..Typography::default() };
+        let loose = Typography { line_height: Some(1.4), ..Typography::default() };
 
         let a = s.measure_text("Ag", EM, false, false, None, None, None, tight);
         let b = s.measure_text("Ag", EM, false, false, None, None, None, loose);

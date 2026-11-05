@@ -32,7 +32,7 @@ pub fn show(message: &str) {
     if let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() {
         // canvas の上に出す。色は固定 — **アプリのテーマは読めない**
         // (初期化に失敗しているので、アプリはまだ動いていない)。
-        let _ = html.style().set_css_text(
+        html.style().set_css_text(
             "position:fixed; inset:0; z-index:2147483647; \
              display:flex; align-items:center; justify-content:center; \
              padding:24px; box-sizing:border-box; text-align:center; \

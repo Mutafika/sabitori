@@ -1,4 +1,4 @@
-/// TUI aesthetic demo — dense, sharp, terminal-native feel rendered with GPU.
+//! TUI aesthetic demo — dense, sharp, terminal-native feel rendered with GPU.
 
 use sabitori::*;
 use sabitori_style::Theme;

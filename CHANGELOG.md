@@ -15,6 +15,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`sabitori_gpu::UnmetLimit` を公開した**。`GpuInitError::DeviceRejected { unmet }` の型なのに crate の外から
+  名前を書けなかった (`pub(crate)` だった)。
+
+### Changed（破壊的）
+
+- **MSRV (`rust-version`) を 1.85 から 1.88 に上げた**。let-chains (`if a && let Some(x) = ..`) を使うため。
+  これまでは `[workspace.package]` に 1.85 と書いてあるだけで、各 crate が受け取っておらず
+  (`rust-version.workspace = true` が無かった)、どこでも検査していなかった。今は全 crate が名乗り、CI の
+  `msrv` ジョブが 1.88 で `cargo check` を通す。
+
+### Fixed
+
+- **`examples/filer.rs`: ⌘⌫ (ゴミ箱へ入れる) が効かなかった**。素の ⌫ (上のフォルダへ) の腕が先にあって、
+  ⌘ 付きの腕に届いていなかった。
+
+### Documentation
+
+- **`MarkdownOptions::link_id_prefix` はまだ効かない、と書いた**。markdown のリンクは今は押せず (文字の後ろに
+  URL を `(…)` で添えるだけ)、id も付かない。doc は「押すと `{prefix}{url}` の id が届く」と書いていた。
+
+### 内部
+
+- clippy の警告を 0 件にした (v0.54.0 時点で 270 件ほど)。CI の clippy は `-D warnings` で、版を固定し
+  (`1.99.0`)、Linux・feature net・wasm の 3 通りを見る。引数の多さ (`too_many_arguments`) だけは workspace で
+  止めた (描画・計測の関数は値を 1 つずつ受けるのが普通で、散らばっていた 25 個の `#[allow]` も消した)。
+
 ## [0.54.0] - 2026-11-04
 
 ### Added

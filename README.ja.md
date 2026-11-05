@@ -43,7 +43,7 @@ impl DeclarativeApp for App {
             .justify_center()
             .gap(16.0)
             .children([
-                text(&format!("Clicks: {}", self.clicks))
+                text(format!("Clicks: {}", self.clicks))
                     .font_size(24.0)
                     .color(Color::from_hex("#c0caf5")),
                 button("Click Me")
@@ -409,5 +409,5 @@ WASM 固有の要件（`wgpu` の `webgl` feature、フォントの同梱、WebG
 
 ## 動作要件
 
-- Rust 1.85+（edition 2024）
+- Rust 1.88+（edition 2024）
 - wgpu 24 対応の GPU バックエンド（Vulkan / Metal / DX12 / WebGPU / WebGL2）

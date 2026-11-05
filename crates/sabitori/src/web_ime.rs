@@ -151,12 +151,11 @@ pub fn ensure_attached() {
                 }
             }
         }
-        if let Some(bridge) = guard.as_mut() {
-            if !bridge.canvas_hooked {
+        if let Some(bridge) = guard.as_mut()
+            && !bridge.canvas_hooked {
                 bridge.canvas_hooked =
                     hook_canvas(&bridge.textarea, &bridge.password, &mut bridge._keep);
             }
-        }
     });
 }
 

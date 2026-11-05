@@ -422,7 +422,7 @@ mod tests {
         let tasks: Tasks<App> = Tasks::new();
         assert_eq!(tasks.pending(), 0);
 
-        tasks.spawn(async { () }, |_app: &mut App, _| {});
+        tasks.spawn(async {  }, |_app: &mut App, _| {});
         settle(&tasks);
         assert_eq!(tasks.pending(), 0, "終わったら 0 に戻ること");
     }

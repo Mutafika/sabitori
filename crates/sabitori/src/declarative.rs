@@ -11,13 +11,15 @@ use web_time::Instant;
 use sabitori_core::build::{build_tree_measured, BuildResult};
 use sabitori_core::element::Element;
 use sabitori_core::ViewContext;
-use sabitori_gpu::{GpuContext, GpuRenderer, RingRenderer, SceneRenderContext};
+use sabitori_gpu::{GpuRenderer, RingRenderer};
+#[cfg(not(target_arch = "wasm32"))]
+use sabitori_gpu::{GpuContext, SceneRenderContext};
 use sabitori_input::{Delivery, InputEvent, InputEventKind, Key, Modifiers, MouseButton as InputMouseButton, PointerKind, MOUSE_POINTER_ID};
 use sabitori_text::TextRenderer;
 use sabitori_widgets::TextInputState;
 use winit::application::ApplicationHandler;
-use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::bridge::{OrderedFrame, UiRenderers};
@@ -1095,7 +1097,8 @@ struct ExtraWindowState {
     resize: Option<crate::window_resize::Drag>,
     /// Mirrors `ExtraWindow::scene_3d` so `redraw_extra` and the
     /// resize handler can branch without re-querying the app's
-    /// `extra_windows()` list every frame.
+    /// `extra_windows()` list every frame. (3D の別窓は native だけ。)
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     scene_3d: bool,
     /// 要素の後ろのぼかしの板 (主窓と同じ)。
     #[cfg(target_os = "macos")]
@@ -1296,11 +1299,6 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     image_pending: std::sync::Arc<std::sync::Mutex<Vec<(String, sabitori_core::image_cache::CacheState)>>>,
     /// Pre-built `ImageCtx` handed to each frame's `ViewContext`.
     image_ctx: sabitori_core::ImageCtx,
-    /// Set in `new_events` when winit wakes from `WaitCancelled`/`Init`
-    /// (i.e. an OS event arrived). Consumed in `about_to_wait` to trigger
-    /// exactly one redraw per wake. This is what makes the variable
-    /// refresh rate scheme work — events drive frames, not the loop.
-    pending_redraw: bool,
     /// Set after a render whose glyph atlas overflowed (dropped glyphs). Forces
     /// `must_draw` on the next tick so `maybe_recover_atlas` runs a flush +
     /// re-shape — without it, `lazy_render` parks on the broken frame and the
@@ -1908,11 +1906,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         return;
                     }
                 }
-                if let Some(ref mut tp) = self.trackpad_pinch {
-                    if let Some(scale) = tp.apply(delta) {
+                if let Some(ref mut tp) = self.trackpad_pinch
+                    && let Some(scale) = tp.apply(delta) {
                         self.app.on_pinch(scale, self.mouse_x, self.mouse_y);
                     }
-                }
             }
             // Touch events — first finger drives the primary flow (tap, scroll,
             // drag). A second finger promotes to a pinch gesture. Extra fingers
@@ -2390,12 +2387,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // 「描くものが無くなった」= 非同期のロードも含めて落ち着いた合図。
         #[cfg(not(target_arch = "wasm32"))]
         if self.shooter.armed() {
-            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured()) {
-                if self.shooter.write(frame) {
+            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured())
+                && self.shooter.write(frame) {
                     event_loop.exit();
                     return;
                 }
-            }
             if self.shooter.should_request(!must_draw) {
                 self.shooter.mark_requested();
                 if let Some(r) = self.renderer.as_mut() {
@@ -2553,7 +2549,9 @@ impl DrawGate {
 }
 
 /// What [`plan_extras`] decided to do with the live extra-window set.
+/// (別窓は web に無いが、決め方は cfg 無しで置いてどの target でもテストする。)
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct ExtraPlan {
     /// Keys of live windows the app stopped declaring. Closed before
     /// anything else, so a key can be recycled onto a different display
@@ -2572,6 +2570,7 @@ pub(crate) struct ExtraPlan {
 /// a single window to be torn down and rebuilt. Splitting the decision
 /// out is what makes that testable: the winit half needs an event loop
 /// and real displays, this half needs neither.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn plan_extras(wanted: &[String], live: &[String]) -> ExtraPlan {
     let wanted_set: std::collections::HashSet<&str> = wanted.iter().map(String::as_str).collect();
     let live_set: std::collections::HashSet<&str> = live.iter().map(String::as_str).collect();
@@ -2879,7 +2878,6 @@ impl<A: DeclarativeApp> AppState<A> {
             image_cache,
             image_pending,
             image_ctx,
-            pending_redraw: true,
             atlas_recover_pending: false,
             relayout_pending: false,
             relayout_streak: 0,
@@ -3113,13 +3111,11 @@ impl<A: DeclarativeApp> AppState<A> {
         // 登録済みテキスト欄からのスクロール要求 — キャレットが箱の外に出たら
         // 追いかける。 アプリが `scroll_intents` を書く必要は無い。
         for (_, target) in &self.managed {
-            if let Some(field) = target.as_any().downcast_ref::<TextInputState>() {
-                if let Some((sid, y)) = field.take_scroll_request() {
-                    if let Some(sv) = self.scroll_states.get_mut(&sid) {
+            if let Some(field) = target.as_any().downcast_ref::<TextInputState>()
+                && let Some((sid, y)) = field.take_scroll_request()
+                    && let Some(sv) = self.scroll_states.get_mut(&sid) {
                         sv.smooth_scroll_to(y);
                     }
-                }
-            }
         }
 
         // Build overlay tree separately (if any)
@@ -3725,8 +3721,8 @@ impl<A: DeclarativeApp> AppState<A> {
         }
         let id = target.unwrap_or("");
         let same_target = self.last_click_id.as_deref() == Some(id);
-        // 偶数回目 (2, 4, …)。`is_multiple_of` は MSRV 1.85 に無い。
-        let even = click_count & 1 == 0;
+        // 偶数回目 (2, 4, …)。
+        let even = click_count.is_multiple_of(2);
         if even && same_target {
             self.app.on_double_click(id, x, y);
         }
@@ -3806,15 +3802,14 @@ impl<A: DeclarativeApp> AppState<A> {
                         // 登録済みテキスト欄なら、 **押した場所にキャレットを置く**。
                         // 欄の内側が原点の座標に直して渡し、 解決は次の `view()`
                         // でやる (実フォントで測れるのがそこだけなので)。
-                        if let Some(id) = region.id.as_deref() {
-                            if let Some(field) = self.managed_text_field(id) {
+                        if let Some(id) = region.id.as_deref()
+                            && let Some(field) = self.managed_text_field(id) {
                                 field.request_point(
                                     pt.x - region.rect.origin.x,
                                     pt.y - region.rect.origin.y,
                                     self.modifiers.shift,
                                 );
                             }
-                        }
                     }
                     // Handle click (still fires for draggable elements)。
                     // 無効な要素は鳴らないが、`break` は通るので押下は吸う
@@ -4042,24 +4037,21 @@ impl<A: DeclarativeApp> AppState<A> {
                     let mut scroll_target: Option<String> = None;
                     if let Some(ref build) = self.last_build {
                         for region in &build.hit_regions {
-                            if region.rect.contains(pos) {
-                                if let Some(ref rid) = region.id {
-                                    if self.scroll_states.contains_key(rid) {
+                            if region.rect.contains(pos)
+                                && let Some(ref rid) = region.id
+                                    && self.scroll_states.contains_key(rid) {
                                         scroll_target = Some(rid.clone());
                                         break;
                                     }
-                                }
-                            }
                         }
                     }
 
                     // If the touch landed on a managed scroll container,
                     // begin a drag so any in-flight fling stops here.
-                    if let Some(ref sid) = scroll_target {
-                        if let Some(sv) = self.scroll_states.get_mut(sid) {
+                    if let Some(ref sid) = scroll_target
+                        && let Some(sv) = self.scroll_states.get_mut(sid) {
                             sv.begin_drag();
                         }
-                    }
                     self.touch_drag = Some(TouchDrag {
                         id: touch_id,
                         start: (x, y),
@@ -4103,14 +4095,13 @@ impl<A: DeclarativeApp> AppState<A> {
             winit::event::TouchPhase::Moved => {
                 // Pinch takes precedence over single-touch drag.
                 if let Some(ref pinch) = self.pinch {
-                    if touch_id == pinch.id_a || touch_id == pinch.id_b {
-                        if let Some((dist, center)) =
+                    if (touch_id == pinch.id_a || touch_id == pinch.id_b)
+                        && let Some((dist, center)) =
                             pinch_metrics(&self.active_touches, pinch.id_a, pinch.id_b)
                         {
                             let scale = dist / pinch.start_distance;
                             self.app.on_pinch(scale, center.0, center.1);
                         }
-                    }
                 } else if self
                     .touch_drag
                     .as_ref()
@@ -4146,13 +4137,11 @@ impl<A: DeclarativeApp> AppState<A> {
                             td.moved_beyond_slop = true;
                         }
                         self.drag_manager.on_move(x, y);
-                        if !self.drag_manager.is_active() && td.moved_beyond_slop {
-                            if let Some(ref sid) = td.scroll_target {
-                                if let Some(sv) = self.scroll_states.get_mut(sid) {
+                        if !self.drag_manager.is_active() && td.moved_beyond_slop
+                            && let Some(ref sid) = td.scroll_target
+                                && let Some(sv) = self.scroll_states.get_mut(sid) {
                                     sv.drag_by(dx, dy, dt);
                                 }
-                            }
-                        }
                     }
                 }
             }
@@ -4166,13 +4155,11 @@ impl<A: DeclarativeApp> AppState<A> {
                         self.app.on_pinch_end();
                         // Don't resume single-drag; require full lift.
                         // Any in-flight fling on the original target is killed.
-                        if let Some(td) = self.touch_drag.take() {
-                            if let Some(sid) = td.scroll_target {
-                                if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                        if let Some(td) = self.touch_drag.take()
+                            && let Some(sid) = td.scroll_target
+                                && let Some(sv) = self.scroll_states.get_mut(&sid) {
                                     sv.cancel_fling();
                                 }
-                            }
-                        }
                         self.drag_manager.cancel();
                     }
                 } else if self
@@ -4184,9 +4171,9 @@ impl<A: DeclarativeApp> AppState<A> {
                     let td = self.touch_drag.take();
                     let drop_completed = self.drag_manager.on_release();
                     if let Some((data, _source_id)) = drop_completed {
-                        if !is_cancel {
-                            if let Some(ref build) = self.last_build {
-                                if let Some(target_id) = build
+                        if !is_cancel
+                            && let Some(ref build) = self.last_build
+                                && let Some(target_id) = build
                                     .hit_regions
                                     .iter()
                                     .find(|r| r.drop_zone && r.rect.contains(pos))
@@ -4194,27 +4181,22 @@ impl<A: DeclarativeApp> AppState<A> {
                                 {
                                     self.app.on_drop(&data, target_id);
                                 }
-                            }
-                        }
                         // Drag-and-drop path: no scroll fling, just reset state.
-                        if let Some(td) = td {
-                            if let Some(sid) = td.scroll_target {
-                                if let Some(sv) = self.scroll_states.get_mut(&sid) {
+                        if let Some(td) = td
+                            && let Some(sid) = td.scroll_target
+                                && let Some(sv) = self.scroll_states.get_mut(&sid) {
                                     sv.cancel_fling();
                                 }
-                            }
-                        }
                     } else if let Some(td) = td {
                         // Hand off to fling on release, or kill on cancel.
-                        if let Some(ref sid) = td.scroll_target {
-                            if let Some(sv) = self.scroll_states.get_mut(sid) {
+                        if let Some(ref sid) = td.scroll_target
+                            && let Some(sv) = self.scroll_states.get_mut(sid) {
                                 if is_cancel {
                                     sv.cancel_fling();
                                 } else {
                                     sv.end_drag();
                                 }
                             }
-                        }
                         if !is_cancel && !td.moved_beyond_slop && td.select.is_none() {
                             self.dispatch_click(
                                 td.click_target.as_deref(),
@@ -4450,11 +4432,10 @@ impl<A: DeclarativeApp> AppState<A> {
             }
         }
         // 1 文字も範囲が無いなら (= 単なる click) 視覚 noise になるので消す。
-        if let Some(ref sel) = self.selection {
-            if sel.is_empty() {
+        if let Some(ref sel) = self.selection
+            && sel.is_empty() {
                 self.selection = None;
             }
-        }
         // Complete drag if active
         if let Some((data, _source_id)) = self.drag_manager.on_release() {
             // Find drop zone under cursor
@@ -4538,11 +4519,10 @@ impl<A: DeclarativeApp> AppState<A> {
             .focused_id
             .clone()
             .and_then(|id| self.managed_text_field(&id).cloned());
-        if let Some(field) = field {
-            if !field.is_secure() {
+        if let Some(field) = field
+            && !field.is_secure() {
                 field.cut_selection();
             }
-        }
     }
 
     pub(crate) fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
@@ -4604,8 +4584,8 @@ impl<A: DeclarativeApp> AppState<A> {
             // 受け口のコメントだけがあり、 実際には何も届かなかった (issue #20)。
             // `CharInput` の連打にしないのは、 消費側が undo の単位や IME の状態と
             // 噛み合わせられなくなるため。
-            if crate::clipboard::is_paste_shortcut(key, self.modifiers) {
-                if let Some(text) = crate::clipboard::read_text() {
+            if crate::clipboard::is_paste_shortcut(key, self.modifiers)
+                && let Some(text) = crate::clipboard::read_text() {
                     let ev = InputEvent::Paste { text };
                     // 登録済みの欄が先。 他のイベントと同じ順序。
                     if !self.route_to_managed(&ev) {
@@ -4616,7 +4596,6 @@ impl<A: DeclarativeApp> AppState<A> {
                         );
                     }
                 }
-            }
             // Any key other than the copy shortcut dismisses the
             // selection — typing, pasting (Cmd+V), Enter, navigation all
             // end it, like a terminal/editor. Without this the highlight
@@ -4633,8 +4612,8 @@ impl<A: DeclarativeApp> AppState<A> {
                 self.focused_id = None;
             }
             // Tab / Shift+Tab moves focus between focusable elements
-            if key == Key::Tab {
-                if let Some(ref build) = self.last_build {
+            if key == Key::Tab
+                && let Some(ref build) = self.last_build {
                     let focusable_ids: Vec<String> = build.hit_regions.iter()
                         .rev() // hit_regions are front-to-back; reverse for document order
                         .filter(|r| r.focusable && r.id.is_some())
@@ -4659,7 +4638,6 @@ impl<A: DeclarativeApp> AppState<A> {
                         self.focused_id = Some(focusable_ids[next].clone());
                     }
                 }
-            }
             // Escape / Tab がフォーカスを動かしたら capture を撮り直す。
             // 配信より後になったので、 アプリはこの frame の `on_input` では
             // 移動前の状態を見る。 移動後は直後の `on_ui_capture` で届く。
@@ -4728,15 +4706,14 @@ impl<A: DeclarativeApp> AppState<A> {
                 continue;
             }
             // clip_rect 外は無視。 scroll 領域外の text に selection が漏れない。
-            if let Some(c) = layout.clip_rect {
-                if x < c.origin.x
+            if let Some(c) = layout.clip_rect
+                && (x < c.origin.x
                     || x > c.origin.x + c.size.width
                     || y < c.origin.y
-                    || y > c.origin.y + c.size.height
+                    || y > c.origin.y + c.size.height)
                 {
                     continue;
                 }
-            }
 
             // pass 1: 最も y が近い行 index を選ぶ。
             let mut min_line_dy: f32 = f32::MAX;
@@ -4767,7 +4744,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 let mid = hit.x + hit.w * 0.5;
                 let dx = (mid - x).abs();
                 let is_left = x < mid;
-                if best_in_line.map_or(true, |(d, _, _)| dx < d) {
+                if best_in_line.is_none_or(|(d, _, _)| dx < d) {
                     best_in_line = Some((dx, hit, is_left));
                 }
             }
@@ -4788,7 +4765,7 @@ impl<A: DeclarativeApp> AppState<A> {
 
             let byte = if is_left { hit.byte_start } else { hit.byte_end };
             let score = min_line_dy + dx;
-            if best.map_or(true, |(s, _, _)| score < s) {
+            if best.is_none_or(|(s, _, _)| score < s) {
                 best = Some((score, layout.text_idx, byte));
             }
         }
@@ -4958,8 +4935,8 @@ impl<A: DeclarativeApp> AppState<A> {
         let lookup = |idx: usize| -> Option<&str> {
             text_layouts.iter().find(|l| l.text_idx == idx).map(|l| &*l.content)
         };
-        let anchor_ok = lookup(sel.anchor.0).map_or(false, |c| c == &*sel.anchor_content);
-        let head_ok = lookup(sel.head.0).map_or(false, |c| c == &*sel.head_content);
+        let anchor_ok = lookup(sel.anchor.0).is_some_and(|c| c == &*sel.anchor_content);
+        let head_ok = lookup(sel.head.0).is_some_and(|c| c == &*sel.head_content);
         if !anchor_ok || !head_ok {
             *selection = None;
             *selecting = false;
@@ -5066,15 +5043,14 @@ impl<A: DeclarativeApp> AppState<A> {
     fn link_at(&self, x: f32, y: f32) -> Option<(String, Option<String>)> {
         for layout in &self.text_layouts {
             let Some(ranges) = layout.link_ranges.as_ref() else { continue };
-            if let Some(c) = layout.clip_rect {
-                if x < c.origin.x
+            if let Some(c) = layout.clip_rect
+                && (x < c.origin.x
                     || x > c.origin.x + c.size.width
                     || y < c.origin.y
-                    || y > c.origin.y + c.size.height
+                    || y > c.origin.y + c.size.height)
                 {
                     continue;
                 }
-            }
             for hit in &layout.hits {
                 if x >= hit.x && x < hit.x + hit.w && y >= hit.y && y < hit.y + hit.h {
                     for r in ranges {
@@ -5666,6 +5642,8 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
 pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
     use std::cell::RefCell;
     use std::rc::Rc;
+    use winit::event::StartCause;
+    use winit::event_loop::EventLoop;
 
     console_error_panic_hook::set_once();
     // ホスト側が既に logger を張っていることがある。`init_with_level` はその場合 Err を
@@ -7643,11 +7621,14 @@ mod draw_gate_tests {
         assert!(DrawGate { lazy: false, ..DrawGate::default() }.must_draw());
     }
 
+    /// 描く理由 1 つ: 名前と、それを立てる操作。
+    type Reason = (&'static str, fn(&mut DrawGate));
+
     /// 描く理由は 9 つあり、 **どれ 1 つでも欠けると画面が止まる**。
     /// 表にして 1 本ずつ立て、 全部が単独で効くことを見る。
     #[test]
     fn every_reason_draws_on_its_own() {
-        let reasons: [(&str, fn(&mut DrawGate)); 9] = [
+        let reasons: [Reason; 9] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),
@@ -7688,7 +7669,7 @@ mod draw_gate_tests {
     /// 125Hz で描き続けていた (既定のフレーム間隔 8ms + vsync 無し)。
     #[test]
     fn an_occluded_window_draws_for_no_reason_at_all() {
-        let reasons: [(&str, fn(&mut DrawGate)); 9] = [
+        let reasons: [Reason; 9] = [
             ("入力が来た", |g| g.dirty = true),
             ("アプリが poll_dirty で名乗った", |g| g.app_dirty = true),
             ("アプリが is_animating で名乗った", |g| g.app_animating = true),

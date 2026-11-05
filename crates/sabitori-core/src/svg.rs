@@ -79,7 +79,6 @@ impl Svg {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// `group` の中身を要素にして `out` へ。`origin` は置く先の箱の左上 (絵の座標 × k)。
 fn collect(
     group: &Group,
@@ -168,22 +167,20 @@ fn path_element(p: &usvg::Path, k: f32, origin: (f32, f32), opacity: f32) -> Opt
             kind.cmds.push(cmd);
         }
     }
-    if let Some(fill) = p.fill() {
-        if let Some(c) = paint_color(fill.paint(), fill.opacity().get() * opacity) {
+    if let Some(fill) = p.fill()
+        && let Some(c) = paint_color(fill.paint(), fill.opacity().get() * opacity) {
             e = e.fill(c);
             if fill.rule() == usvg::FillRule::EvenOdd {
                 e = e.fill_even_odd();
             }
         }
-    }
-    if let Some(s) = p.stroke() {
-        if let Some(c) = paint_color(s.paint(), s.opacity().get() * opacity) {
+    if let Some(s) = p.stroke()
+        && let Some(c) = paint_color(s.paint(), s.opacity().get() * opacity) {
             e = e.stroke(c, stroke_w);
             if let Some(d) = s.dasharray().filter(|d| d.len() >= 2) {
                 e = e.dash(d[0] * scale * k, d[1] * scale * k);
             }
         }
-    }
     Some(e.absolute().pos(bx - origin.0, by - origin.1).w(Px(bw)).h(Px(bh)))
 }
 

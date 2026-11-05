@@ -75,9 +75,11 @@ pub struct MarkdownOptions {
     /// If true, extracts a table of contents (h1..h6) alongside the tree.
     /// Use [`render_markdown_with_toc`] to receive both.
     pub extract_toc: bool,
-    /// Prefix for link element ids. Clicks on links produce ids shaped
-    /// `{prefix}{url}` so the host app can dispatch them.
-    /// Default: `"md-link:"`.
+    /// Prefix for link element ids (`{prefix}{url}`, default `"md-link:"`).
+    ///
+    /// **Not wired up yet**: links are not clickable — the label is shown with
+    /// its URL appended in parentheses, and no id is emitted. This field is kept
+    /// so the option exists once links become clickable.
     pub link_id_prefix: String,
 }
 
@@ -133,7 +135,6 @@ pub fn render_markdown_with_toc(md: &str, opts: &MarkdownOptions) -> (Element, V
 
 struct Builder<'a> {
     theme: MarkdownTheme,
-    link_prefix: String,
     resolver: ImageResolver<'a>,
     toc: Vec<TocEntry>,
     blocks: Vec<Element>,
@@ -190,14 +191,8 @@ struct ListState {
 
 impl<'a> Builder<'a> {
     fn new(opts: &MarkdownOptions, resolver: ImageResolver<'a>) -> Self {
-        let link_prefix = if opts.link_id_prefix.is_empty() {
-            "md-link:".to_string()
-        } else {
-            opts.link_id_prefix.clone()
-        };
         Self {
             theme: opts.theme.clone(),
-            link_prefix,
             resolver,
             toc: Vec::new(),
             blocks: Vec::new(),
@@ -631,7 +626,7 @@ fn image_block(theme: &MarkdownTheme, url: &str, title: &str, resolver: ImageRes
         label.push_str(": ");
         label.push_str(title);
     }
-    label.push_str("]");
+    label.push(']');
     // URL を全文出すと data:image/png;base64,... が数 KB 流れて UI が崩壊する。
     // - data: URL は scheme + media type だけ (例: `data:image/png`)
     // - 通常の HTTP URL は 80 文字でカット

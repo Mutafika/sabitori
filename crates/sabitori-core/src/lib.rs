@@ -772,8 +772,11 @@ mod view_context_tests {
         }
     }
 
+    /// 頼まれた注文 (URL と、頼んだ大きさ) の記録。
+    type OrderLog = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u32>)>>>;
+
     /// 頼まれた注文を記録するだけの `ImageCtx`。
-    fn recording_images() -> (ImageCtx, std::sync::Arc<std::sync::Mutex<Vec<(String, Option<u32>)>>>) {
+    fn recording_images() -> (ImageCtx, OrderLog) {
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log_for_closure = log.clone();
         let ctx = ImageCtx {

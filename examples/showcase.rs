@@ -3,8 +3,7 @@
     unused_mut,
     unused_parens,
     dead_code,
-    clippy::needless_range_loop,
-    clippy::too_many_arguments
+    clippy::needless_range_loop
 )]
 
 //! Sabitori GPU Showcase — 30 demos in a grid with modal expansion.
@@ -1103,7 +1102,7 @@ impl ShowcaseApp {
             }
             // Toggle Switch
             15 => {
-                let target = if ((t / 2.0) as u32) % 2 == 0 { 0.0 } else { 1.0 };
+                let target = if ((t / 2.0) as u32).is_multiple_of(2) { 0.0 } else { 1.0 };
                 state.values[0] += (target - state.values[0]) * 8.0 * dt;
             }
             // Morph Button
@@ -1304,7 +1303,7 @@ impl ShowcaseApp {
 
         match idx {
             // Particle Gravity / Orbit / Explosion / Wave / Swarm
-            0 | 1 | 2 | 3 | 4 => {
+            0..=4 => {
                 for p in &self.demos[idx].particles {
                     let speed = (p.vx * p.vx + p.vy * p.vy).sqrt();
                     let col = speed_color(p.hue, speed, p.life * 0.85);
@@ -1983,20 +1982,18 @@ impl ApplicationHandler for ShowcaseApp {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y * SCROLL_SPEED,
                         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
                     };
-                    let rows = (DEMO_COUNT + GRID_COLS - 1) / GRID_COLS;
+                    let rows = DEMO_COUNT.div_ceil(GRID_COLS);
                     let (_, ch) = self.card_size();
                     let max_scroll = (rows as f32 * (ch + CARD_PAD + 28.0) + HEADER_H + CARD_PAD - self.win_h).max(0.0);
                     self.scroll_y = (self.scroll_y - dy).clamp(0.0, max_scroll);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let Key::Named(winit::keyboard::NamedKey::Escape) = &event.logical_key {
-                        if self.modal_open.is_some() {
+                if event.state == ElementState::Pressed
+                    && let Key::Named(winit::keyboard::NamedKey::Escape) = &event.logical_key
+                        && self.modal_open.is_some() {
                             self.modal_target = 0.0;
                         }
-                    }
-                }
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
@@ -2014,13 +2011,12 @@ impl ApplicationHandler for ShowcaseApp {
 
                 // Animate modal
                 self.modal_anim += (self.modal_target - self.modal_anim) * MODAL_ANIM_SPEED * dt;
-                if self.modal_target == 0.0 && self.modal_anim < 0.01 {
-                    if let Some(old_idx) = self.modal_open.take() {
+                if self.modal_target == 0.0 && self.modal_anim < 0.01
+                    && let Some(old_idx) = self.modal_open.take() {
                         self.modal_anim = 0.0;
                         // Reinit demo for card size
                         self.init_demo(old_idx, false);
                     }
-                }
 
                 // Update all visible demos
                 for i in 0..DEMO_COUNT {

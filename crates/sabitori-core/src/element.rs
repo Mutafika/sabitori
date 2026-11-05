@@ -25,17 +25,14 @@ use crate::{Color, Corners, Point};
 
 /// CSS-like dimension value for the element builder API.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Dimension {
+    #[default]
     Auto,
     Px(f32),
     Percent(f32),
 }
 
-impl Default for Dimension {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
 
 /// Shorthand constructors.
 impl Dimension {
@@ -1569,24 +1566,22 @@ const ACTIVE_TINT: f32 = 0.14;
 ///   暗いテーマでは明るく、明るいテーマでは暗くなる。
 pub fn resolve_theme_tints(element: &mut Element, theme: &crate::AppTheme) {
     let base = element.style.background;
-    if let Some(h) = element.hover_style.as_deref_mut() {
-        if h.theme_tint && h.background.is_none() {
+    if let Some(h) = element.hover_style.as_deref_mut()
+        && h.theme_tint && h.background.is_none() {
             h.background = Some(if base.a <= 0.0 {
                 theme.hover_bg
             } else {
                 base.lerp(theme.text_primary.with_alpha(base.a), HOVER_TINT)
             });
         }
-    }
-    if let Some(a) = element.active_style.as_deref_mut() {
-        if a.theme_tint && a.background.is_none() {
+    if let Some(a) = element.active_style.as_deref_mut()
+        && a.theme_tint && a.background.is_none() {
             a.background = Some(if base.a <= 0.0 {
                 theme.select_bg
             } else {
                 base.lerp(theme.text_primary.with_alpha(base.a), ACTIVE_TINT)
             });
         }
-    }
     for child in &mut element.children {
         resolve_theme_tints(child, theme);
     }
@@ -1632,16 +1627,14 @@ fn apply_state_styles_inner(
         // style と hover_style/active_style を同時に触るので、フィールド分割で
         // 借用を割る。
         let Element { style, hover_style, active_style, .. } = element;
-        if is_hovered {
-            if let Some(h) = hover_style.as_ref() {
+        if is_hovered
+            && let Some(h) = hover_style.as_ref() {
                 fold_state_style(style, h, animated);
             }
-        }
-        if is_pressed {
-            if let Some(a) = active_style.as_ref() {
+        if is_pressed
+            && let Some(a) = active_style.as_ref() {
                 fold_state_style(style, a, animated);
             }
-        }
     }
     for child in &mut element.children {
         apply_state_styles_inner(child, hovered_id, pressed_id, disabled);
@@ -4105,7 +4098,7 @@ impl StateStyle {
         self
     }
 
-    pub fn glow_sm(mut self, color: Color) -> Self {
+    pub fn glow_sm(self, color: Color) -> Self {
         self.glow(color.with_alpha(0.3), 8.0)
     }
 

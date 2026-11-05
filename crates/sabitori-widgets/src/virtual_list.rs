@@ -79,8 +79,11 @@ pub struct VirtualList<'a, T> {
     id: &'a str,
     items: &'a [T],
     item_height: f32,
-    render_item: Option<Box<dyn Fn(&T, usize) -> Element + 'a>>,
+    render_item: Option<RenderItem<'a, T>>,
 }
+
+/// 行 1 つを組む関数 (`(項目, 何番目か) -> Element`)。
+type RenderItem<'a, T> = Box<dyn Fn(&T, usize) -> Element + 'a>;
 
 impl<'a, T> VirtualList<'a, T> {
     pub fn new(id: &'a str, items: &'a [T]) -> Self {

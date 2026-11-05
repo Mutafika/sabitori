@@ -36,12 +36,11 @@ fn module_gates() -> Vec<(String, Vec<String>)> {
             continue;
         }
         let decl = line.strip_prefix("pub ").unwrap_or(line);
-        if let Some(rest) = decl.strip_prefix("mod ") {
-            if let Some(name) = rest.strip_suffix(';') {
+        if let Some(rest) = decl.strip_prefix("mod ")
+            && let Some(name) = rest.strip_suffix(';') {
                 out.push((name.to_string(), std::mem::take(&mut pending)));
                 continue;
             }
-        }
         pending.clear();
     }
     out

@@ -586,7 +586,8 @@ impl Reel {
     fn render_ctx(&self, gpu: &mut Gpu, scene: &dyn Scene, ctx: FrameCtx) -> Vec<u8> {
         let mut draw = |ctx: FrameCtx| {
             let root = scene.view(ctx);
-            gpu.render_frame(&root, self.clear, frame_stage(scene, ctx))
+            frame_stage(scene, ctx);
+            gpu.render_frame(&root, self.clear, ())
         };
         match self.motion_blur {
             Some(blur) if blur.samples > 1 => blur.render(ctx, draw),
@@ -950,7 +951,7 @@ impl Gpu {
         };
         #[cfg(not(feature = "three-d"))]
         let drew_3d = {
-            let _ = stage;
+            let _ = &stage;
             false
         };
 
@@ -1437,7 +1438,7 @@ mod tests {
             .child(div().w(Px(20.0)).h(Px(30.0)).bg(Color::from_hex("#0000ff")));
         let mut gpu = Gpu::new(40, 30, 2.0, &[], None, None);
         assert_eq!((gpu.width, gpu.height), (80, 60));
-        let rgba = gpu.render_frame(&root, [0.0, 0.0, 0.0, 1.0], Default::default());
+        let rgba = gpu.render_frame(&root, [0.0, 0.0, 0.0, 1.0], ());
         assert_eq!(rgba.len(), 80 * 60 * 4);
 
         let left = pixel(&rgba, 80, 20, 30);
@@ -1463,7 +1464,7 @@ mod tests {
         // 黒い画素がある一番右の列。
         let right_edge = |mono: Option<&str>| -> u32 {
             let mut gpu = Gpu::new(400, 60, 1.0, &[], None, mono.map(str::to_string));
-            let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], Default::default());
+            let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], ());
             (0..400u32)
                 .rev()
                 .find(|&x| (0..60u32).any(|y| pixel(&rgba, 400, x, y)[0] < 100))
@@ -1492,7 +1493,7 @@ mod tests {
                 .gradient(Color::TRANSPARENT, Color::BLACK, std::f32::consts::FRAC_PI_2),
         );
         let mut gpu = Gpu::new(64, 64, 1.0, &[], None, None);
-        let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], Default::default());
+        let rgba = gpu.render_frame(&root, [1.0, 1.0, 1.0, 1.0], ());
         let top = pixel(&rgba, 64, 32, 2)[0];
         let bottom = pixel(&rgba, 64, 32, 61)[0];
         assert!(bottom + 100 < top, "下が暗くなっていない (上 {top}, 下 {bottom})");

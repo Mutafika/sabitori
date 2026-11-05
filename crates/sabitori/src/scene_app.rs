@@ -18,7 +18,9 @@ use sabitori_input::{
 use sabitori_text::TextRenderer;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, DeviceEvents, EventLoop};
+use winit::event_loop::ActiveEventLoop;
+#[cfg(not(target_arch = "wasm32"))]
+use winit::event_loop::DeviceEvents;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
@@ -300,8 +302,8 @@ impl<A: SceneApp> SceneAppState<A> {
         }
         let id = target.unwrap_or("");
         let same_target = self.last_click_id.as_deref() == Some(id);
-        // 偶数回目 (2, 4, …)。`is_multiple_of` は MSRV 1.85 に無い。
-        let even = click_count & 1 == 0;
+        // 偶数回目 (2, 4, …)。
+        let even = click_count.is_multiple_of(2);
         if even && same_target {
             self.app.on_double_click(id, x, y);
         }
@@ -750,8 +752,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 {
                     // Complete an active drag: drop onto the zone under the
                     // pointer, if any, before the app's pointer-up hook.
-                    if let Some((data, _source_id)) = self.drag_manager.on_release() {
-                        if let Some(ref build) = self.last_build {
+                    if let Some((data, _source_id)) = self.drag_manager.on_release()
+                        && let Some(ref build) = self.last_build {
                             let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
                             if let Some(target_id) = build.hit_regions.iter()
                                 .find(|r| r.drop_zone && r.rect.contains(pt))
@@ -760,7 +762,6 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                 self.app.on_drop(&data, target_id);
                             }
                         }
-                    }
                     self.app.on_pointer_up();
                     self.push_ui_capture();
                 }
@@ -768,13 +769,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                 if state == winit::event::ElementState::Pressed
                     && button == winit::event::MouseButton::Right
                     && !consumed
-                {
-                    if let Some(ref build) = self.last_build {
+                    && let Some(ref build) = self.last_build {
                         // 宛先は declarative と同じ 1 本 (メニューの幕は飛ばす)。
                         let id = crate::runtime_shared::right_click_target(build, pos.x, pos.y);
                         self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
                     }
-                }
             }
 
             WindowEvent::MouseWheel { delta, phase, .. } => {
@@ -861,11 +860,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                         return;
                     }
                 }
-                if let Some(ref mut tp) = self.trackpad_pinch {
-                    if let Some(scale) = tp.apply(delta) {
+                if let Some(ref mut tp) = self.trackpad_pinch
+                    && let Some(scale) = tp.apply(delta) {
                         self.app.on_pinch(scale, self.mouse_x, self.mouse_y);
                     }
-                }
             }
             // Touch events — first finger drives click/focus (deferred to
             // release with TOUCH_SLOP), second finger promotes to pinch.
@@ -994,14 +992,13 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                     }
                     winit::event::TouchPhase::Moved => {
                         if let Some(ref pinch) = self.pinch {
-                            if touch.id == pinch.id_a || touch.id == pinch.id_b {
-                                if let Some((dist, center)) =
+                            if (touch.id == pinch.id_a || touch.id == pinch.id_b)
+                                && let Some((dist, center)) =
                                     pinch_metrics(&self.active_touches, pinch.id_a, pinch.id_b)
                                 {
                                     let scale_f = dist / pinch.start_distance;
                                     self.app.on_pinch(scale_f, center.0, center.1);
                                 }
-                            }
                         } else if self
                             .touch_drag
                             .as_ref()
@@ -1038,8 +1035,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                             .unwrap_or(false)
                         {
                             let td = self.touch_drag.take();
-                            if let Some(td) = td {
-                                if !is_cancel && !td.moved_beyond_slop {
+                            if let Some(td) = td
+                                && !is_cancel && !td.moved_beyond_slop {
                                     self.dispatch_click(
                                         td.click_target.as_deref(),
                                         td.click_count,
@@ -1047,7 +1044,6 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                         y,
                                     );
                                 }
-                            }
                             self.app.on_pointer_up();
                         }
                         if self.active_touches.is_empty()
@@ -1125,8 +1121,8 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
 
                     // Cmd/Ctrl+V: クリップボードを読んで 1 イベントで配る (issue #20)。
                     // declarative と同じ扱い。
-                    if !handled && crate::clipboard::is_paste_shortcut(key, self.modifiers) {
-                        if let Some(text) = crate::clipboard::read_text() {
+                    if !handled && crate::clipboard::is_paste_shortcut(key, self.modifiers)
+                        && let Some(text) = crate::clipboard::read_text() {
                             let ev = InputEvent::Paste { text };
                             crate::runtime_shared::dispatch(
                                 &mut self.app,
@@ -1134,7 +1130,6 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
                                 &ev,
                             );
                         }
-                    }
 
                     // 以前はここが素通しで、Backspace の "\x7f" がテキストとして
                     // 挿入され、Cmd+C の "c" も漏れていた。判定は keymap に集約。
@@ -1503,12 +1498,11 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
         // 落ち着いたら 1 枚撮って終わる (#69)。declarative 版と同じ規約。
         #[cfg(not(target_arch = "wasm32"))]
         if self.shooter.armed() {
-            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured()) {
-                if self.shooter.write(frame) {
+            if let Some(frame) = self.renderer.as_mut().and_then(|r| r.take_captured())
+                && self.shooter.write(frame) {
                     event_loop.exit();
                     return;
                 }
-            }
             if self.shooter.should_request(!must_draw) {
                 self.shooter.mark_requested();
                 if let Some(r) = self.renderer.as_mut() {
@@ -1520,11 +1514,10 @@ impl<A: SceneApp> ApplicationHandler for SceneAppState<A> {
             }
         }
 
-        if must_draw {
-            if let Some(w) = self.window.as_ref() {
+        if must_draw
+            && let Some(w) = self.window.as_ref() {
                 w.request_redraw();
             }
-        }
 
         // 次の起床を刻みの境界に置く。これが無いとループは回りっぱなし (Poll)
         // か眠りっぱなし (Wait) のどちらかになる。
@@ -1606,6 +1599,7 @@ pub fn run_scene<A: SceneApp + 'static>(app: A) {
 pub fn run_scene<A: SceneApp + 'static>(app: A) {
     use std::cell::RefCell;
     use std::rc::Rc;
+    use winit::event_loop::EventLoop;
 
     console_error_panic_hook::set_once();
     // ホスト側が既に logger を張っていることがある。`init_with_level` はその場合 Err を

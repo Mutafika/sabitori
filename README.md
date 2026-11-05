@@ -43,7 +43,7 @@ impl DeclarativeApp for App {
             .justify_center()
             .gap(16.0)
             .children([
-                text(&format!("Clicks: {}", self.clicks))
+                text(format!("Clicks: {}", self.clicks))
                     .font_size(24.0)
                     .color(Color::from_hex("#c0caf5")),
                 button("Click Me")
@@ -409,5 +409,5 @@ Notable open items:
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.88+ (edition 2024)
 - A wgpu 24-compatible GPU backend (Vulkan / Metal / DX12 / WebGPU / WebGL2)

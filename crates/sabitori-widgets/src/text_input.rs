@@ -2156,7 +2156,7 @@ mod nav_tests {
             (Key::Left, unimplemented_mod()),
             // 「送信」に使われる Enter たち。
             (Key::Enter, cmd),
-            (Key::Enter, { let mut m = Modifiers::default(); m.alt = true; m }),
+            (Key::Enter, Modifiers { alt: true, ..Modifiers::default() }),
         ];
         for (key, mods) in cases {
             let mut s = field("hello world", 5);
