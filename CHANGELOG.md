@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-11-07
+
 ### Added
 
 - **`DeclarativeApp::on_close_requested(reason)`** — 利用者が窓やアプリを閉じようとしたときに聞く。
@@ -5165,7 +5167,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/Mutafika/sabitori/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Mutafika/sabitori/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Mutafika/sabitori/compare/v0.53.1...v0.54.0
 [0.53.1]: https://github.com/Mutafika/sabitori/compare/v0.53.0...v0.53.1
