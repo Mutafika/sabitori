@@ -542,6 +542,16 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.window_gesture.take()
     }
 
+    /// 利用者が閉じようとしたのと同じく、[`DeclarativeApp::on_close_requested`] を通す
+    /// (窓の閉じるボタンなら [`CloseReason::Window`]、⌘Q なら [`CloseReason::Quit`])。
+    /// アプリが断らなければ閉じた扱いになり、`true` を返す。
+    ///
+    /// [`CloseReason::Window`]: crate::CloseReason::Window
+    /// [`CloseReason::Quit`]: crate::CloseReason::Quit
+    pub fn request_close(&mut self, reason: crate::CloseReason) -> bool {
+        self.state.request_close(reason)
+    }
+
     /// 窓の操作ボタン (`.window_action(..)`) を押して頼まれたことを取り出す。本物の窓
     /// ではランタイムがその場で窓に掛けるが、Harness には窓が無いのでここに残る
     /// (閉じるだけは本物と同じく窓を閉じる側にも回る)。取り出すと空になる。

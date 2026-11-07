@@ -49,6 +49,8 @@ pub mod scene_app;
 pub mod clipboard;
 /// ファイルを選ぶ・保存する (issue #77)。
 pub mod files;
+/// 確かめのダイアログ (OS 標準の窓)。
+pub mod dialog;
 /// 非同期の結果を UI に戻す (issue #64)。
 pub mod tasks;
 /// アプリの回帰テストを窓も GPU も無しで書くための足場 (issue #19)。
@@ -78,6 +80,9 @@ mod macos_secure_input;
 mod macos_track;
 #[cfg(target_os = "macos")]
 mod macos_open;
+/// ⌘Q などの「終了」を、終わる前にアプリへ聞く。
+#[cfg(target_os = "macos")]
+mod macos_quit;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
 /// web の打鍵の仕分け (DOM を触らない部分)。wasm でしか動かない `web_ime` から
@@ -97,7 +102,7 @@ pub mod web_history;
 /// これが無いと積んだ入力が誰にも汲まれない (issue #73 / #74)。
 #[cfg(target_arch = "wasm32")]
 pub mod web_wake;
-pub use declarative::{BackdropBlur, DeclarativeApp, ExtraInput, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
+pub use declarative::{BackdropBlur, CloseReason, DeclarativeApp, ExtraInput, ExtraWindow, ScrollIntent, ScrollShift, UiCapture, run_declarative};
 mod titlebar;
 pub use titlebar::{Titlebar, WindowGesture};
 mod window_resize;

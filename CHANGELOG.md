@@ -15,6 +15,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`DeclarativeApp::on_close_requested(reason)`** — 利用者が窓やアプリを閉じようとしたときに聞く。
+  `false` を返すと閉じない。来るのは窓の閉じるボタン (`.window_action(WindowAction::Close)` のボタンも)
+  と、macOS の ⌘Q・Dock の「終了」・ログアウト (`CloseReason::Window` / `CloseReason::Quit`)。
+  キー (⌘W など) はランタイムが持たないので、アプリが自分で閉じる `take_close_request` はここを通らない。
+  終了は窓ごとに聞き、断った窓があれば終わるのをやめて、よいと言った窓だけ閉じる。
+  macOS の終了は、winit の delegate に無い `applicationShouldTerminate:` を足して `NSTerminateLater` で待たせ、
+  ループの中で聞いてから答える。既定は `true` (今までどおり閉じる)。
+- **`sabitori::dialog`** — OS 標準の確かめのダイアログ。`dialog::ask(key, Ask::new(..).button(..).cancel_button(..))`
+  で出し、押されたボタンが `DeclarativeApp::on_dialog_answered(key, Answer::Button(i))` に届く
+  (届け方は `files::pick` と同じ)。macOS は `NSAlert`、ほかは `Answer::Unsupported`。
+  テストからは `dialog::test_deliver` で答えを差し込める。
+- **`Harness::request_close(reason)`** — 閉じるボタン / 終了を押したのと同じく `on_close_requested` を通す。
+
 ## [0.55.0] - 2026-11-05
 
 ### Added

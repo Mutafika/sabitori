@@ -289,6 +289,15 @@ impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
 /// 越えたら文字の選択 (#111)。
 const CLICK_SLOP: f32 = 4.0;
 
+/// [`DeclarativeApp::on_close_requested`] で、何が閉じようとしているか。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    /// この窓だけ (OS の閉じるボタン、`.window_action(WindowAction::Close)` のボタン)。
+    Window,
+    /// アプリごと (macOS の ⌘Q・Dock の「終了」・ログアウト)。
+    Quit,
+}
+
 pub trait DeclarativeApp: 'static {
     /// Build the UI tree. Called every frame.
     /// Use `ctx.hovered` to check which element the mouse is over.
@@ -654,6 +663,24 @@ pub trait DeclarativeApp: 'static {
     ///
     /// [`files::pick`]: crate::files::pick
     fn on_files_picked(&mut self, _key: &str, _result: crate::files::PickResult) {}
+
+    /// [`dialog::ask`](crate::dialog::ask) の答え。`key` は聞いたときに付けた札。
+    fn on_dialog_answered(&mut self, _key: &str, _answer: crate::dialog::Answer) {}
+
+    /// OS から「閉じたい」と来た。`false` を返すと閉じない (終了なら終わるのをやめる)。
+    ///
+    /// 来るのは利用者が窓やアプリを閉じようとしたときだけ: 窓の閉じるボタン
+    /// (`.window_action(WindowAction::Close)` のボタンも)、macOS の ⌘Q・Dock の
+    /// 「終了」・ログアウト ([`CloseReason`])。**キー (⌘W など) はランタイムが持たない** —
+    /// アプリが自分で閉じる [`Self::take_close_request`] はここを通らない。
+    ///
+    /// 断ったあとどうするかはアプリが決める。保存していない変更を確かめるなら、ここで
+    /// [`dialog::ask`](crate::dialog::ask) を出して `false` を返し、答えが来たら
+    /// [`Self::take_close_request`] で閉じる。
+    ///
+    /// 終了は窓ごとに聞く。どの窓も `true` なら終わる。断った窓があれば終わるのをやめ、
+    /// `true` を返した窓だけ閉じる。
+    fn on_close_requested(&mut self, _reason: CloseReason) -> bool { true }
 
     /// 戻る / 進む、または起動時の URL。[`Self::url_fragment`] の対。
     ///
@@ -1659,7 +1686,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             self.dirty = true;
         }
         match event {
-            WindowEvent::CloseRequested => self.closed = true,
+            WindowEvent::CloseRequested => {
+                self.request_close(CloseReason::Window);
+            }
             // 最小化 / 完全に覆われた (#79)。**描くのを止めるだけ**で、溜まった
             // `dirty` は消さない — 見えた瞬間に 1 枚描き直して追いつく。
             WindowEvent::Occluded(occluded) => {
@@ -2937,6 +2966,11 @@ impl<A: DeclarativeApp> AppState<A> {
         // テストが `tick` を書かない限り結果が永遠に届かない。
         for (key, result) in crate::files::take_results() {
             self.app.on_files_picked(&key, result);
+            self.dirty = true;
+        }
+        // ダイアログの答えも同じ理由でここ。
+        for (key, answer) in crate::dialog::take_results() {
+            self.app.on_dialog_answered(&key, answer);
             self.dirty = true;
         }
 
@@ -5140,11 +5174,19 @@ impl<A: DeclarativeApp> AppState<A> {
             .find_map(|r| r.window_action)
     }
 
-    /// 窓の操作をこの窓に掛ける。閉じるは OS の閉じるボタンと同じ道 (`closed`)。
+    /// 利用者が閉じようとした。アプリが断らなければ閉じる (`closed`)。閉じたら `true`。
+    pub(crate) fn request_close(&mut self, reason: CloseReason) -> bool {
+        if self.app.on_close_requested(reason) {
+            self.closed = true;
+        }
+        self.closed
+    }
+
+    /// 窓の操作をこの窓に掛ける。閉じるは OS の閉じるボタンと同じ道 (`request_close`)。
     /// 窓の無い Harness では掛けずに残す ([`crate::testing::Harness::take_window_action`])。
     fn apply_window_action(&mut self, action: WindowAction) {
-        if action == WindowAction::Close {
-            self.closed = true;
+        if action == WindowAction::Close && !self.request_close(CloseReason::Window) {
+            return;
         }
         match self.window.as_deref() {
             Some(window) => crate::titlebar::perform_action(window, action),
@@ -5629,6 +5671,11 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
     {
         let proxy = event_loop.create_proxy();
         crate::macos_open::install(move || {
+            let _ = proxy.send_event(());
+        });
+        // ⌘Q などの「終了」を、終わる前にアプリへ聞く。
+        let proxy = event_loop.create_proxy();
+        crate::macos_quit::install(move || {
             let _ = proxy.send_event(());
         });
     }
