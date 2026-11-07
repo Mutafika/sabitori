@@ -81,6 +81,27 @@ impl<A: DeclarativeApp> Host<A> {
         any
     }
 
+    /// 終了してよいかを、窓ごとのアプリに聞く。どの窓もよければ `true` (窓は閉じずに
+    /// そのまま — いつもの終わり方 (`exiting`) で片付く)。断った窓があれば `false` で、
+    /// よいと言った窓だけ閉じる印を付ける。終了を聞いてくるのは macOS だけ。
+    #[cfg(target_os = "macos")]
+    fn ask_quit(&mut self) -> bool {
+        let answers: Vec<bool> = self
+            .windows
+            .iter_mut()
+            .map(|w| w.app.on_close_requested(super::CloseReason::Quit))
+            .collect();
+        if answers.iter().all(|&ok| ok) {
+            return true;
+        }
+        for (w, ok) in self.windows.iter_mut().zip(answers) {
+            if ok {
+                w.closed = true;
+            }
+        }
+        false
+    }
+
     /// OS から渡されたパスと開き直しを、最後に焦点を持った窓のアプリへ (macOS)。
     /// 窓ができるまでは溜めたまま待つ — 起動時の分を窓のない状態で渡さない。
     fn deliver_from_os(&mut self) {
@@ -111,6 +132,14 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
             w.user_event(event_loop, event);
         }
         self.deliver_from_os();
+        #[cfg(target_os = "macos")]
+        if crate::macos_quit::take() {
+            let ok = self.ask_quit();
+            crate::macos_quit::reply(ok);
+            if !ok {
+                self.reap(event_loop);
+            }
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
