@@ -4,8 +4,9 @@
 //! // view():
 //! split_pane(ctx, "main", &self.split, sidebar, editor)
 //!
-//! // on_input(): 仕切りのドラッグを state に渡す
-//! self.split.on_input("main", event, ctx_width);
+//! // on_input(): 仕切りのドラッグを state に渡す。箱は前のフレームの組み上がりから
+//! // (`split_pane` は箱に `id` を付ける)
+//! self.split.on_input_in("main", event, self.hovered.as_deref(), self.split_area);
 //! ```
 //!
 //! ## 0.4.0 での作り直し
@@ -18,7 +19,7 @@
 //! 宣言版が持つのは比率とドラッグ状態だけ。 実際の配置は flex がやる。
 
 use sabitori_core::element::{div, Cursor, Element, Px, Role};
-use sabitori_core::{Color, ViewContext};
+use sabitori_core::{Color, Rect, ViewContext};
 use sabitori_input::InputEvent;
 
 /// 分割の向き。
@@ -85,6 +86,10 @@ impl SplitPaneState {
 
     /// 仕切りのドラッグを処理する。 `total` は分割方向の全長 (px)。
     ///
+    /// **分割ペインが窓の左上から始まる前提**で、指の位置を窓の端から測る。窓の中の
+    /// どこかに置いたもの (一覧の右・帯の下など) は [`Self::on_input_in`] を使う。
+    /// こちらで済ませると、置いた所の分だけ仕切りが指からずれる。
+    ///
     /// 押した位置が仕切りかどうかは `hovered` (= `ctx.hovered`) で判定する。
     /// 戻り値は「この event を消費したか」で、 `on_input` の戻り値にそのまま使える。
     pub fn on_input(
@@ -94,6 +99,22 @@ impl SplitPaneState {
         hovered: Option<&str>,
         total: f32,
     ) -> bool {
+        self.on_input_in(id, event, hovered, Rect::new(0.0, 0.0, total, total))
+    }
+
+    /// 仕切りのドラッグを処理する。`area` は分割ペインの箱 (窓の左上が原点の論理 px)
+    /// で、指の位置を箱の端から測る。箱は前のフレームの組み上がりから取れる —
+    /// [`split_pane`] は箱に `id` を付けるので `BuildResult::region_rect(id)`。
+    ///
+    /// 押した位置が仕切りかどうかは `hovered` (= `ctx.hovered`) で判定する。
+    /// 戻り値は「この event を消費したか」。
+    pub fn on_input_in(
+        &mut self,
+        id: &str,
+        event: &InputEvent,
+        hovered: Option<&str>,
+        area: Rect,
+    ) -> bool {
         let divider = Self::divider_id(id);
         match event {
             InputEvent::PointerPressed { .. } if hovered == Some(divider.as_str()) => {
@@ -101,9 +122,9 @@ impl SplitPaneState {
                 true
             }
             InputEvent::PointerMoved { position, .. } if self.dragging => {
-                let along = match self.direction {
-                    SplitDirection::Horizontal => position.x,
-                    SplitDirection::Vertical => position.y,
+                let (along, total) = match self.direction {
+                    SplitDirection::Horizontal => (position.x - area.origin.x, area.size.width),
+                    SplitDirection::Vertical => (position.y - area.origin.y, area.size.height),
                 };
                 if total > 0.0 {
                     self.set_ratio(along / total, total);
@@ -226,6 +247,46 @@ pub fn split_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sabitori_core::Point;
+    use sabitori_input::{Modifiers, PointerKind, MOUSE_POINTER_ID};
+
+    fn moved(x: f32, y: f32) -> InputEvent {
+        InputEvent::PointerMoved {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn pressed() -> InputEvent {
+        InputEvent::PointerPressed {
+            id: MOUSE_POINTER_ID,
+            kind: PointerKind::Mouse,
+            position: Point::new(0.0, 0.0),
+            button: None,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }
+    }
+
+    /// 窓の中ほどに置いた分割ペインでも、仕切りは指の所へ来る。箱の端から測るので、
+    /// 置いた所 (左 300px・上 100px) の分だけずれない。
+    #[test]
+    fn dragging_follows_the_pointer_wherever_the_pane_sits() {
+        let divider = SplitPaneState::divider_id("sp");
+        let area = Rect::new(300.0, 100.0, 400.0, 400.0);
+
+        let mut h = SplitPaneState::new(SplitDirection::Horizontal, 0.5);
+        assert!(h.on_input_in("sp", &pressed(), Some(&divider), area));
+        h.on_input_in("sp", &moved(300.0 + 100.0, 0.0), None, area);
+        assert!((h.ratio() - 0.25).abs() < 1e-4, "{}", h.ratio());
+
+        let mut v = SplitPaneState::new(SplitDirection::Vertical, 0.5);
+        v.on_input_in("sp", &pressed(), Some(&divider), area);
+        v.on_input_in("sp", &moved(0.0, 100.0 + 300.0), None, area);
+        assert!((v.ratio() - 0.75).abs() < 1e-4, "{}", v.ratio());
+    }
 
     /// 最小サイズを割り込まないこと。 仕切りを端まで引いてもペインが消えない。
     #[test]

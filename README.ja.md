@@ -308,7 +308,7 @@ cargo run --example showcase      # 30 デモのグリッド + モーダルズ�
 cargo run --example layout        # Taffy Flexbox レイアウト
 cargo run --example text          # cosmic-text 統合
 cargo run --example tui_demo      # ANSI ベースの TUI ダッシュボード
-cargo run --example tui_gallery   # 部品ギャラリー 37 種、TUI / Modern の 2 つの見た目（ドラッグ&ドロップ・goo・層・文字の選択など）
+cargo run --example tui_gallery   # 部品ギャラリー 55 種、TUI / Modern の 2 つの見た目（表・木・分割ペイン・マスク・重ね方・SVG・縦書き・窓のボタンなど）
 cargo run --example filer         # ファイラ — ランタイム管理スクロール + 行の仮想化
 cargo run --example hello         # 低レベル API（`SabitoriApp` トレイト）
 cargo run --example hot_reload    # ホットリロードのデモ（下記）

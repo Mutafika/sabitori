@@ -308,7 +308,7 @@ cargo run --example showcase      # 30-demo grid + modal zoom (low-level: drives
 cargo run --example layout        # Taffy Flexbox layout
 cargo run --example text          # cosmic-text integration
 cargo run --example tui_demo      # ANSI-based TUI dashboard
-cargo run --example tui_gallery   # Component gallery, 37 demos, TUI / Modern skins (drag & drop, goo, layers, text selection…)
+cargo run --example tui_gallery   # Component gallery, 55 demos, TUI / Modern skins (tables, trees, split panes, masks, blend modes, SVG, vertical text, window buttons…)
 cargo run --example filer         # File manager — runtime-managed scroll, virtualized rows
 cargo run --example hello         # Low-level API (`SabitoriApp` trait)
 cargo run --example hot_reload    # Hot-reload demo (below)

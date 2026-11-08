@@ -16,6 +16,9 @@
 //! ```
 
 use sabitori::*;
+use sabitori::dialog::{self, Answer, Ask};
+use sabitori::element::{path, BlendMode, GlyphMotion};
+use sabitori::svg::Svg;
 use sabitori_style::{AnsiPalette, Theme};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -95,23 +98,50 @@ struct Gallery {
     dd_cards: [usize; 5],
     /// 外から落とされたファイルの名前 (新しい順)。
     dd_files: Vec<String>,
+    // ── v0.42〜v0.56 の部品 ──
+    /// Paths & SVG の絵。起動時に 1 度だけ読む。
+    svg_logo: Option<Svg>,
+    table: TableState,
+    /// 表の並べ替え (列, 降順か)。
+    table_sort: Option<(usize, bool)>,
+    tree: TreeNode,
+    split_h: SplitPaneState,
+    split_v: SplitPaneState,
+    /// 分割ペインの箱 (前のフレームの組み上がりから)。仕切りの位置をここから測る。
+    split_h_area: Rect,
+    split_v_area: Rect,
+    /// 指の下の要素 (`on_hover_change`)。分割ペインが「仕切りを押したか」を見るのに使う。
+    hovered: Option<String>,
+    vlist: Vec<String>,
+    notes: TextInputState,
+    datetime: DateTimePickerState,
+    color: ColorPickerState,
+    swatch_menu: ContextMenuState,
+    /// 選んだ蛍光ペン (`SWATCHES` の添字)。
+    highlight: Option<usize>,
+    dialog_answer: Option<String>,
+    /// Window Buttons で押されたもの (新しい順)。
+    win_log: Vec<String>,
 }
 
 /// 一覧の見出し。 項目の並びの中で区分が変わった所に差す。
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Section { Text, Widgets, Visual, Gpu, Themes, Splash, Forms, Interaction }
+enum Section { Text, Widgets, Data, Visual, Effects, Gpu, Themes, Splash, Forms, Interaction, Window }
 
 impl Section {
     fn label(self) -> &'static str {
         match self {
             Section::Text => "TEXT",
             Section::Widgets => "WIDGETS",
+            Section::Data => "DATA",
             Section::Visual => "VISUAL",
+            Section::Effects => "EFFECTS",
             Section::Gpu => "GPU",
             Section::Themes => "THEMES",
             Section::Splash => "SPLASH",
             Section::Forms => "FORMS",
             Section::Interaction => "INTERACTION",
+            Section::Window => "WINDOW",
         }
     }
 }
@@ -131,6 +161,13 @@ enum Demo {
     SplashPresets,
     FormControls,
     ContextMenu, ViewTransition, Modal, Toast, DragDrop,
+    // v0.42〜v0.56
+    VerticalText, GlyphMotion,
+    Table, Tree, Split, VirtualList, TextArea,
+    PathsSvg, RadialGrain, Mask, Blend, Transform, BackdropBlur,
+    DateTime, ColorPicker,
+    MenuSwatches, Dialog,
+    WindowButtons,
 }
 
 const ITEMS: &[(Demo, &str, Section)] = &[
@@ -140,6 +177,8 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::Terminal, "Terminal", Section::Text),
     (Demo::MatrixRain, "Matrix Rain", Section::Text),
     (Demo::TextSelection, "Text Selection", Section::Text),
+    (Demo::VerticalText, "Vertical Text", Section::Text),
+    (Demo::GlyphMotion, "Glyph Motion", Section::Text),
     (Demo::ProgressBars, "Progress Bars", Section::Widgets),
     (Demo::Spinners, "Spinners", Section::Widgets),
     (Demo::Toggle, "Toggle", Section::Widgets),
@@ -148,6 +187,11 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::Skeleton, "Skeleton", Section::Widgets),
     (Demo::Sparkline, "Sparkline", Section::Widgets),
     (Demo::Clock, "Clock", Section::Widgets),
+    (Demo::Table, "Table", Section::Data),
+    (Demo::Tree, "Tree View", Section::Data),
+    (Demo::Split, "Split Pane", Section::Data),
+    (Demo::VirtualList, "Virtual List", Section::Data),
+    (Demo::TextArea, "Text Area", Section::Data),
     (Demo::EasingCurves, "Easing Curves", Section::Visual),
     (Demo::PulseBorder, "Pulse Border", Section::Visual),
     (Demo::ColorTween, "Color Tween", Section::Visual),
@@ -155,6 +199,12 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::Glassmorphism, "Glassmorphism", Section::Visual),
     (Demo::BentoGrid, "Bento Grid", Section::Visual),
     (Demo::Heatmap, "Heatmap", Section::Visual),
+    (Demo::PathsSvg, "Paths & SVG", Section::Effects),
+    (Demo::RadialGrain, "Radial & Grain", Section::Effects),
+    (Demo::Mask, "Mask", Section::Effects),
+    (Demo::Blend, "Blend Modes", Section::Effects),
+    (Demo::Transform, "Blur/Rotate/Zoom", Section::Effects),
+    (Demo::BackdropBlur, "Backdrop Blur", Section::Effects),
     (Demo::Orbit, "Orbit", Section::Gpu),
     (Demo::GlowPulse, "Glow Pulse", Section::Gpu),
     (Demo::Morph, "Morph", Section::Gpu),
@@ -166,11 +216,57 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::ThemeGallery, "Theme Gallery", Section::Themes),
     (Demo::SplashPresets, "Splash Presets", Section::Splash),
     (Demo::FormControls, "Form Controls", Section::Forms),
+    (Demo::DateTime, "Date & Time", Section::Forms),
+    (Demo::ColorPicker, "Color Picker", Section::Forms),
     (Demo::ContextMenu, "Context Menu", Section::Interaction),
     (Demo::ViewTransition, "View Transition", Section::Interaction),
     (Demo::Modal, "Modal", Section::Interaction),
     (Demo::Toast, "Toast", Section::Interaction),
     (Demo::DragDrop, "Drag & Drop", Section::Interaction),
+    (Demo::MenuSwatches, "Menu Swatches", Section::Interaction),
+    (Demo::Dialog, "Dialog", Section::Interaction),
+    (Demo::WindowButtons, "Window Buttons", Section::Window),
+];
+
+/// Paths & SVG の星 (24 四方)。
+const STAR_PATH: &str = "M12 2 L14.9 8.6 L22 9.3 L16.6 14 L18.2 21 L12 17.3 L5.8 21 L7.4 14 L2 9.3 L9.1 8.6 Z";
+/// Window Buttons の画鋲 (24 四方)。
+const PIN_PATH: &str = "M12 17 V22 M9 3 H15 M10 3 V10 L6 14 H18 L14 10 V3";
+/// Paths & SVG の `Svg` で読む絵。
+const SVG_LOGO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#7aa2f7"/>
+  <rect x="4" y="34" width="56" height="26" rx="0" fill="#bb9af7" opacity="0.6"/>
+  <path d="M18 40 C 18 26, 46 38, 46 24" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <circle cx="18" cy="40" r="5" fill="#ffffff"/>
+  <circle cx="46" cy="24" r="5" fill="#ffffff"/>
+</svg>"##;
+
+/// Table の列と行 (名前・言語・星・更新)。
+const TABLE_COLUMNS: [&str; 4] = ["Name", "Lang", "Stars", "Updated"];
+const TABLE_ROWS: [(&str, &str, u32, &str); 14] = [
+    ("sabitori-core", "Rust", 412, "2026-11-04"),
+    ("sabitori-gpu", "Rust", 377, "2026-11-01"),
+    ("sabitori-text", "Rust", 298, "2026-10-28"),
+    ("sabitori-widgets", "Rust", 356, "2026-11-04"),
+    ("sabitori-layout", "Rust", 154, "2026-10-12"),
+    ("sabitori-reel", "Rust", 221, "2026-10-19"),
+    ("shaders/rect", "WGSL", 96, "2026-10-15"),
+    ("shaders/text", "WGSL", 88, "2026-10-14"),
+    ("shaders/group", "WGSL", 61, "2026-10-15"),
+    ("templates/wasm", "HTML", 47, "2026-09-30"),
+    ("examples/filer", "Rust", 133, "2026-11-05"),
+    ("examples/tui_gallery", "Rust", 189, "2026-11-08"),
+    ("examples/landing", "Rust", 72, "2026-10-02"),
+    ("web/sabitori-home", "HTML", 39, "2026-10-21"),
+];
+
+/// Menu Swatches の蛍光ペン。
+const SWATCHES: [(&str, Color); 5] = [
+    ("yellow", Color::new(1.0, 0.86, 0.2, 0.45)),
+    ("green", Color::new(0.35, 0.9, 0.45, 0.4)),
+    ("blue", Color::new(0.35, 0.6, 1.0, 0.4)),
+    ("pink", Color::new(1.0, 0.4, 0.7, 0.4)),
+    ("orange", Color::new(1.0, 0.6, 0.2, 0.45)),
 ];
 
 /// Drag & Drop の列とカード。
@@ -2177,6 +2273,519 @@ impl Gallery {
             self.lbl("Cards: .draggable() → .droppable() → on_drop. Files from other apps light the same drop zones and arrive in on_file_drop_at (macOS).", 12.5, 400, t.text_disabled).shrink(0.0),
         ])
     }
+    // ════════════════════════════════════════
+    // v0.42〜v0.56 で増えた部品
+    // ════════════════════════════════════════
+
+    /// 展示 1 つの台 (枠・地・角)。
+    fn plate(&self, t: &Theme) -> Element {
+        div()
+            .bg(t.surface_elevated)
+            .border(1.0, t.border)
+            .rounded_px(self.round(12.0, 4.0))
+            .p(Px(14.0))
+            .shrink(0.0)
+            .flex_col()
+            .items_center()
+            .gap(8.0)
+    }
+
+    /// 台の下に付ける短い説明 (コードの書き方)。
+    fn code_note(&self, t: &Theme, s: &str) -> Element {
+        text(s).mono().font_size(11.5).color(t.text_disabled).shrink(0.0)
+    }
+
+    /// 見出し・中身・説明の決まった並び。
+    fn exhibit(&self, t: &Theme, title: &str, body: Vec<Element>, note: &str) -> Element {
+        let mut kids = vec![self.lbl(title, 15.0, 700, t.primary).shrink(0.0)];
+        kids.extend(body);
+        kids.push(self.lbl(note, 12.5, 400, t.text_disabled).shrink(0.0));
+        div().w_full().flex_col().gap(12.0).children(kids)
+    }
+
+    // ── Text ──
+
+    fn vertical_text(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let haiku = "古池や\n蛙飛びこむ\n水の音";
+        let prose = "縦書きでは、字を上から下へ、列を右から左へ並べます。句読点は升目の右上に寄り、長音「ー」や半角の ABC・123 は九十度回ります。";
+        self.exhibit(t, "Vertical Text", vec![
+            div().flex_row().gap(14.0).items_start().children([
+                self.plate(t).children([
+                    text(haiku).vertical().font_size(24.0).color(t.text_primary),
+                    self.code_note(t, "段落ごとに 1 列"),
+                ]),
+                self.plate(t).children([
+                    text(prose).vertical().font_size(14.0).color(t.text_secondary).h(Px(200.0)),
+                    self.code_note(t, ".h(200) で折り返す"),
+                ]),
+                self.plate(t).children([
+                    text("縦書き").vertical().font_size(34.0).bold().color(a.cyan),
+                    self.code_note(t, "見出し"),
+                ]),
+            ]),
+        ], ".vertical() — columns run right to left; give it a height and it wraps into the next column.")
+    }
+
+    fn glyph_motion_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let time = self.elapsed();
+        // 跳ねる: 字ごとに位相をずらした正弦の山だけを使う。
+        let bounce = text("Bouncing letters").font_size(28.0).bold().color(t.text_primary)
+            .per_glyph(move |i, _| GlyphMotion {
+                dy: -(time * 4.0 - i as f32 * 0.35).sin().max(0.0) * 14.0,
+                ..Default::default()
+            });
+        // 1 字ずつ下から現れる (3 秒で一巡)。
+        let cycle = (time % 3.0) / 3.0;
+        let reveal = text("1 字ずつ現れる文字").font_size(24.0).color(a.cyan)
+            .per_glyph(move |i, n| {
+                let s = (cycle * (n as f32 + 6.0) - i as f32).clamp(0.0, 1.0);
+                GlyphMotion { dy: (1.0 - s) * 18.0, opacity: s, scale: 0.6 + 0.4 * s, ..Default::default() }
+            });
+        // 揺れる: 回すだけ。
+        let wobble = text("wobble").mono().font_size(28.0).color(a.magenta)
+            .per_glyph(move |i, _| GlyphMotion {
+                rotation: (time * 3.0 + i as f32 * 0.9).sin() * 0.5,
+                ..Default::default()
+            });
+        self.exhibit(t, "Glyph Motion", vec![
+            self.plate(t).w_full().items_start().gap(18.0).children([bounce, reveal, wobble]),
+        ], ".per_glyph(|i, n| GlyphMotion { dy, rotation, scale, opacity }) — one text element, each glyph moves on its own.")
+    }
+
+    // ── Effects ──
+
+    fn paths_svg(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let time = self.elapsed();
+        // 1.8 秒で描き、 1.2 秒止める。
+        let k = ((time % 3.0) / 1.8).min(1.0);
+        let draw = 1.0 - (1.0 - k).powi(3);
+        let check = path().svg_path("M5 13 L10 18 L21 6").view_box(0.0, 0.0, 26.0, 24.0)
+            .w(Px(88.0)).h(Px(88.0)).stroke(a.green, 2.4).trim(0.0, draw);
+        let wave = path().svg_path("M0 20 C 15 0, 35 0, 50 20 S 85 40, 100 20 S 135 0, 150 20")
+            .view_box(0.0, 0.0, 150.0, 40.0).w(Px(150.0)).h(Px(88.0)).stroke(a.cyan, 2.0).dash(7.0, 5.0);
+        let star = path().svg_path(STAR_PATH).view_box(0.0, 0.0, 24.0, 24.0)
+            .w(Px(88.0)).h(Px(88.0)).fill(a.yellow).rotate(time * 0.6);
+        let logo = self.svg_logo.as_ref().map_or_else(div, |svg| svg.element(88.0));
+        let cell = |body: Element, note: &str| self.plate(t).children([body, self.code_note(t, note)]);
+        self.exhibit(t, "Paths & SVG", vec![
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(14.0).children([
+                cell(check, ".trim(0, k)"),
+                cell(wave, ".dash(7, 5)"),
+                cell(star, ".fill() + .rotate()"),
+                cell(logo, "Svg::parse(..).element(88)"),
+            ]),
+        ], "path().svg_path(d) draws any SVG path data; Svg turns a whole SVG file into an element tree.")
+    }
+
+    fn radial_grain(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let time = self.elapsed();
+        let cx = 0.5 + 0.32 * (time * 0.7).cos();
+        let cy = 0.5 + 0.32 * (time * 0.9).sin();
+        let r = self.round(12.0, 4.0);
+        let spot = div().w(Px(200.0)).h(Px(130.0)).rounded_px(r)
+            .radial_gradient_at(a.cyan.with_alpha(0.95), Color::from_hex("#0b1020"), cx, cy);
+        let film = div().w(Px(200.0)).h(Px(130.0)).rounded_px(r)
+            .radial_gradient(Color::from_hex("#f4d9a6"), Color::from_hex("#3b2412"))
+            .grain(0.09).grain_seed((time * 12.0) as u32);
+        let band = div().w(Px(200.0)).h(Px(130.0)).rounded_px(r)
+            .gradient(Color::from_hex("#141623"), Color::from_hex("#2a2f4a"), std::f32::consts::FRAC_PI_2)
+            .grain(0.05);
+        let cell = |body: Element, note: &str| self.plate(t).children([body, self.code_note(t, note)]);
+        self.exhibit(t, "Radial & Grain", vec![
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(14.0).children([
+                cell(spot, ".radial_gradient_at(.., cx, cy)"),
+                cell(film, ".grain(0.09).grain_seed(frame)"),
+                cell(band, "dark gradient + .grain(0.05)"),
+            ]),
+        ], "Radial gradients with a movable center, and film grain that also breaks up banding in dark gradients.")
+    }
+
+    fn mask_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let time = self.elapsed();
+        // 字の形に切り抜く。地のグラデーションは回り続ける。
+        let cut = div().w(Px(300.0)).h(Px(76.0))
+            .gradient(a.cyan, a.magenta, time * 0.8)
+            .mask(text("SABITORI").font_size(60.0).bold());
+        // 下へ向かって消える。
+        let lines: Vec<Element> = (0..7)
+            .map(|i| text(format!("log line {:02} — ok", i + 1)).mono().font_size(13.0).color(t.text_secondary).shrink(0.0))
+            .collect();
+        let fade = div().w(Px(220.0)).h(Px(120.0)).overflow_hidden().flex_col().gap(3.0).children(lines)
+            .mask(div().w_full().h_full().gradient(Color::WHITE, Color::TRANSPARENT, std::f32::consts::FRAC_PI_2));
+        // 丸く広がって現れる。
+        let grow = ((time % 2.5) / 1.6).min(1.0);
+        let d = 4.0 + 136.0 * (1.0 - (1.0 - grow).powi(2));
+        let reveal = div().w(Px(140.0)).h(Px(140.0))
+            .radial_gradient(a.yellow, a.red)
+            .mask(div().w_full().h_full().flex_col().items_center().justify_center()
+                .child(div().w(Px(d)).h(Px(d)).rounded_px(d * 0.5).bg(Color::WHITE)));
+        let cell = |body: Element, note: &str| self.plate(t).children([body, self.code_note(t, note)]);
+        self.exhibit(t, "Mask", vec![
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(14.0).children([
+                cell(cut, ".mask(text(..))"),
+                cell(fade, ".mask(gradient → transparent)"),
+                cell(reveal, ".mask(growing circle)"),
+            ]),
+        ], ".mask(element) shows only where the mask is opaque — cut to letters, fade an edge, wipe something in.")
+    }
+
+    fn blend_demo(&self, t: &Theme) -> Element {
+        let time = self.elapsed();
+        let stage = |mode: BlendMode, name: &str, ground: Color| -> Element {
+            let colors = [Color::from_hex("#ff4d6d"), Color::from_hex("#4dff88"), Color::from_hex("#4d8bff")];
+            let circles: Vec<Element> = colors.iter().enumerate().map(|(i, &c)| {
+                let ang = time * 0.8 + i as f32 * std::f32::consts::TAU / 3.0;
+                let (x, y) = (45.0 + 18.0 * ang.cos(), 40.0 + 18.0 * ang.sin());
+                div().absolute().pos(x, y).w(Px(60.0)).h(Px(60.0)).rounded_px(30.0).bg(c).blend(mode)
+            }).collect();
+            self.plate(t).children([
+                div().w(Px(150.0)).h(Px(140.0)).bg(ground).rounded_px(self.round(10.0, 3.0)).children(circles),
+                self.code_note(t, name),
+            ])
+        };
+        let dark = Color::from_hex("#0b0d17");
+        self.exhibit(t, "Blend Modes", vec![
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(14.0).children([
+                stage(BlendMode::Normal, "Normal", dark),
+                stage(BlendMode::Add, "Add", dark),
+                stage(BlendMode::Screen, "Screen", dark),
+                stage(BlendMode::Multiply, "Multiply", Color::from_hex("#ecebe6")),
+            ]),
+        ], ".blend(mode) — light and particles add up with Add / Screen; shadows and paper darken with Multiply.")
+    }
+
+    fn transform_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let time = self.elapsed();
+        let card = |label: &str, color: Color| -> Element {
+            div().w(Px(130.0)).h(Px(90.0)).rounded_px(self.round(12.0, 4.0))
+                .gradient(color, color.with_alpha(0.35), 0.9)
+                .flex_col().items_center().justify_center()
+                .child(text(label).font_size(18.0).bold().color(Color::WHITE))
+        };
+        let blur = card("focus", a.cyan).blur(4.0 + 4.0 * (time * 1.6).sin());
+        let rotate = card("rotate", a.magenta).rotate(time * 0.9);
+        let zoom = card("zoom", a.green).zoom(1.0 + 0.22 * (time * 1.3).sin());
+        let cell = |body: Element, note: &str| {
+            self.plate(t).children([
+                div().w(Px(170.0)).h(Px(140.0)).flex_col().items_center().justify_center().child(body),
+                self.code_note(t, note),
+            ])
+        };
+        self.exhibit(t, "Blur · Rotate · Zoom", vec![
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(14.0).children([
+                cell(blur, ".blur(px)"),
+                cell(rotate, ".rotate(radians)"),
+                cell(zoom, ".zoom(k)"),
+            ]),
+        ], "Each one draws the element with its children into one picture first, then blurs, turns or scales it.")
+    }
+
+    fn backdrop_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
+        let materials = [
+            (BackdropBlur::Hud, "Hud"),
+            (BackdropBlur::Popover, "Popover"),
+            (BackdropBlur::Sidebar, "Sidebar"),
+        ];
+        let panels: Vec<Element> = materials.iter().map(|&(m, name)| {
+            div().w(Px(170.0)).h(Px(150.0)).shrink(0.0)
+                .rounded_px(self.round(16.0, 6.0))
+                .backdrop_blur(m)
+                .bg(t.surface.with_alpha(0.18))
+                .border(1.0, Color::WHITE.with_alpha(0.12))
+                .flex_col().items_center().justify_center().gap(6.0)
+                .children([
+                    self.lbl(name, 15.0, 700, t.text_primary),
+                    self.code_note(t, "backdrop_blur(..)"),
+                ])
+        }).collect();
+        self.exhibit(t, "Backdrop Blur", vec![
+            self.lbl("Move this window over something busy. The stage turns see-through here, so the desktop shows sharp around the panels and blurred behind them.", 13.0, 400, t.text_secondary).shrink(0.0),
+            div().flex_row().flex_wrap(FlexWrap::Wrap).gap(18.0).children(panels),
+            text(if cfg!(target_os = "macos") { "macOS: NSVisualEffectView under the window" } else { "macOS only — elsewhere the panels are just translucent" })
+                .mono().font_size(12.0).color(a.yellow).shrink(0.0),
+        ], ".backdrop_blur(material) blurs what is behind the window, inside the element's box (transparent windows only).")
+    }
+
+    // ── Data ──
+
+    /// 表の行を、今の並べ替えで。
+    fn table_rows_sorted(&self) -> Vec<Vec<Cell>> {
+        Self::rows_in_order(self.table_sort)
+    }
+
+    /// 表の行 (名前・言語・星・更新) を `sort` (列, 降順か) の順で。
+    fn rows_in_order(sort: Option<(usize, bool)>) -> Vec<Vec<Cell>> {
+        let mut rows = TABLE_ROWS.to_vec();
+        if let Some((col, desc)) = sort {
+            rows.sort_by(|x, y| {
+                let o = if col == 2 {
+                    x.2.cmp(&y.2)
+                } else {
+                    let key = |r: &(&'static str, &'static str, u32, &'static str)| -> &'static str { match col { 0 => r.0, 1 => r.1, _ => r.3 } };
+                    key(x).cmp(key(y))
+                };
+                if desc { o.reverse() } else { o }
+            });
+        }
+        let lang_color = |l: &str| match l {
+            "Rust" => Color::from_hex("#dea584"),
+            "WGSL" => Color::from_hex("#7aa2f7"),
+            _ => Color::from_hex("#9ece6a"),
+        };
+        rows.iter().map(|&(name, lang, stars, updated)| vec![
+            Cell::bold(name),
+            Cell::colored(lang, lang_color(lang)),
+            Cell::text(format!("{stars}")),
+            Cell::text(updated),
+        ]).collect()
+    }
+
+    fn table_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let style = TableStyle {
+            header_bg: t.surface_elevated,
+            header_fg: t.text_secondary,
+            row_bg: Color::TRANSPARENT,
+            row_bg_alt: t.surface_elevated.with_alpha(0.45),
+            row_bg_hover: t.surface_hover,
+            row_bg_selected: t.primary.with_alpha(0.28),
+            fg: t.text_primary,
+            fg_selected: t.text_primary,
+            border: t.border,
+            ..TableStyle::default_dark()
+        };
+        let sort = match self.table_sort {
+            Some((col, desc)) => format!("sorted by {} {}", TABLE_COLUMNS[col], if desc { "↓" } else { "↑" }),
+            None => "click a header to sort".to_string(),
+        };
+        self.exhibit(t, "Table", vec![
+            table(ctx, "tbl", &self.table, &style).w_full().h(Px(300.0)).shrink(0.0)
+                .rounded_px(self.round(10.0, 3.0)).overflow_hidden(),
+            text(&sort).mono().font_size(12.5).color(t.text_secondary).shrink(0.0),
+        ], "table(ctx, id, &TableState, &style) — fixed and flex columns, row selection, header clicks, its own scrolling.")
+    }
+
+    fn tree_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let style = TreeViewStyle {
+            fg: t.text_secondary,
+            fg_selected: t.text_primary,
+            bg_hover: t.surface_hover,
+            bg_selected: t.primary.with_alpha(0.28),
+            ..TreeViewStyle::default_dark()
+        };
+        self.exhibit(t, "Tree View", vec![
+            self.plate(t).w_full().items_start().child(
+                tree_view(ctx, "tree", &self.tree, &style).w_full().h(Px(300.0)),
+            ),
+        ], "tree_view(ctx, id, &TreeNode, &style) — click a folder to open it; the app owns the tree.")
+    }
+
+    fn split_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let style = SplitPaneStyle {
+            divider: t.border,
+            divider_hover: t.primary.with_alpha(0.7),
+            divider_active: t.primary,
+        };
+        let pane = |title: &str, body: &str, tint: Color| -> Element {
+            div().w_full().h_full().bg(tint.with_alpha(0.08)).p(Px(12.0)).flex_col().gap(6.0).children([
+                self.lbl(title, 13.0, 700, tint),
+                text(body).mono().font_size(12.0).color(t.text_secondary),
+            ])
+        };
+        let a = &t.ansi;
+        let right = split_pane(ctx, "split-v", &self.split_v, &style,
+            pane("editor", "fn main() {\n    run();\n}", a.cyan),
+            pane("terminal", "$ cargo run\n   Compiling…", a.green),
+        );
+        let ratio = format!("{:.0}% | {:.0}% / {:.0}%", self.split_h.ratio() * 100.0, self.split_v.ratio() * 100.0, (1.0 - self.split_v.ratio()) * 100.0);
+        self.exhibit(t, "Split Pane", vec![
+            split_pane(ctx, "split-h", &self.split_h, &style,
+                pane("files", "src/\n  main.rs\n  lib.rs", a.magenta),
+                right,
+            ).w_full().h(Px(300.0)).shrink(0.0).border(1.0, t.border).rounded_px(self.round(10.0, 3.0)).overflow_hidden(),
+            text(&ratio).mono().font_size(12.5).color(t.text_secondary).shrink(0.0),
+        ], "Drag the dividers. SplitPaneState::on_input_in(.., area) measures from the pane's own box, wherever it sits.")
+    }
+
+    fn virtual_list_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let a = &t.ansi;
+        let list = virtual_list(ctx, "vlist", &self.vlist, 22.0, |line, i| {
+            let level = match i % 17 { 0 => ("ERR ", a.red), 5 | 11 => ("WARN", a.yellow), _ => ("INFO", a.green) };
+            div().w_full().h(Px(22.0)).flex_row().items_center().gap(10.0).px_pad(Px(10.0)).children([
+                text(format!("{:>5}", i + 1)).mono().font_size(12.0).color(t.text_disabled).shrink(0.0),
+                text(level.0).mono().font_size(12.0).color(level.1).shrink(0.0),
+                text(line).mono().font_size(12.0).color(t.text_secondary).max_lines(1),
+            ])
+        });
+        self.exhibit(t, "Virtual List", vec![
+            self.plate(t).w_full().p(Px(0.0)).items_start().overflow_hidden()
+                .child(list.w_full().h(Px(300.0))),
+        ], "virtual_list(ctx, id, &items, row_h, render) — 10,000 rows, only the visible ones are built.")
+    }
+
+    fn text_area_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let style = TextInputStyle {
+            bg: t.surface,
+            border: t.border,
+            text: t.text_primary,
+            placeholder: t.text_disabled,
+            font_size: 14.0,
+            radius: self.round(8.0, 3.0),
+            padding: 10.0,
+            focus_border: Some(t.primary),
+            caret: Some(t.text_primary),
+            preedit: Some(t.primary.with_alpha(0.25)),
+            ..TextInputStyle::default_dark()
+        };
+        let lines = self.notes.text().lines().count().max(1);
+        let chars = self.notes.text().chars().count();
+        self.exhibit(t, "Text Area", vec![
+            text_area(ctx, "notes", &self.notes, &style, 8).w_full().shrink(0.0),
+            text(format!("{lines} lines · {chars} chars")).mono().font_size(12.5).color(t.text_secondary).shrink(0.0),
+        ], "text_area(ctx, id, &state, &style, visible_lines) — wraps, scrolls, IME; no wiring in on_input.")
+    }
+
+    // ── Forms ──
+
+    fn date_time_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let date = DatePickerStyle {
+            bg: t.surface_elevated,
+            border: t.border,
+            header_fg: t.text_primary,
+            weekday_fg: t.text_disabled,
+            day_fg: t.text_secondary,
+            muted_fg: t.text_disabled,
+            selected_bg: t.primary,
+            selected_fg: Color::WHITE,
+            hover_bg: t.surface_hover,
+            ..DatePickerStyle::default_dark()
+        };
+        let time = TimePickerStyle {
+            bg: t.surface_elevated,
+            border: t.border,
+            header_fg: t.text_primary,
+            fg: t.text_secondary,
+            muted_fg: t.text_disabled,
+            selected_bg: t.primary,
+            selected_fg: Color::WHITE,
+            hover_bg: t.surface_hover,
+            ..TimePickerStyle::default_dark()
+        };
+        let style = DateTimePickerStyle { date, time, ..DateTimePickerStyle::default_dark() };
+        self.exhibit(t, "Date & Time", vec![
+            self.datetime.view(ctx.hovered.as_deref(), &style),
+            text(self.datetime.formatted()).mono().font_size(14.0).color(t.primary).shrink(0.0),
+        ], "DateTimePickerState — a calendar and a time grid (15-minute steps, 9:00–18:00) feeding one value.")
+    }
+
+    fn color_picker_demo(&self, t: &Theme, ctx: &ViewContext) -> Element {
+        let style = ColorPickerStyle {
+            bg: t.surface_elevated,
+            border: t.border,
+            text: t.text_primary,
+            label: t.text_secondary,
+            focus_border: t.primary,
+            ..ColorPickerStyle::default_dark()
+        };
+        let c = self.color.color();
+        self.exhibit(t, "Color Picker", vec![
+            div().flex_row().gap(16.0).items_start().children([
+                self.color.view(ctx.hovered.as_deref(), &style),
+                div().w(Px(160.0)).h(Px(160.0)).shrink(0.0).rounded_px(self.round(16.0, 4.0))
+                    .radial_gradient(c, c.with_alpha(0.15))
+                    .border(1.0, t.border),
+            ]),
+        ], "ColorPickerState — palette swatches, and R/G/B rows you drag sideways or click to type.")
+    }
+
+    // ── Interaction ──
+
+    fn swatch_menu_demo(&self, t: &Theme) -> Element {
+        let mark = self.highlight.map(|i| SWATCHES[i]);
+        const SENTENCE: &str = "Right-click this sentence to pick a highlighter colour.";
+        let mut sample = text(SENTENCE).font_size(16.0).color(t.text_primary);
+        if let Some((_, c)) = mark {
+            sample = sample.highlight(HighlightSpec {
+                ranges: vec![(0, SENTENCE.len())],
+                color: c,
+                current: None,
+                current_color: c,
+            });
+        }
+        self.exhibit(t, "Menu Swatches", vec![
+            div().id("swatch-area").w_full().h(Px(160.0)).shrink(0.0)
+                .bg(t.surface_elevated).border(1.0, t.border).rounded_px(self.round(12.0, 4.0))
+                .flex_col().items_center().justify_center().gap(10.0)
+                .children([
+                    sample,
+                    self.lbl(&format!("highlighter: {}", mark.map_or("none", |(n, _)| n)), 12.5, 500, t.text_secondary),
+                ]),
+        ], "MenuItemDef::with_swatch(color) — a menu row shows the colour behind its label before you pick it.")
+    }
+
+    fn dialog_demo(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
+        let button = |id: &'static str, label: &str, color: Color, f: fn(&mut Gallery)| -> Element {
+            let hot = ctx.hovered.as_deref() == Some(id);
+            div().cursor(Cursor::Pointer).shrink(0.0)
+                .bg(if hot { color.with_alpha(0.9) } else { color.with_alpha(0.7) })
+                .rounded_px(self.round(8.0, 3.0))
+                .px_pad(Px(14.0)).py(Px(8.0))
+                .child(self.lbl(label, 13.5, 600, Color::WHITE))
+                .click(ctx, id, move |app: &mut Gallery| f(app))
+        };
+        let answer = self.dialog_answer.clone().unwrap_or_else(|| "—".to_string());
+        self.exhibit(t, "Dialog", vec![
+            div().flex_row().gap(12.0).children([
+                button("dlg-save", "Ask: save changes?", a.blue, |_| {
+                    dialog::ask("save", Ask::new("「見積.csv」への変更を保存しますか？")
+                        .detail("保存しないと、変更は失われます。")
+                        .button("保存").button("保存しない").cancel_button("キャンセル"));
+                }),
+                button("dlg-delete", "Ask: delete?", a.red, |_| {
+                    dialog::ask("delete", Ask::new("3 個の項目をゴミ箱に入れますか？")
+                        .button("ゴミ箱に入れる").cancel_button("キャンセル"));
+                }),
+            ]),
+            text(format!("answer: {answer}")).mono().font_size(14.0).color(t.primary).shrink(0.0),
+        ], "dialog::ask(key, Ask) shows the OS alert (macOS); the button pressed comes back in on_dialog_answered.")
+    }
+
+    // ── Window ──
+
+    fn window_buttons_demo(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
+        // 見本の帯。 − □ は本当にこの窓を動かす。 ✕ はギャラリーが閉じないよう、
+        // アプリの操作に付け替えて押されたことだけを出す。
+        let bar = |id: &str, buttons: &TitlebarButtons, lights: bool| -> Element {
+            let row = titlebar_buttons(ctx, id, buttons);
+            let title = self.lbl(id, 12.5, 600, t.text_secondary);
+            let kids = if lights {
+                vec![row.ml(Px(12.0)), div().w(Px(14.0)), title, div().flex_1()]
+            } else {
+                vec![title.ml(Px(12.0)), div().flex_1(), row]
+            };
+            div().w_full().h(Px(38.0)).shrink(0.0).flex_row().items_center()
+                .bg(t.surface_elevated).border(1.0, t.border).rounded_px(self.round(10.0, 3.0))
+                .overflow_hidden()
+                .children(kids)
+        };
+        let keep_open = |b: TitlebarButtons| b.edit("close", |c| c.app_action());
+        let windows = keep_open(TitlebarButtons::windows(&ctx.theme, 38.0));
+        let lights = keep_open(TitlebarButtons::traffic_lights());
+        let custom = keep_open(
+            TitlebarButtons::windows(&ctx.theme, 38.0)
+                .insert(0, TitlebarButton::new("pin", TitlebarIcon::svg(PIN_PATH, 24.0)).label("Pin"))
+                .edit("maximize", |b| b.action(WindowAction::ToggleFullscreen).icon(TitlebarIcon::Fullscreen)),
+        );
+        let state = ctx.window_state;
+        let log = if self.win_log.is_empty() { "—".to_string() } else { self.win_log.join("  ") };
+        self.exhibit(t, "Window Buttons", vec![
+            bar("win-a", &windows, false),
+            bar("win-b", &lights, true),
+            bar("win-c", &custom, false),
+            text(format!("maximized: {} · fullscreen: {}", state.maximized, state.fullscreen))
+                .mono().font_size(12.5).color(t.text_secondary).shrink(0.0),
+            text(format!("pressed: {log}")).mono().font_size(12.5).color(a.yellow).shrink(0.0),
+        ], "titlebar_buttons — presets for − □ ✕ and traffic lights; swap icons and actions freely. − □ move this window; ✕ only logs.")
+    }
 }
 
 impl DeclarativeApp for Gallery {
@@ -2216,6 +2825,7 @@ impl DeclarativeApp for Gallery {
         self.wave_st.tick(dt);
         self.pulse_st.tick(dt);
         self.color_cycle_st.tick(dt);
+        self.swatch_menu.tick(dt);
         // Goo のピル: 少しだけ行き過ぎるばね。
         let target = if self.goo_open { 1.0 } else { 0.0 };
         let dt = dt.min(1.0 / 30.0);
@@ -2226,6 +2836,14 @@ impl DeclarativeApp for Gallery {
     fn overlay_view(&self, ctx: &ViewContext) -> Option<Element> {
         let t = &self.theme;
         let a = &t.ansi;
+
+        // Menu Swatches: 行の名前の後ろに色の帯 (`MenuItemDef::with_swatch`)。
+        if let Some(menu) = self.swatch_menu.to_overlay(
+            ctx.width, ctx.height, ctx.hovered.as_deref(),
+            t.surface_elevated, t.border, t.text_primary, t.text_secondary, t.surface_hover,
+        ) {
+            return Some(menu);
+        }
 
         // Context menu overlay
         if let Some((mx, my)) = self.ctx_menu {
@@ -2379,7 +2997,7 @@ impl DeclarativeApp for Gallery {
         // ── Skin (TUI ↔ Modern) ──────────────────────────────────────────
         // TUI = crisp mono terminal look. Modern = proportional type, soft
         // palette, rounded accents — the landing-page aesthetic. Only the
-        // *chrome* reskins; the 32 demos are the exhibits and stay as-is.
+        // *chrome* reskins; the demos are the exhibits and stay as-is.
         let modern = self.modern;
         let hx = |s: &str| Color::from_hex(s);
         let (s_bg0, s_bg1, s_chrome, s_surface, s_surface_hi, s_border,
@@ -2390,6 +3008,14 @@ impl DeclarativeApp for Gallery {
             (t.surface.with_alpha(t.opacity), t.surface.with_alpha(t.opacity), t.surface_elevated,
              t.surface_elevated, t.surface_active, t.border,
              t.text_primary, t.text_secondary, t.text_disabled, t.primary, a.magenta)
+        };
+        // Backdrop Blur の間だけ、窓の地と舞台を透かす。透かさないと、窓の後ろの
+        // ぼかし (`backdrop_blur`) は不透明な地の下に隠れて見えない。
+        let see_through = self.demo() == Demo::BackdropBlur;
+        let (s_bg0, s_bg1, s_surface, bg) = if see_through {
+            (s_bg0.with_alpha(0.12), s_bg1.with_alpha(0.12), s_surface.with_alpha(0.1), bg.with_alpha(0.12))
+        } else {
+            (s_bg0, s_bg1, s_surface, bg)
         };
 
         // ── Sidebar ──
@@ -2412,12 +3038,15 @@ impl DeclarativeApp for Gallery {
                 }
                 let color = match section {
                     Section::Text | Section::Widgets => s_text_dim,
+                    Section::Data => a.blue.with_alpha(0.75),
                     Section::Visual => a.cyan.with_alpha(0.7),
+                    Section::Effects => a.bright_magenta.with_alpha(0.7),
                     Section::Gpu => s_accent.with_alpha(0.75),
                     Section::Themes => a.magenta.with_alpha(0.7),
                     Section::Splash => a.bright_cyan.with_alpha(0.7),
                     Section::Forms => a.green.with_alpha(0.7),
                     Section::Interaction => a.yellow.with_alpha(0.7),
+                    Section::Window => a.bright_green.with_alpha(0.7),
                 };
                 menu_items.push(section_label(section.label(), color));
                 prev_section = Some(section);
@@ -2515,6 +3144,24 @@ impl DeclarativeApp for Gallery {
             Demo::Modal => self.modal(t, a, ctx),
             Demo::Toast => self.toast(t, a, ctx),
             Demo::DragDrop => self.drag_drop(t, a, ctx),
+            Demo::VerticalText => self.vertical_text(t, a),
+            Demo::GlyphMotion => self.glyph_motion_demo(t, a),
+            Demo::Table => self.table_demo(t, ctx),
+            Demo::Tree => self.tree_demo(t, ctx),
+            Demo::Split => self.split_demo(t, ctx),
+            Demo::VirtualList => self.virtual_list_demo(t, ctx),
+            Demo::TextArea => self.text_area_demo(t, ctx),
+            Demo::PathsSvg => self.paths_svg(t, a),
+            Demo::RadialGrain => self.radial_grain(t, a),
+            Demo::Mask => self.mask_demo(t, a),
+            Demo::Blend => self.blend_demo(t),
+            Demo::Transform => self.transform_demo(t, a),
+            Demo::BackdropBlur => self.backdrop_demo(t, a),
+            Demo::DateTime => self.date_time_demo(t, ctx),
+            Demo::ColorPicker => self.color_picker_demo(t, ctx),
+            Demo::MenuSwatches => self.swatch_menu_demo(t),
+            Demo::Dialog => self.dialog_demo(t, a, ctx),
+            Demo::WindowButtons => self.window_buttons_demo(t, a, ctx),
         };
 
         // Fade the preview in whenever the selected component changes.
@@ -2664,6 +3311,29 @@ impl DeclarativeApp for Gallery {
 
     fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
         self.slider_track = build.region_rect("form-slider");
+        if let Some(r) = build.region_rect("split-h") {
+            self.split_h_area = r;
+        }
+        if let Some(r) = build.region_rect("split-v") {
+            self.split_v_area = r;
+        }
+    }
+
+    fn on_hover_change(&mut self, id: Option<&str>) {
+        self.hovered = id.map(str::to_owned);
+    }
+
+    fn on_dialog_answered(&mut self, key: &str, answer: Answer) {
+        // ボタンは足した順の番号で届く (キャンセルも 1 つのボタン)。
+        let labels: &[&str] = match key {
+            "save" => &["保存", "保存しない", "キャンセル"],
+            "delete" => &["ゴミ箱に入れる", "キャンセル"],
+            _ => &[],
+        };
+        self.dialog_answer = Some(match answer {
+            Answer::Button(i) => format!("{key} → {}", labels.get(i).copied().unwrap_or("?")),
+            Answer::Unsupported => format!("{key} → not supported on this OS"),
+        });
     }
 
     fn on_selection_changed(&mut self, selection: Option<&SelectedText>) {
@@ -2717,16 +3387,30 @@ impl DeclarativeApp for Gallery {
         if self.slider_dragging {
             self.drag_slider_to(x);
         }
+        self.color.on_pointer_move(x);
     }
 
     fn on_pointer_up(&mut self) {
         self.slider_dragging = false;
+        self.color.on_pointer_up();
     }
 
     fn on_right_click(&mut self, id: &str, x: f32, y: f32) {
         // 幕は右クリックを通すので、 メニューを開いたまま押しても届く。
         // 枠の上なら開き直し、 それ以外なら閉じる。
         self.ctx_menu = (self.demo() == Demo::ContextMenu && id == "ctx-area").then_some((x, y));
+        if self.demo() == Demo::MenuSwatches && id == "swatch-area" {
+            let mut items: Vec<MenuItemDef> = SWATCHES
+                .iter()
+                .enumerate()
+                .map(|(i, (name, c))| MenuItemDef::action(format!("sw-{i}"), *name).with_swatch(*c))
+                .collect();
+            items.push(MenuItemDef::separator());
+            items.push(MenuItemDef::action("sw-none", "No highlight"));
+            self.swatch_menu.show(x, y, items);
+        } else {
+            self.swatch_menu.dismiss();
+        }
     }
 
     /// 押された id の解釈が要る物 (浮いている物の後始末と `DropdownState`) だけ。
@@ -2738,12 +3422,78 @@ impl DeclarativeApp for Gallery {
         if self.form_dropdown.handle_click(id) == DropdownEvent::Ignored {
             self.form_dropdown.close();
         }
+        // Menu Swatches: 項目を押したら色を決め、どこを押しても閉じる。
+        if self.swatch_menu.is_visible() {
+            if id == "sw-none" {
+                self.highlight = None;
+            } else if let Some(i) = id.strip_prefix("sw-").and_then(|n| n.parse::<usize>().ok()) {
+                self.highlight = Some(i);
+            }
+            self.swatch_menu.dismiss();
+        }
+        match self.demo() {
+            Demo::Table => {
+                if let Some(col) = table_clicked_header("tbl", id) {
+                    // 同じ列なら向きを替え、別の列なら昇順から。
+                    self.table_sort = match self.table_sort {
+                        Some((c, desc)) if c == col => Some((col, !desc)),
+                        _ => Some((col, false)),
+                    };
+                    self.table.set_rows(self.table_rows_sorted());
+                    self.table.selected = None;
+                } else if let Some(row) = table_clicked_row("tbl", id) {
+                    self.table.selected = Some(row);
+                }
+            }
+            Demo::Tree => {
+                if let Some(row) = tree_clicked_row("tree", id) {
+                    self.tree.toggle_row(row);
+                    self.tree.select_row(row);
+                }
+            }
+            Demo::DateTime => {
+                self.datetime.handle_click(id);
+            }
+            Demo::ColorPicker => {
+                self.color.handle_click(id);
+                self.color.on_pointer_down(id, self.pointer_x);
+            }
+            Demo::WindowButtons if id.starts_with("win-") => {
+                self.win_log.insert(0, id.to_string());
+                self.win_log.truncate(4);
+            }
+            _ => {}
+        }
     }
 
     fn on_input(&mut self, event: &InputEvent) -> bool {
         if !self.splash_done {
             self.splash_done = true;
             return true;
+        }
+        // 分割ペインの仕切り。指の位置は箱 (`on_build` で拾う) の端から測る。
+        if self.demo() == Demo::Split {
+            let hovered = self.hovered.as_deref();
+            if self.split_h.on_input_in("split-h", event, hovered, self.split_h_area)
+                || self.split_v.on_input_in("split-v", event, hovered, self.split_v_area)
+            {
+                return true;
+            }
+        }
+        // 色の R / G / B を打っている間は、キーをそちらへ (j / k で項目が動かないように)。
+        if self.demo() == Demo::ColorPicker && self.color.wants_keyboard() {
+            match event {
+                InputEvent::KeyInput { key, pressed: true, modifiers, .. } => {
+                    if self.color.on_key(*key, *modifiers) {
+                        return true;
+                    }
+                }
+                InputEvent::CharInput(c) => {
+                    self.color.on_char(*c);
+                    return true;
+                }
+                _ => {}
+            }
         }
         // テキスト欄への配線は要らない。 `text_input(..)` を `view()` に置いた
         // 時点でランタイムが配る (焦点のある欄が先に受けるので、 ここの j / k は
@@ -2849,6 +3599,58 @@ impl Gallery {
             goo_v: 0.0,
             dd_cards: [0, 0, 1, 1, 2],
             dd_files: Vec::new(),
+            svg_logo: Svg::parse(SVG_LOGO).ok(),
+            table: {
+                let mut table = TableState::new(vec![
+                    TableColumn::flex(TABLE_COLUMNS[0]).min(140.0),
+                    TableColumn::fixed(TABLE_COLUMNS[1], 80.0),
+                    TableColumn::fixed(TABLE_COLUMNS[2], 80.0).priority(1),
+                    TableColumn::fixed(TABLE_COLUMNS[3], 120.0).priority(2),
+                ]);
+                table.set_rows(Self::rows_in_order(None));
+                table
+            },
+            table_sort: None,
+            tree: TreeNode::new("sabitori").with_expanded(true).with_children(vec![
+                TreeNode::new("crates").with_expanded(true).with_children(vec![
+                    TreeNode::new("sabitori-core").with_children(vec![
+                        TreeNode::new("element.rs"), TreeNode::new("build.rs"), TreeNode::new("path.rs"), TreeNode::new("svg.rs"),
+                    ]),
+                    TreeNode::new("sabitori-widgets").with_children(vec![
+                        TreeNode::new("table.rs"), TreeNode::new("tree_view.rs"), TreeNode::new("split_pane.rs"), TreeNode::new("titlebar_buttons.rs"),
+                    ]),
+                    TreeNode::new("sabitori-gpu").with_children(vec![
+                        TreeNode::new("renderer.rs"), TreeNode::new("group_renderer.rs"),
+                    ]),
+                ]),
+                TreeNode::new("examples").with_children(vec![
+                    TreeNode::new("tui_gallery.rs"), TreeNode::new("custom_titlebar.rs"), TreeNode::new("filer.rs"),
+                ]),
+                TreeNode::new("shaders").with_children(vec![TreeNode::new("rect.wgsl"), TreeNode::new("text.wgsl")]),
+                TreeNode::new("README.md"),
+                TreeNode::new("CHANGELOG.md"),
+            ]),
+            split_h: SplitPaneState::new(SplitDirection::Horizontal, 0.32),
+            split_v: SplitPaneState::new(SplitDirection::Vertical, 0.6),
+            split_h_area: Rect::new(0.0, 0.0, 0.0, 0.0),
+            split_v_area: Rect::new(0.0, 0.0, 0.0, 0.0),
+            hovered: None,
+            vlist: (0..10_000)
+                .map(|i| format!("request #{i} handled in {} ms", 3 + (i * 37) % 120))
+                .collect(),
+            notes: {
+                let notes = TextInputState::new("Write a few lines…");
+                notes.set_text("買い物\n- 牛乳\n- 卵\n\nLong lines wrap inside the box; the area scrolls once it is full.");
+                notes
+            },
+            datetime: DateTimePickerState::new("dt", 2026, 11, 8, 14, 30)
+                .with_minute_step(15)
+                .with_hour_range(9, 18),
+            color: ColorPickerState::new("cp", Color::from_hex("#7aa2f7")),
+            swatch_menu: ContextMenuState::new(),
+            highlight: Some(0),
+            dialog_answer: None,
+            win_log: Vec::new(),
         }
     }
 
@@ -3038,6 +3840,108 @@ mod tests {
             }
         }
         assert!(found.is_empty(), "はみ出し:\n{}", found.join("\n"));
+    }
+
+    /// 表: 見出しを押すと並べ替わり (同じ見出しをもう一度で逆順)、行を押すと選ばれる。
+    #[test]
+    fn table_sorts_by_header_and_selects_rows() {
+        let mut h = open("Table");
+        h.click(&table_header_id("tbl", 2));
+        h.frame();
+        assert_eq!(h.app().table_sort, Some((2, false)));
+        h.click(&table_header_id("tbl", 2));
+        h.frame();
+        assert_eq!(h.app().table_sort, Some((2, true)), "同じ見出しで逆順");
+        let first = h.app().table_rows_sorted();
+        assert_eq!(format!("{:?}", first[0][0]), format!("{:?}", Cell::bold("sabitori-core")), "星の多い順の先頭");
+        h.click(&table_row_id("tbl", 1));
+        assert_eq!(h.app().table.selected, Some(1));
+    }
+
+    /// 木: 閉じたフォルダを押すと開き、子が次のフレームで現れる。
+    #[test]
+    fn tree_opens_a_folder_on_click() {
+        let mut h = open("Tree View");
+        // 0 sabitori / 1 crates / 2 sabitori-core (閉じている)
+        assert!(h.rect_of(&tree_row_id("tree", 3)).is_some());
+        let before = h.app().tree.flatten().len();
+        h.click(&tree_row_id("tree", 2));
+        h.frame();
+        assert_eq!(h.app().tree.flatten().len(), before + 4, "sabitori-core の 4 つが出る");
+    }
+
+    /// 分割ペイン: 一覧の右に置いても、仕切りは指の所へ来る (箱の端から測る)。
+    #[test]
+    fn split_divider_follows_the_pointer_inside_the_stage() {
+        let mut h = open("Split Pane");
+        h.frame();
+        let area = h.app().split_h_area;
+        assert!(area.origin.x > 150.0, "一覧の右に置かれている: {area:?}");
+        let div = h.rect_of(&SplitPaneState::divider_id("split-h")).expect("仕切り");
+        let (dx, dy) = (div.origin.x + div.size.width * 0.5, div.origin.y + div.size.height * 0.5);
+        h.move_to(dx, dy);
+        h.press_at(dx, dy);
+        let target = area.origin.x + area.size.width * 0.5;
+        h.move_to(target, dy);
+        h.release();
+        let ratio = h.app().split_h.ratio();
+        assert!((ratio - 0.5).abs() < 0.02, "指は真ん中なのに {ratio}");
+    }
+
+    /// 日付と時刻: 日と時刻のマスを押すと値が変わる。
+    #[test]
+    fn date_and_time_cells_set_the_value() {
+        let mut h = open("Date & Time");
+        let day = h.build().hit_regions.iter()
+            .filter_map(|r| r.id.clone())
+            .find(|id| id.starts_with("dt:date") && id.ends_with(":20"))
+            .expect("20 日のマス");
+        h.click(&day);
+        h.frame();
+        assert!(h.app().datetime.formatted().starts_with("2026-11-20"), "{}", h.app().datetime.formatted());
+    }
+
+    /// 色: 見本を押すとその色になる。
+    #[test]
+    fn color_swatches_pick_the_color() {
+        let mut h = open("Color Picker");
+        let before = h.app().color.color();
+        h.click("cp:swatch:0");
+        assert_ne!(h.app().color.color(), before);
+    }
+
+    /// メニューの色帯: 文を右クリックするとメニューが開き、選んだ色で塗られる。
+    #[test]
+    fn swatch_menu_picks_a_highlighter() {
+        let mut h = open("Menu Swatches");
+        h.right_click("swatch-area");
+        h.frame();
+        assert!(h.app().swatch_menu.is_visible());
+        h.click("sw-2");
+        h.frame();
+        assert_eq!(h.app().highlight, Some(2));
+        assert!(!h.app().swatch_menu.is_visible(), "選んだら閉じる");
+    }
+
+    /// ダイアログ: 答えはボタンの名前で出る (OS の窓は開けないので答えを差し込む)。
+    #[test]
+    fn dialog_answer_names_the_button() {
+        let mut h = open("Dialog");
+        dialog::test_deliver("save", Answer::Button(1));
+        h.frame();
+        assert_eq!(h.app().dialog_answer.as_deref(), Some("save → 保存しない"));
+    }
+
+    /// 窓のボタン: − はこの窓に掛かる。✕ はギャラリーを閉じないよう、押されたことだけを残す。
+    #[test]
+    fn window_buttons_move_the_window_but_close_only_logs() {
+        let mut h = open("Window Buttons");
+        h.click("win-a:minimize");
+        assert_eq!(h.take_window_action(), Some(WindowAction::Minimize));
+        h.frame();
+        h.click("win-b:close");
+        assert_eq!(h.take_window_action(), None, "ギャラリーが閉じる");
+        assert_eq!(h.app().win_log.first().map(String::as_str), Some("win-b:close"));
     }
 
     #[test]
