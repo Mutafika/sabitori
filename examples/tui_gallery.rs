@@ -72,14 +72,16 @@ struct Gallery {
     form_text: TextInputState,
     form_checks: [bool; 3],
     form_radio: usize,
-    form_slider: f32,
     form_dropdown: DropdownState,
-    slider_dragging: bool,
+    /// スライダーの値 (0..=1)。添字は [`SliderKind`]。
+    sliders: [f32; SliderKind::ALL.len()],
+    /// 押してから離すまでの間、指に付いてくるスライダー。
+    slider_drag: Option<SliderKind>,
     /// 直近のフレームで組んだスライダーの溝の矩形 (`on_build` で拾う)。
     ///
     /// 以前は溝の左端を `200.0` と決め打ちしていて、 窓の幅や一覧の幅が
     /// 変わるとつまみが指からずれていた。
-    slider_track: Option<Rect>,
+    slider_tracks: [Option<Rect>; SliderKind::ALL.len()],
     pointer_x: f32,
     // Splash preview
     splash_preview_idx: usize,
@@ -122,6 +124,37 @@ struct Gallery {
     dialog_answer: Option<String>,
     /// Window Buttons で押されたもの (新しい順)。
     win_log: Vec<String>,
+}
+
+/// ギャラリーにあるスライダー。値は `Gallery::sliders` にこの順で持つ。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SliderKind {
+    /// Form Controls の見本。
+    Form,
+    /// Backdrop Blur: 窓の地と舞台の濃さ (0 で素通し、1 でいつもの濃さ)。
+    BackdropGround,
+    /// Backdrop Blur: ぼかした板に重ねる色の濃さ。
+    BackdropTint,
+}
+
+impl SliderKind {
+    const ALL: [SliderKind; 3] = [SliderKind::Form, SliderKind::BackdropGround, SliderKind::BackdropTint];
+
+    fn id(self) -> &'static str {
+        match self {
+            SliderKind::Form => "form-slider",
+            SliderKind::BackdropGround => "backdrop-ground",
+            SliderKind::BackdropTint => "backdrop-tint",
+        }
+    }
+
+    fn initial(self) -> f32 {
+        match self {
+            SliderKind::Form => 0.5,
+            SliderKind::BackdropGround => 0.35,
+            SliderKind::BackdropTint => 0.18,
+        }
+    }
 }
 
 /// 一覧の見出し。 項目の並びの中で区分が変わった所に差す。
@@ -353,13 +386,26 @@ impl Gallery {
         self.transition_start = self.elapsed();
     }
 
+    fn slider(&self, kind: SliderKind) -> f32 {
+        self.sliders[kind as usize]
+    }
+
     /// スライダーの値を、 ポインタの x から決める (溝の矩形は前のフレームのもの)。
-    fn drag_slider_to(&mut self, x: f32) {
-        if let Some(track) = self.slider_track {
+    fn drag_slider_to(&mut self, kind: SliderKind, x: f32) {
+        if let Some(track) = self.slider_tracks[kind as usize] {
             // つまみ (16px) の中心が指に来るように、 端から半分ずつ削る。
             let usable = (track.size.width - 16.0).max(1.0);
-            self.form_slider = ((x - track.origin.x - 8.0) / usable).clamp(0.0, 1.0);
+            self.sliders[kind as usize] = ((x - track.origin.x - 8.0) / usable).clamp(0.0, 1.0);
         }
+    }
+
+    /// 押した所へ飛び、 離すまで指に付いてくる (`on_pointer_move`) スライダー。
+    fn slider_el(&self, ctx: &ViewContext, kind: SliderKind, width: f32, t: &Theme) -> Element {
+        slider(kind.id(), self.slider(kind), width, t.surface_elevated, t.primary, Color::WHITE)
+            .click(ctx, kind.id(), move |app: &mut Gallery| {
+                app.slider_drag = Some(kind);
+                app.drag_slider_to(kind, app.pointer_x);
+            })
     }
 
     /// 選んでいる範囲をマーカーとして残す。
@@ -1780,12 +1826,7 @@ impl Gallery {
                 .click(ctx, format!("form-radio-{i}"), move |app: &mut Gallery| app.form_radio = i)
         }).collect();
 
-        // Slider: 押した所へ飛び、 離すまで指に付いてくる (`on_pointer_move`)。
-        let slider_el = slider("form-slider", self.form_slider, 300.0, t.surface_elevated, t.primary, Color::WHITE)
-            .click(ctx, "form-slider", |app: &mut Gallery| {
-                app.slider_dragging = true;
-                app.drag_slider_to(app.pointer_x);
-            });
+        let slider_el = self.slider_el(ctx, SliderKind::Form, 300.0, t);
 
         // Dropdown: `DropdownState` の trigger + menu。 開閉と選択は `on_click` の
         // `handle_click` が解釈する。 menu は trigger に `anchor_to` で貼り付くので、
@@ -1823,7 +1864,7 @@ impl Gallery {
             div().flex_row().gap(16.0).children(radios),
 
             // Slider
-            self.lbl(&format!("Slider — {:.0}%", self.form_slider * 100.0), 12.5, 600, t.text_disabled).shrink(0.0),
+            self.lbl(&format!("Slider — {:.0}%", self.slider(SliderKind::Form) * 100.0), 12.5, 600, t.text_disabled).shrink(0.0),
             slider_el,
 
             // Dropdown
@@ -2485,17 +2526,18 @@ impl Gallery {
         ], "Each one draws the element with its children into one picture first, then blurs, turns or scales it.")
     }
 
-    fn backdrop_demo(&self, t: &Theme, a: &AnsiPalette) -> Element {
+    fn backdrop_demo(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
         let materials = [
             (BackdropBlur::Hud, "Hud"),
             (BackdropBlur::Popover, "Popover"),
             (BackdropBlur::Sidebar, "Sidebar"),
         ];
+        let tint = self.slider(SliderKind::BackdropTint);
         let panels: Vec<Element> = materials.iter().map(|&(m, name)| {
             div().w(Px(170.0)).h(Px(150.0)).shrink(0.0)
                 .rounded_px(self.round(16.0, 6.0))
                 .backdrop_blur(m)
-                .bg(t.surface.with_alpha(0.18))
+                .bg(t.surface.with_alpha(tint))
                 .border(1.0, Color::WHITE.with_alpha(0.12))
                 .flex_col().items_center().justify_center().gap(6.0)
                 .children([
@@ -2503,8 +2545,18 @@ impl Gallery {
                     self.code_note(t, "backdrop_blur(..)"),
                 ])
         }).collect();
+        // 名前の欄の幅を揃えて、溝の左端を縦に揃える。
+        let knob = |kind: SliderKind, name: &str| -> Element {
+            div().flex_row().items_center().gap(12.0).children([
+                self.lbl(&format!("{name} {:>3.0}%", self.slider(kind) * 100.0), 12.5, 600, t.text_secondary)
+                    .w(Px(110.0)).shrink(0.0),
+                self.slider_el(ctx, kind, 240.0, t),
+            ])
+        };
         self.exhibit(t, "Backdrop Blur", vec![
             self.lbl("Move this window over something busy. The stage turns see-through here, so the desktop shows sharp around the panels and blurred behind them.", 13.0, 400, t.text_secondary).shrink(0.0),
+            knob(SliderKind::BackdropGround, "Ground"),
+            knob(SliderKind::BackdropTint, "Tint"),
             div().flex_row().flex_wrap(FlexWrap::Wrap).gap(18.0).children(panels),
             text(if cfg!(target_os = "macos") { "macOS: NSVisualEffectView under the window" } else { "macOS only — elsewhere the panels are just translucent" })
                 .mono().font_size(12.0).color(a.yellow).shrink(0.0),
@@ -3020,10 +3072,16 @@ impl DeclarativeApp for Gallery {
              t.text_primary, t.text_secondary, t.text_disabled, t.primary, a.magenta)
         };
         // Backdrop Blur の間だけ、窓の地と舞台を透かす。透かさないと、窓の後ろの
-        // ぼかし (`backdrop_blur`) は不透明な地の下に隠れて見えない。
+        // ぼかし (`backdrop_blur`) は不透明な地の下に隠れて見えない。どこまで透かすかは
+        // 見本のスライダー (0 で素通し、1 でいつもの濃さ)。一覧は不透明な地を敷いて
+        // 透かさない — 後ろの窓の文字と重なって読めなくなる (TUI のいつもの 0.88 でも、
+        // 暗い地の上では後ろの白い文字がかなり見える)。
         let see_through = self.demo() == Demo::BackdropBlur;
+        let sidebar_ground = see_through.then_some(if modern { s_bg0 } else { bg }.with_alpha(1.0));
         let (s_bg0, s_bg1, s_surface, bg) = if see_through {
-            (s_bg0.with_alpha(0.12), s_bg1.with_alpha(0.12), s_surface.with_alpha(0.1), bg.with_alpha(0.12))
+            let ground = self.slider(SliderKind::BackdropGround);
+            let thin = |c: Color| c.with_alpha(c.a * ground);
+            (thin(s_bg0), thin(s_bg1), thin(s_surface), thin(bg))
         } else {
             (s_bg0, s_bg1, s_surface, bg)
         };
@@ -3114,6 +3172,10 @@ impl DeclarativeApp for Gallery {
                     .flex_col().py(Px(4.0))
                     .children(menu_items),
             ]);
+        let sidebar = match sidebar_ground {
+            Some(ground) => sidebar.bg(ground),
+            None => sidebar,
+        };
 
         // ── Preview ──
         let preview = match self.demo() {
@@ -3166,7 +3228,7 @@ impl DeclarativeApp for Gallery {
             Demo::Mask => self.mask_demo(t, a),
             Demo::Blend => self.blend_demo(t),
             Demo::Transform => self.transform_demo(t, a),
-            Demo::BackdropBlur => self.backdrop_demo(t, a),
+            Demo::BackdropBlur => self.backdrop_demo(t, a, ctx),
             Demo::DateTime => self.date_time_demo(t, ctx),
             Demo::ColorPicker => self.color_picker_demo(t, ctx),
             Demo::MenuSwatches => self.swatch_menu_demo(t),
@@ -3343,7 +3405,9 @@ impl DeclarativeApp for Gallery {
     }
 
     fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
-        self.slider_track = build.region_rect("form-slider");
+        for kind in SliderKind::ALL {
+            self.slider_tracks[kind as usize] = build.region_rect(kind.id());
+        }
         if let Some(r) = build.region_rect("split-h") {
             self.split_h_area = r;
         }
@@ -3417,14 +3481,14 @@ impl DeclarativeApp for Gallery {
 
     fn on_pointer_move(&mut self, x: f32, _y: f32) {
         self.pointer_x = x;
-        if self.slider_dragging {
-            self.drag_slider_to(x);
+        if let Some(kind) = self.slider_drag {
+            self.drag_slider_to(kind, x);
         }
         self.color.on_pointer_move(x);
     }
 
     fn on_pointer_up(&mut self) {
-        self.slider_dragging = false;
+        self.slider_drag = None;
         self.color.on_pointer_up();
     }
 
@@ -3615,13 +3679,13 @@ impl Gallery {
             form_text: TextInputState::new("Type here..."),
             form_checks: [true, false, true],
             form_radio: 0,
-            form_slider: 0.5,
             form_dropdown: DropdownState::new(
                 "form-dropdown",
                 ["Option A", "Option B", "Option C", "Option D"].map(String::from).to_vec(),
             ),
-            slider_dragging: false,
-            slider_track: None,
+            sliders: SliderKind::ALL.map(SliderKind::initial),
+            slider_drag: None,
+            slider_tracks: [None; SliderKind::ALL.len()],
             pointer_x: 0.0,
             splash_preview_idx: 0,
             splash_preview_start: 0.0,
@@ -3808,11 +3872,42 @@ mod tests {
         h.move_to(track.origin.x + track.size.width - 2.0, track.origin.y + 10.0);
         h.press_at(track.origin.x + track.size.width - 2.0, track.origin.y + 10.0);
         h.frame();
-        assert!(h.app().form_slider > 0.95, "右端を押せば最大近く: {}", h.app().form_slider);
+        assert!(h.app().slider(SliderKind::Form) > 0.95, "右端を押せば最大近く: {}", h.app().slider(SliderKind::Form));
         h.move_to(track.origin.x + 8.0, track.origin.y + 10.0);
         h.release();
         h.frame();
-        assert!(h.app().form_slider < 0.05, "左端まで引けば 0 近く: {}", h.app().form_slider);
+        assert!(h.app().slider(SliderKind::Form) < 0.05, "左端まで引けば 0 近く: {}", h.app().slider(SliderKind::Form));
+    }
+
+    /// Backdrop Blur の透け具合は 2 本のスライダーで変える。引いたものだけが動き、
+    /// 離した後に指を動かしても付いてこない。
+    #[test]
+    fn backdrop_sliders_move_one_at_a_time() {
+        let mut h = open("Backdrop Blur");
+        let ground = h.rect_of(SliderKind::BackdropGround.id()).expect("地のスライダー");
+        let y = ground.origin.y + ground.size.height / 2.0;
+        h.move_to(ground.origin.x + ground.size.width / 2.0, y);
+        h.press_at(ground.origin.x + ground.size.width / 2.0, y);
+        h.frame();
+        h.move_to(ground.origin.x, y);
+        h.release();
+        h.frame();
+        let app = h.app();
+        assert!(app.slider(SliderKind::BackdropGround) < 0.05, "左端まで引けば素通し: {}", app.slider(SliderKind::BackdropGround));
+        assert_eq!(app.slider(SliderKind::BackdropTint), SliderKind::BackdropTint.initial());
+        assert_eq!(app.slider(SliderKind::Form), SliderKind::Form.initial());
+
+        h.move_to(ground.origin.x + ground.size.width, y);
+        h.frame();
+        assert!(h.app().slider(SliderKind::BackdropGround) < 0.05, "離した後は付いてこない");
+
+        let tint = h.rect_of(SliderKind::BackdropTint.id()).expect("色のスライダー");
+        let y = tint.origin.y + tint.size.height / 2.0;
+        h.move_to(tint.origin.x + tint.size.width - 2.0, y);
+        h.click_at(tint.origin.x + tint.size.width - 2.0, y);
+        h.frame();
+        assert!(h.app().slider(SliderKind::BackdropTint) > 0.95, "右端を押せば濃く: {}", h.app().slider(SliderKind::BackdropTint));
+        assert!(h.app().slider(SliderKind::BackdropGround) < 0.05);
     }
 
     #[test]
