@@ -507,6 +507,7 @@ fn shape_run(
             buffer.set_text(ctx.font_system, text, attrs, Shaping::Advanced);
             apply_align(&mut buffer, typo.align);
             buffer.shape_until_scroll(ctx.font_system, false);
+            crate::shaper::fit_letter_spacing(ctx.font_system, &mut buffer, width, typo.letter_spacing);
             if buffer.layout_runs().count() <= n as usize {
                 text
             } else {
@@ -518,16 +519,20 @@ fn shape_run(
                     text,
                     width,
                     n as usize,
+                    typo.letter_spacing,
                 );
                 owned.as_str()
             }
         }
         _ => text,
     };
-    // Final shape pass with whatever the clamp logic decided on.
+    // Final shape pass with whatever the clamp logic decided on. 字間で詰めた幅が
+    // 残っているかもしれないので、箱の幅から組み直す。
+    buffer.set_size(ctx.font_system, Some(width), None);
     buffer.set_text(ctx.font_system, final_text, attrs, Shaping::Advanced);
     apply_align(&mut buffer, typo.align);
     buffer.shape_until_scroll(ctx.font_system, false);
+    crate::shaper::fit_letter_spacing(ctx.font_system, &mut buffer, width, typo.letter_spacing);
 
     let mut glyphs: Vec<GlyphInstance> = Vec::new();
     let mut glyph_bytes: Vec<(u32, u32)> = Vec::new();
@@ -2041,6 +2046,67 @@ mod shaping_cache_tests {
         // …but position is deliberately NOT in the key.
         f.with_hits("Cache key", 500.0, 500.0, 14.0, None, td, false);
         assert_eq!(f.cache.len(), 4, "position must never add an entry");
+    }
+}
+
+#[cfg(test)]
+mod letter_spacing_wrap_tests {
+    //! 字間 (`letter_spacing`) を付けた文を折り返すと、行が箱からはみ出していた。
+    //! cosmic-text は字間を知らないので、箱の幅で折り返したあとに 1 字ごとに字間ずつ
+    //! ずらすと、行は `字間 × (字数 − 1)` だけ長くなる。描く道と測る道の両方を見る。
+    use super::*;
+    use crate::shaper::TextShaper;
+
+    const SENTENCE: &str = "Move this window over something busy. The stage turns see-through here, so the desktop shows sharp around the panels and blurred behind them.";
+    const WIDTH: f32 = 320.0;
+
+    fn spaced() -> Typography {
+        Typography { letter_spacing: 1.5, ..Typography::default() }
+    }
+
+    fn shaped(text: &str, typo: Typography) -> ShapedRun {
+        let mut font_system = FontSystem::new();
+        let mut atlas = GlyphAtlas::new();
+        let mut ctx = ShapeCtx {
+            font_system: &mut font_system,
+            atlas: &mut atlas,
+            scale_factor: 1.0,
+            smoothing: false,
+            color: [1.0; 4],
+            spans: &[],
+            preferred_family: &None,
+            preferred_monospace_family: &None,
+        };
+        shape_run(&mut ctx, text, 0.0, 0.0, 14.0, Some(WIDTH), false, false, None, None, typo)
+    }
+
+    /// 描いた字 (字間でずらした後の位置) は、どの行も箱の幅に収まる。
+    #[test]
+    fn spaced_lines_stay_inside_the_box() {
+        let run = shaped(SENTENCE, spaced());
+        let right = run.hits.iter().map(|h| h.x + h.w).fold(0.0_f32, f32::max);
+        assert!(right <= WIDTH + 0.5, "行の右端 {right} が箱 {WIDTH} を越えた");
+        // 字間が無いときより行は増える (詰めて折り返した) が、文は全部描かれる。
+        let lines = run.hits.iter().map(|h| h.line_index).max().unwrap_or(0) + 1;
+        let plain = shaped(SENTENCE, Typography::default());
+        let plain_lines = plain.hits.iter().map(|h| h.line_index).max().unwrap_or(0) + 1;
+        assert!(lines >= plain_lines);
+        let last = run.hits.iter().map(|h| h.byte_end).max().unwrap_or(0);
+        assert_eq!(last, SENTENCE.len(), "後ろが欠けた");
+    }
+
+    /// 測った箱と描いた行が同じ折り返しになる (行数が揃う)。
+    #[test]
+    fn measured_box_matches_the_drawn_lines() {
+        let typo = spaced();
+        let run = shaped(SENTENCE, typo);
+        let lines = run.hits.iter().map(|h| h.line_index).max().unwrap_or(0) + 1;
+        let mut shaper = TextShaper::new();
+        let m = shaper.measure_text(SENTENCE, 14.0, false, false, None, Some(WIDTH), None, typo);
+        // 計測は行の幅に 2px の余白を足す。
+        assert!(m.width() <= WIDTH + 2.0, "測った幅 {} が箱 {WIDTH} を越えた", m.width());
+        let line_h = typo.line_height_px(crate::shaper::quantize_font_size(14.0));
+        assert_eq!((m.height() / line_h).round() as u32, lines, "測った行数と描いた行数が違う");
     }
 }
 
