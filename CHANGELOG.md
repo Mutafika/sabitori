@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-11-08
+
 ### Fixed
 
 - **字間 (`letter_spacing`) を付けた文を折り返すと、行が箱からはみ出していた**。cosmic-text は字間を知らない
@@ -5192,7 +5194,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/Mutafika/sabitori/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Mutafika/sabitori/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Mutafika/sabitori/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Mutafika/sabitori/compare/v0.53.1...v0.54.0
