@@ -232,6 +232,11 @@ const ITEMS: &[(Demo, &str, Section)] = &[
 const STAR_PATH: &str = "M12 2 L14.9 8.6 L22 9.3 L16.6 14 L18.2 21 L12 17.3 L5.8 21 L7.4 14 L2 9.3 L9.1 8.6 Z";
 /// Window Buttons の画鋲 (24 四方)。
 const PIN_PATH: &str = "M12 17 V22 M9 3 H15 M10 3 V10 L6 14 H18 L14 10 V3";
+/// ヘッダー (= 窓の帯) の高さ。
+const MODERN_BAR_H: f32 = 46.0;
+const TUI_BAR_H: f32 = 24.0;
+/// ギャラリー自身の窓のボタンの id の頭。Window Buttons の見本 (`win-*`) とは別。
+const WINDOW_BUTTONS_ID: &str = "chrome";
 /// Paths & SVG の `Svg` で読む絵。
 const SVG_LOGO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect x="4" y="4" width="56" height="56" rx="14" fill="#7aa2f7"/>
@@ -2792,6 +2797,11 @@ impl DeclarativeApp for Gallery {
     fn title(&self) -> &str { "Sabitori TUI Gallery" }
     fn size(&self) -> (f32, f32) { (1000.0, 660.0) }
     fn transparent(&self) -> bool { true }
+    /// ヘッダーが窓の帯を兼ねる。高さはフルスクリーンを抜けたときに OS の帯を戻す
+    /// 高さで、普段の見た目には効かない。
+    fn titlebar(&self) -> Titlebar { Titlebar::Custom { height: MODERN_BAR_H } }
+    /// 中身を窓の上端まで広げると、macOS では縁の外側から大きさを変えにくい。
+    fn resize_handles(&self) -> Option<ResizeHandles> { Some(ResizeHandles::default()) }
 
     /// HackGen (白源)。 Hack だけだと wasm で日本語が豆腐になる。
     ///
@@ -3228,38 +3238,61 @@ impl DeclarativeApp for Gallery {
         let item_name = ITEMS[self.selected].1;
         let version = concat!("sabitori v", env!("CARGO_PKG_VERSION"));
 
-        // ── Header ──
+        // ── Header = 窓の帯 ──
+        // OS の帯は消してあり (`Titlebar::Custom`)、ヘッダーをつかむと窓が動く。
+        // 窓のボタンを自分で描くのは macOS だけ。他の OS では OS の帯が残るので、
+        // 描くと 2 組になる。Modern は左に信号の丸、TUI は右端に − □ ✕。
+        let own_buttons = cfg!(target_os = "macos");
         let header = if modern {
-            div().w_full().h(Px(46.0)).shrink(0.0)
+            let mut kids = Vec::new();
+            if own_buttons {
+                kids.push(titlebar_buttons(ctx, WINDOW_BUTTONS_ID, &TitlebarButtons::traffic_lights()).mr(Px(8.0)));
+            }
+            kids.extend([
+                div().w(Px(20.0)).h(Px(20.0)).rounded_px(6.0)
+                    .gradient(s_accent, s_accent2, 45.0).glow_sm(s_accent),
+                text("sabitori").font_size(16.0).font_weight(600).letter_spacing(0.2).color(s_text_hi).shrink(0.0),
+                text("/").font_size(15.0).color(s_text_dim).shrink(0.0),
+                text(item_name).font_size(15.0).font_weight(500).color(s_text_mid).shrink(0.0),
+                div().flex_1(),
+                skin_toggle,
+                text(format!("{}/{}", self.selected + 1, ITEMS.len()))
+                    .font_size(13.0).font_weight(500).color(s_text_dim).shrink(0.0),
+            ]);
+            div().w_full().h(Px(MODERN_BAR_H)).shrink(0.0)
                 .bg(s_chrome)
+                .window_drag().no_select()
                 .flex_row().items_center().overflow_hidden()
                 .px_pad(Px(16.0)).gap(10.0)
-                .children([
-                    div().w(Px(20.0)).h(Px(20.0)).rounded_px(6.0)
-                        .gradient(s_accent, s_accent2, 45.0).glow_sm(s_accent),
-                    text("sabitori").font_size(16.0).font_weight(600).letter_spacing(0.2).color(s_text_hi).shrink(0.0),
-                    text("/").font_size(15.0).color(s_text_dim).shrink(0.0),
-                    text(item_name).font_size(15.0).font_weight(500).color(s_text_mid).shrink(0.0),
-                    div().flex_1(),
-                    skin_toggle,
-                    text(format!("{}/{}", self.selected + 1, ITEMS.len()))
-                        .font_size(13.0).font_weight(500).color(s_text_dim).shrink(0.0),
-                ])
+                .children(kids)
         } else {
-            div().w_full().h(Px(24.0)).shrink(0.0)
+            let mut kids = vec![
+                text("sabitori").mono().bold().font_size(14.0).color(t.primary).shrink(0.0),
+                text("/").mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
+                text(item_name).mono().font_size(14.0).color(t.text_primary).shrink(0.0),
+                div().flex_1(),
+                skin_toggle,
+                text(format!("{}/{}", self.selected + 1, ITEMS.len()))
+                    .mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
+                text("j/k").mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
+            ];
+            if own_buttons {
+                // 帯の高さいっぱいの四角を右端にぴったり付ける。色は端末のテーマから。
+                let mut buttons = TitlebarButtons::windows(&ctx.theme, TUI_BAR_H);
+                buttons.style.width = 34.0;
+                buttons.style.icon_size = 9.0;
+                buttons.style.icon = t.text_disabled;
+                buttons.style.icon_hover = t.text_primary;
+                buttons.style.hover_bg = Some(t.surface_hover);
+                buttons.style.danger_bg = Some(a.red);
+                kids.push(titlebar_buttons(ctx, WINDOW_BUTTONS_ID, &buttons).ml(Px(4.0)));
+            }
+            div().w_full().h(Px(TUI_BAR_H)).shrink(0.0)
                 .bg(t.surface_elevated)
+                .window_drag().no_select()
                 .flex_row().items_center().overflow_hidden()
-                .px_pad(Px(10.0)).gap(8.0)
-                .children([
-                    text("sabitori").mono().bold().font_size(14.0).color(t.primary).shrink(0.0),
-                    text("/").mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
-                    text(item_name).mono().font_size(14.0).color(t.text_primary).shrink(0.0),
-                    div().flex_1(),
-                    skin_toggle,
-                    text(format!("{}/{}", self.selected + 1, ITEMS.len()))
-                        .mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
-                    text("j/k").mono().font_size(14.0).color(t.text_disabled).shrink(0.0),
-                ])
+                .pl(Px(10.0)).pr(Px(if own_buttons { 0.0 } else { 10.0 })).gap(8.0)
+                .children(kids)
         };
 
         // ── Footer ──
@@ -3942,6 +3975,39 @@ mod tests {
         h.click("win-b:close");
         assert_eq!(h.take_window_action(), None, "ギャラリーが閉じる");
         assert_eq!(h.app().win_log.first().map(String::as_str), Some("win-b:close"));
+    }
+
+    /// ヘッダーが窓の帯を兼ねる (OS の帯と 2 段にしない)。どちらの皮でも、空いた所を
+    /// 押すと窓をつかみ、帯の部品 (皮の切り替え) はつかみに取られず、窓のボタンは窓に効く。
+    #[test]
+    fn the_header_is_the_window_bar_in_both_skins() {
+        for (modern, bar_h) in [(true, MODERN_BAR_H), (false, TUI_BAR_H)] {
+            let mut g = Gallery::new();
+            g.splash_done = true;
+            g.modern = modern;
+            let mut h = Harness::new(g, 1000.0, 660.0);
+            h.frame();
+
+            h.click_at(500.0, bar_h / 2.0);
+            assert_eq!(h.take_window_gesture(), Some(WindowGesture::Drag), "modern={modern}");
+
+            h.click("skin-toggle");
+            assert_eq!(h.take_window_gesture(), None, "modern={modern}");
+            assert_eq!(h.app().modern, !modern);
+            h.app_mut().modern = modern;
+            h.frame();
+
+            if cfg!(target_os = "macos") {
+                h.click(&titlebar_button_id(WINDOW_BUTTONS_ID, "minimize"));
+                assert_eq!(h.take_window_action(), Some(WindowAction::Minimize), "modern={modern}");
+                h.frame();
+                h.click(&titlebar_button_id(WINDOW_BUTTONS_ID, "close"));
+                assert_eq!(h.take_window_action(), Some(WindowAction::Close), "modern={modern}");
+            } else {
+                // OS の帯が残る所では自前のボタンを描かない (描くと 2 組になる)。
+                assert!(h.rect_of(&titlebar_button_id(WINDOW_BUTTONS_ID, "close")).is_none());
+            }
+        }
     }
 
     #[test]

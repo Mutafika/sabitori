@@ -15,6 +15,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`tui_gallery` のヘッダーを窓の帯にした**。OS 標準のタイトルバーの下にヘッダーを描いていたので、帯が 2 段に
+  重なっていた。`Titlebar::Custom` で OS の帯を消し、ヘッダーをつかみどころ (`window_drag`) にして、窓のボタンを
+  `titlebar_buttons` で並べる — Modern は左に信号の丸、TUI は右端に − □ ✕ (色は端末のテーマから)。自前のボタンを
+  描くのは macOS だけ (他の OS は OS の帯が残る)。縁の外側からつかみにくくなるので `resize_handles` も付けた。
+
 ## [0.57.0] - 2026-11-08
 
 ### Fixed
