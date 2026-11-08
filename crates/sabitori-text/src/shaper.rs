@@ -463,6 +463,7 @@ impl TextShaper {
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         apply_align(&mut buffer, typo.align);
         buffer.shape_until_scroll(&mut self.font_system, false);
+        fit_letter_spacing(&mut self.font_system, &mut buffer, shaping_width, typo.letter_spacing);
 
         let mut width: f32 = 0.0;
         let mut line_count: usize = 0;
@@ -526,6 +527,12 @@ impl TextShaper {
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         apply_align(&mut buffer, shape.typo.align);
         buffer.shape_until_scroll(&mut self.font_system, false);
+        fit_letter_spacing(
+            &mut self.font_system,
+            &mut buffer,
+            shape.wrap_width.unwrap_or(f32::MAX),
+            shape.typo.letter_spacing,
+        );
         buffer
     }
 
@@ -566,10 +573,11 @@ impl TextShaper {
         buffer.set_text(&mut self.font_system, text, attrs, Shaping::Advanced);
         apply_align(&mut buffer, typo.align);
         buffer.shape_until_scroll(&mut self.font_system, false);
+        fit_letter_spacing(&mut self.font_system, &mut buffer, width, typo.letter_spacing);
         if buffer.layout_runs().count() <= n {
             return text.to_string();
         }
-        clamp_last_line(&mut self.font_system, &buffer, metrics, &attrs, text, width, n)
+        clamp_last_line(&mut self.font_system, &buffer, metrics, &attrs, text, width, n, typo.letter_spacing)
     }
 
     /// `byte_offset` にキャレットを置いたときの位置。
@@ -714,6 +722,39 @@ impl TextShaper {
 }
 
 /// `offset` を直前の文字境界まで戻し、 文字列長で頭打ちにする。
+/// 字間 (`letter_spacing`) の分だけ、折り返しを手前にする。
+///
+/// cosmic-text は字間を知らない。箱の幅 `width` で折り返してから、描くときに 1 字ごとに
+/// 字間ずつずらすと、行は `字間 × (字数 − 1)` だけ箱より長くなってはみ出す (Modern の
+/// 見た目の説明文のように、字間を付けた長い文で起きていた)。どの行も「行の幅 + 字間 ×
+/// (字数 − 1)」が `width` に収まるまで、折り返しの幅を詰めて組み直す。
+///
+/// `buffer` は幅 `width` で組み終えたもの。字間が 0 以下か、幅が無い (折り返さない)
+/// ときは何もしない。計測 ([`TextShaper::measure_text`])・キャレットの位置
+/// ([`TextShaper::shaped`])・描く道 (`TextRenderer`) が同じこれを通るので、測った箱と
+/// 描いた行の折り返しが揃う。
+pub(crate) fn fit_letter_spacing(font_system: &mut FontSystem, buffer: &mut Buffer, width: f32, spacing: f32) {
+    if spacing <= 0.0 || width >= f32::MAX {
+        return;
+    }
+    let mut wrap = width;
+    // 1 回で収まらないのは、詰めたせいで後ろの行に字が寄ったときくらい。
+    for _ in 0..8 {
+        let over = buffer
+            .layout_runs()
+            // 折り返せない塊 (箱より長い語) の行は、いくら詰めても収まらないので見ない。
+            .filter(|r| r.line_w <= wrap + 0.5)
+            .map(|r| r.line_w + spacing * r.glyphs.len().saturating_sub(1) as f32 - width)
+            .fold(0.0_f32, f32::max);
+        if over <= 0.01 {
+            return;
+        }
+        wrap = (wrap - over).max(1.0);
+        buffer.set_size(font_system, Some(wrap), None);
+        buffer.shape_until_scroll(font_system, false);
+    }
+}
+
 /// `max_lines` で切る: 最初の n-1 行は折り返したまま残し、**最後の行だけ字の
 /// 単位で**、「…」を足して行幅に収まる最長の前置きにする (#110)。
 ///
@@ -728,6 +769,7 @@ pub(crate) fn clamp_last_line(
     text: &str,
     width: f32,
     n_lines: usize,
+    spacing: f32,
 ) -> String {
     // 最初の n-1 行は折り返したまま残し、**最後の行だけ字の単位で**
     // 詰める (#110)。以前は (n+1) 行目の頭 = 語の切れ目から後ろへ削って
@@ -768,7 +810,11 @@ pub(crate) fn clamp_last_line(
         let trial = format!("{}…", text[last_start..cut].trim_end());
         one_line.set_text(font_system, &trial, *attrs, Shaping::Advanced);
         one_line.shape_until_scroll(font_system, false);
-        let w = one_line.layout_runs().map(|r| r.line_w).fold(0.0_f32, f32::max);
+        // 字間も足して測る (描くときは 1 字ごとに字間ずつずれる)。
+        let w = one_line
+            .layout_runs()
+            .map(|r| r.line_w + spacing.max(0.0) * r.glyphs.len().saturating_sub(1) as f32)
+            .fold(0.0_f32, f32::max);
         // 余裕は持たせない — 描くときは同じ幅で語の単位で折り返すので、わずかでも
         // はみ出す候補は 2 行に割れる。
         w <= width
@@ -793,8 +839,10 @@ pub(crate) fn clamp_last_line(
         if lo == 0 {
             return out;
         }
+        wrapped.set_size(font_system, Some(width), None);
         wrapped.set_text(font_system, &out, *attrs, Shaping::Advanced);
         wrapped.shape_until_scroll(font_system, false);
+        fit_letter_spacing(font_system, &mut wrapped, width, spacing);
         if wrapped.layout_runs().count() <= n_lines {
             return out;
         }
