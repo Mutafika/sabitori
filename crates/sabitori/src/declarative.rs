@@ -289,6 +289,10 @@ impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
 /// 越えたら文字の選択 (#111)。
 const CLICK_SLOP: f32 = 4.0;
 
+/// 窓の中に描く確かめのダイアログ ([`crate::dialog::ask`]) の id。ボタンは
+/// `"sabitori::ask::button::{n}"`、箱は `"sabitori::ask::dialog"`。
+pub const ASK_DIALOG_ID: &str = "sabitori::ask";
+
 /// [`DeclarativeApp::on_close_requested`] で、何が閉じようとしているか。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
@@ -666,6 +670,17 @@ pub trait DeclarativeApp: 'static {
 
     /// [`dialog::ask`](crate::dialog::ask) の答え。`key` は聞いたときに付けた札。
     fn on_dialog_answered(&mut self, _key: &str, _answer: crate::dialog::Answer) {}
+
+    /// [`dialog::ask`](crate::dialog::ask) を OS の確かめの窓で出すか (既定 `true`)。
+    /// OS の窓があるのは macOS (`NSAlert`) だけで、他の OS はいつも窓の中に描く。
+    /// `false` にすると macOS でも窓の中に描く — 見た目をアプリに揃えたいとき。
+    fn native_dialogs(&self) -> bool { true }
+
+    /// 窓の中に描くダイアログ ([`dialog::ask`](crate::dialog::ask)) の見た目。
+    /// 既定は `ctx.theme` の色。
+    fn ask_dialog_style(&self, ctx: &ViewContext) -> sabitori_widgets::AskDialogStyle {
+        sabitori_widgets::AskDialogStyle::from_theme(&ctx.theme)
+    }
 
     /// OS から「閉じたい」と来た。`false` を返すと閉じない (終了なら終わるのをやめる)。
     ///
@@ -1311,6 +1326,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) bars: crate::runtime_shared::Bars,
     /// Managed tooltip hover-delay state.
     tooltip_state: sabitori_widgets::TooltipState,
+    /// 窓の中に描く確かめのダイアログ ([`crate::dialog::ask`])。
+    /// Harness からも読めるようにしてある。
+    pub(crate) ask_dialog: sabitori_widgets::AskDialogState,
     /// Managed drag & drop state.
     /// Harness からも状態を読めるようにしてある (#48)。
     pub(crate) drag_manager: sabitori_widgets::DragManager,
@@ -1981,14 +1999,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             WindowEvent::Ime(ime_event) => {
                 let event = sabitori_window::keymap::input_from_ime(&ime_event);
-                let handled = self.route_to_managed(&event)
-                    || match self.focused_id {
-                        Some(ref id) => self.app.on_focused_input(id, &event),
-                        None => false,
-                    };
-                if !handled {
-                    self.app.on_input(&event);
-                }
+                self.dispatch_text_event(&event);
             }
             WindowEvent::RedrawRequested => {
                 let frame_t0 = Instant::now();
@@ -2031,14 +2042,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         }
                     }
                     for e in events {
-                        let handled = self.route_to_managed(&e)
-                            || match self.focused_id {
-                                Some(ref fid) => self.app.on_focused_input(fid, &e),
-                                None => false,
-                            };
-                        if !handled {
-                            self.app.on_input(&e);
-                        }
+                        self.dispatch_text_event(&e);
                     }
                 }
 
@@ -2076,14 +2080,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     crate::web_ime::set_active(on_a_field, self.managed_ime_area());
 
                     for e in crate::web_ime::drain() {
-                        let handled = self.route_to_managed(&e)
-                            || match self.focused_id {
-                                Some(ref fid) => self.app.on_focused_input(fid, &e),
-                                None => false,
-                            };
-                        if !handled {
-                            self.app.on_input(&e);
-                        }
+                        self.dispatch_text_event(&e);
                     }
 
                     // URL と戻るボタン (#74)。アプリが名乗る断片を押し、
@@ -2901,6 +2898,7 @@ impl<A: DeclarativeApp> AppState<A> {
             bars: crate::runtime_shared::Bars::default(),
             modifiers: Modifiers::default(),
             tooltip_state: sabitori_widgets::TooltipState::new(),
+            ask_dialog: sabitori_widgets::AskDialogState::new(),
             drag_manager: sabitori_widgets::DragManager::new(),
             style_animator: sabitori_widgets::StyleAnimator::new(),
             presence_animator: sabitori_widgets::PresenceAnimator::new(),
@@ -2968,9 +2966,19 @@ impl<A: DeclarativeApp> AppState<A> {
             self.app.on_files_picked(&key, result);
             self.dirty = true;
         }
-        // ダイアログの答えも同じ理由でここ。
+        // ダイアログの答えも同じ理由でここ。窓の中に描いた方の答えも同じ口へ。
         for (key, answer) in crate::dialog::take_results() {
             self.app.on_dialog_answered(&key, answer);
+            self.dirty = true;
+        }
+        for (key, button) in self.ask_dialog.take_answers() {
+            self.app.on_dialog_answered(&key, crate::dialog::Answer::Button(button));
+            self.dirty = true;
+        }
+        // 窓の中に描く問いを引き取る (答えの中でまた聞いたものも、ここで拾える)。
+        crate::dialog::set_native(self.app.native_dialogs());
+        for (key, ask) in crate::dialog::take_drawn() {
+            self.ask_dialog.ask(key, ask);
             self.dirty = true;
         }
 
@@ -3159,6 +3167,11 @@ impl<A: DeclarativeApp> AppState<A> {
             el
         });
 
+        // 窓の中に描く確かめのダイアログ ([`crate::dialog::ask`])。アプリの重ね物より
+        // 上に重ねる。ばねとボタンを登録するので、引き取り (下) より前に組む。
+        let ask_style = self.app.ask_dialog_style(&ctx);
+        let ask_element = sabitori_widgets::ask_dialog(&ctx, ASK_DIALOG_ID, &self.ask_dialog, &ask_style);
+
         // `view()` / `overlay_view()` の中でウィジェットが登録したものを引き取る。
         // 以後の入力配信・tick・フォーカス反映はランタイムが持つので、 アプリ側に
         // 書くことは何も無い (`sabitori_core::Managed` の doc を参照)。
@@ -3196,6 +3209,7 @@ impl<A: DeclarativeApp> AppState<A> {
         // Collect all overlay parts
         let mut overlay_parts: Vec<Element> = Vec::new();
         if let Some(el) = app_overlay { overlay_parts.push(el); }
+        if let Some(el) = ask_element { overlay_parts.push(el); }
         if let Some(el) = tooltip_element { overlay_parts.push(el); }
         if let Some(el) = drag_ghost_element { overlay_parts.push(el); }
         // 常に full-viewport コンテナで包む。単一 overlay をそのまま root にすると
@@ -3821,6 +3835,10 @@ impl<A: DeclarativeApp> AppState<A> {
             // クリック対象はここでは決めるだけ。 実行はループを抜けてから —
             // ハンドラは `&mut self` を要り、 `build` を借りたままでは呼べない。
             let mut click_target: Option<String> = None;
+            // 確かめのダイアログ ([`crate::dialog::ask`]) の上の押下では焦点を
+            // 外さない。閉じた後、下の欄にそのまま打ち続けられるように (OS の窓と同じ)。
+            // 押したボタンで閉じるので、押す前に見ておく。
+            let keep_focus = self.ask_dialog.is_open();
             // 押した要素が手前の木 (menu・modal) か。手前の文字は選べないので、
             // その下の本文に当たっても待たない (#111)。
             let mut target_overlay = false;
@@ -3880,7 +3898,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 self.dispatch_click(click_target.as_deref(), click_count, self.mouse_x, self.mouse_y);
             }
             // Blur if clicked on a non-focusable region (or empty area)
-            if !focus_set {
+            if !focus_set && !keep_focus {
                 self.focused_id = None;
             }
             // Start pending drag if a draggable element was hit
@@ -4038,6 +4056,8 @@ impl<A: DeclarativeApp> AppState<A> {
 
                     let mut click_target: Option<String> = None;
                     let mut pending_drag: Option<(String, Option<String>)> = None;
+                    // マウス押下と同じく、確かめのダイアログの上では焦点を外さない。
+                    let keep_focus = self.ask_dialog.is_open();
                     if let Some(ref build) = self.last_build {
                         let mut focus_set = false;
                         for region in &build.hit_regions {
@@ -4060,7 +4080,7 @@ impl<A: DeclarativeApp> AppState<A> {
                                 break;
                             }
                         }
-                        if !focus_set {
+                        if !focus_set && !keep_focus {
                             self.focused_id = None;
                         }
                     }
@@ -4559,7 +4579,33 @@ impl<A: DeclarativeApp> AppState<A> {
             }
     }
 
+    /// 文字の入力 (IME の変換・確定、iOS / web の文字) を、登録済みの欄 → 焦点の
+    /// 要素 → アプリの順に配る。窓の中に確かめのダイアログを出している間は
+    /// 誰にも渡さない (下の欄に文字が入らないように)。
+    fn dispatch_text_event(&mut self, event: &InputEvent) {
+        if self.ask_dialog.is_open() {
+            return;
+        }
+        let handled = self.route_to_managed(event)
+            || match self.focused_id.clone() {
+                Some(id) => self.app.on_focused_input(&id, event),
+                None => false,
+            };
+        if !handled {
+            self.app.on_input(event);
+        }
+    }
+
     pub(crate) fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
+        // 窓の中に確かめのダイアログを出している間は、キーは全部そちらへ
+        // (Return / Esc でボタンを押す)。下の画面の欄やアプリには渡さない。
+        if self.ask_dialog.is_open() {
+            if pressed {
+                self.ask_dialog.on_key(key);
+                self.dirty = true;
+            }
+            return;
+        }
         // 配る順が要点: **アプリが先、既定動作があと**。
         //
         // 以前は既定動作 (コピー・選択解除・フォーカス移動) を先に実行してから

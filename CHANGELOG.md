@@ -15,8 +15,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **確かめのダイアログを窓の中に描く部品 `ask_dialog` (`sabitori-widgets`)**。`dialog::ask` に渡すのと同じ
+  `Ask` (問い・補足・ボタン) を、窓の中央に重ねて描く。OS の確かめの窓と同じ振る舞いにしてある — 1 つ目の
+  ボタンが既定で右端・Return で押され、`cancel_button` は Esc で押され、背景を押しても閉じない。出ている間は
+  キーを全部吸い (下の欄に文字が入らない)、出している間に聞いた問いは答えた後に順に出る。見た目は
+  `AskDialogStyle` (`from_theme` で `AppTheme` の色、`mono` で端末風)。状態は `AskDialogState`。
+- **`dialog::ask` が web / Windows / Linux でも聞けるようになった**。これまでは `Answer::Unsupported` を返す
+  だけで、「アプリが自分の画面で聞く」ことになっていた。今はランタイムが `ask_dialog` を窓の上に重ね、キーを
+  回し、答えを同じ `on_dialog_answered` に届ける — アプリは何も配線しなくていい。macOS は今までどおり
+  `NSAlert` で、`DeclarativeApp::native_dialogs()` を `false` にすると macOS でも窓の中に描く (見た目を
+  アプリに揃えたいとき)。見た目は `DeclarativeApp::ask_dialog_style()` (既定は `ctx.theme` の色)。
+  ボタンの id は `"sabitori::ask::button::{n}"` なので、`Harness` から押せる (OS の窓と違い `test_deliver`
+  で答えを差し込まなくていい)。ダイアログの上の押下では、下の欄の焦点を外さない (閉じた後そのまま打てる)。
+
 ### Changed
 
+- `dialog::Ask` は `sabitori_widgets::Ask` の再公開になった (部品と同じ型)。`sabitori::dialog::Ask` の
+  書き方はそのまま通る。`Answer::Unsupported` は、メインスレッド以外から聞いたときだけになった。
+- IME の変換・確定と iOS / web の文字を配る 3 か所が同じ処理を持っていたので、1 つにまとめた
+  (`dispatch_text_event`)。確かめのダイアログが出ている間はここで止める。
 - **`tui_gallery` のヘッダーを窓の帯にした**。OS 標準のタイトルバーの下にヘッダーを描いていたので、帯が 2 段に
   重なっていた。`Titlebar::Custom` で OS の帯を消し、ヘッダーをつかみどころ (`window_drag`) にして、窓のボタンを
   `titlebar_buttons` で並べる — Modern は左に信号の丸、TUI は右端に − □ ✕ (色は端末のテーマから)。自前のボタンを
@@ -27,9 +46,8 @@
   ギャラリーのスライダーは 1 本専用の配線だったので、`SliderKind` で何本でも持てるようにした。
 - **`tui_gallery` の Dialog を、OS の確かめの窓 (NSAlert) から窓の中に描くダイアログにした**。sabitori で描いた
   部品の見本なのに、そこだけ OS の窓 (しかも .app でないので絵がフォルダ) が出て、皮にも合っていなかった。
-  `dialog::ask` と同じ `Ask` を `modal()` で描き、既定のボタンを右端に、Return で既定・Esc でキャンセル、
-  背景を押しても閉じない (OS の窓と同じ)。答えは同じ `on_dialog_answered` に渡す。撮影用に
-  `TUI_GALLERY_ASK=save|delete` で問いを開いた状態から始められる。
+  `native_dialogs()` を `false` にして `dialog::ask` を呼ぶだけにし、見た目は `ask_dialog_style()` で皮に
+  合わせる (TUI は等幅)。撮影用に `TUI_GALLERY_ASK=save|delete` で問いを開いた状態から始められる。
 
 ## [0.57.0] - 2026-11-08
 

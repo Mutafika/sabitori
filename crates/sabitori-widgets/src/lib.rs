@@ -42,6 +42,7 @@
 //! | `Table` | [`table`] + [`TableState`] (宣言版に作り直し) |
 //! | `SplitPane` | [`split_pane`] + [`SplitPaneState`] (宣言版に作り直し) |
 
+mod ask_dialog;
 mod color_picker;
 mod context_menu_widget;
 mod date_picker;
@@ -71,6 +72,7 @@ mod virtual_list;
 mod window_drag;
 pub mod file_browser;
 
+pub use ask_dialog::{ask_dialog, Ask, AskDialogState, AskDialogStyle};
 pub use color_picker::{ColorPickerState, ColorPickerStyle};
 pub use context_menu_widget::{ContextMenuState, MenuItemDef};
 pub use date_picker::{DatePickerState, DatePickerStyle};
