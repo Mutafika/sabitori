@@ -1,4 +1,4 @@
-//! 確かめのダイアログ (OS 標準の窓)。
+//! 確かめのダイアログ。
 //!
 //! 文言とボタンを渡すと出し、押されたボタンを後で
 //! [`DeclarativeApp::on_dialog_answered`] に届ける。届け方は [`crate::files::pick`]
@@ -23,64 +23,45 @@
 //! 何を聞くか (保存するか・消してよいか) はアプリが決める。ここは窓を出して
 //! 答えを返すだけ。
 //!
+//! # どこに出るか
+//!
 //! | | |
 //! |---|---|
-//! | macOS | `NSAlert` |
-//! | web / Windows / Linux | **未対応** ([`Answer::Unsupported`]) — アプリが自分の画面で聞く |
+//! | macOS | `NSAlert` (OS の確かめの窓)。[`DeclarativeApp::native_dialogs`] が `false` なら窓の中に描く |
+//! | web / Windows / Linux | 窓の中に描く |
+//!
+//! 窓の中に描くときは、ランタイムが [`ask_dialog`](sabitori_widgets::ask_dialog) を
+//! 窓の上に重ねる。見た目は [`DeclarativeApp::ask_dialog_style`] (既定は `ctx.theme`
+//! の色)。1 つ目のボタンが既定で右端・Return で押され、[`Ask::cancel_button`] は
+//! Esc で押される。出ている間、キーと下の画面のクリックはダイアログが吸う。
+//! 出している間に聞いた問いは、答えた後に順に出る。
 //!
 //! [`DeclarativeApp::on_dialog_answered`]: crate::DeclarativeApp::on_dialog_answered
+//! [`DeclarativeApp::native_dialogs`]: crate::DeclarativeApp::native_dialogs
+//! [`DeclarativeApp::ask_dialog_style`]: crate::DeclarativeApp::ask_dialog_style
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
-/// 何を聞くか。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Ask {
-    /// 問い (太字の 1 行目)。
-    pub message: String,
-    /// 補足 (空なら出さない)。
-    pub detail: String,
-    /// ボタンの文字。**1 つ目が既定** (Return で押される)。空なら「OK」1 つ。
-    pub buttons: Vec<String>,
-    /// Esc で押されるボタン。
-    pub cancel: Option<usize>,
-}
-
-impl Ask {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), ..Self::default() }
-    }
-
-    pub fn detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-
-    /// ボタンを足す (足した順に 0, 1, 2…)。
-    pub fn button(mut self, label: impl Into<String>) -> Self {
-        self.buttons.push(label.into());
-        self
-    }
-
-    /// Esc でも押されるボタンを足す。
-    pub fn cancel_button(mut self, label: impl Into<String>) -> Self {
-        self.cancel = Some(self.buttons.len());
-        self.buttons.push(label.into());
-        self
-    }
-}
+/// 何を聞くか。窓の中に描く部品 ([`sabitori_widgets::ask_dialog`]) と同じ型。
+pub use sabitori_widgets::Ask;
 
 /// 答え。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// 押されたボタン ([`Ask::buttons`] の何番目か)。
     Button(usize),
-    /// この環境には OS のダイアログが無い。アプリが自分の画面で聞く。
+    /// 出せなかった (メインスレッド以外から聞いた)。
     Unsupported,
 }
 
 thread_local! {
     /// 届いた答え。ランタイムが毎フレーム汲んで `on_dialog_answered` を呼ぶ。
     static RESULTS: RefCell<Vec<(String, Answer)>> = const { RefCell::new(Vec::new()) };
+    /// 窓の中に描く問い。ランタイムが毎フレーム汲んで重ねる。
+    static DRAWN: RefCell<Vec<(String, Ask)>> = const { RefCell::new(Vec::new()) };
+    /// OS の窓を使ってよいか (`DeclarativeApp::native_dialogs`)。ランタイムが
+    /// 毎フレーム合わせる。
+    static NATIVE: Cell<bool> = const { Cell::new(true) };
 }
 
 fn deliver(key: String, answer: Answer) {
@@ -94,35 +75,40 @@ pub(crate) fn take_results() -> Vec<(String, Answer)> {
     RESULTS.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
-/// **テストから「このボタンが押された」を差し込む。** ダイアログは OS のものなので、
-/// ヘッドレスのテストからは開けない。
+/// 窓の中に描く問いを、ランタイムが毎フレーム汲む。
+pub(crate) fn take_drawn() -> Vec<(String, Ask)> {
+    DRAWN.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
+/// OS の窓を使ってよいかを、ランタイムがアプリの設定に合わせる。
+pub(crate) fn set_native(yes: bool) {
+    NATIVE.with(|n| n.set(yes));
+}
+
+/// **テストから「このボタンが押された」を差し込む。** OS の窓はヘッドレスの
+/// テストからは開けない。窓の中に描く方は `Harness` でボタンを押せばよい
+/// (`"sabitori::ask::button::{n}"`)。
 pub fn test_deliver(key: impl Into<String>, answer: Answer) {
     deliver(key.into(), answer);
 }
 
 /// ダイアログを出す。答えは [`DeclarativeApp::on_dialog_answered`] に届く。
 ///
-/// macOS ではその場で出して、閉じるまで待つ (`runModal`)。メインスレッド (クリック
-/// 処理や `on_close_requested` の中) から呼ぶ。
+/// macOS の OS の窓はその場で出して、閉じるまで待つ (`runModal`)。窓の中に描く
+/// ときは次のフレームで出る。どちらもメインスレッド (クリック処理や
+/// `on_close_requested` の中) から呼ぶ。
 ///
 /// [`DeclarativeApp::on_dialog_answered`]: crate::DeclarativeApp::on_dialog_answered
 pub fn ask(key: impl Into<String>, ask: Ask) {
     let key = key.into();
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-    {
+    if NATIVE.with(Cell::get) {
         deliver(key, macos::ask(&ask));
+        return;
     }
+    DRAWN.with(|d| d.borrow_mut().push((key, ask)));
     #[cfg(target_arch = "wasm32")]
-    {
-        let _ = &ask;
-        deliver(key, Answer::Unsupported);
-    }
-    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
-    {
-        let _ = &ask;
-        tracing::warn!("dialog::ask はこの環境では未対応");
-        deliver(key, Answer::Unsupported);
-    }
+    crate::web_wake::wake();
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
@@ -160,10 +146,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builder_marks_the_cancel_button() {
-        let a = Ask::new("保存しますか？").button("保存").button("保存しない").cancel_button("キャンセル");
-        assert_eq!(a.buttons, ["保存", "保存しない", "キャンセル"]);
-        assert_eq!(a.cancel, Some(2));
+    fn drawn_asks_wait_for_the_runtime() {
+        set_native(false);
+        ask("k", Ask::new("消しますか？").button("消す"));
+        set_native(true);
+        let drawn = take_drawn();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].0, "k");
+        assert!(take_drawn().is_empty());
+        assert!(take_results().is_empty(), "答えはまだ無い");
     }
 
     #[test]

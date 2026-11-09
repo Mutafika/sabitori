@@ -16,7 +16,7 @@
 //! ```
 
 use sabitori::*;
-use sabitori::dialog::{Answer, Ask};
+use sabitori::dialog::{self, Answer, Ask};
 use sabitori::element::{path, BlendMode, GlyphMotion};
 use sabitori::svg::Svg;
 use sabitori_style::{AnsiPalette, Theme};
@@ -122,10 +122,8 @@ struct Gallery {
     /// 選んだ蛍光ペン (`SWATCHES` の添字)。
     highlight: Option<usize>,
     dialog_answer: Option<String>,
-    /// Dialog で聞いている問い (札と中身)。窓の中に sabitori で描く。閉じても
-    /// 消えていく間は描くので、次の問いまで残す。
-    asking: Option<(&'static str, Ask)>,
-    ask_modal: ModalState,
+    /// 起動時に開く Dialog の問い (`TUI_GALLERY_ASK`)。最初のフレームを組んだ後に聞く。
+    ask_on_start: Option<String>,
     /// Window Buttons で押されたもの (新しい順)。
     win_log: Vec<String>,
 }
@@ -2800,7 +2798,7 @@ impl Gallery {
                 button("dlg-delete", "Ask: delete?", a.red, |app| app.ask("delete")),
             ]),
             text(format!("answer: {answer}")).mono().font_size(14.0).color(t.primary).shrink(0.0),
-        ], "The same Ask as dialog::ask, drawn in this window with modal() — it follows the skin and works on every OS. Return presses the first button, Esc the cancel one. (dialog::ask itself shows the OS alert on macOS.)")
+        ], "dialog::ask(key, Ask) draws the question in this window (native_dialogs() = false) — it follows the skin and works on every OS. Return presses the first button, Esc the cancel one; the answer comes back in on_dialog_answered.")
     }
 
     /// Dialog の見本の問い (札と中身)。
@@ -2815,74 +2813,12 @@ impl Gallery {
         }
     }
 
-    /// 見本の問いを窓の中に出す (答えは [`Self::answer`] で受ける)。
+    /// 見本の問いを出す。ギャラリーは `native_dialogs() == false` なので、OS の窓では
+    /// なく窓の中に描かれ、答えは `on_dialog_answered` に来る。
     fn ask(&mut self, key: &str) {
-        if let Some(question) = Self::sample_ask(key) {
-            self.asking = Some(question);
-            self.ask_modal.open();
+        if let Some((key, ask)) = Self::sample_ask(key) {
+            dialog::ask(key, ask);
         }
-    }
-
-    /// 出している問いに答えて閉じる。答えは OS の窓と同じ `on_dialog_answered` に渡す
-    /// (どちらで聞いても受け口は 1 つ)。
-    fn answer(&mut self, button: usize) {
-        if !self.ask_modal.is_open() {
-            return;
-        }
-        self.ask_modal.close();
-        if let Some((key, _)) = self.asking {
-            self.on_dialog_answered(key, Answer::Button(button));
-        }
-    }
-
-    /// 出している問いのボタンの文字 (`Ask` が空なら「OK」1 つ)。
-    fn ask_buttons(ask: &Ask) -> Vec<String> {
-        if ask.buttons.is_empty() { vec!["OK".to_string()] } else { ask.buttons.clone() }
-    }
-
-    /// Dialog の問いを、 sabitori の `modal` で窓の中に描く。
-    fn ask_view(&self, ctx: &ViewContext) -> Option<Element> {
-        let t = &self.theme;
-        let (_, ask) = self.asking.as_ref()?;
-        let labels = Self::ask_buttons(ask);
-        let style = ModalStyle {
-            backdrop_color: Color::new(0.0, 0.0, 0.0, 0.45),
-            bg: t.surface_elevated,
-            border_color: t.border,
-            corner_radius: self.round(14.0, 4.0),
-            max_width: 400.0,
-            padding: if self.modern { 22.0 } else { 16.0 },
-            ..ModalStyle::from_theme(&ctx.theme)
-        };
-        // 既定 (1 つ目) を右端に置く。 macOS の並びと同じく、右から 1 つ目・2 つ目…。
-        let buttons: Vec<Element> = labels.iter().enumerate().rev().map(|(i, label)| {
-            let id = format!("ask-btn-{i}");
-            let hot = ctx.hovered.as_deref() == Some(id.as_str());
-            let (bg, fg) = if i == 0 {
-                (if hot { t.primary_hover } else { t.primary }, Color::WHITE)
-            } else {
-                (if hot { t.surface_hover } else { Color::TRANSPARENT }, t.text_primary)
-            };
-            let el = div().cursor(Cursor::Pointer).shrink(0.0)
-                .bg(bg).rounded_px(self.round(7.0, 3.0))
-                .px_pad(Px(14.0)).py(Px(6.0))
-                .child(self.lbl(label, 13.5, if i == 0 { 600 } else { 500 }, fg).shrink(0.0))
-                .click(ctx, id, move |app: &mut Gallery| app.answer(i));
-            if i == 0 { el } else { el.border(1.0, t.border) }
-        }).collect();
-        let mut keys = format!("Return: {}", labels[0]);
-        if let Some(cancel) = ask.cancel.and_then(|c| labels.get(c)) {
-            keys.push_str(&format!("  ·  Esc: {cancel}"));
-        }
-        let mut content = vec![self.lbl(&ask.message, 15.0, 700, t.text_primary)];
-        if !ask.detail.is_empty() {
-            content.push(self.lbl(&ask.detail, 13.0, 400, t.text_secondary));
-        }
-        content.push(div().h(Px(4.0)));
-        content.push(div().w_full().flex_row().justify_end().gap(8.0).children(buttons));
-        content.push(self.lbl(&keys, 11.5, 400, t.text_disabled).self_end());
-        let dialog = modal(ctx, "ask", &self.ask_modal, &style, "", content)?;
-        Some(div().w(Px(ctx.width)).h(Px(ctx.height)).child(dialog))
     }
 
     // ── Window ──
@@ -2931,6 +2867,29 @@ impl DeclarativeApp for Gallery {
     /// ヘッダーが窓の帯を兼ねる。高さはフルスクリーンを抜けたときに OS の帯を戻す
     /// 高さで、普段の見た目には効かない。
     fn titlebar(&self) -> Titlebar { Titlebar::Custom { height: MODERN_BAR_H } }
+    /// `dialog::ask` を OS の窓ではなく窓の中に描く (見本が皮に揃うように)。
+    fn native_dialogs(&self) -> bool { false }
+    /// 窓の中に描くダイアログを、ギャラリーのテーマと皮に合わせる。
+    fn ask_dialog_style(&self, ctx: &ViewContext) -> AskDialogStyle {
+        let t = &self.theme;
+        AskDialogStyle {
+            bg: t.surface_elevated,
+            border: t.border,
+            corner_radius: self.round(14.0, 4.0),
+            padding: if self.modern { 22.0 } else { 16.0 },
+            message: t.text_primary,
+            detail: t.text_secondary,
+            hint: t.text_disabled,
+            primary_bg: t.primary,
+            primary_bg_hover: t.primary_hover,
+            button_bg_hover: t.surface_hover,
+            button_text: t.text_primary,
+            button_border: t.border,
+            button_radius: self.round(7.0, 3.0),
+            mono: !self.modern,
+            ..AskDialogStyle::from_theme(&ctx.theme)
+        }
+    }
     /// 中身を窓の上端まで広げると、macOS では縁の外側から大きさを変えにくい。
     fn resize_handles(&self) -> Option<ResizeHandles> { Some(ResizeHandles::default()) }
 
@@ -2978,10 +2937,6 @@ impl DeclarativeApp for Gallery {
         let t = &self.theme;
         let a = &t.ansi;
 
-        // Dialog の問い。閉じきるまで (消えていく間も) 描く。
-        if let Some(ask) = self.ask_view(ctx) {
-            return Some(ask);
-        }
 
         // Menu Swatches: 行の名前の後ろに色の帯 (`MenuItemDef::with_swatch`)。
         if let Some(menu) = self.swatch_menu.to_overlay(
@@ -3489,6 +3444,9 @@ impl DeclarativeApp for Gallery {
     }
 
     fn on_build(&mut self, build: &sabitori_core::build::BuildResult) {
+        if let Some(key) = self.ask_on_start.take() {
+            self.ask(&key);
+        }
         for kind in SliderKind::ALL {
             self.slider_tracks[kind as usize] = build.region_rect(kind.id());
         }
@@ -3506,9 +3464,10 @@ impl DeclarativeApp for Gallery {
 
     fn on_dialog_answered(&mut self, key: &str, answer: Answer) {
         // ボタンは足した順の番号で届く (キャンセルも 1 つのボタン)。
-        let labels = Self::sample_ask(key).map(|(_, ask)| Self::ask_buttons(&ask)).unwrap_or_default();
+        let sample = Self::sample_ask(key);
+        let labels = sample.as_ref().map(|(_, ask)| ask.labels()).unwrap_or_default();
         self.dialog_answer = Some(match answer {
-            Answer::Button(i) => format!("{key} → {}", labels.get(i).map_or("?", String::as_str)),
+            Answer::Button(i) => format!("{key} → {}", labels.get(i).copied().unwrap_or("?")),
             Answer::Unsupported => format!("{key} → not supported on this OS"),
         });
     }
@@ -3647,20 +3606,6 @@ impl DeclarativeApp for Gallery {
         if !self.splash_done {
             self.splash_done = true;
             return true;
-        }
-        // 問いを出している間は、キーはその問いだけが受ける (j / k で項目が動かない)。
-        // Return は既定 (1 つ目) のボタン、Esc はキャンセルのボタン。
-        if self.ask_modal.is_open() {
-            match event {
-                InputEvent::KeyInput { key: Key::Enter, pressed: true, .. } => self.answer(0),
-                InputEvent::KeyInput { key: Key::Escape, pressed: true, .. } => {
-                    if let Some(cancel) = self.asking.as_ref().and_then(|(_, ask)| ask.cancel) {
-                        self.answer(cancel);
-                    }
-                }
-                _ => {}
-            }
-            return matches!(event, InputEvent::KeyInput { .. } | InputEvent::CharInput(_));
         }
         // 分割ペインの仕切り。指の位置は箱 (`on_build` で拾う) の端から測る。
         if self.demo() == Demo::Split {
@@ -3841,13 +3786,7 @@ impl Gallery {
             swatch_menu: ContextMenuState::new(),
             highlight: Some(0),
             dialog_answer: None,
-            asking: None,
-            ask_modal: {
-                // OS の確かめの窓と同じく、背景を押しても閉じない (どれかのボタンで答える)。
-                let m = ModalState::new();
-                m.set_dismissable(false);
-                m
-            },
+            ask_on_start: None,
             win_log: Vec::new(),
         }
     }
@@ -3869,10 +3808,9 @@ impl Gallery {
         if std::env::var("TUI_GALLERY_GOO_OPEN").is_ok_and(|v| v == "1") {
             self.goo_open = true;
         }
-        // Dialog の問いを開いた状態で始める (`save` / `delete`)。
-        if let Ok(key) = std::env::var("TUI_GALLERY_ASK") {
-            self.ask(&key);
-        }
+        // Dialog の問いを開いた状態で始める (`save` / `delete`)。ここで聞くと
+        // `native_dialogs` をランタイムが知る前なので、最初のフレームの後に聞く。
+        self.ask_on_start = std::env::var("TUI_GALLERY_ASK").ok();
     }
 }
 
@@ -4164,22 +4102,22 @@ mod tests {
         let mut h = open("Dialog");
         h.click("dlg-save");
         h.settle();
-        assert!(h.rect_of("ask::dialog").is_some(), "窓の中に出る");
+        assert!(h.rect_of("sabitori::ask::dialog").is_some(), "窓の中に出る");
         // 既定 (1 つ目) は右端。
-        let save = h.rect_of("ask-btn-0").expect("保存");
-        let dont = h.rect_of("ask-btn-1").expect("保存しない");
+        let save = h.rect_of("sabitori::ask::button::0").expect("保存");
+        let dont = h.rect_of("sabitori::ask::button::1").expect("保存しない");
         assert!(save.origin.x > dont.origin.x, "既定が右端: {save:?} / {dont:?}");
 
         // 背景を押しても閉じない (どれかのボタンで答える)。
         h.click_at(5.0, 300.0);
         h.settle();
-        assert!(h.app().ask_modal.is_open());
+        assert!(h.rect_of("sabitori::ask::dialog").is_some(), "背景では閉じない");
         assert_eq!(h.app().dialog_answer, None);
 
-        h.click("ask-btn-1");
+        h.click("sabitori::ask::button::1");
         h.settle();
         assert_eq!(h.app().dialog_answer.as_deref(), Some("save → 保存しない"));
-        assert!(h.rect_of("ask::dialog").is_none(), "閉じきったら描かない");
+        assert!(h.rect_of("sabitori::ask::dialog").is_none(), "閉じきったら描かない");
     }
 
     /// Return は既定のボタン、 Esc はキャンセルのボタン。 出している間は j / k で項目が動かない。
@@ -4201,7 +4139,8 @@ mod tests {
         h.key(Key::Enter, Modifiers::default());
         h.frame();
         assert_eq!(h.app().dialog_answer.as_deref(), Some("save → 保存"));
-        assert!(!h.app().ask_modal.is_open());
+        h.settle();
+        assert!(h.rect_of("sabitori::ask::dialog").is_none());
     }
 
     /// 窓のボタン: − はこの窓に掛かる。✕ はギャラリーを閉じないよう、押されたことだけを残す。
