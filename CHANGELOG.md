@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-11-09
+
 ### Added
 
 - **確かめのダイアログを窓の中に描く部品 `ask_dialog` (`sabitori-widgets`)**。`dialog::ask` に渡すのと同じ
@@ -5228,7 +5230,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/Mutafika/sabitori/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Mutafika/sabitori/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Mutafika/sabitori/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Mutafika/sabitori/compare/v0.54.0...v0.55.0
