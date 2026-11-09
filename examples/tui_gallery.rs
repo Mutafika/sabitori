@@ -16,7 +16,7 @@
 //! ```
 
 use sabitori::*;
-use sabitori::dialog::{self, Answer, Ask};
+use sabitori::dialog::{Answer, Ask};
 use sabitori::element::{path, BlendMode, GlyphMotion};
 use sabitori::svg::Svg;
 use sabitori_style::{AnsiPalette, Theme};
@@ -122,6 +122,10 @@ struct Gallery {
     /// 選んだ蛍光ペン (`SWATCHES` の添字)。
     highlight: Option<usize>,
     dialog_answer: Option<String>,
+    /// Dialog で聞いている問い (札と中身)。窓の中に sabitori で描く。閉じても
+    /// 消えていく間は描くので、次の問いまで残す。
+    asking: Option<(&'static str, Ask)>,
+    ask_modal: ModalState,
     /// Window Buttons で押されたもの (新しい順)。
     win_log: Vec<String>,
 }
@@ -2792,18 +2796,93 @@ impl Gallery {
         let answer = self.dialog_answer.clone().unwrap_or_else(|| "—".to_string());
         self.exhibit(t, "Dialog", vec![
             div().flex_row().gap(12.0).children([
-                button("dlg-save", "Ask: save changes?", a.blue, |_| {
-                    dialog::ask("save", Ask::new("「見積.csv」への変更を保存しますか？")
-                        .detail("保存しないと、変更は失われます。")
-                        .button("保存").button("保存しない").cancel_button("キャンセル"));
-                }),
-                button("dlg-delete", "Ask: delete?", a.red, |_| {
-                    dialog::ask("delete", Ask::new("3 個の項目をゴミ箱に入れますか？")
-                        .button("ゴミ箱に入れる").cancel_button("キャンセル"));
-                }),
+                button("dlg-save", "Ask: save changes?", a.blue, |app| app.ask("save")),
+                button("dlg-delete", "Ask: delete?", a.red, |app| app.ask("delete")),
             ]),
             text(format!("answer: {answer}")).mono().font_size(14.0).color(t.primary).shrink(0.0),
-        ], "dialog::ask(key, Ask) shows the OS alert (macOS); the button pressed comes back in on_dialog_answered.")
+        ], "The same Ask as dialog::ask, drawn in this window with modal() — it follows the skin and works on every OS. Return presses the first button, Esc the cancel one. (dialog::ask itself shows the OS alert on macOS.)")
+    }
+
+    /// Dialog の見本の問い (札と中身)。
+    fn sample_ask(key: &str) -> Option<(&'static str, Ask)> {
+        match key {
+            "save" => Some(("save", Ask::new("「見積.csv」への変更を保存しますか？")
+                .detail("保存しないと、変更は失われます。")
+                .button("保存").button("保存しない").cancel_button("キャンセル"))),
+            "delete" => Some(("delete", Ask::new("3 個の項目をゴミ箱に入れますか？")
+                .button("ゴミ箱に入れる").cancel_button("キャンセル"))),
+            _ => None,
+        }
+    }
+
+    /// 見本の問いを窓の中に出す (答えは [`Self::answer`] で受ける)。
+    fn ask(&mut self, key: &str) {
+        if let Some(question) = Self::sample_ask(key) {
+            self.asking = Some(question);
+            self.ask_modal.open();
+        }
+    }
+
+    /// 出している問いに答えて閉じる。答えは OS の窓と同じ `on_dialog_answered` に渡す
+    /// (どちらで聞いても受け口は 1 つ)。
+    fn answer(&mut self, button: usize) {
+        if !self.ask_modal.is_open() {
+            return;
+        }
+        self.ask_modal.close();
+        if let Some((key, _)) = self.asking {
+            self.on_dialog_answered(key, Answer::Button(button));
+        }
+    }
+
+    /// 出している問いのボタンの文字 (`Ask` が空なら「OK」1 つ)。
+    fn ask_buttons(ask: &Ask) -> Vec<String> {
+        if ask.buttons.is_empty() { vec!["OK".to_string()] } else { ask.buttons.clone() }
+    }
+
+    /// Dialog の問いを、 sabitori の `modal` で窓の中に描く。
+    fn ask_view(&self, ctx: &ViewContext) -> Option<Element> {
+        let t = &self.theme;
+        let (_, ask) = self.asking.as_ref()?;
+        let labels = Self::ask_buttons(ask);
+        let style = ModalStyle {
+            backdrop_color: Color::new(0.0, 0.0, 0.0, 0.45),
+            bg: t.surface_elevated,
+            border_color: t.border,
+            corner_radius: self.round(14.0, 4.0),
+            max_width: 400.0,
+            padding: if self.modern { 22.0 } else { 16.0 },
+            ..ModalStyle::from_theme(&ctx.theme)
+        };
+        // 既定 (1 つ目) を右端に置く。 macOS の並びと同じく、右から 1 つ目・2 つ目…。
+        let buttons: Vec<Element> = labels.iter().enumerate().rev().map(|(i, label)| {
+            let id = format!("ask-btn-{i}");
+            let hot = ctx.hovered.as_deref() == Some(id.as_str());
+            let (bg, fg) = if i == 0 {
+                (if hot { t.primary_hover } else { t.primary }, Color::WHITE)
+            } else {
+                (if hot { t.surface_hover } else { Color::TRANSPARENT }, t.text_primary)
+            };
+            let el = div().cursor(Cursor::Pointer).shrink(0.0)
+                .bg(bg).rounded_px(self.round(7.0, 3.0))
+                .px_pad(Px(14.0)).py(Px(6.0))
+                .child(self.lbl(label, 13.5, if i == 0 { 600 } else { 500 }, fg).shrink(0.0))
+                .click(ctx, id, move |app: &mut Gallery| app.answer(i));
+            if i == 0 { el } else { el.border(1.0, t.border) }
+        }).collect();
+        let mut keys = format!("Return: {}", labels[0]);
+        if let Some(cancel) = ask.cancel.and_then(|c| labels.get(c)) {
+            keys.push_str(&format!("  ·  Esc: {cancel}"));
+        }
+        let mut content = vec![self.lbl(&ask.message, 15.0, 700, t.text_primary)];
+        if !ask.detail.is_empty() {
+            content.push(self.lbl(&ask.detail, 13.0, 400, t.text_secondary));
+        }
+        content.push(div().h(Px(4.0)));
+        content.push(div().w_full().flex_row().justify_end().gap(8.0).children(buttons));
+        content.push(self.lbl(&keys, 11.5, 400, t.text_disabled).self_end());
+        let dialog = modal(ctx, "ask", &self.ask_modal, &style, "", content)?;
+        Some(div().w(Px(ctx.width)).h(Px(ctx.height)).child(dialog))
     }
 
     // ── Window ──
@@ -2898,6 +2977,11 @@ impl DeclarativeApp for Gallery {
     fn overlay_view(&self, ctx: &ViewContext) -> Option<Element> {
         let t = &self.theme;
         let a = &t.ansi;
+
+        // Dialog の問い。閉じきるまで (消えていく間も) 描く。
+        if let Some(ask) = self.ask_view(ctx) {
+            return Some(ask);
+        }
 
         // Menu Swatches: 行の名前の後ろに色の帯 (`MenuItemDef::with_swatch`)。
         if let Some(menu) = self.swatch_menu.to_overlay(
@@ -3422,13 +3506,9 @@ impl DeclarativeApp for Gallery {
 
     fn on_dialog_answered(&mut self, key: &str, answer: Answer) {
         // ボタンは足した順の番号で届く (キャンセルも 1 つのボタン)。
-        let labels: &[&str] = match key {
-            "save" => &["保存", "保存しない", "キャンセル"],
-            "delete" => &["ゴミ箱に入れる", "キャンセル"],
-            _ => &[],
-        };
+        let labels = Self::sample_ask(key).map(|(_, ask)| Self::ask_buttons(&ask)).unwrap_or_default();
         self.dialog_answer = Some(match answer {
-            Answer::Button(i) => format!("{key} → {}", labels.get(i).copied().unwrap_or("?")),
+            Answer::Button(i) => format!("{key} → {}", labels.get(i).map_or("?", String::as_str)),
             Answer::Unsupported => format!("{key} → not supported on this OS"),
         });
     }
@@ -3567,6 +3647,20 @@ impl DeclarativeApp for Gallery {
         if !self.splash_done {
             self.splash_done = true;
             return true;
+        }
+        // 問いを出している間は、キーはその問いだけが受ける (j / k で項目が動かない)。
+        // Return は既定 (1 つ目) のボタン、Esc はキャンセルのボタン。
+        if self.ask_modal.is_open() {
+            match event {
+                InputEvent::KeyInput { key: Key::Enter, pressed: true, .. } => self.answer(0),
+                InputEvent::KeyInput { key: Key::Escape, pressed: true, .. } => {
+                    if let Some(cancel) = self.asking.as_ref().and_then(|(_, ask)| ask.cancel) {
+                        self.answer(cancel);
+                    }
+                }
+                _ => {}
+            }
+            return matches!(event, InputEvent::KeyInput { .. } | InputEvent::CharInput(_));
         }
         // 分割ペインの仕切り。指の位置は箱 (`on_build` で拾う) の端から測る。
         if self.demo() == Demo::Split {
@@ -3747,12 +3841,20 @@ impl Gallery {
             swatch_menu: ContextMenuState::new(),
             highlight: Some(0),
             dialog_answer: None,
+            asking: None,
+            ask_modal: {
+                // OS の確かめの窓と同じく、背景を押しても閉じない (どれかのボタンで答える)。
+                let m = ModalState::new();
+                m.set_dismissable(false);
+                m
+            },
             win_log: Vec::new(),
         }
     }
 
     /// 撮影・確認用: `TUI_GALLERY_ITEM=<一覧の名前>` で起動画面を飛ばしてその部品を開き、
-    /// `TUI_GALLERY_SKIN=tui` で TUI の見た目から始める。
+    /// `TUI_GALLERY_SKIN=tui` で TUI の見た目から始める。`TUI_GALLERY_ASK=save` (か `delete`)
+    /// で Dialog の問いを開いた状態から始める。
     fn apply_env(&mut self) {
         let item = std::env::var("TUI_GALLERY_ITEM").ok()
             .and_then(|name| ITEMS.iter().position(|(_, n, _)| n.eq_ignore_ascii_case(&name)));
@@ -3766,6 +3868,10 @@ impl Gallery {
         }
         if std::env::var("TUI_GALLERY_GOO_OPEN").is_ok_and(|v| v == "1") {
             self.goo_open = true;
+        }
+        // Dialog の問いを開いた状態で始める (`save` / `delete`)。
+        if let Ok(key) = std::env::var("TUI_GALLERY_ASK") {
+            self.ask(&key);
         }
     }
 }
@@ -4051,13 +4157,51 @@ mod tests {
         assert!(!h.app().swatch_menu.is_visible(), "選んだら閉じる");
     }
 
-    /// ダイアログ: 答えはボタンの名前で出る (OS の窓は開けないので答えを差し込む)。
+    /// ダイアログ: OS の窓ではなく、窓の中に sabitori で描く。押したボタンの名前が
+    /// 答えに出て、閉じきると描くものが無くなる。
     #[test]
-    fn dialog_answer_names_the_button() {
+    fn dialog_is_drawn_in_the_window_and_answers_by_button() {
         let mut h = open("Dialog");
-        dialog::test_deliver("save", Answer::Button(1));
-        h.frame();
+        h.click("dlg-save");
+        h.settle();
+        assert!(h.rect_of("ask::dialog").is_some(), "窓の中に出る");
+        // 既定 (1 つ目) は右端。
+        let save = h.rect_of("ask-btn-0").expect("保存");
+        let dont = h.rect_of("ask-btn-1").expect("保存しない");
+        assert!(save.origin.x > dont.origin.x, "既定が右端: {save:?} / {dont:?}");
+
+        // 背景を押しても閉じない (どれかのボタンで答える)。
+        h.click_at(5.0, 300.0);
+        h.settle();
+        assert!(h.app().ask_modal.is_open());
+        assert_eq!(h.app().dialog_answer, None);
+
+        h.click("ask-btn-1");
+        h.settle();
         assert_eq!(h.app().dialog_answer.as_deref(), Some("save → 保存しない"));
+        assert!(h.rect_of("ask::dialog").is_none(), "閉じきったら描かない");
+    }
+
+    /// Return は既定のボタン、 Esc はキャンセルのボタン。 出している間は j / k で項目が動かない。
+    #[test]
+    fn dialog_keys_press_the_default_and_the_cancel_button() {
+        let mut h = open("Dialog");
+        let before = h.app().selected;
+        h.click("dlg-delete");
+        h.frame();
+        h.text("j");
+        h.frame();
+        assert_eq!(h.app().selected, before, "問いの間は一覧が動かない");
+        h.key(Key::Escape, Modifiers::default());
+        h.frame();
+        assert_eq!(h.app().dialog_answer.as_deref(), Some("delete → キャンセル"));
+
+        h.click("dlg-save");
+        h.frame();
+        h.key(Key::Enter, Modifiers::default());
+        h.frame();
+        assert_eq!(h.app().dialog_answer.as_deref(), Some("save → 保存"));
+        assert!(!h.app().ask_modal.is_open());
     }
 
     /// 窓のボタン: − はこの窓に掛かる。✕ はギャラリーを閉じないよう、押されたことだけを残す。
