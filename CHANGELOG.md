@@ -31,6 +31,15 @@
   (他のショートカットが鳴らない)。修飾キーだけでは決まらず、⌫ / ⌦ は「外す」、Esc と他を押すとやめる。
   決めた押下で出る文字も吸う (同じ押下の `j` が下の一覧を動かさない)。ランタイムがテキスト欄と同じく焦点のある
   欄へキーを回すので、アプリの配線は `tick` で受け取るだけ。
+- **ファイル選択が場所 (パス) を返す、フォルダを選べる、最初に開く場所を決められる、保存先を返す**。
+  - `PickedFile::path` — native では選ばれたファイルの場所 (web は `None`、ブラウザが渡さない)。csvmac は場所が
+    無く、開いたファイルを ⌘S で書き戻せずに毎回保存先を聞いていた
+  - `PickOptions::folders()` — ファイルではなくフォルダを選ばせる (中身は読まず、`path` に場所。web は
+    `Unsupported`)。mearie は osascript で、zunou は `rfd` で選んでいた
+  - `PickOptions::start_in(dir)` / `SaveOptions::start_in(dir)` — 最初に開く場所
+  - `files::save_as(name, bytes, SaveOptions) -> SaveResult` — 保存先を選ばせて書き、書いた場所を返す
+    (`Saved(Some(path))`、web は `Saved(None)`)。`save` は今までどおり `bool`
+  - `PickedFile::new(name, bytes)` / `.with_path(path)` (テストで結果を差し込む用)
 - `Harness::key_with_text(key, modifiers, text)` — 押下とその文字を 1 つの出来事で送る (実機と同じ)。
 - `tui_gallery` に Shortcuts (56 種目)。表の鍵で鳴り、欄で付け替え、取られた鍵は移り、修飾キー無しは断る。
 
@@ -63,6 +72,8 @@
 
 ### Changed
 
+- **`PickedFile` に `path` を足した**。`PickedFile { name, bytes }` と全部書いて組んでいる所 (テストの差し込みなど)
+  は `PickedFile::new(name, bytes)` にする。
 - **押下の判定を 1 本にした** (`runtime_shared::press_hit`)。主窓のマウス・タッチと別窓が、当たり判定 →
   焦点 → クリック → つかむ、を 3 か所に写していて、上の 3 つはその写しのずれだった。
 - **ツールチップの色がアプリのテーマ (`ctx.theme`) に従う**。暗い色の決め打ちだったので、明るいテーマでも
