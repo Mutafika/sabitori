@@ -1399,6 +1399,11 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// `position()` があればそちら。
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) position_hint: Option<winit::dpi::Position>,
+    /// 主窓に 3D シーンを描く口 ([`crate::run_scene`] のときだけ `Some`)。シーンの
+    /// アプリも入力・部品・組み立ては宣言的ランタイムと同じ道を通り、違うのは描く段
+    /// (`render_scene_then_frame`) と、作るとき・大きさが変わったとき・生のマウスの
+    /// 動きだけ。前は `scene_app.rs` に手で写したランタイムが別にあり、ずれていた。
+    pub(crate) scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>,
 }
 
 /// 文字選択 state。 `(text_idx, byte_offset)` のペアを anchor / head で持つ。
@@ -1651,7 +1656,16 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // toggled per focus in the redraw loop instead of forced on at startup.
         #[cfg(not(target_os = "ios"))]
         crate::runtime_shared::enable_ime(&window);
-        let gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
+        #[allow(unused_mut)]
+        let mut gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
+        // 3D シーン (`run_scene`): 深度を用意してからアプリにパイプラインを作らせる。
+        // 生の相対マウスモーションも受ける (中 / 右ボタンのドラッグ中もカメラが止まらない
+        // ように — macOS はその間 `CursorMoved` の位置を更新しない)。
+        if let Some(scene) = self.scene.clone() {
+            gpu.create_depth_texture();
+            scene.setup(&mut self.app, &gpu.gpu_context());
+            event_loop.listen_device_events(winit::event_loop::DeviceEvents::Always);
+        }
         let r = init_renderers(&self.app, &gpu);
         self.app.set_window(window.clone());
         self.window = Some(window);
@@ -1726,6 +1740,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
                     let size = sabitori_window::surface_size(w, size);
                     r.resize(size.width, size.height, w.scale_factor());
+                    // 深度はレンダラが作り直してある。シーンの描き先を合わせさせる。
+                    if let Some(scene) = self.scene.as_ref() {
+                        scene.on_resize(&mut self.app, &r.gpu_context());
+                    }
                     w.request_redraw();
                 }
             }
@@ -1737,6 +1755,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 if let (Some(w), Some(r)) = (self.window.as_ref(), self.renderer.as_mut()) {
                     let size = sabitori_window::surface_size(w, w.inner_size());
                     r.resize(size.width, size.height, w.scale_factor());
+                    if let Some(scene) = self.scene.as_ref() {
+                        scene.on_resize(&mut self.app, &r.gpu_context());
+                    }
                     w.request_redraw();
                 }
             }
@@ -2236,7 +2257,19 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         fills: fr.as_mut(),
                     };
                     frame.upload(renderer, &mut r, &device, &queue);
-                    let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
+                    // 3D シーン (`run_scene`) なら、シーンを描いてから UI を重ねる。
+                    match self.scene.as_ref() {
+                        Some(scene) => {
+                            let app = &mut self.app;
+                            let _ = renderer.render_scene_then_frame(
+                                |scene_ctx| scene.render_scene(app, scene_ctx),
+                                |pass, gpu| frame.draw(gpu, &r, pass),
+                            );
+                        }
+                        None => {
+                            let _ = renderer.render_frame(|pass, gpu| frame.draw(gpu, &r, pass));
+                        }
+                    }
                 }
                 // フレーム境界。テクスチャ LRU の世代をここで進める (#43)。
                 if let Some(ir) = ir.as_mut() {
@@ -2931,6 +2964,7 @@ impl<A: DeclarativeApp> AppState<A> {
             closed: false,
             #[cfg(not(target_arch = "wasm32"))]
             position_hint: None,
+            scene: None,
         }
     }
 
@@ -3913,6 +3947,16 @@ impl<A: DeclarativeApp> AppState<A> {
         // Focus / pending-drag transitions feed the capture snapshot.
         self.push_ui_capture();
     
+    }
+
+    /// 生の相対マウスモーション (`DeviceEvent::MouseMotion`)。3D シーンのアプリ
+    /// (`SceneApp::on_raw_motion`) にだけ渡す。直に描き直さず無効化だけする — 出す /
+    /// 出さないを `about_to_wait` の 1 か所に集める (ドラッグ中は 1000Hz 級で来る)。
+    pub(crate) fn raw_motion(&mut self, dx: f64, dy: f64) {
+        if let Some(scene) = self.scene.as_ref() {
+            scene.on_raw_motion(&mut self.app, dx, dy);
+            self.dirty = true;
+        }
     }
 
     /// 押下で焦点を動かす (マウスとタッチで共有)。焦点を受ける要素なら焦点を当て、
@@ -5637,9 +5681,17 @@ impl<A: DeclarativeApp> AppState<A> {
 }
 
 /// Run a declarative app.
-/// Run a declarative app (native).
-#[cfg(not(target_arch = "wasm32"))]
 pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
+    run_with(app, None);
+}
+
+/// 宣言的ランタイムを回す (native)。`scene` を渡すと主窓に 3D シーンを描く
+/// ([`crate::run_scene`])。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn run_with<A: DeclarativeApp + 'static>(
+    app: A,
+    scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>,
+) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -5671,13 +5723,16 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
         });
     }
 
-    let mut host = Host::new(app);
+    let mut host = Host::new(app, scene);
     event_loop.run_app(&mut host).unwrap();
 }
 
-/// Run a declarative app (WASM).
+/// 宣言的ランタイムを回す (WASM)。`scene` は native 版と同じ。
 #[cfg(target_arch = "wasm32")]
-pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
+pub(crate) fn run_with<A: DeclarativeApp + 'static>(
+    app: A,
+    scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>,
+) {
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::StartCause;
@@ -5688,7 +5743,9 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
     // 返すので、`expect` せず譲る (native 側の `try_init` と同じ方針)。
     let _ = console_log::init_with_level(log::Level::Info);
 
-    let state = Rc::new(RefCell::new(AppState::new(app)));
+    let mut first = AppState::new(app);
+    first.scene = scene;
+    let state = Rc::new(RefCell::new(first));
 
     struct WasmHandler<A: DeclarativeApp> {
         inner: Rc<RefCell<AppState<A>>>,
@@ -5753,6 +5810,11 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
                         gpu.resize(size.width, size.height, window.scale_factor());
                     }
                     let mut s = inner.borrow_mut();
+                    // 3D シーン (`run_scene`): 深度を用意してからパイプラインを作らせる。
+                    if let Some(scene) = s.scene.clone() {
+                        gpu.create_depth_texture();
+                        scene.setup(&mut s.app, &gpu.gpu_context());
+                    }
                     // DOM の橋渡し (IME / History) が 1 フレーム起こせるように
                     // 窓を渡す。lazy_render が既定 true なので、これが無いと
                     // 積んだ入力が誰にも汲まれない。
@@ -5775,6 +5837,18 @@ pub fn run_declarative<A: DeclarativeApp + 'static>(app: A) {
             // web の窓は 1 枚きり。閉じたら終わる (native の `Host` の、窓が 1 つの時と同じ)。
             if self.inner.borrow().closed {
                 event_loop.exit();
+            }
+        }
+
+        /// 生のマウスの動き。3D シーンのアプリ (`SceneApp::on_raw_motion`) にだけ渡る。
+        fn device_event(
+            &mut self,
+            _event_loop: &ActiveEventLoop,
+            _device_id: winit::event::DeviceId,
+            event: winit::event::DeviceEvent,
+        ) {
+            if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+                self.inner.borrow_mut().raw_motion(delta.0, delta.1);
             }
         }
 

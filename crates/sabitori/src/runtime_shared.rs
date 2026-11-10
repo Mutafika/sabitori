@@ -1,19 +1,14 @@
-//! `DeclarativeApp` と `SceneApp` の 2 ランタイムが共有する、ポインタまわりの
-//! 解決ロジック。
+//! ランタイムの、ポインタまわりの判断 (ホバー・押下対象・カーソル・入力キャプチャ・
+//! 帯・重ね物の畳み込み …)。
 //!
-//! 両ランタイムは winit のイベントループを別々に回すので `ApplicationHandler` の
-//! 実装は分かれる。 だが「hit_regions からホバーを引く」「押下対象を引く」
-//! 「cursor を winit に送る」「入力キャプチャを算出する」は、どちらで動かしても
-//! **同じ答えでなければならない**。
+//! 0.58 までは `DeclarativeApp` (`run_declarative`) と `SceneApp` (`run_scene`) の
+//! 2 ランタイムが別々にあり、「どちらで動かしても同じ答え」にするためにここへ集めて
+//! いた。それでも写しは残り、直しが片方に届かずにずれた (無効なボタンが押せる・
+//! キーを離したことが届かない・UI の文字が Retina で 1 倍、など)。0.59 で
+//! `run_scene` も同じランタイムを回すようになり、ランタイムは 1 つになった。
 //!
-//! かつては scene_app 側に "ported verbatim so both runtimes resolve hover
-//! identically" と注記された複製が置かれていた。 注記があっても複製は複製で、
-//! 実際 `active_style` の対応は declarative にだけ入りかけている
-//! ([#3](https://github.com/Mutafika/sabitori/issues/3))。 同じ理由で `Cursor` に
-//! variant を足す時、 winit へのマッピング表が 2 つあれば片方は必ず忘れられる。
-//!
-//! 状態 (hovered_id / last_cursor / window / …) は各ランタイムが持ったまま、
-//! **判断だけ**をここに集める。 引数が素の値なので、 winit のウィンドウ無しに
+//! 状態 (hovered_id / last_cursor / window / …) はランタイムが持ったまま、
+//! **判断だけ**をここに置く。引数が素の値なので、winit のウィンドウ無しに
 //! テストから叩ける。
 
 use std::collections::HashMap;
@@ -767,8 +762,10 @@ fn slide(states: &mut HashMap<String, ScrollView>, id: &str, to: f32) {
     }
 }
 
-/// IME を有効にする (両ランタイム共通)。macOS では入力モード切替の取りこぼし対策
+/// IME を有効にする (native)。macOS では入力モード切替の取りこぼし対策
 /// ([`crate::macos_ime`]) もここで仕込むので、`set_ime_allowed(true)` を直接呼ばずにこれを使う。
+/// web の IME は隠し textarea の橋渡し (`web_ime`) が受けるので使わない。
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn enable_ime(window: &winit::window::Window) {
     window.set_ime_allowed(true);
     #[cfg(target_os = "macos")]
