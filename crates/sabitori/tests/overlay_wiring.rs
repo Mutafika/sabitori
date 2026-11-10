@@ -1,7 +1,8 @@
-//! **外付け overlay の畳み込みが、2 ランタイムで 1 本であること。**
+//! **外付け overlay の畳み込みが 1 本であること。**
 //!
-//! `DeclarativeApp` と `SceneApp` は winit のループを別々に回すので
-//! `ApplicationHandler` の実装が分かれる。overlay の畳み込み
+//! 0.58 までは `DeclarativeApp` と `SceneApp` が winit のループを別々に回していて
+//! `ApplicationHandler` の実装が分かれていた (0.59 から `run_scene` も同じランタイムを
+//! 回す — 下の `run_scene_has_no_runtime_of_its_own`)。overlay の畳み込み
 //! (`overlay_list` へ描画を足し、当たり領域を手前へ差し込む) は**両方に必要**で、
 //! かつては**両方に手書きされていた**。
 //!
@@ -40,10 +41,7 @@ fn lines_with(src: &str, needle: &str) -> Vec<(usize, String)> {
 /// を呼ぶこと。2 本に戻すと、次に番号の付け方を変えたとき片方が忘れられる。
 #[test]
 fn neither_runtime_folds_the_overlay_in_by_hand() {
-    for (name, src) in [
-        ("declarative.rs", include_str!("../src/declarative.rs")),
-        ("scene_app.rs", include_str!("../src/scene_app.rs")),
-    ] {
+    for (name, src) in [("declarative.rs", include_str!("../src/declarative.rs"))] {
         for needle in [SPLICE, EXTEND] {
             let found = lines_with(src, needle);
             assert!(
@@ -75,16 +73,30 @@ fn the_fold_lives_in_runtime_shared() {
     }
 }
 
-/// **両ランタイムが実際に呼んでいる。**
+/// **ランタイムが実際に呼んでいる。**
 #[test]
-fn both_runtimes_call_the_shared_fold() {
-    for (name, src) in [
-        ("declarative.rs", include_str!("../src/declarative.rs")),
-        ("scene_app.rs", include_str!("../src/scene_app.rs")),
-    ] {
+fn the_runtime_calls_the_shared_fold() {
+    assert!(
+        !lines_with(include_str!("../src/declarative.rs"), "absorb_overlay").is_empty(),
+        "declarative.rs が absorb_overlay を呼んでいない"
+    );
+}
+
+/// **`run_scene` は自分のランタイムを持たない。**
+///
+/// 0.58 までは `scene_app.rs` に宣言的ランタイムを手で写したものがあり (約 1,500 行)、
+/// 直しが届かずにずれていた (無効なボタンが押せる・キーを離したことが届かない・
+/// Retina で文字が 1 倍・登録した部品が黙って何もしない)。今は `run_scene` も
+/// `declarative::run_with` を回し、主窓の描く段だけを差し込む。ここに winit のループを
+/// 書き戻したら、また 2 本に割れる。
+#[test]
+fn run_scene_has_no_runtime_of_its_own() {
+    let src = include_str!("../src/scene_app.rs");
+    for needle in ["impl<A: SceneApp> ApplicationHandler", "fn window_event", "fn about_to_wait", "run_app("] {
         assert!(
-            !lines_with(src, "absorb_overlay").is_empty(),
-            "{name} が absorb_overlay を呼んでいない"
+            lines_with(src, needle).is_empty(),
+            "scene_app.rs に自前のランタイム ({needle}) がある → declarative::run_with を使うこと"
         );
     }
+    assert!(!lines_with(src, "run_with(").is_empty(), "run_scene が declarative::run_with を回していない");
 }

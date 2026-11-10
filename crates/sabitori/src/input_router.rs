@@ -1,8 +1,7 @@
-//! Shared pointer/touch gesture plumbing used by both `declarative.rs` and
-//! `scene_app.rs`. The runtimes differ in what they do with gestures (managed
-//! scroll, drag-and-drop, custom scene panning) but they share the same
-//! state model: which modality owns the primary flow, which finger is
-//! driving the single-touch path, and whether a two-finger pinch is active.
+//! Pointer/touch gesture plumbing for the runtime (`declarative.rs`; `run_scene`
+//! runs the same runtime since 0.59): which modality owns the primary flow,
+//! which finger is driving the single-touch path, and whether a two-finger
+//! pinch is active.
 
 /// Minimum distance (logical px) a touch must travel before it's considered a
 /// scroll/drag rather than a tap. Matches Android's default touch slop range.

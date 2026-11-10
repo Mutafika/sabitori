@@ -7,7 +7,7 @@
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, Position};
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
@@ -20,13 +20,18 @@ pub(crate) struct Host<A: DeclarativeApp> {
     windows: Vec<AppState<A>>,
     /// 最後に焦点を持った主窓。OS から渡されたパスと開き直しの届け先。
     focused: Option<WindowId>,
+    /// 3D シーンの口 ([`crate::run_scene`])。後から開く窓にも同じものを渡す。
+    scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>,
 }
 
 impl<A: DeclarativeApp> Host<A> {
-    pub(crate) fn new(app: A) -> Self {
+    pub(crate) fn new(app: A, scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>) -> Self {
+        let mut first = AppState::new(app);
+        first.scene = scene.clone();
         Self {
-            windows: vec![AppState::new(app)],
+            windows: vec![first],
             focused: None,
+            scene,
         }
     }
 
@@ -63,6 +68,7 @@ impl<A: DeclarativeApp> Host<A> {
             });
             for (k, app) in apps.into_iter().enumerate() {
                 let mut state = AppState::new(app);
+                state.scene = self.scene.clone();
                 state.position_hint = from.map(|(pos, step)| {
                     let d = step * (k + 1) as f64;
                     Position::Physical(PhysicalPosition::new(
@@ -164,6 +170,15 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
         }
     }
 
+    /// 生のマウスの動き。3D シーンのアプリ (`SceneApp::on_raw_motion`) にだけ渡る。
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            for w in &mut self.windows {
+                w.raw_motion(delta.0, delta.1);
+            }
+        }
+    }
+
     /// ループが終わる。⌘Q (macOS の「終了」) では、winit は窓を閉じてここを呼んだあと、
     /// 片付けずにプロセスを終える — 窓を持ったままだとアプリの `Drop` が走らない。
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -252,11 +267,42 @@ mod tests {
         }
     }
 
+    /// 生のマウスの動きを数えるだけのシーンの口 (GPU が要る口は呼ばれない所だけ試す)。
+    struct RawMotion(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl<A> crate::scene_app::SceneDriver<A> for RawMotion {
+        fn setup(&self, _app: &mut A, _ctx: &sabitori_gpu::GpuContext) {}
+        fn on_resize(&self, _app: &mut A, _ctx: &sabitori_gpu::GpuContext) {}
+        fn render_scene(&self, _app: &mut A, _ctx: &mut sabitori_gpu::SceneRenderContext) {}
+        fn on_raw_motion(&self, _app: &mut A, _dx: f64, _dy: f64) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// `run_scene` の口は主窓の状態に渡り、生のマウスの動きはその口にだけ届く
+    /// (宣言的なだけのアプリには何も起きない)。
+    #[test]
+    fn the_scene_hook_rides_on_the_window_and_gets_raw_motion() {
+        let moved = std::rc::Rc::new(std::cell::Cell::new(0));
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(0));
+        let scene: std::rc::Rc<dyn crate::scene_app::SceneDriver<Counted>> =
+            std::rc::Rc::new(RawMotion(moved.clone()));
+        let mut host = Host::new(Counted(dropped.clone()), Some(scene));
+        assert!(host.windows[0].scene.is_some());
+        host.windows[0].raw_motion(1.0, 2.0);
+        assert_eq!(moved.get(), 1);
+
+        let mut plain = Host::new(Counted(dropped), None);
+        assert!(plain.windows[0].scene.is_none());
+        plain.windows[0].raw_motion(1.0, 2.0);
+        assert_eq!(moved.get(), 1, "シーンでない窓には届かない");
+    }
+
     /// ★終わる時 (⌘Q) は、開いている窓のアプリが全部落ちる (`Drop` が走る)。
     #[test]
     fn quitting_drops_every_window_s_app() {
         let dropped = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut host = Host::new(Counted(dropped.clone()));
+        let mut host = Host::new(Counted(dropped.clone()), None);
         host.windows.push(AppState::new(Counted(dropped.clone())));
         assert_eq!(dropped.get(), 0);
         host.quit();
