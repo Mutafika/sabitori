@@ -59,10 +59,7 @@ fn a_picked_file_reaches_the_app() {
 
     files::test_deliver(
         "restore",
-        PickResult::Picked(vec![PickedFile {
-            name: "backup.db".into(),
-            bytes: b"SQLite format 3\0".to_vec(),
-        }]),
+        PickResult::Picked(vec![PickedFile::new("backup.db", b"SQLite format 3\0".to_vec())]),
     );
     h.frame();
 
@@ -106,4 +103,44 @@ fn a_result_for_another_key_is_ignored() {
     h.frame();
 
     assert_eq!(h.app().status, "");
+}
+
+/// 開いたファイルの場所が届き、⌘S でそこへ書き戻せること (csvmac は場所が無かったので、
+/// 開いたファイルを保存するたびに保存先を聞いていた)。
+#[test]
+fn an_opened_file_carries_its_path_so_save_writes_back_there() {
+    #[derive(Default)]
+    struct Editor {
+        path: Option<std::path::PathBuf>,
+        text: String,
+    }
+    impl DeclarativeApp for Editor {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            div()
+        }
+        fn on_files_picked(&mut self, _key: &str, result: PickResult) {
+            if let PickResult::Picked(files) = result {
+                self.text = String::from_utf8_lossy(&files[0].bytes).into_owned();
+                self.path = files[0].path.clone();
+            }
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("sabitori-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("見積.csv");
+    std::fs::write(&file, "a,b\n").unwrap();
+
+    let mut h = Harness::new(Editor::default(), 200.0, 100.0);
+    h.frame();
+    files::test_deliver("open", PickResult::Picked(vec![PickedFile::new("見積.csv", b"a,b\n".to_vec()).with_path(&file)]));
+    h.frame();
+    assert_eq!(h.app().path.as_deref(), Some(file.as_path()));
+
+    // ⌘S: 聞かずに、開いた場所へ書き戻す。
+    h.app_mut().text.push_str("c,d\n");
+    let (path, text) = (h.app().path.clone().unwrap(), h.app().text.clone());
+    std::fs::write(&path, text).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "a,b\nc,d\n");
+    std::fs::remove_dir_all(&dir).ok();
 }
