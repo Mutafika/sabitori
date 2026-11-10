@@ -17,6 +17,23 @@
 
 ### Added
 
+- **ショートカットの表 (`Keymap` / `Chord` / `KeyCommand`、`sabitori-input`・`sabitori::*` から)**。lustar・mearie・
+  bamiri・matcha が同じものを手で書いていた (合わせて約 2,000 行)。
+  - `Chord` — 鍵 1 つと修飾キー。設定から `cmd+shift+t` / `⇧⌘T` / `mod+,` (`mod` は macOS で ⌘・他で Ctrl) を読み、
+    `to_config()` で同じ形に書き戻し、`label()` で `⇧⌘T` (macOS) / `Ctrl+Shift+T` (他) と出す。`from_event` で
+    押された鍵から作る (修飾キーだけの押下は `None`)。`is_plain()` は文字を打つのと同じ押し方か
+  - `Keymap<C: KeyCommand>` — 既定の表と、利用者が変えた分 (`overrides()`、これだけを保存する) を分けて持つ。
+    `lookup_event` で `on_input` からそのまま引ける。`assign` は同じ鍵を持っていた他の操作から外し、外れた操作を
+    返す (「⌘F は検索から外れました」)。`reset` / `reset_all`、既定と同じにしたら設定から消える。`reserve` で
+    割り当てさせない鍵 (⌘Q など)。設定の読めない行・知らない操作は飛ばして残りは効かせる
+- **ショートカットを押して登録する欄 `shortcut_field` (`ShortcutFieldState` / `ShortcutFieldStyle` / `Recorded`)**。
+  押すと待ち受けになり、次に押した組み合わせを捕まえて `take_recorded()` で渡す。待ち受けの間はキーを全部吸う
+  (他のショートカットが鳴らない)。修飾キーだけでは決まらず、⌫ / ⌦ は「外す」、Esc と他を押すとやめる。
+  決めた押下で出る文字も吸う (同じ押下の `j` が下の一覧を動かさない)。ランタイムがテキスト欄と同じく焦点のある
+  欄へキーを回すので、アプリの配線は `tick` で受け取るだけ。
+- `Harness::key_with_text(key, modifiers, text)` — 押下とその文字を 1 つの出来事で送る (実機と同じ)。
+- `tui_gallery` に Shortcuts (56 種目)。表の鍵で鳴り、欄で付け替え、取られた鍵は移り、修飾キー無しは断る。
+
 - `ToastManager::to_overlay_themed(w, h, &AppTheme)`。地・文字・枠と、種類の印 (Info / Success / Warning /
   Error) の色をテーマから取る。`to_overlay` は種類の印が Material の色の決め打ちだった (そのまま残してある)。
 - `Harness::tap_at(x, y)` — 指でタップする (iPad などの指の道を通る)。

@@ -57,6 +57,7 @@ mod numeric_input;
 mod presence;
 mod scroll_view;
 mod select;
+mod shortcut_field;
 mod slider;
 mod snap;
 mod split_pane;
@@ -91,6 +92,7 @@ pub use numeric_input::NumericInputState;
 pub use presence::PresenceAnimator;
 pub use scroll_view::ScrollView;
 pub use select::{DropdownEvent, DropdownState, DropdownStyle};
+pub use shortcut_field::{shortcut_field, Recorded, ShortcutFieldState, ShortcutFieldStyle};
 pub use slider::SliderState;
 pub use snap::{snap_rect, SnapGuides};
 pub use split_pane::{

@@ -185,3 +185,20 @@ fn layout_types_are_shared_between_element_and_style_props() {
     };
     assert_eq!(props.width, Dimension::Px(10.0));
 }
+
+/// ショートカットの表と、押して登録する欄が `sabitori::*` だけで書ける。
+#[test]
+fn shortcuts_are_usable_through_the_facade() {
+    use sabitori::{shortcut_field, Chord, KeyCommand, Keymap, Recorded, ShortcutFieldState, ShortcutFieldStyle};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct Find;
+    impl KeyCommand for Find {
+        fn id(self) -> &'static str {
+            "find"
+        }
+    }
+    let keymap = Keymap::new([(Find, vec![Chord::primary(Key::F)])]);
+    assert!(keymap.lookup(Chord::primary(Key::F)) == Some(Find));
+    let _ = (shortcut_field, ShortcutFieldState::new(), ShortcutFieldStyle::from_theme, Recorded::Cleared);
+}
