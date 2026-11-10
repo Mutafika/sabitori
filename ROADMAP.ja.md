@@ -4,7 +4,7 @@
 
 ## 現在地
 
-`0.58.0` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
+`0.59.0` (pre-release)。コア機能は一通り揃い、`templates/wasm/` の手順で WASM ビルド可能。
 利用側は **git タグ依存**が前提（クレート間が path 依存で、シェーダーをクレート外から
 `include_str!` しているため）。
 
@@ -107,7 +107,7 @@ StyleAnimator / PresenceAnimator
 - ✅ ライトテーマと、ウィジェット既定スタイルの `AppTheme` 追従 — [#65](https://github.com/Mutafika/sabitori/issues/65)
 - ✅ フォーム: パスワード欄 [#61](https://github.com/Mutafika/sabitori/issues/61) / disabled 状態 [#62](https://github.com/Mutafika/sabitori/issues/62)
 - ✅ 小粒の部品（時刻ピッカー・sticky・表のセルに Element など）— [#75](https://github.com/Mutafika/sabitori/issues/75)
-- ✅ 確かめのダイアログをどの OS でも（OS の窓が無い所では窓の中に描く `dialog::ask`、部品 `ask_dialog`）— v0.58.0
+- ✅ 確かめのダイアログをどの OS でも（OS の窓が無い所では窓の中に描く `dialog::ask`、部品 `ask_dialog`）— v0.59.0
 
 ### 利用側のアプリがまだ自前で書いているもの（2026-11-10 の洗い出し）
 

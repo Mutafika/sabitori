@@ -4,7 +4,7 @@
 
 ## Current Status
 
-`0.58.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate.
+`0.59.0` (pre-release). The core feature set is in place; the WASM target is buildable via the `templates/wasm/` setup. Consumers are expected to depend on a **git tag** — the crates depend on each other by path and `include_str!` their shaders from outside the crate.
 
 The current focus is closing the gaps that showed up writing a real line-of-business app (a rental/reservation system) on sabitori; "What line-of-business apps and the web still need" below is that list, and every entry has an issue. Releases ship from a single line — now `0.12.x`. See [CHANGELOG.md](./CHANGELOG.md) for what landed in each version.
 
@@ -103,7 +103,7 @@ Each one had an issue with the app's workaround written down; all are closed now
 - ✅ A light theme, and widget default styles that follow `AppTheme` — [#65](https://github.com/Mutafika/sabitori/issues/65)
 - ✅ Forms: password fields [#61](https://github.com/Mutafika/sabitori/issues/61), disabled state [#62](https://github.com/Mutafika/sabitori/issues/62)
 - ✅ Small parts (time picker, sticky, Elements in table cells, …) — [#75](https://github.com/Mutafika/sabitori/issues/75)
-- ✅ Confirm dialogs on every OS (`dialog::ask` draws in the window where there is no native alert; `ask_dialog` widget) — v0.58.0
+- ✅ Confirm dialogs on every OS (`dialog::ask` draws in the window where there is no native alert; `ask_dialog` widget) — v0.59.0
 
 ### What consumer apps still hand-roll (survey 2026-11-10)
 

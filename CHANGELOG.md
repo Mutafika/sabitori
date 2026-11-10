@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-11
+
 ### Added
 
 - **ショートカットの表 (`Keymap` / `Chord` / `KeyCommand`、`sabitori-input`・`sabitori::*` から)**。lustar・mearie・
@@ -26,10 +28,13 @@
     `lookup_event` で `on_input` からそのまま引ける。`assign` は同じ鍵を持っていた他の操作から外し、外れた操作を
     返す (「⌘F は検索から外れました」)。`reset` / `reset_all`、既定と同じにしたら設定から消える。`reserve` で
     割り当てさせない鍵 (⌘Q など)。設定の読めない行・知らない操作は飛ばして残りは効かせる
+    1 つの鍵は 1 つの操作にだけ付く — 取り合いになったら利用者が変えた操作が既定のままの操作に勝ち、負けた方
+    からは外す (`is_default` は既定の鍵を取られていれば `false`、`reset` で取り返せる)
 - **ショートカットを押して登録する欄 `shortcut_field` (`ShortcutFieldState` / `ShortcutFieldStyle` / `Recorded`)**。
   押すと待ち受けになり、次に押した組み合わせを捕まえて `take_recorded()` で渡す。待ち受けの間はキーを全部吸う
   (他のショートカットが鳴らない)。修飾キーだけでは決まらず、⌫ / ⌦ は「外す」、Esc と他を押すとやめる。
-  決めた押下で出る文字も吸う (同じ押下の `j` が下の一覧を動かさない)。ランタイムがテキスト欄と同じく焦点のある
+  決めた鍵を離すまで、その鍵の繰り返しと出る文字も吸う (同じ押下の `j` が下の一覧を動かさず、長めに押しても
+  いま割り当てた操作が鳴らない)。ランタイムがテキスト欄と同じく焦点のある
   欄へキーを回すので、アプリの配線は `tick` で受け取るだけ。
 - **ファイル選択が場所 (パス) を返す、フォルダを選べる、最初に開く場所を決められる、保存先を返す**。
   - `PickedFile::path` — native では選ばれたファイルの場所 (web は `None`、ブラウザが渡さない)。csvmac は場所が
@@ -5303,7 +5308,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/Mutafika/sabitori/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Mutafika/sabitori/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Mutafika/sabitori/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Mutafika/sabitori/compare/v0.55.0...v0.56.0
