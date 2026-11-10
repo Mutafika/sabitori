@@ -110,6 +110,38 @@ impl ToastManager {
         text_color: Color,
         border: Color,
     ) -> Option<Element> {
+        let kinds = [
+            Color::from_hex("#4a90d9"),
+            Color::from_hex("#4caf50"),
+            Color::from_hex("#ff9800"),
+            Color::from_hex("#f44336"),
+        ];
+        self.overlay(viewport_w, viewport_h, bg, text_color, border, kinds)
+    }
+
+    /// [`Self::to_overlay`] の色を `theme` から取る版。地は `elevated`、文字は
+    /// `text_primary`、枠は `border`、種類の印は Info = `primary`・Success = `success`・
+    /// Warning = `warning`・Error = `error`。`ctx.theme` をそのまま渡せる。
+    pub fn to_overlay_themed(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+        theme: &sabitori_core::AppTheme,
+    ) -> Option<Element> {
+        let kinds = [theme.primary, theme.success, theme.warning, theme.error];
+        self.overlay(viewport_w, viewport_h, theme.elevated, theme.text_primary, theme.border, kinds)
+    }
+
+    /// `kinds` は Info / Success / Warning / Error の印の色。
+    fn overlay(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+        bg: Color,
+        text_color: Color,
+        border: Color,
+        kinds: [Color; 4],
+    ) -> Option<Element> {
         if self.toasts.is_empty() {
             return None;
         }
@@ -132,10 +164,10 @@ impl ToastManager {
 
             // Icon badge color based on kind
             let icon_bg = match toast.kind {
-                ToastKind::Info => Color::from_hex("#4a90d9"),
-                ToastKind::Success => Color::from_hex("#4caf50"),
-                ToastKind::Warning => Color::from_hex("#ff9800"),
-                ToastKind::Error => Color::from_hex("#f44336"),
+                ToastKind::Info => kinds[0],
+                ToastKind::Success => kinds[1],
+                ToastKind::Warning => kinds[2],
+                ToastKind::Error => kinds[3],
             };
 
             let icon_el = div()

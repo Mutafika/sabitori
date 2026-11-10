@@ -3178,11 +3178,12 @@ impl<A: DeclarativeApp> AppState<A> {
         self.adopt_managed(ctx.take_managed());
         self.actions = ctx.take_actions();
         let tooltip_element = self.tooltip_state.info().map(|(text, tx, ty)| {
+            // 色はアプリのテーマから (明るいテーマなら明るい札になる)。
             sabitori_core::tooltip_popup(
                 &text, tx, ty, w, h,
-                sabitori_core::Color::new(0.15, 0.15, 0.18, 0.95),
-                sabitori_core::Color::new(0.9, 0.9, 0.9, 1.0),
-                sabitori_core::Color::new(0.3, 0.3, 0.35, 0.8),
+                ctx.theme.elevated.with_alpha(0.95),
+                ctx.theme.text_primary,
+                ctx.theme.border.with_alpha(0.8),
             )
         });
         let drag_ghost_element = if self.drag_manager.is_active() {
@@ -3827,58 +3828,20 @@ impl<A: DeclarativeApp> AppState<A> {
         // 押下対象は `clickable`（= id 付き）で見る — `.active()` は
         // hover_style を持たない要素にも書けるため。
         self.pressed_id = self.hit_id_at(self.mouse_x, self.mouse_y);
-        if let Some(ref build) = self.last_build {
+        if self.last_build.is_some() {
             let pt = sabitori_core::Point::new(self.mouse_x, self.mouse_y);
-            let mut focus_set = false;
-            let mut pending_drag: Option<(String, Option<String>)> = None;
-            let mut hit_clickable_or_drag = false;
-            // クリック対象はここでは決めるだけ。 実行はループを抜けてから —
-            // ハンドラは `&mut self` を要り、 `build` を借りたままでは呼べない。
-            let mut click_target: Option<String> = None;
             // 確かめのダイアログ ([`crate::dialog::ask`]) の上の押下では焦点を
             // 外さない。閉じた後、下の欄にそのまま打ち続けられるように (OS の窓と同じ)。
             // 押したボタンで閉じるので、押す前に見ておく。
             let keep_focus = self.ask_dialog.is_open();
+            let hit = self.last_build.as_ref().and_then(|b| crate::runtime_shared::press_hit(b, pt));
+            let focus_set = self.press_focus(hit.as_ref(), pt);
+            // クリック (つかんで動かせる要素でも鳴る)。無効な要素は鳴らないが押下は吸う (#62)。
+            let click_target = hit.as_ref().and_then(|h| h.click.clone());
             // 押した要素が手前の木 (menu・modal) か。手前の文字は選べないので、
             // その下の本文に当たっても待たない (#111)。
-            let mut target_overlay = false;
-            for region in &build.hit_regions {
-                // 意味だけの領域 (role/label のみ) は透過する。 これを止めると
-                // 表のセルに `Role::Cell` を書いた瞬間、 行のクリックが死ぬ
-                // (`HitRegion::is_interactive` の doc を参照)。
-                if region.is_interactive() && region.rect.contains(pt) {
-                    // Handle focus
-                    if region.focusable {
-                        self.focused_id = region.id.clone();
-                        focus_set = true;
-                        // 登録済みテキスト欄なら、 **押した場所にキャレットを置く**。
-                        // 欄の内側が原点の座標に直して渡し、 解決は次の `view()`
-                        // でやる (実フォントで測れるのがそこだけなので)。
-                        if let Some(id) = region.id.as_deref()
-                            && let Some(field) = self.managed_text_field(id) {
-                                field.request_point(
-                                    pt.x - region.rect.origin.x,
-                                    pt.y - region.rect.origin.y,
-                                    self.modifiers.shift,
-                                );
-                            }
-                    }
-                    // Handle click (still fires for draggable elements)。
-                    // 無効な要素は鳴らないが、`break` は通るので押下は吸う
-                    // (下の親が代わりに鳴らない = ブラウザと同じ) (#62)。
-                    if region.clickable && !region.disabled {
-                        click_target = region.id.clone();
-                        target_overlay = region.overlay;
-                        hit_clickable_or_drag = true;
-                    }
-                    // Check for drag data
-                    if let Some(ref drag_data) = region.drag_data {
-                        pending_drag = Some((drag_data.clone(), region.id.clone()));
-                        hit_clickable_or_drag = true;
-                    }
-                    break;
-                }
-            }
+            let target_overlay = hit.as_ref().is_some_and(|h| h.click.is_some() && h.overlay);
+            let pending_drag = hit.as_ref().and_then(|h| h.drag.clone().map(|d| (d, h.id.clone())));
             // 押せる要素の中の**選べる文字**を押したなら、クリックは離すまで待つ
             // (#111)。動かさずに離せばクリック、ドラッグすれば文字の選択 —
             // ブラウザのリンクの行と同じ。押した瞬間に鳴らすと、一覧の行の文字を
@@ -3946,12 +3909,25 @@ impl<A: DeclarativeApp> AppState<A> {
                 self.selection = None;
                 self.selecting = false;
             }
-            // hit_clickable_or_drag は warning 抑止のため _ で受ける。
-            let _ = hit_clickable_or_drag;
         }
         // Focus / pending-drag transitions feed the capture snapshot.
         self.push_ui_capture();
     
+    }
+
+    /// 押下で焦点を動かす (マウスとタッチで共有)。焦点を受ける要素なら焦点を当て、
+    /// 登録済みのテキスト欄なら**押した場所にキャレットを置く** — 欄の内側が原点の
+    /// 座標に直して渡し、解決は次の `view()` でやる (実フォントで測れるのがそこだけ
+    /// なので)。焦点を当てたら `true` (外すかどうかは呼び手が決める)。
+    fn press_focus(&mut self, hit: Option<&crate::runtime_shared::PressHit>, pt: sabitori_core::Point) -> bool {
+        let Some(hit) = hit.filter(|h| h.focusable) else { return false };
+        self.focused_id = hit.id.clone();
+        if let Some(id) = hit.id.as_deref()
+            && let Some(field) = self.managed_text_field(id)
+        {
+            field.request_point(pt.x - hit.rect.origin.x, pt.y - hit.rect.origin.y, self.modifiers.shift);
+        }
+        true
     }
 
     /// 指 1 本ぶんのタッチの処理本体 (`WindowEvent::Touch` から、座標を論理 px に
@@ -4054,35 +4030,14 @@ impl<A: DeclarativeApp> AppState<A> {
                         return;
                     }
 
-                    let mut click_target: Option<String> = None;
-                    let mut pending_drag: Option<(String, Option<String>)> = None;
-                    // マウス押下と同じく、確かめのダイアログの上では焦点を外さない。
+                    // 判定はマウスと同じ 1 本 (`press_hit`)。焦点を当て、テキスト欄なら
+                    // 押した所にキャレットを置く。確かめのダイアログの上では焦点を外さない。
                     let keep_focus = self.ask_dialog.is_open();
-                    if let Some(ref build) = self.last_build {
-                        let mut focus_set = false;
-                        for region in &build.hit_regions {
-                            // マウス押下と同じく、 意味だけの領域は透過する。
-                            if region.is_interactive() && region.rect.contains(pos) {
-                                if region.focusable {
-                                    self.focused_id = region.id.clone();
-                                    focus_set = true;
-                                }
-                                // 無効な要素は click を鳴らさない。ここで
-                                // `break` は通るので押下は吸われ、下に居る
-                                // 親のクリックが代わりに鳴ることはない (#62)。
-                                if region.clickable && !region.disabled {
-                                    click_target = region.id.clone();
-                                }
-                                if let Some(ref drag_data) = region.drag_data {
-                                    pending_drag =
-                                        Some((drag_data.clone(), region.id.clone()));
-                                }
-                                break;
-                            }
-                        }
-                        if !focus_set && !keep_focus {
-                            self.focused_id = None;
-                        }
+                    let hit = self.last_build.as_ref().and_then(|b| crate::runtime_shared::press_hit(b, pos));
+                    let click_target = hit.as_ref().and_then(|h| h.click.clone());
+                    let pending_drag = hit.as_ref().and_then(|h| h.drag.clone().map(|d| (d, h.id.clone())));
+                    if self.last_build.is_some() && !self.press_focus(hit.as_ref(), pos) && !keep_focus {
+                        self.focused_id = None;
                     }
                     if let Some((data, source_id)) = pending_drag {
                         self.drag_manager.start_pending(data, source_id, x, y);
@@ -4258,6 +4213,12 @@ impl<A: DeclarativeApp> AppState<A> {
                                 x,
                                 y,
                             );
+                            // 本文中のリンクをタップしたら、その id で `on_click` を鳴らす
+                            // (マウスで押したときと同じ。前はタップでは鳴らなかった)。
+                            let (sx, sy) = td.start;
+                            if let Some((link_id, _)) = self.link_at(sx, sy) {
+                                self.app.on_click(&link_id);
+                            }
                             // 選択の外をタップしたら解除 (#108)。押した先の
                             // `on_click` が先 — 「マーカー」ボタンが範囲を読める。
                             if self.selection.is_some() {
@@ -5176,15 +5137,10 @@ impl<A: DeclarativeApp> AppState<A> {
     /// `(x, y)` で押下を受ける最前面の領域が、窓のつかみどころ (`.window_drag()`) か。
     /// 中の押せる物 (タブ等) や手前の層 (menu・modal) が上に居れば、そちらが先に当たる。
     fn window_drag_at(&self, x: f32, y: f32) -> bool {
-        let Some(build) = self.last_build.as_ref() else {
-            return false;
-        };
-        let pt = sabitori_core::Point::new(x, y);
-        build
-            .hit_regions
-            .iter()
-            .find(|r| r.is_interactive() && r.rect.contains(pt))
-            .is_some_and(|r| r.window_drag)
+        self.last_build
+            .as_ref()
+            .and_then(|b| crate::runtime_shared::press_hit(b, sabitori_core::Point::new(x, y)))
+            .is_some_and(|h| h.window_drag)
     }
 
     /// 信号ボタンの場所 ([`ViewContext::window_controls`])。macOS で
@@ -5504,28 +5460,17 @@ impl<A: DeclarativeApp> AppState<A> {
                 let pt = sabitori_core::Point::new(x, y);
                 // 窓のつかみどころ (`.window_drag()`) の空いた所なら、主窓と同じく
                 // 押下は窓が引き取る (OS に窓を動かさせる)。アプリには渡さない。
-                let grab = extra.last_build.as_ref().is_some_and(|b| {
-                    b.hit_regions
-                        .iter()
-                        .find(|r| r.is_interactive() && r.rect.contains(pt))
-                        .is_some_and(|r| r.window_drag)
-                });
-                if grab {
+                // 判定は主窓と同じ 1 本 (`press_hit`)。無効な要素は `Click` を鳴らさない。
+                let press = extra.last_build.as_ref().and_then(|b| crate::runtime_shared::press_hit(b, pt));
+                if press.as_ref().is_some_and(|h| h.window_drag) {
                     extra.window.drag_window().ok();
                     return;
                 }
-                let hit = extra
-                    .last_build
-                    .as_ref()
-                    .and_then(|b| crate::runtime_shared::hit_id_at(b, x, y));
+                let hit = press.as_ref().and_then(|h| h.click.clone());
                 // 窓の操作ボタン (`.window_action(..)`) なら、その別窓に掛ける。閉じるは
                 // OS の閉じるボタン (`CloseRequested`) と同じく主窓ごと — 別窓を 1 枚だけ
                 // 消すのは、アプリが `Click` を受けて `extra_windows()` から外す。
-                let action = hit.as_deref().and_then(|hit| {
-                    extra.last_build.as_ref()?.hit_regions.iter()
-                        .filter(|r| r.id.as_deref() == Some(hit))
-                        .find_map(|r| r.window_action)
-                });
+                let action = press.as_ref().and_then(|h| h.window_action);
                 match action {
                     Some(WindowAction::Close) => self.closed = true,
                     Some(action) => crate::titlebar::perform_action(&extra.window, action),
@@ -7099,6 +7044,33 @@ mod highlight_tests {
         fn on_click(&mut self, id: &str) {
             self.clicked.push(id.to_string());
         }
+    }
+
+    /// 本文中のリンク (「第1条」の 3 字、x 0..30) をタップすると、マウスで押したときと
+    /// 同じくその id が鳴る。前は指の道がリンクを見ておらず、何も起きなかった。
+    #[test]
+    fn tapping_a_link_in_body_text_fires_it() {
+        let link = |state: &mut AppState<Rows>| {
+            let mut layout = owned(0, None, "第1条を見よ", 0.0);
+            layout.link_ranges = Some(vec![sabitori_core::LinkRange {
+                start: 0,
+                end: "第1条".len(),
+                id: "art-1".into(),
+                tooltip: None,
+                color: sabitori_core::Color::WHITE,
+            }]);
+            state.text_layouts = vec![layout];
+        };
+        let mut state = AppState::new(Rows::default());
+        link(&mut state);
+        state.handle_touch(TouchPhase::Started, 1, 15.0, 8.0);
+        state.handle_touch(TouchPhase::Ended, 1, 15.0, 8.0);
+        assert_eq!(state.app.clicked, ["art-1"]);
+
+        // リンクの外 (「見よ」) をタップしても鳴らない。
+        state.handle_touch(TouchPhase::Started, 1, 45.0, 8.0);
+        state.handle_touch(TouchPhase::Ended, 1, 45.0, 8.0);
+        assert_eq!(state.app.clicked, ["art-1"]);
     }
 
     /// 一覧の行 (id 付き・押すと詳細へ) の上に、1 行目の文字 (x 0..60, y 0..16)。
