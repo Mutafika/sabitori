@@ -18,8 +18,8 @@
 //! ```ignore
 //! fn view(&self, ctx: &ViewContext) -> Element {
 //!     div().flex_col().children([
-//!         text_input(ctx, "name", &self.name, &TextInputStyle::default_dark()),
-//!         table(ctx, "files", &self.files, &TableStyle::default_dark()),
+//!         text_input(ctx, "name", &self.name, &TextInputStyle::from_theme(&ctx.theme)),
+//!         table(ctx, "files", &self.files, &TableStyle::from_theme(&ctx.theme)),
 //!     ])
 //! }
 //! ```
@@ -54,7 +54,6 @@ mod modal;
 mod nav_frame;
 mod time_picker;
 mod numeric_input;
-mod panel;
 mod presence;
 mod scroll_view;
 mod select;
@@ -80,7 +79,7 @@ pub use dock_group::{drop_split, DockAxis, DockGroup, MIN_PANE_PX, SPLITTER_PX};
 pub use drag::DragManager;
 pub use focus::{FocusChange, FocusKeyResult, FocusManager};
 pub use menu_bar::{MenuBarState, MenuBarStyle, MenuDef};
-pub use modal::{modal, Modal, ModalState, ModalStyle};
+pub use modal::{modal, ModalState, ModalStyle};
 pub use nav_frame::{
     nav_frame, nav_frame_with, nav_item_id, nav_menu_button_id, NavFrameState, NavFrameStyle, NavGroup, NavIcon,
     NavItem, NavMode, NavSlots,
@@ -89,7 +88,6 @@ pub use time_picker::{
     parse_hhmm, DateTimePickerState, DateTimePickerStyle, TimePickerState, TimePickerStyle,
 };
 pub use numeric_input::NumericInputState;
-pub use panel::{Panel, PanelSide};
 pub use presence::PresenceAnimator;
 pub use scroll_view::ScrollView;
 pub use select::{DropdownEvent, DropdownState, DropdownStyle};

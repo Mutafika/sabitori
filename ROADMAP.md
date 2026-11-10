@@ -73,8 +73,6 @@ StyleAnimator / PresenceAnimator
 ## Planned / Not Yet Started
 
 ### macOS Native Integration
-`objc2-app-kit` is already a dependency, but only drag & drop is wired up.
-
 - ⬜ NSStatusItem (menu bar resident icon)
 - ⬜ Transparent NSWindow + wgpu rendering (overlay use cases)
 - ⬜ macOS notifications (UNUserNotificationCenter)
@@ -91,23 +89,40 @@ StyleAnimator / PresenceAnimator
 - ⬜ `release-plz` setup for lockstep release automation
 - ⬜ `#[doc]` comments for docs.rs
 
-### What line-of-business apps and the web still need
+### Filled in by writing line-of-business apps (all shipped)
 
 Gaps found by writing a real reservation-management app (~20 screens) on sabitori.
-Nothing here is a commitment yet — but **every entry has an issue, with the
-workaround the app is using written down in it**, so consumers can decide
-whether to wait or write their own.
+Each one had an issue with the app's workaround written down; all are closed now.
 
-- ⬜ Japanese IME / soft keyboard on the web (hidden-textarea bridge) — [#73](https://github.com/Mutafika/sabitori/issues/73)
-- ⬜ Clipboard on the web (via `copy` / `paste` events) — [#76](https://github.com/Mutafika/sabitori/issues/76)
-- ⬜ URL / back button (History) on the web, and driving horizontal scroll from the app — [#74](https://github.com/Mutafika/sabitori/issues/74)
-- ⬜ Picking and saving files (native dialogs / web input + download) — [#77](https://github.com/Mutafika/sabitori/issues/77)
-- ⬜ An HTTP client (POST/PUT/DELETE, JSON, cookies) shared by native and wasm — [#63](https://github.com/Mutafika/sabitori/issues/63)
-- ⬜ A standard way to get async results back into the UI (`Tasks`) — [#64](https://github.com/Mutafika/sabitori/issues/64)
-- ⬜ A light theme, and widget default styles that follow `AppTheme` — [#65](https://github.com/Mutafika/sabitori/issues/65)
-- ⬜ Forms: password fields [#61](https://github.com/Mutafika/sabitori/issues/61), disabled state [#62](https://github.com/Mutafika/sabitori/issues/62)
-- ⬜ Small parts (time picker, sticky, Elements in table cells, …) — [#75](https://github.com/Mutafika/sabitori/issues/75)
-- ⬜ Charts / printing / off-screen rendering / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) items 11–12, plus separate calls
+- ✅ Japanese IME / soft keyboard on the web (hidden-textarea bridge) — [#73](https://github.com/Mutafika/sabitori/issues/73)
+- ✅ Clipboard on the web (via `copy` / `paste` events) — [#76](https://github.com/Mutafika/sabitori/issues/76)
+- ✅ URL / back button (History) on the web, and driving horizontal scroll from the app — [#74](https://github.com/Mutafika/sabitori/issues/74)
+- ✅ Picking and saving files (native dialogs / web input + download) — [#77](https://github.com/Mutafika/sabitori/issues/77)
+- ✅ An HTTP client (POST/PUT/DELETE, JSON, cookies) shared by native and wasm — [#63](https://github.com/Mutafika/sabitori/issues/63)
+- ✅ A standard way to get async results back into the UI (`Tasks`) — [#64](https://github.com/Mutafika/sabitori/issues/64)
+- ✅ A light theme, and widget default styles that follow `AppTheme` — [#65](https://github.com/Mutafika/sabitori/issues/65)
+- ✅ Forms: password fields [#61](https://github.com/Mutafika/sabitori/issues/61), disabled state [#62](https://github.com/Mutafika/sabitori/issues/62)
+- ✅ Small parts (time picker, sticky, Elements in table cells, …) — [#75](https://github.com/Mutafika/sabitori/issues/75)
+- ✅ Confirm dialogs on every OS (`dialog::ask` draws in the window where there is no native alert; `ask_dialog` widget) — v0.58.0
+
+### What consumer apps still hand-roll (survey 2026-11-10)
+
+Pieces that several apps built on sabitori write for themselves. Ordered by how
+many apps carry their own copy.
+
+- ⬜ Shortcut table: parse `cmd+shift+t`, show `⇧⌘T`, user overrides, a "press a key" recorder (4 apps, ~2,000 lines)
+- ⬜ File picking that returns paths, picks folders, and remembers where to save (and Windows / Linux pickers)
+- ⬜ A tab strip widget (6 apps)
+- ⬜ Wake-at-a-time timers and a worker → UI channel, so apps stop redrawing every frame just to wait (5 apps)
+- ⬜ Scroll just enough to reveal a row / element (4 apps)
+- ⬜ Inline rename field, window frame save / restore, OS dark-mode changes, button / badge variants, list multi-select model, file / image clipboard, pan-zoom viewport
+- ⬜ Column view (Miller columns), table column resize / reorder, a native menu bar (NSMenu)
+- ⬜ Charts / printing / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) items 11–12, plus separate calls
+
+### Platform gaps
+- ⬜ `run_scene` shares the declarative runtime's input and widgets (today it silently drops file / dialog answers, close requests, managed widgets and key releases)
+- ⬜ Windows / Linux: `Titlebar::Custom` (undecorated window), file pickers, "Open with" paths from the command line
+- ⬜ Web: tab title, "leave this page?" before closing, dropping files, writing to the clipboard from a button
 
 ### Under Consideration
 - ⬜ WebSocket / SSE client

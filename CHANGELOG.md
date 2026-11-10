@@ -15,6 +15,38 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ToastManager::to_overlay_themed(w, h, &AppTheme)`。地・文字・枠と、種類の印 (Info / Success / Warning /
+  Error) の色をテーマから取る。`to_overlay` は種類の印が Material の色の決め打ちだった (そのまま残してある)。
+- `Harness::tap_at(x, y)` — 指でタップする (iPad などの指の道を通る)。
+- `Key` / `Modifiers` / `MouseButton` / `PointerKind` / `WheelPhase` などの入力の型に `Hash` を付けた。
+  ショートカットの表を `HashMap` で持てなかった (mearie が「Key is not Hash」と書いて回避していた)。
+
+### Fixed
+
+- **本文中のリンク (`link_ranges`) を指でタップしても鳴らなかった**。マウスで押すと `on_click(link_id)` が
+  鳴るのに、タッチの道はリンクを見ていなかった。
+- **テキスト欄を指でタップしても、キャレットが触れた所に来なかった** (マウスでは押した所に来る)。
+- **別窓 (`extra_windows`) で、無効 (`disabled`) な要素を押すと `ExtraInput::Click` が飛んでいた**。主窓は
+  鳴らさない (#62)。意味だけの領域 (role / label だけ) を透過しないのも別窓だけだった。
+
+### Changed
+
+- **押下の判定を 1 本にした** (`runtime_shared::press_hit`)。主窓のマウス・タッチと別窓が、当たり判定 →
+  焦点 → クリック → つかむ、を 3 か所に写していて、上の 3 つはその写しのずれだった。
+- **ツールチップの色がアプリのテーマ (`ctx.theme`) に従う**。暗い色の決め打ちだったので、明るいテーマでも
+  暗い札が出ていた。
+- **`ModalStyle` に `title_color` を足した** (`from_theme` は `text_primary`)。`modal()` の見出しの色が
+  `#e8e8f0` の決め打ちで、明るいテーマでは読めなかった。`ModalStyle { .. }` を全部書いて組んでいる所は
+  この欄を足す必要がある (`..ModalStyle::from_theme(..)` なら要らない)。
+- **使われていない `Modal` 構造体 (アプリが `tick` を回す古いモーダル) と `Panel` / `PanelSide` を消した**。
+  `ModalState` + `modal()` に置き換わっていて、手元のどのアプリからも使われていなかった。
+- `sabitori-widgets` の冒頭の例を `default_dark()` から `from_theme(&ctx.theme)` に (テーマに沿わない書き方を
+  教えていた)。
+- ROADMAP: 閉じた issue 10 件が「未着手」のままだったのを済みにし、利用側のアプリの洗い出し
+  (ショートカット表・パスを返すファイル選択・タブの帯・時刻指定の起こし など) と OS ごとの抜けを足した。
+
 ## [0.58.0] - 2026-11-09
 
 ### Added

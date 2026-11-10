@@ -61,6 +61,47 @@ pub(crate) fn resolve_hover(build: &BuildResult, x: f32, y: f32) -> HoverHit {
     HoverHit { hovered_id, tooltip, cursor }
 }
 
+/// 押した点の最前面にある、押下を受ける領域 ([`press_hit`] の答え)。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PressHit {
+    /// 領域の id。
+    pub id: Option<String>,
+    /// 領域の矩形 (テキスト欄のキャレットを、押した所へ置くのに使う)。
+    pub rect: sabitori_core::Rect,
+    /// 焦点を受ける。
+    pub focusable: bool,
+    /// 鳴らすクリックの宛先。無効な要素は `None` (押下は吸う — 下の親が代わりに
+    /// 鳴らない、#62)。
+    pub click: Option<String>,
+    /// 手前の木 (menu・modal) の領域。
+    pub overlay: bool,
+    /// つかんで動かせる要素の荷物。
+    pub drag: Option<String>,
+    /// 窓のつかみどころ (`.window_drag()`)。
+    pub window_drag: bool,
+    /// 窓の操作ボタン (`.window_action(..)`)。無効なら `None`。
+    pub window_action: Option<sabitori_core::element::WindowAction>,
+}
+
+/// 押した点の最前面の、押下を受ける領域。意味だけの領域 (role / label だけ) は
+/// 透過する (`HitRegion::is_interactive`)。
+///
+/// **押下の判定はこれ 1 本。** 主窓のマウス・タッチと別窓が同じ答えを見る。前は
+/// 3 か所に写していて、別窓だけ無効な要素の `ExtraInput::Click` が飛んでいた。
+pub(crate) fn press_hit(build: &BuildResult, pt: Point) -> Option<PressHit> {
+    let region = build.hit_regions.iter().find(|r| r.is_interactive() && r.rect.contains(pt))?;
+    Some(PressHit {
+        id: region.id.clone(),
+        rect: region.rect,
+        focusable: region.focusable,
+        click: if region.clickable && !region.disabled { region.id.clone() } else { None },
+        overlay: region.overlay,
+        drag: region.drag_data.clone(),
+        window_drag: region.window_drag,
+        window_action: region.window_action,
+    })
+}
+
 /// 座標の下にある、 id を持つ最前面の hit region の id。 押下対象の解決に使う。
 ///
 /// ホバーと違って `hoverable` では絞らない — `.active()` だけを書いた要素
@@ -313,6 +354,24 @@ mod tests {
 
     fn build(root: &sabitori_core::Element) -> BuildResult {
         sabitori_core::build::build_tree(root, 400.0, 300.0)
+    }
+
+    /// 押下の判定 (`press_hit`): 無効な要素はクリックを鳴らさないが押下は吸う (下の
+    /// 親が代わりに鳴らない)。意味だけの領域 (label だけ) は透過して下を押す。
+    #[test]
+    fn press_hit_absorbs_disabled_and_sees_through_label_only_regions() {
+        let b = build(&div().w(Px(400.0)).h(Px(300.0)).id("parent").child(
+            div().w(Px(100.0)).h(Px(40.0)).id("save").disabled(true),
+        ));
+        let hit = press_hit(&b, Point::new(10.0, 10.0)).expect("押下を受ける");
+        assert_eq!(hit.id.as_deref(), Some("save"));
+        assert_eq!(hit.click, None, "無効なボタンは鳴らない");
+
+        let b = build(&div().w(Px(400.0)).h(Px(300.0)).id("row").child(
+            div().w(Px(100.0)).h(Px(40.0)).label("名前"),
+        ));
+        let hit = press_hit(&b, Point::new(10.0, 10.0)).expect("下の行を押す");
+        assert_eq!(hit.click.as_deref(), Some("row"), "label だけの領域は透過する");
     }
 
     /// 外付けの上掛けの木で層を上げた中身 ([`sabitori_core::Element::layer`]) と、

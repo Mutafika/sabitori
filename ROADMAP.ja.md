@@ -77,8 +77,6 @@ StyleAnimator / PresenceAnimator
 ## 未着手 / 計画中
 
 ### macOS ネイティブ統合
-`Cargo.toml` に `objc2-app-kit` 依存はあるが Drag & Drop 以外は未実装。
-
 - ⬜ NSStatusItem（メニューバー常駐アイコン）
 - ⬜ 透明 NSWindow + wgpu 描画（オーバーレイ用途）
 - ⬜ macOS 通知 (UNUserNotificationCenter)
@@ -95,22 +93,39 @@ StyleAnimator / PresenceAnimator
 - ⬜ `release-plz` セットアップでロックステップ release 自動化
 - ⬜ docs.rs 用 `#[doc]` コメント整備
 
-### 業務アプリ / Web で足りていないもの
+### 業務アプリを書いて埋めたもの（すべて済み）
 
-実際に業務アプリ（予約管理、約 20 画面）を sabitori で書いて出てきた穴。
-やる / やらないをここで宣言はしていない（まだ決めていない）が、**どれも issue があり、
-消費側の回避策も issue に書いてある**ので「待つか自前で書くか」はそこで判断できる。
+実際に業務アプリ（予約管理、約 20 画面）を sabitori で書いて出てきた穴。どれも issue に
+消費側の回避策を書いて進め、今は全部閉じている。
 
-- ⬜ Web の日本語 IME・ソフトキーボード（隠し textarea の橋渡し）— [#73](https://github.com/Mutafika/sabitori/issues/73)
-- ⬜ Web のクリップボード（`copy` / `paste` イベント経由）— [#76](https://github.com/Mutafika/sabitori/issues/76)
-- ⬜ Web の URL / 戻るボタン（History）と、アプリからの横スクロール — [#74](https://github.com/Mutafika/sabitori/issues/74)
-- ⬜ ファイルを選ぶ / 保存する口（native のダイアログ / Web の input・ダウンロード）— [#77](https://github.com/Mutafika/sabitori/issues/77)
-- ⬜ HTTP クライアント（POST/PUT/DELETE・JSON・Cookie）を native/wasm 共通で — [#63](https://github.com/Mutafika/sabitori/issues/63)
-- ⬜ 非同期の結果を UI に戻す標準の形（`Tasks`）— [#64](https://github.com/Mutafika/sabitori/issues/64)
-- ⬜ ライトテーマと、ウィジェット既定スタイルの `AppTheme` 追従 — [#65](https://github.com/Mutafika/sabitori/issues/65)
-- ⬜ フォーム: パスワード欄 [#61](https://github.com/Mutafika/sabitori/issues/61) / disabled 状態 [#62](https://github.com/Mutafika/sabitori/issues/62)
-- ⬜ 小粒の部品（時刻ピッカー・sticky・表のセルに Element など）— [#75](https://github.com/Mutafika/sabitori/issues/75)
-- ⬜ グラフ / 印刷・画面外描画 / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) の 11・12 と個別検討
+- ✅ Web の日本語 IME・ソフトキーボード（隠し textarea の橋渡し）— [#73](https://github.com/Mutafika/sabitori/issues/73)
+- ✅ Web のクリップボード（`copy` / `paste` イベント経由）— [#76](https://github.com/Mutafika/sabitori/issues/76)
+- ✅ Web の URL / 戻るボタン（History）と、アプリからの横スクロール — [#74](https://github.com/Mutafika/sabitori/issues/74)
+- ✅ ファイルを選ぶ / 保存する口（native のダイアログ / Web の input・ダウンロード）— [#77](https://github.com/Mutafika/sabitori/issues/77)
+- ✅ HTTP クライアント（POST/PUT/DELETE・JSON・Cookie）を native/wasm 共通で — [#63](https://github.com/Mutafika/sabitori/issues/63)
+- ✅ 非同期の結果を UI に戻す標準の形（`Tasks`）— [#64](https://github.com/Mutafika/sabitori/issues/64)
+- ✅ ライトテーマと、ウィジェット既定スタイルの `AppTheme` 追従 — [#65](https://github.com/Mutafika/sabitori/issues/65)
+- ✅ フォーム: パスワード欄 [#61](https://github.com/Mutafika/sabitori/issues/61) / disabled 状態 [#62](https://github.com/Mutafika/sabitori/issues/62)
+- ✅ 小粒の部品（時刻ピッカー・sticky・表のセルに Element など）— [#75](https://github.com/Mutafika/sabitori/issues/75)
+- ✅ 確かめのダイアログをどの OS でも（OS の窓が無い所では窓の中に描く `dialog::ask`、部品 `ask_dialog`）— v0.58.0
+
+### 利用側のアプリがまだ自前で書いているもの（2026-11-10 の洗い出し）
+
+sabitori で書いたアプリのうち、何本もが自分で持っている部品。持っているアプリの多い順。
+
+- ⬜ ショートカット表: `cmd+shift+t` を読む・`⇧⌘T` と出す・利用者が変える・押して登録する欄（4 本、約 2,000 行）
+- ⬜ パスを返すファイル選択・フォルダ選択・保存先を覚える（と Windows / Linux の選択窓）
+- ⬜ タブの帯（6 本）
+- ⬜ 時刻を指定して起こす口と、別スレッドから画面へ流す口（待つためだけに毎フレーム描き直さないように、5 本）
+- ⬜ 行・要素が見えるところまでスクロールする口（4 本）
+- ⬜ その場で名前を変える欄・窓の位置の保存と復元・OS のダーク / ライトの切り替わり・ボタン / バッジの種類・一覧の複数選択・ファイル / 画像のクリップボード・拡大縮小と移動の表示領域
+- ⬜ 列ビュー（Miller columns）・表の列幅変更 / 並べ替え・ネイティブのメニューバー（NSMenu）
+- ⬜ グラフ / 印刷 / i18n — [#75](https://github.com/Mutafika/sabitori/issues/75) の 11・12 と個別検討
+
+### OS ごとの抜け
+- ⬜ `run_scene` が宣言的ランタイムと入力・部品を共有する（今はファイル / ダイアログの答え・閉じる前の確認・登録した部品・キーを離したことを黙って落とす）
+- ⬜ Windows / Linux: `Titlebar::Custom`（枠なし窓）・ファイル選択・「このアプリで開く」のパス（起動引数）
+- ⬜ Web: タブの題名・閉じる前の「離れますか」・ファイルを落とす・ボタンからクリップボードへ書く
 
 ### その他検討中
 - ⬜ WebSocket / SSE クライアント

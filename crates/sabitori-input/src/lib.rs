@@ -5,14 +5,14 @@ pub type PointerId = u64;
 /// Reserved id for the system mouse pointer. Touch/pen ids start above this.
 pub const MOUSE_POINTER_ID: PointerId = 0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PointerKind {
     Mouse,
     Touch,
     Pen,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
     Right,
@@ -25,7 +25,7 @@ pub enum MouseButton {
 /// の**後**に `Moved` として続く)。刻みホイールは位相を持たないので常に `Moved`。
 /// ランタイムはこれで「1 ジェスチャの間は届け先を固定する」(macOS の latching)
 /// を行う。アプリ側でも、慣性の終わりや「指が離れた」の検出に使える。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WheelPhase {
     Started,
     Moved,
@@ -41,7 +41,7 @@ pub enum WheelPhase {
 /// 本文 1 行 (≈20px) が 1 ノッチで流れる、というテキスト UI の慣習に合わせた値。
 pub const LINE_DELTA_PX: f32 = 20.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Backspace,
     Delete,
@@ -95,7 +95,7 @@ impl Key {
     ];
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
@@ -402,7 +402,7 @@ impl InputEvent {
 ///
 /// 宣言はドキュメントでもある — 消費側は「このランタイムで
 /// `InputEvent::ImeEnabled` は来るのか」 を表 1 つで確認できる。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Delivery {
     /// `on_input` でアプリに届く。 フォーカス中の要素があれば
     /// `on_focused_input` を先に試し、 消費されなければ `on_input` へ落ちる。

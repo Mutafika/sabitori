@@ -483,6 +483,13 @@ impl<A: DeclarativeApp> Harness<A> {
         self.state.release_primary();
     }
 
+    /// 指で `(x, y)` をタップする (触れて、動かさずに離す)。iPad などの指の道を通る —
+    /// クリックは離したときに鳴り、テキスト欄なら触れた所にキャレットが来る。
+    pub fn tap_at(&mut self, x: f32, y: f32) {
+        self.state.handle_touch(winit::event::TouchPhase::Started, 0, x, y);
+        self.state.handle_touch(winit::event::TouchPhase::Ended, 0, x, y);
+    }
+
     /// 押したままにする（ドラッグの起点）。
     pub fn press_at(&mut self, x: f32, y: f32) {
         self.move_to(x, y);
