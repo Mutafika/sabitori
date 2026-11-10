@@ -3579,10 +3579,19 @@ impl<A: DeclarativeApp> AppState<A> {
     /// ランタイムの持ち物で、 アプリが二重に処理する余地を作らないため。
     pub(crate) fn route_to_managed(&mut self, event: &InputEvent) -> bool {
         let Some(id) = self.focused_id.clone() else { return false };
-        match self.managed_text_field(&id) {
-            Some(field) => field.handle_input(event),
-            None => false,
+        if let Some(field) = self.managed_text_field(&id) {
+            return field.handle_input(event);
         }
+        // ショートカットを押して登録する欄 (待ち受けの間はキーを全部受ける)。
+        if let Some(field) = self
+            .managed
+            .iter()
+            .find(|(mid, _)| *mid == id)
+            .and_then(|(_, t)| t.as_any().downcast_ref::<sabitori_widgets::ShortcutFieldState>())
+        {
+            return field.handle_input(event);
+        }
+        false
     }
 
     /// 打鍵が行き場を失ったテキスト欄の id。 テストから配線漏れを assert する

@@ -110,7 +110,7 @@ Each one had an issue with the app's workaround written down; all are closed now
 Pieces that several apps built on sabitori write for themselves. Ordered by how
 many apps carry their own copy.
 
-- ⬜ Shortcut table: parse `cmd+shift+t`, show `⇧⌘T`, user overrides, a "press a key" recorder (4 apps, ~2,000 lines)
+- ✅ Shortcut table: parse `cmd+shift+t`, show `⇧⌘T`, user overrides, a "press a key" recorder (`Keymap` / `Chord` / `shortcut_field`)
 - ⬜ File picking that returns paths, picks folders, and remembers where to save (and Windows / Linux pickers)
 - ⬜ A tab strip widget (6 apps)
 - ⬜ Wake-at-a-time timers and a worker → UI channel, so apps stop redrawing every frame just to wait (5 apps)

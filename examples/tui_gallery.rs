@@ -126,6 +126,13 @@ struct Gallery {
     ask_on_start: Option<String>,
     /// Window Buttons で押されたもの (新しい順)。
     win_log: Vec<String>,
+    /// Shortcuts の表と、行ごとの「押して登録する欄」(`DemoCmd::ALL` の順)。
+    keymap: Keymap<DemoCmd>,
+    key_fields: [ShortcutFieldState; 3],
+    /// 鳴った操作 (新しい順)。
+    key_log: Vec<&'static str>,
+    /// 最後に変えたときの知らせ (どこから外れたか・断った理由)。
+    key_note: Option<String>,
 }
 
 /// ギャラリーにあるスライダー。値は `Gallery::sliders` にこの順で持つ。
@@ -156,6 +163,46 @@ impl SliderKind {
             SliderKind::BackdropGround => 0.35,
             SliderKind::BackdropTint => 0.18,
         }
+    }
+}
+
+/// Shortcuts の見本の操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DemoCmd {
+    Ping,
+    Pong,
+    ClearLog,
+}
+
+impl KeyCommand for DemoCmd {
+    fn id(self) -> &'static str {
+        match self {
+            DemoCmd::Ping => "ping",
+            DemoCmd::Pong => "pong",
+            DemoCmd::ClearLog => "clear_log",
+        }
+    }
+}
+
+impl DemoCmd {
+    const ALL: [DemoCmd; 3] = [DemoCmd::Ping, DemoCmd::Pong, DemoCmd::ClearLog];
+
+    fn name(self) -> &'static str {
+        match self {
+            DemoCmd::Ping => "Ping",
+            DemoCmd::Pong => "Pong",
+            DemoCmd::ClearLog => "Clear log",
+        }
+    }
+
+    /// 見本の表。⌘Q / ⌘W は窓の操作なので割り当てさせない。
+    fn keymap() -> Keymap<DemoCmd> {
+        Keymap::new([
+            (DemoCmd::Ping, vec![Chord::primary(Key::Digit1)]),
+            (DemoCmd::Pong, vec![Chord::primary(Key::Digit2)]),
+            (DemoCmd::ClearLog, vec![Chord::primary(Key::K)]),
+        ])
+        .reserve([Chord::primary(Key::Q), Chord::primary(Key::W)])
     }
 }
 
@@ -201,7 +248,7 @@ enum Demo {
     Table, Tree, Split, VirtualList, TextArea,
     PathsSvg, RadialGrain, Mask, Blend, Transform, BackdropBlur,
     DateTime, ColorPicker,
-    MenuSwatches, Dialog,
+    MenuSwatches, Dialog, Shortcuts,
     WindowButtons,
 }
 
@@ -260,6 +307,7 @@ const ITEMS: &[(Demo, &str, Section)] = &[
     (Demo::DragDrop, "Drag & Drop", Section::Interaction),
     (Demo::MenuSwatches, "Menu Swatches", Section::Interaction),
     (Demo::Dialog, "Dialog", Section::Interaction),
+    (Demo::Shortcuts, "Shortcuts", Section::Interaction),
     (Demo::WindowButtons, "Window Buttons", Section::Window),
 ];
 
@@ -2781,6 +2829,86 @@ impl Gallery {
         ], "MenuItemDef::with_swatch(color) — a menu row shows the colour behind its label before you pick it.")
     }
 
+    fn run_demo_cmd(&mut self, cmd: DemoCmd) {
+        match cmd {
+            DemoCmd::ClearLog => self.key_log.clear(),
+            other => {
+                self.key_log.insert(0, other.name());
+                self.key_log.truncate(6);
+            }
+        }
+    }
+
+    /// 欄で捕まえた鍵を表に入れる。文字を打つのと同じ押し方 (修飾キー無し) と、
+    /// 割り当てさせない鍵は断る。
+    fn take_recorded_shortcuts(&mut self) {
+        for (i, cmd) in DemoCmd::ALL.into_iter().enumerate() {
+            match self.key_fields[i].take_recorded() {
+                Some(Recorded::Chord(chord)) if chord.is_plain() => {
+                    self.key_note = Some(format!("{} types text — hold ⌘, ⌃ or ⌥ with it", chord.label()));
+                }
+                Some(Recorded::Chord(chord)) if self.keymap.is_reserved(chord) => {
+                    self.key_note = Some(format!("{} belongs to the window", chord.label()));
+                }
+                Some(Recorded::Chord(chord)) => {
+                    let bumped = self.keymap.assign(cmd, Some(chord));
+                    self.key_note = bumped.first().map(|b| format!("{} moved from {} to {}", chord.label(), b.name(), cmd.name()));
+                }
+                Some(Recorded::Cleared) => {
+                    self.keymap.assign(cmd, None);
+                    self.key_note = None;
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn shortcuts_demo(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
+        let style = ShortcutFieldStyle {
+            bg: t.surface_elevated,
+            border: t.border,
+            border_armed: t.primary,
+            text: t.text_primary,
+            placeholder: t.text_disabled,
+            radius: self.round(6.0, 2.0),
+            mono: !self.modern,
+            ..ShortcutFieldStyle::from_theme(&ctx.theme)
+        };
+        let rows: Vec<Element> = DemoCmd::ALL.into_iter().enumerate().map(|(i, cmd)| {
+            let field_id = format!("key-{}", cmd.id());
+            let reset_id = format!("key-reset-{}", cmd.id());
+            let hot = ctx.hovered.as_deref() == Some(reset_id.as_str());
+            let reset = if self.keymap.is_default(cmd) {
+                div().w(Px(52.0))
+            } else {
+                div().w(Px(52.0)).cursor(Cursor::Pointer).no_select()
+                    .child(self.lbl("Reset", 12.0, 500, if hot { t.primary } else { t.text_secondary }))
+                    .click(ctx, reset_id, move |app: &mut Gallery| {
+                        let bumped = app.keymap.reset(cmd);
+                        app.key_note = bumped.first().map(|b| format!("{} gave its key back to {}", b.name(), cmd.name()));
+                    })
+            };
+            div().flex_row().items_center().gap(12.0).children([
+                self.lbl(cmd.name(), 13.5, 500, t.text_primary).w(Px(90.0)).shrink(0.0),
+                shortcut_field(ctx, &field_id, &self.key_fields[i], self.keymap.chords(cmd).first().copied(), &style),
+                reset,
+            ])
+        }).collect();
+        let log = if self.key_log.is_empty() { "—".to_string() } else { self.key_log.join("  ") };
+        let mut body = rows;
+        body.push(text(format!("fired: {log}")).mono().font_size(13.0).color(a.yellow).shrink(0.0));
+        if let Some(note) = &self.key_note {
+            body.push(self.lbl(note, 12.5, 500, a.cyan).shrink(0.0));
+        }
+        let saved = if self.keymap.overrides().is_empty() {
+            "{}".to_string()
+        } else {
+            self.keymap.overrides().iter().map(|(k, v)| format!("{k} = [{}]", v.join(", "))).collect::<Vec<_>>().join("  ")
+        };
+        body.push(text(format!("saved overrides: {saved}")).mono().font_size(12.0).color(t.text_disabled).shrink(0.0));
+        self.exhibit(t, "Shortcuts", body, "Keymap + shortcut_field — press the keys to fire, click a field and press a new combination to rebind (⌫ clears, Esc cancels). A taken key moves over; only the changes are saved.")
+    }
+
     fn dialog_demo(&self, t: &Theme, a: &AnsiPalette, ctx: &ViewContext) -> Element {
         let button = |id: &'static str, label: &str, color: Color, f: fn(&mut Gallery)| -> Element {
             let hot = ctx.hovered.as_deref() == Some(id);
@@ -2926,6 +3054,7 @@ impl DeclarativeApp for Gallery {
         self.pulse_st.tick(dt);
         self.color_cycle_st.tick(dt);
         self.swatch_menu.tick(dt);
+        self.take_recorded_shortcuts();
         // Goo のピル: 少しだけ行き過ぎるばね。
         let target = if self.goo_open { 1.0 } else { 0.0 };
         let dt = dt.min(1.0 / 30.0);
@@ -3272,6 +3401,7 @@ impl DeclarativeApp for Gallery {
             Demo::ColorPicker => self.color_picker_demo(t, ctx),
             Demo::MenuSwatches => self.swatch_menu_demo(t),
             Demo::Dialog => self.dialog_demo(t, a, ctx),
+            Demo::Shortcuts => self.shortcuts_demo(t, a, ctx),
             Demo::WindowButtons => self.window_buttons_demo(t, a, ctx),
         };
 
@@ -3607,6 +3737,13 @@ impl DeclarativeApp for Gallery {
             self.splash_done = true;
             return true;
         }
+        // Shortcuts: 表の鍵で操作を呼ぶ (押して登録する欄が待ち受けの間は、欄が先に受ける)。
+        if self.demo() == Demo::Shortcuts
+            && let Some(cmd) = self.keymap.lookup_event(event)
+        {
+            self.run_demo_cmd(cmd);
+            return true;
+        }
         // 分割ペインの仕切り。指の位置は箱 (`on_build` で拾う) の端から測る。
         if self.demo() == Demo::Split {
             let hovered = self.hovered.as_deref();
@@ -3788,6 +3925,10 @@ impl Gallery {
             dialog_answer: None,
             ask_on_start: None,
             win_log: Vec::new(),
+            keymap: DemoCmd::keymap(),
+            key_fields: Default::default(),
+            key_log: Vec::new(),
+            key_note: None,
         }
     }
 
@@ -4186,6 +4327,49 @@ mod tests {
                 assert!(h.rect_of(&titlebar_button_id(WINDOW_BUTTONS_ID, "close")).is_none());
             }
         }
+    }
+
+    /// Shortcuts: 表の鍵で鳴り、欄を押して新しい鍵を押すと付け替わる (他の操作からは外れる)。
+    /// 修飾キー無しの鍵は断る (j / k で一覧を動かすのと取り合いになる)。
+    #[test]
+    fn shortcuts_fire_and_rebind_from_the_field() {
+        let mut h = open("Shortcuts");
+        let primary = Chord::primary(Key::Digit1).mods;
+        let press = |h: &mut Harness<Gallery>, key: Key, mods: Modifiers| {
+            h.key(key, mods);
+            h.set_modifiers(Modifiers::default());
+            h.tick(0.016);
+            h.frame();
+        };
+        press(&mut h, Key::Digit1, primary);
+        assert_eq!(h.app().key_log, ["Ping"]);
+
+        // Pong の欄を押して ⌘1 → Ping から外れて Pong に付く。
+        h.click("key-pong");
+        h.frame();
+        press(&mut h, Key::Digit1, primary);
+        assert_eq!(h.app().keymap.lookup(Chord::primary(Key::Digit1)), Some(DemoCmd::Pong));
+        assert!(h.app().keymap.chords(DemoCmd::Ping).is_empty());
+        assert!(h.app().key_note.as_deref().is_some_and(|n| n.contains("Ping")), "{:?}", h.app().key_note);
+        press(&mut h, Key::Digit1, primary);
+        assert_eq!(h.app().key_log, ["Pong", "Ping"]);
+
+        // 修飾キー無しは断る。表は変わらず、選んでいる項目も動かない (欄が吸う)。
+        let selected = h.app().selected;
+        h.click("key-ping");
+        h.frame();
+        // 実機と同じく、押下とその文字 (`j`) が 1 つの出来事で届く。
+        h.key_with_text(Key::J, Modifiers::default(), "j");
+        h.tick(0.016);
+        h.frame();
+        assert!(h.app().keymap.chords(DemoCmd::Ping).is_empty());
+        assert_eq!(h.app().selected, selected);
+        assert!(h.app().key_note.as_deref().is_some_and(|n| n.contains("types text")), "{:?}", h.app().key_note);
+
+        // Reset で既定に戻り、⌘1 を Pong から取り返す。
+        h.click("key-reset-ping");
+        h.frame();
+        assert_eq!(h.app().keymap.lookup(Chord::primary(Key::Digit1)), Some(DemoCmd::Ping));
     }
 
     #[test]

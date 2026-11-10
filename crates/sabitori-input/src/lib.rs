@@ -1,5 +1,8 @@
 use sabitori_core::Point;
 
+pub mod shortcut;
+pub use shortcut::{Chord, KeyCommand, Keymap};
+
 pub type PointerId = u64;
 
 /// Reserved id for the system mouse pointer. Touch/pen ids start above this.

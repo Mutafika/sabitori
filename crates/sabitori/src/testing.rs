@@ -725,6 +725,15 @@ impl<A: DeclarativeApp> Harness<A> {
         self.key_up(key, modifiers);
     }
 
+    /// 文字の出る鍵を押して離す。実機と同じく、押下と**その押下で出る文字**
+    /// (`text`) が 1 つの出来事で届く — [`Self::key`] のあとに [`Self::text`] を
+    /// 呼ぶのとは違い、押下を受けた部品が同じ押下の文字をどう扱うかまで確かめられる。
+    pub fn key_with_text(&mut self, key: Key, modifiers: Modifiers, text: &str) {
+        self.state.set_modifiers(modifiers);
+        self.state.handle_key_input(key, true, text.chars().collect());
+        self.state.handle_key_input(key, false, Vec::new());
+    }
+
     /// キー押下。 `modifiers` はこの時点の状態としてランタイムに入る。
     pub fn key_down(&mut self, key: Key, modifiers: Modifiers) {
         self.state.set_modifiers(modifiers);
