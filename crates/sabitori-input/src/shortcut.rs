@@ -319,7 +319,8 @@ pub struct Keymap<C: KeyCommand> {
 }
 
 impl<C: KeyCommand> Keymap<C> {
-    /// 既定の表から。同じ鍵が 2 つの操作にあれば先の方が効く。
+    /// 既定の表から。同じ鍵が 2 つの操作にあれば先の方に付き、後の方からは外れる
+    /// (1 つの鍵は 1 つの操作にだけ付く — 画面に出る鍵と効く鍵がずれない)。
     pub fn new(defaults: impl IntoIterator<Item = (C, Vec<Chord>)>) -> Self {
         let mut keymap = Self {
             defaults: defaults.into_iter().collect(),
@@ -367,9 +368,15 @@ impl<C: KeyCommand> Keymap<C> {
         self.chords(command).first().map(|ch| ch.label())
     }
 
-    /// 既定のままか。
+    /// 既定のままか。利用者が変えていなくても、既定の鍵を他の操作に取られていれば
+    /// `false` ([`Self::reset`] で取り返せる)。
     pub fn is_default(&self, command: C) -> bool {
-        !self.overrides.contains_key(command.id())
+        if self.overrides.contains_key(command.id()) {
+            return false;
+        }
+        let defaults: Vec<Chord> =
+            self.default_chords(command).into_iter().filter(|ch| !self.reserved.contains(ch)).collect();
+        self.chords(command) == defaults
     }
 
     /// 操作と鍵を、既定の表の順に (設定画面に並べる用)。
@@ -448,6 +455,10 @@ impl<C: KeyCommand> Keymap<C> {
         }
     }
 
+    /// 今効いている鍵を組み直す。**1 つの鍵は 1 つの操作にだけ付く。** 取り合いに
+    /// なったら、利用者が変えた操作が既定のままの操作に勝ち、同じ側どうしなら表で先の
+    /// 方が勝つ。負けた方からは外す — 設定画面に同じ鍵が 2 行出て片方しか効かない、を
+    /// 作らない (既定を後から足したら、利用者が前に選んだ鍵とぶつかる)。
     fn rebuild(&mut self) {
         self.current = self
             .defaults
@@ -462,9 +473,12 @@ impl<C: KeyCommand> Keymap<C> {
             })
             .collect();
         self.lookup.clear();
-        for (command, chords) in &self.current {
-            for chord in chords {
-                self.lookup.entry(*chord).or_insert(*command);
+        for user_set in [true, false] {
+            for (command, chords) in &mut self.current {
+                if self.overrides.contains_key(command.id()) != user_set {
+                    continue;
+                }
+                chords.retain(|chord| *self.lookup.entry(*chord).or_insert(*command) == *command);
             }
         }
     }
@@ -599,6 +613,36 @@ mod tests {
         let k = keymap().with_overrides(saved);
         assert_eq!(k.chords(Cmd::Find), [Chord::cmd(Key::F).shift()], "読めない鍵だけ落ちる");
         assert_eq!(k.lookup(Chord::cmd(Key::T)), Some(Cmd::NewTab), "他の行はそのまま");
+    }
+
+    /// 利用者が選んだ鍵が、別の操作の既定とぶつかる (既定を後から足した・設定を手で
+    /// 書いた)。利用者が選んだ方に付き、既定の方からは外れる — 前は両方の行に同じ鍵が
+    /// 出て、効くのは表で先の方 (利用者が選んでいない方) だった。
+    #[test]
+    fn a_user_s_chord_wins_over_another_command_s_default() {
+        let mut saved = BTreeMap::new();
+        saved.insert("find".to_string(), vec!["cmd+t".to_string()]);
+        let mut k = keymap().with_overrides(saved);
+        assert_eq!(k.lookup(Chord::cmd(Key::T)), Some(Cmd::Find));
+        assert_eq!(k.chords(Cmd::Find), [Chord::cmd(Key::T)]);
+        assert!(k.chords(Cmd::NewTab).is_empty(), "負けた方には出さない");
+        assert!(!k.is_default(Cmd::NewTab), "既定の鍵を取られている (戻せる)");
+        assert!(k.is_default(Cmd::CloseTab));
+        // 戻すと取り返す。
+        assert_eq!(k.reset(Cmd::NewTab), [Cmd::Find]);
+        assert_eq!(k.lookup(Chord::cmd(Key::T)), Some(Cmd::NewTab));
+        assert!(k.is_default(Cmd::NewTab));
+    }
+
+    /// 既定の表の中で同じ鍵が 2 つの操作にあれば、先の方にだけ付く。
+    #[test]
+    fn a_chord_shared_by_two_defaults_goes_to_the_first() {
+        let k = Keymap::new([
+            (Cmd::NewTab, vec![Chord::cmd(Key::T)]),
+            (Cmd::Find, vec![Chord::cmd(Key::T), Chord::cmd(Key::F)]),
+        ]);
+        assert_eq!(k.lookup(Chord::cmd(Key::T)), Some(Cmd::NewTab));
+        assert_eq!(k.chords(Cmd::Find), [Chord::cmd(Key::F)]);
     }
 
     #[test]

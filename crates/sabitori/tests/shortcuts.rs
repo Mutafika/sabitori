@@ -133,3 +133,26 @@ fn backspace_clears_and_escape_or_clicking_away_stops_listening() {
     h.frame();
     assert!(!h.app().find_key.is_armed(), "他を押したらやめる");
 }
+
+/// 登録する鍵を長めに押すと、OS は同じ押下を繰り返し送る。離すまでは欄が吸い、
+/// いま割り当てた操作がその場で鳴らない。
+#[test]
+fn holding_the_recorded_chord_does_not_fire_it() {
+    let mut h = Harness::new(Settings::new(), 400.0, 300.0);
+    h.frame();
+    h.click("key-find");
+    h.frame();
+    h.key_down(Key::G, CMD);
+    h.tick(0.016);
+    h.frame();
+    assert_eq!(h.app().keymap.lookup(Chord::cmd(Key::G)), Some(Cmd::Find));
+    for _ in 0..3 {
+        h.key_down(Key::G, CMD);
+        h.tick(0.016);
+        h.frame();
+    }
+    assert!(h.app().ran.is_empty(), "押し続けている間は鳴らない");
+    h.key_up(Key::G, CMD);
+    press(&mut h, Key::G, CMD);
+    assert_eq!(h.app().ran, [Cmd::Find], "離してから押せば鳴る");
+}

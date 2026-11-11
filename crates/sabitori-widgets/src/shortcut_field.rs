@@ -53,9 +53,10 @@ struct Inner {
     armed: bool,
     /// 捕まえて、まだアプリが受け取っていないもの。
     recorded: Option<Recorded>,
-    /// 鍵を決めたあと、その押下で出る文字と離しも吸う (待ち受けは終わっているが、
-    /// 同じ押下の `j` が下の画面へ漏れると、一覧が動くなどする)。
-    swallow_rest: bool,
+    /// 決めた鍵。**離すまで**、その鍵の押下 (押し続けたときの繰り返し)・出る文字・離しを
+    /// 吸う。待ち受けは終わっているが、同じ押下の `j` が下の画面へ漏れると一覧が動き、
+    /// 押し続けた ⌘G の繰り返しが漏れると、いま割り当てた操作がその場で鳴る。
+    held: Option<Key>,
 }
 
 impl std::fmt::Debug for ShortcutFieldState {
@@ -94,6 +95,13 @@ impl ShortcutFieldState {
         self.0.borrow_mut().armed = false;
     }
 
+    /// 焦点が外れた: 待ち受けをやめ、離しを待っていた鍵も忘れる (離しはもう届かない)。
+    fn blur(&self) {
+        let mut i = self.0.borrow_mut();
+        i.armed = false;
+        i.held = None;
+    }
+
     /// 捕まえたものを受け取る (受け取ると空になる)。`tick` などで見る。
     pub fn take_recorded(&self) -> Option<Recorded> {
         self.0.borrow_mut().recorded.take()
@@ -103,32 +111,34 @@ impl ShortcutFieldState {
     pub fn handle_input(&self, event: &InputEvent) -> bool {
         let mut i = self.0.borrow_mut();
         if !i.armed {
-            // 決めた鍵の押下で出る文字と、その離しまでは吸う。次の押下で終わり。
-            if i.swallow_rest {
-                match event {
-                    InputEvent::KeyInput { pressed: true, .. } => i.swallow_rest = false,
-                    InputEvent::KeyInput { pressed: false, .. } => {
-                        i.swallow_rest = false;
-                        return true;
-                    }
-                    InputEvent::CharInput(_)
-                    | InputEvent::ImeCommit { .. }
-                    | InputEvent::ImePreedit { .. } => return true,
-                    _ => {}
+            // 決めた鍵を離すまでは、その鍵の繰り返し・出る文字・離しを吸う。
+            let Some(held) = i.held else { return false };
+            return match event {
+                InputEvent::KeyInput { key, pressed: true, .. } if *key == held => true,
+                InputEvent::KeyInput { key, pressed: false, .. } if *key == held => {
+                    i.held = None;
+                    true
                 }
-            }
-            return false;
+                // 別の鍵を押した: 前の鍵の離しを取りこぼしていても、ここで終わりにする。
+                InputEvent::KeyInput { pressed: true, .. } => {
+                    i.held = None;
+                    false
+                }
+                InputEvent::CharInput(_) | InputEvent::ImeCommit { .. } | InputEvent::ImePreedit { .. } => true,
+                // 修飾キーの離しなどはアプリへ渡す (押しっぱなしの追跡が狂わないように)。
+                _ => false,
+            };
         }
         if let InputEvent::KeyInput { key, pressed: true, modifiers } = event {
             let plain = !modifiers.meta && !modifiers.ctrl && !modifiers.alt && !modifiers.shift;
             if plain && matches!(key, Key::Backspace | Key::Delete) {
                 i.recorded = Some(Recorded::Cleared);
                 i.armed = false;
-                i.swallow_rest = true;
+                i.held = Some(*key);
             } else if let Some(chord) = Chord::from_event(event) {
                 i.recorded = Some(Recorded::Chord(chord));
                 i.armed = false;
-                i.swallow_rest = true;
+                i.held = Some(chord.key);
             }
         }
         // 文字・IME・離した鍵も吸う (待ち受けの間に下の画面へ漏らさない)。
@@ -190,7 +200,7 @@ pub fn shortcut_field(
     ctx.register_managed(id, Rc::new(state.clone()));
     let focused = ctx.focused.as_deref() == Some(id);
     if !focused {
-        state.disarm();
+        state.blur();
     }
     {
         let state = state.clone();
@@ -274,5 +284,24 @@ mod tests {
         assert!(s.handle_input(&InputEvent::KeyInput { key: Key::J, pressed: false, modifiers: Modifiers::default() }));
         assert!(!s.handle_input(&press(Key::K, Modifiers::default())), "次の押下は渡す");
         assert!(!s.handle_input(&InputEvent::CharInput('k')));
+    }
+
+    /// 決めた鍵を押し続けたときの繰り返し (OS が押下として送る) も、離すまで吸う。
+    /// 前は次の押下で吸うのをやめていたので、⌘G を長めに押すと、いま割り当てた操作が鳴った。
+    #[test]
+    fn holding_the_captured_key_does_not_leak_its_repeats() {
+        let s = ShortcutFieldState::new();
+        let cmd = Modifiers { meta: true, ..Default::default() };
+        s.arm();
+        assert!(s.handle_input(&press(Key::G, cmd)));
+        assert!(s.handle_input(&press(Key::G, cmd)), "繰り返しは吸う");
+        assert!(s.handle_input(&press(Key::G, cmd)));
+        // ⌘ を先に離す: その離しはアプリへ渡し、G はまだ吸う (文字も)。
+        let none = Modifiers::default();
+        assert!(!s.handle_input(&InputEvent::KeyInput { key: Key::Other, pressed: false, modifiers: none }));
+        assert!(s.handle_input(&press(Key::G, none)));
+        assert!(s.handle_input(&InputEvent::CharInput('g')));
+        assert!(s.handle_input(&InputEvent::KeyInput { key: Key::G, pressed: false, modifiers: none }));
+        assert!(!s.handle_input(&press(Key::G, cmd)), "離したあとの押下は渡す");
     }
 }
