@@ -15,6 +15,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`PickOptions::paths_only()`** — 選ばれたファイルの中身を読まず、場所だけ受け取る (`bytes` は空、`path` に場所)。
+  0.59 で場所を返すようになったが、場所だけ欲しいときも丸ごとメモリに読んでいた (ファイラで大きな動画を選ぶ、
+  など)。web は場所を渡せないので効かない (今までどおり中身を読む)。
+- **`Key::Semicolon` / `Quote` / `Backquote` / `Backslash`** (`;` `'` `` ` `` `\`)。`Key::Other` に落ちていたので
+  ショートカットにできず (⌘; ⌃` など)、`shortcut_field` で押しても何も起きなかった。⇧ 付きの形 (`:` `"` `~` `|`)
+  も同じキー。`Chord` は `cmd+;` / `ctrl+backquote` などを読む。
+
+### Changed（破壊的）
+
+- **`SaveResult::Failed(String)` を足した**。`save_as` は、保存先を選んだあと書けなかったとき (権限が無い・空きが
+  無いなど) も `Cancelled` を返していて、アプリは「保存できませんでした」と出せなかった。`SaveResult` を網羅で
+  `match` している所は腕を足す。`save` (`bool`) は今までどおり `false`。
+- **`PickOptions` に `paths_only` を足した**。`PickOptions { .. }` と全部書いて組んでいる所は欄を足す
+  (`PickOptions::new()` からなら要らない)。
+- **`Key` に 4 つ足した** (上)。`Key` を網羅で `match` している所は腕を足す。これらの鍵は `KeyInput` で
+  `Key::Other` ではなく自分の名前で届く。
+
 ## [0.59.0] - 2026-11-11
 
 ### Added

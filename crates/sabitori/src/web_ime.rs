@@ -676,6 +676,10 @@ fn map_key(key: &str) -> Option<Key> {
                 '=' | '+' => Key::Equal,
                 '[' | '{' => Key::BracketLeft,
                 ']' | '}' => Key::BracketRight,
+                ';' | ':' => Key::Semicolon,
+                '\'' | '"' => Key::Quote,
+                '`' | '~' => Key::Backquote,
+                '\\' | '|' => Key::Backslash,
                 _ => return None,
             }
         }
