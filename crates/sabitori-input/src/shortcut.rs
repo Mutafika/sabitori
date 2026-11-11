@@ -258,6 +258,8 @@ const KEYS: &[(Key, &str, &str)] = &[
     (Key::Period, ".", "."), (Key::Comma, ",", ","), (Key::Slash, "/", "/"),
     (Key::Minus, "-", "-"), (Key::Equal, "=", "="), (Key::BracketLeft, "[", "["),
     (Key::BracketRight, "]", "]"),
+    (Key::Semicolon, ";", ";"), (Key::Quote, "'", "'"), (Key::Backquote, "`", "`"),
+    (Key::Backslash, "\\", "\\"),
 ];
 
 fn key_config_name(key: Key) -> &'static str {
@@ -286,6 +288,10 @@ fn key_from_name(name: &str) -> Option<Key> {
         "equal" | "equals" => "=",
         "bracketleft" => "[",
         "bracketright" => "]",
+        "semicolon" => ";",
+        "quote" => "'",
+        "backquote" | "grave" => "`",
+        "backslash" => "\\",
         "↑" => "up",
         "↓" => "down",
         "←" => "left",
@@ -525,6 +531,22 @@ mod tests {
         assert_eq!(Chord::parse("hyper+t"), None, "知らない修飾キーは黙って別の鍵にしない");
         assert_eq!(Chord::parse("cmd+"), None);
         assert_eq!(Chord::parse("cmd+nope"), None);
+    }
+
+    /// 表に無い鍵は、設定に書くと読み戻せない (空の名前になる)。名前の無い鍵と ⇧ 単独
+    /// 以外は全部、書いて読み戻せること — 鍵を足したら表にも足す。
+    #[test]
+    fn every_key_round_trips_through_the_config_form() {
+        for &key in Key::ALL {
+            if is_modifier_only(key) {
+                continue;
+            }
+            let chord = Chord::cmd(key).shift();
+            assert_eq!(Chord::parse(&chord.to_config()), Some(chord), "{key:?}");
+        }
+        assert_eq!(Chord::parse("cmd+;"), Some(Chord::cmd(Key::Semicolon)));
+        assert_eq!(Chord::parse("ctrl+`"), Some(Chord::key(Key::Backquote).ctrl()));
+        assert_eq!(Chord::cmd(Key::Backslash).label_mac(), "⌘\\");
     }
 
     #[test]

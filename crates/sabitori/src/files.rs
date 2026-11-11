@@ -37,13 +37,15 @@
 //!
 //! native では選ばれたファイルの場所が [`PickedFile::path`] に入る。開いたファイルへ
 //! ⌘S で書き戻す、次に開くときに同じフォルダから始める ([`PickOptions::start_in`])、
-//! といったことができる。フォルダを選ばせるなら [`PickOptions::folders`]。
+//! といったことができる。フォルダを選ばせるなら [`PickOptions::folders`]、大きな
+//! ファイルの場所だけ欲しい (中身は読まない) なら [`PickOptions::paths_only`]。
 //! 保存先を選ばせて、その場所を受け取るなら [`save_as`]:
 //!
 //! ```ignore
 //! match files::save_as(&doc.name, &bytes, SaveOptions::new().start_in(&last_dir)) {
 //!     SaveResult::Saved(Some(path)) => self.doc.path = Some(path), // 次の ⌘S はここへ
 //!     SaveResult::Saved(None) => {}                                // web: ダウンロードした
+//!     SaveResult::Failed(reason) => self.toast(format!("保存できませんでした: {reason}")),
 //!     SaveResult::Cancelled | SaveResult::Unsupported => {}
 //! }
 //! ```
@@ -112,6 +114,8 @@ pub struct PickOptions {
     pub folders: bool,
     /// 最初に開く場所。
     pub start_in: Option<PathBuf>,
+    /// 中身を読まない ([`Self::paths_only`])。
+    pub paths_only: bool,
 }
 
 impl PickOptions {
@@ -147,6 +151,15 @@ impl PickOptions {
         self.start_in = Some(dir.as_ref().to_path_buf());
         self
     }
+
+    /// 中身を読まず、場所だけ受け取る (`bytes` は空、`path` に場所)。大きなファイル
+    /// (動画など) を選ばせて自分で読む・場所だけ覚える、というときに — 付けないと
+    /// 選ばれたファイルを丸ごとメモリに読む。web は場所を渡せないので効かない
+    /// (今までどおり中身を読む)。
+    pub fn paths_only(mut self) -> Self {
+        self.paths_only = true;
+        self
+    }
 }
 
 /// 保存の結果 ([`save_as`])。
@@ -155,8 +168,11 @@ pub enum SaveResult {
     /// 書いた。native は書いた場所、web は `None` (ダウンロードを始めた — 場所は
     /// ブラウザが決める)。
     Saved(Option<PathBuf>),
-    /// ユーザーが閉じた、か書けなかった (書けなかった理由はログに出る)。
+    /// ユーザーが閉じた。
     Cancelled,
+    /// 保存先は選ばれたが書けなかった (権限が無い・空きが無いなど)。中身は理由 —
+    /// 「保存できませんでした」と出す用。
+    Failed(String),
     /// この環境に保存の口が無い。
     Unsupported,
 }
@@ -248,7 +264,11 @@ pub fn save_as(name: &str, bytes: &[u8], options: SaveOptions) -> SaveResult {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = options;
-        if web::save(name, bytes) { SaveResult::Saved(None) } else { SaveResult::Cancelled }
+        if web::save(name, bytes) {
+            SaveResult::Saved(None)
+        } else {
+            SaveResult::Failed("ブラウザがダウンロードを始められなかった".into())
+        }
     }
     #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
@@ -258,13 +278,26 @@ pub fn save_as(name: &str, bytes: &[u8], options: SaveOptions) -> SaveResult {
     }
 }
 
+/// 選ばれた場所へ書く。書けなかったら理由を付けて [`SaveResult::Failed`]。
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn write_to(path: PathBuf, bytes: &[u8]) -> SaveResult {
+    match std::fs::write(&path, bytes) {
+        Ok(()) => SaveResult::Saved(Some(path)),
+        Err(e) => {
+            tracing::warn!("保存に失敗: {e}");
+            SaveResult::Failed(e.to_string())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // macOS
 // ---------------------------------------------------------------------------
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 mod macos {
-    use super::{PickOptions, PickResult, PickedFile, SaveOptions, SaveResult};
+    use super::{write_to, PickOptions, PickResult, PickedFile, SaveOptions, SaveResult};
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSOpenPanel, NSSavePanel};
     use objc2_foundation::{NSArray, NSString, NSURL};
@@ -317,8 +350,8 @@ mod macos {
         for url in urls.iter() {
             let Some(path) = url.path() else { continue };
             let path = std::path::PathBuf::from(path.to_string());
-            // フォルダは中身を読まない (場所だけ渡す)。
-            if options.folders {
+            // フォルダと、場所だけ欲しいときは中身を読まない。
+            if options.folders || options.paths_only {
                 out.push(PickedFile { name: name_of(&path), bytes: Vec::new(), path: Some(path) });
                 continue;
             }
@@ -348,13 +381,7 @@ mod macos {
         let Some(url) = panel.URL() else { return SaveResult::Cancelled };
         let Some(path) = url.path() else { return SaveResult::Cancelled };
         let path = std::path::PathBuf::from(path.to_string());
-        match std::fs::write(&path, bytes) {
-            Ok(()) => SaveResult::Saved(Some(path)),
-            Err(e) => {
-                tracing::warn!("保存に失敗: {e}");
-                SaveResult::Cancelled
-            }
-        }
+        write_to(path, bytes)
     }
 }
 
@@ -476,6 +503,8 @@ mod tests {
         assert!(o.multiple);
         let o = PickOptions::new().folders().start_in("/tmp/projects");
         assert!(o.folders);
+        assert!(PickOptions::new().paths_only().paths_only);
+        assert!(!PickOptions::new().paths_only, "既定は今までどおり中身を読む");
         assert_eq!(o.start_in.as_deref(), Some(Path::new("/tmp/projects")));
         assert_eq!(SaveOptions::new().start_in("/tmp").start_in.as_deref(), Some(Path::new("/tmp")));
     }
@@ -486,6 +515,21 @@ mod tests {
         assert_eq!(f.path, None, "web と同じく、場所は無しから");
         let f = f.with_path("/Users/me/見積.csv");
         assert_eq!(f.path.as_deref(), Some(Path::new("/Users/me/見積.csv")));
+    }
+
+    /// 書けなかったら、閉じたのとは別に理由付きで返る (「保存できませんでした」と出せる)。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_write_that_fails_is_not_reported_as_cancelled() {
+        let dir = std::env::temp_dir().join(format!("sabitori-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("out.csv");
+        assert_eq!(write_to(ok.clone(), b"a,b"), SaveResult::Saved(Some(ok.clone())));
+        assert_eq!(std::fs::read(&ok).unwrap(), b"a,b");
+        // フォルダの無い場所には書けない。
+        let bad = dir.join("no-such-dir").join("out.csv");
+        assert!(matches!(write_to(bad, b"a,b"), SaveResult::Failed(reason) if !reason.is_empty()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 差し込んだ結果が 1 回だけ汲まれること (2 回汲めると二重復元になる)。

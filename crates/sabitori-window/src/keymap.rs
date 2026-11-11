@@ -68,6 +68,10 @@ fn physical_key(code: KeyCode) -> Option<Key> {
         KeyCode::Equal => Key::Equal,
         KeyCode::BracketLeft => Key::BracketLeft,
         KeyCode::BracketRight => Key::BracketRight,
+        KeyCode::Semicolon => Key::Semicolon,
+        KeyCode::Quote => Key::Quote,
+        KeyCode::Backquote => Key::Backquote,
+        KeyCode::Backslash => Key::Backslash,
         _ => return None,
     })
 }
@@ -154,6 +158,10 @@ fn character_key(c: &str) -> Key {
         "=" | "+" => Key::Equal,
         "[" | "{" => Key::BracketLeft,
         "]" | "}" => Key::BracketRight,
+        ";" | ":" => Key::Semicolon,
+        "'" | "\"" => Key::Quote,
+        "`" | "~" => Key::Backquote,
+        "\\" | "|" => Key::Backslash,
         _ => Key::Other,
     }
 }
@@ -313,6 +321,10 @@ mod tests {
             Key::Equal => ch("="),
             Key::BracketLeft => ch("["),
             Key::BracketRight => ch("]"),
+            Key::Semicolon => ch(";"),
+            Key::Quote => ch("'"),
+            Key::Backquote => ch("`"),
+            Key::Backslash => ch("\\"),
             // 「対応する winit の入力が無い」ことを意味する受け皿。
             Key::Other => None,
         }
@@ -345,6 +357,10 @@ mod tests {
             ("{", Key::BracketLeft),
             ("}", Key::BracketRight),
             ("?", Key::Slash),
+            (":", Key::Semicolon),
+            ("\"", Key::Quote),
+            ("~", Key::Backquote),
+            ("|", Key::Backslash),
         ] {
             assert_eq!(key_from_winit(&WinitKey::Character(shifted.into())), Some(key));
         }
