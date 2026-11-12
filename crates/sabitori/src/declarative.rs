@@ -289,6 +289,19 @@ impl<S: Into<String>> From<(S, f32)> for ScrollIntent {
 /// 越えたら文字の選択 (#111)。
 const CLICK_SLOP: f32 = 4.0;
 
+/// マウスで押したテキスト欄 (`AppState::field_drag`)。
+struct FieldDrag {
+    id: String,
+    /// 押したときの欄の左上 (欄に渡す座標の原点)。
+    origin: sabitori_core::Point,
+    /// 押した所。
+    from: sabitori_core::Point,
+    /// ドラッグで選択を伸ばすか (1 回目の押下だけ)。
+    extend: bool,
+    /// `CLICK_SLOP` より動いたか (動くまではドラッグではなくクリック)。
+    moved: bool,
+}
+
 /// 窓の中に描く確かめのダイアログ ([`crate::dialog::ask`]) の id。ボタンは
 /// `"sabitori::ask::button::{n}"`、箱は `"sabitori::ask::dialog"`。
 pub const ASK_DIALOG_ID: &str = "sabitori::ask";
@@ -1385,6 +1398,8 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     /// drag-selection 中か。 mouse_down で text 要素にヒットしたら true、
     /// mouse_up で false。 true の間の mouse_move は selection.head を更新する。
     selecting: bool,
+    /// マウスで押したテキスト欄。離すまでの移動で欄の中の選択を伸ばす。
+    field_drag: Option<FieldDrag>,
     /// アプリに最後に渡した選択範囲 (#107)。`ctx.text_selection()` の中身で、
     /// 変わったときだけ `on_selection_changed` を呼ぶための比較にも使う。
     pub(crate) selection_snapshot: Option<sabitori_core::SelectedText>,
@@ -1803,6 +1818,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                 // ウィンドウの外へ出たら押下も解除する。 解放イベントが別ウィンドウで
                 // 起きると戻ってこないので、ここで消さないと押しっぱなしの見た目が残る。
                 self.pressed_id = None;
+                self.field_drag = None;
                 // 掴んだまま外へ出た。**離しは別ウィンドウで起きて戻ってこない**ので、
                 // ここで放さないと、カーソルを戻した瞬間にボタンを押していないのに
                 // 面が指に付いてくる (すぐ上の `pressed_id` と同じ理由)。
@@ -2836,6 +2852,17 @@ impl<A: DeclarativeApp> AppState<A> {
         // text selection drag: button held + selecting=true なら head を更新。
         // hit_test_text が None でも head は前の値を保持 (= 端の text 上で
         // 止まる、 巻き戻りで戻れる)。
+        // テキスト欄を押したまま動かした: 欄の中の選択を伸ばす (解決は次の `view()`)。
+        // クリックの手のぶれ (CLICK_SLOP 以内) では選ばない。
+        if let Some(fd) = &mut self.field_drag {
+            fd.moved |= (self.mouse_x - fd.from.x).hypot(self.mouse_y - fd.from.y) > CLICK_SLOP;
+        }
+        if let Some(fd) = self.field_drag.as_ref().filter(|fd| fd.extend && fd.moved)
+            && let Some(field) = self.managed_text_field(&fd.id)
+        {
+            field.request_drag_point(self.mouse_x - fd.origin.x, self.mouse_y - fd.origin.y);
+            self.dirty = true;
+        }
         if self.selecting {
             // drag 中は最近傍 snap (strict=false)。 anchor は既に実テキスト上に
             // 立っているので、 段落の外へ払っても選択が伸び続けてよい。
@@ -2952,6 +2979,7 @@ impl<A: DeclarativeApp> AppState<A> {
             text_layouts: Vec::new(),
             selection: None,
             selecting: false,
+            field_drag: None,
             selection_snapshot: None,
             selection_handles: false,
             selection_redraw: false,
@@ -3879,6 +3907,28 @@ impl<A: DeclarativeApp> AppState<A> {
             let keep_focus = self.ask_dialog.is_open();
             let hit = self.last_build.as_ref().and_then(|b| crate::runtime_shared::press_hit(b, pt));
             let focus_set = self.press_focus(hit.as_ref(), pt);
+            // テキスト欄を押したなら、離すまでのドラッグで選択を伸ばす。2 回目・3 回目の
+            // 押下は語・行を選ぶ (OS の欄と同じ)。押した所にキャレットを置くのは `press_focus`。
+            self.field_drag = None;
+            if let Some(h) = hit.as_ref().filter(|h| h.focusable)
+                && let Some(id) = h.id.as_deref()
+                && let Some(field) = self.managed_text_field(id)
+            {
+                let (fx, fy) = (pt.x - h.rect.origin.x, pt.y - h.rect.origin.y);
+                match click_count {
+                    2 => field.request_word(fx, fy),
+                    n if n >= 3 => field.request_line(fx, fy),
+                    _ => {}
+                }
+                self.field_drag = Some(FieldDrag {
+                    id: id.to_string(),
+                    origin: h.rect.origin,
+                    from: pt,
+                    // 語・行を選んだ後は、手のぶれで選択が崩れないようドラッグでは伸ばさない。
+                    extend: click_count <= 1,
+                    moved: false,
+                });
+            }
             // クリック (つかんで動かせる要素でも鳴る)。無効な要素は鳴らないが押下は吸う (#62)。
             let click_target = hit.as_ref().and_then(|h| h.click.clone());
             // 押した要素が手前の木 (menu・modal) か。手前の文字は選べないので、
@@ -3927,7 +3977,7 @@ impl<A: DeclarativeApp> AppState<A> {
                 self.app.on_click(&link_id);
                 self.selection = None;
                 self.selecting = false;
-            } else if had_pending_drag || !self.app.text_selection_enabled() {
+            } else if had_pending_drag || self.field_drag.is_some() || !self.app.text_selection_enabled() {
                 // 明示的に draggable な要素は drag system 優先で selection 解除。
                 // app が selection 自体を切っている場合も同じ扱い (#67)。
                 self.selection = None;
@@ -4484,6 +4534,7 @@ impl<A: DeclarativeApp> AppState<A> {
             modifiers: self.modifiers,
         });
         self.pressed_id = None;
+        self.field_drag = None;
         // text selection drag 終了。 selection 自体は維持して Cmd+C を待つ。
         self.selecting = false;
         // 押した所で待っていたクリック (#111): 文字を選ばずに離したなら鳴らす。

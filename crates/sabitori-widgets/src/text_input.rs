@@ -100,6 +100,13 @@ pub enum PendingMove {
     DeleteToLineStart,
     /// この座標 (欄の内側が原点) にキャレットを置く。 クリック用。
     ToPoint { x: f32, y: f32, select: bool },
+    /// `from` から `to` までを選ぶ。 押した所がまだ解決されないうちにドラッグが
+    /// 来たとき用 (押した所を起点にしないと、 前のキャレットから選んでしまう)。
+    Span { from: (f32, f32), to: (f32, f32) },
+    /// この座標の語を選ぶ (ダブルクリック)。
+    Word { x: f32, y: f32 },
+    /// この座標の行 (`\n` で区切った段落) を選ぶ (トリプルクリック)。
+    Line { x: f32, y: f32 },
 }
 
 /// 単語境界の判定に使う文字の種別。
@@ -166,6 +173,36 @@ fn prev_word_boundary(text: &str, i: usize) -> usize {
 }
 
 /// `i` より後にある単語の末尾。
+/// `i` の位置の語 (ダブルクリックで選ぶ範囲)。 押した所の右の字 (行末なら左の字) と
+/// 同じ文字種が続く所まで。 空白や記号の上なら、 その続きを選ぶ (macOS の欄と同じ)。
+fn word_at(text: &str, i: usize) -> (usize, usize) {
+    let i = floor_boundary(text, i.min(text.len()));
+    let (at, c) = match (text[i..].chars().next(), text[..i].chars().next_back()) {
+        (Some(c), _) if c != '\n' => (i, c),
+        (_, Some(c)) if c != '\n' => (i - c.len_utf8(), c),
+        _ => return (i, i),
+    };
+    let class = char_class(c);
+    let same = |c: char| c != '\n' && char_class(c) == class;
+    let mut lo = at;
+    while let Some(p) = text[..lo].chars().next_back().filter(|&p| same(p)) {
+        lo -= p.len_utf8();
+    }
+    let mut hi = at + c.len_utf8();
+    while let Some(n) = text[hi..].chars().next().filter(|&n| same(n)) {
+        hi += n.len_utf8();
+    }
+    (lo, hi)
+}
+
+/// `i` を含む段落 (`\n` で区切った行) の範囲。 区切りの `\n` は含めない。
+fn line_at(text: &str, i: usize) -> (usize, usize) {
+    let i = floor_boundary(text, i.min(text.len()));
+    let lo = text[..i].rfind('\n').map_or(0, |n| n + 1);
+    let hi = text[i..].find('\n').map_or(text.len(), |n| i + n);
+    (lo, hi)
+}
+
 fn next_word_boundary(text: &str, i: usize) -> usize {
     let mut i = floor_boundary(text, i.min(text.len()));
     let next = |i: usize| text[i..].chars().next();
@@ -1271,6 +1308,35 @@ impl TextInputState {
         self.0.borrow_mut().pending = Some(PendingMove::ToPoint { x, y, select });
     }
 
+    /// 押したまま動かした先 (欄の内側が原点) まで選択を伸ばすよう予約する。
+    /// マウスのドラッグで選ぶのに、 ランタイムが呼ぶ。
+    #[doc(hidden)]
+    pub fn request_drag_point(&self, x: f32, y: f32) {
+        let mut inner = self.0.borrow_mut();
+        inner.pending = Some(match inner.pending.take() {
+            // 押した所がまだ解決されていない: 押した所を起点にする。
+            Some(PendingMove::ToPoint { x: ax, y: ay, select: false }) => {
+                PendingMove::Span { from: (ax, ay), to: (x, y) }
+            }
+            Some(PendingMove::Span { from, .. }) => PendingMove::Span { from, to: (x, y) },
+            // 語・行を選ぶ予約は残す (ドラッグで潰さない)。
+            Some(p @ (PendingMove::Word { .. } | PendingMove::Line { .. })) => p,
+            _ => PendingMove::ToPoint { x, y, select: true },
+        });
+    }
+
+    /// この座標の語を選ぶよう予約する (ダブルクリック)。
+    #[doc(hidden)]
+    pub fn request_word(&self, x: f32, y: f32) {
+        self.0.borrow_mut().pending = Some(PendingMove::Word { x, y });
+    }
+
+    /// この座標の行を選ぶよう予約する (トリプルクリック)。
+    #[doc(hidden)]
+    pub fn request_line(&self, x: f32, y: f32) {
+        self.0.borrow_mut().pending = Some(PendingMove::Line { x, y });
+    }
+
     /// 予約された「実測が要る移動」を解決する。
     ///
     /// **`view()` の中からしか呼べない** — 計測器 (`ctx`) が居るのがそこだけ
@@ -1308,6 +1374,34 @@ impl TextInputState {
             if secure { unmask_offset(&inner.text, b) } else { b }
         };
 
+        // 範囲を選ぶもの (ドラッグ・ダブルクリック・トリプルクリック) は、
+        // 起点も終点もここで決める。
+        let at = |x: f32, y: f32| from_display(ctx.offset_at(display, (x - pad, y - pad), shape));
+        let span = match pending {
+            PendingMove::Span { from, to } => Some((at(from.0, from.1), at(to.0, to.1))),
+            PendingMove::Word { x, y } | PendingMove::Line { x, y } => {
+                let i = at(x, y);
+                let inner = self.0.borrow();
+                // 伏字は語の区切りを見せない (⌥← と同じ)。 全体を選ぶ。
+                Some(if inner.secure {
+                    (0, inner.text.len())
+                } else if matches!(pending, PendingMove::Word { .. }) {
+                    word_at(&inner.text, i)
+                } else {
+                    line_at(&inner.text, i)
+                })
+            }
+            _ => None,
+        };
+        if let Some((anchor, head)) = span {
+            let mut inner = self.0.borrow_mut();
+            let len = inner.text.len();
+            inner.desired_x = None;
+            inner.selection_start = Some(anchor.min(len));
+            inner.cursor_pos = head.min(len);
+            return;
+        }
+
         let cursor = to_display(self.0.borrow().cursor_pos);
         let here = ctx.caret_pos(display, cursor, shape);
         let mid = here.line_height * 0.5;
@@ -1330,6 +1424,9 @@ impl TextInputState {
             // 代わりに**そこまでを消す**こと。
             PendingMove::DeleteToLineStart => ((-1.0e6, here.y + mid), false, false, true),
             PendingMove::ToPoint { x, y, select } => ((x - pad, y - pad), select, false, false),
+            PendingMove::Span { .. } | PendingMove::Word { .. } | PendingMove::Line { .. } => {
+                unreachable!("上で済ませている")
+            }
         };
 
         let target = from_display(ctx.offset_at(display, point, shape));
@@ -2455,5 +2552,34 @@ mod secure_tests {
         state.set_text("あい1");
         let m = MASK_CHAR.len_utf8();
         assert_eq!(state.to_display_range(0, "あい".len()), (0, 2 * m));
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::{line_at, word_at};
+
+    #[test]
+    fn a_double_click_picks_the_run_of_one_kind_of_letter() {
+        let t = "今日はカタカナとhello world";
+        let at = |s: &str| t.find(s).unwrap();
+        let pick = |i: usize| {
+            let (lo, hi) = word_at(t, i);
+            &t[lo..hi]
+        };
+        assert_eq!(pick(at("カタ") + 3), "カタカナ");
+        assert_eq!(pick(at("hello") + 2), "hello");
+        assert_eq!(pick(at("今日")), "今日");
+        // 行末は左の字の語
+        assert_eq!(pick(t.len()), "world");
+        assert_eq!(word_at("", 0), (0, 0));
+    }
+
+    #[test]
+    fn a_triple_click_picks_the_line_without_its_newline() {
+        let t = "一行目\n二行目\n";
+        let (lo, hi) = line_at(t, t.find("二").unwrap() + 3);
+        assert_eq!(&t[lo..hi], "二行目");
+        assert_eq!(line_at(t, 0), (0, "一行目".len()));
     }
 }
