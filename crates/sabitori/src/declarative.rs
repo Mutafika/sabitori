@@ -2440,6 +2440,14 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         if ime_allowed != self.last_ime_allowed {
             self.last_ime_allowed = ime_allowed;
             if let Some(w) = self.window.as_ref() {
+                // Android: 焦点が移っただけではキーボードをせり上げない (設定から端末へ
+                // 戻っただけで出ていた)。出すのは焦点を受ける所のタップ (`handle_touch`)、
+                // ここはしまう側だけ。
+                #[cfg(target_os = "android")]
+                if !ime_allowed {
+                    w.set_ime_allowed(false);
+                }
+                #[cfg(not(target_os = "android"))]
                 w.set_ime_allowed(ime_allowed);
             }
         }
@@ -2561,9 +2569,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// (隠れた窓と同じ扱い)。ほかの OS では来ない。
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "android")]
-        if !self.occluded {
-            self.occluded = true;
-            self.app.on_visibility_changed(false);
+        {
+            // 窓が取り上げられる前に面を手放す。戻ったときの張り替えが通るように。
+            if let Some(r) = self.renderer.as_mut() {
+                r.release_surface();
+            }
+            if !self.occluded {
+                self.occluded = true;
+                self.app.on_visibility_changed(false);
+            }
         }
     }
 }
@@ -4216,6 +4230,7 @@ impl<A: DeclarativeApp> AppState<A> {
                             click_count,
                             held: 0.0,
                             select: Some(select),
+                            held_drag: None,
                         });
                         return;
                     }
@@ -4229,10 +4244,6 @@ impl<A: DeclarativeApp> AppState<A> {
                     if self.last_build.is_some() && !self.press_focus(hit.as_ref(), pos) && !keep_focus {
                         self.focused_id = None;
                     }
-                    if let Some((data, source_id)) = pending_drag {
-                        self.drag_manager.start_pending(data, source_id, x, y);
-                    }
-
                     let mut scroll_target: Option<String> = None;
                     if let Some(ref build) = self.last_build {
                         for region in &build.hit_regions {
@@ -4251,6 +4262,16 @@ impl<A: DeclarativeApp> AppState<A> {
                         && let Some(sv) = self.scroll_states.get_mut(sid) {
                             sv.begin_drag();
                         }
+                    // スクロールする欄の中では、指はまずスクロール。つかめる要素も
+                    // 長押しまでは預かるだけ (`check_long_press` でつかむ)。
+                    let held_drag = match pending_drag {
+                        Some(drag) if scroll_target.is_some() => Some(drag),
+                        Some((data, source_id)) => {
+                            self.drag_manager.start_pending(data, source_id, x, y);
+                            None
+                        }
+                        None => None,
+                    };
                     self.touch_drag = Some(TouchDrag {
                         id: touch_id,
                         start: (x, y),
@@ -4262,6 +4283,7 @@ impl<A: DeclarativeApp> AppState<A> {
                         click_count,
                         held: 0.0,
                         select: None,
+                        held_drag,
                     });
                 } else if count == 2 && self.pinch.is_none() {
                     // Second finger — promote to pinch. Cancel the
@@ -4443,6 +4465,12 @@ impl<A: DeclarativeApp> AppState<A> {
                     && self.primary_input == PrimaryInput::Touch
                 {
                     self.primary_input = PrimaryInput::None;
+                    // 指には「上にある」が無い。離したら解く。残すと、ホバーで出る物
+                    // (タブの ✕ など) が、見えないまま次のタップの下で押せる。
+                    if self.hovered_id.take().is_some() {
+                        self.app.on_hover_change(None);
+                        self.dirty = true;
+                    }
                 }
             }
         }
@@ -4538,6 +4566,16 @@ impl<A: DeclarativeApp> AppState<A> {
         td.held += dt;
         // 閾値をまたいだ 1 回だけ。文字の上でなければ何もしない (タップのまま)。
         if !(before < LONG_PRESS_SECS && td.held >= LONG_PRESS_SECS) {
+            return;
+        }
+        // 預かっていたドラッグを、ここでつかむ。この指はもうタップでもスクロールでもない。
+        if let Some((data, source_id)) = td.held_drag.take() {
+            td.moved_beyond_slop = true;
+            if let Some(sv) = td.scroll_target.clone().and_then(|sid| self.scroll_states.get_mut(&sid)) {
+                sv.cancel_fling();
+            }
+            self.drag_manager.start_active(data, source_id);
+            self.dirty = true;
             return;
         }
         if !self.app.text_selection_enabled() {
@@ -7243,6 +7281,50 @@ mod highlight_tests {
         );
         assert!(state.grab_selection_handle(41.0, 34.0).is_none(), "ボタンの上はつまみにならない");
         assert!(state.grab_selection_handle(41.0, 22.0).is_some(), "ボタンの外の丸はつかめる");
+    }
+
+    /// 指を離したら「上にある」は残らない。ホバーで出る物が見えないまま押せないように。
+    #[test]
+    fn lifting_the_finger_leaves_nothing_hovered() {
+        use sabitori_core::element::{div, Px};
+        let mut state = touch_state();
+        with_regions(&mut state, div().w(Px(400.0)).h(Px(300.0)).child(div().id("tab").on_click(|| {}).w(Px(100.0)).h(Px(30.0))));
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 10.0);
+        state.handle_touch(TouchPhase::Moved, 1, 21.0, 10.0);
+        assert_eq!(state.hovered_id.as_deref(), Some("tab"), "触れている間は上にある");
+        state.handle_touch(TouchPhase::Ended, 1, 21.0, 10.0);
+        assert_eq!(state.hovered_id, None);
+    }
+
+    /// スクロールする欄の中のつかめる行は、なぞればスクロール、長押しでつかむ。
+    #[test]
+    fn a_draggable_row_in_a_scroller_is_grabbed_only_by_a_long_press() {
+        use sabitori_core::element::{div, Px};
+        let list = || {
+            div().w(Px(400.0)).h(Px(300.0)).child(
+                div().id("list").scroll("list").w(Px(400.0)).h(Px(300.0)).child(
+                    div().id("row").draggable("row-1").w(Px(400.0)).h(Px(40.0)),
+                ),
+            )
+        };
+        // なぞると、つかまずにスクロールする。
+        let mut state = touch_state();
+        state.scroll_states.insert("list".into(), sabitori_widgets::ScrollView::new(300.0, 1000.0));
+        with_regions(&mut state, list());
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 20.0);
+        state.handle_touch(TouchPhase::Moved, 1, 20.0, 60.0);
+        held(&mut state, 0.6);
+        assert!(!state.drag_manager.is_active(), "長押しの前に動いた指はスクロール");
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 60.0);
+        // 長押しすると、動かす前につかむ。
+        let mut state = touch_state();
+        state.scroll_states.insert("list".into(), sabitori_widgets::ScrollView::new(300.0, 1000.0));
+        with_regions(&mut state, list());
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 20.0);
+        assert!(!state.drag_manager.is_active(), "押しただけではつかまない");
+        held(&mut state, 0.6);
+        assert!(state.drag_manager.is_active(), "長押しでつかむ");
+        assert!(state.selection.is_none());
     }
 
     /// つかんで動かせる要素の上の長押しはドラッグのため。文字を選ばない。

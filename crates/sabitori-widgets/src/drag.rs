@@ -50,9 +50,19 @@ impl DragManager {
         };
     }
 
+    /// 動かすのを待たずに、いまつかむ (指の長押しでつかんだとき)。
+    pub fn start_active(&mut self, data: String, source_id: Option<String>) {
+        self.state = DragState::Active { data, source_id, created: Instant::now() };
+    }
+
     /// Call on mouse move. Returns `true` if the drag just became active
     /// (i.e., the threshold was crossed on this call).
     pub fn on_move(&mut self, x: f32, y: f32) -> bool {
+        // 動いているあいだは古びない (`tick` の 5 秒は、離しを取りこぼしたときの保険)。
+        if let DragState::Active { created, .. } = &mut self.state {
+            *created = Instant::now();
+            return false;
+        }
         match &self.state {
             DragState::Pending {
                 start_x, start_y, ..

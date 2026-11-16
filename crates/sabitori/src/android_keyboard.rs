@@ -34,7 +34,11 @@ const KEEP: usize = 32;
 /// 見せ直すべきかどうか (見せ直すなら [`ANCHOR`] だけにする)。
 ///
 /// `composing` は変換中 (未確定の文字がある)。そのあいだは見せ直さない ──
-/// 変換が途切れる。
+/// 変換が途切れる。ただし改行 (送った 1 行) があれば、変換中でも見せ直す。
+/// 送った文が IME の手元に残っていると、それを確定し直して、もう一度打たれる
+/// (外部キーボードで日本語を打つと、送った文が次の入力欄に残った)。外部
+/// キーボードの打鍵には、GameTextInput が毎回「変換中」の印を付けるので、
+/// 変換中を待つといつまでも見せ直せない。
 pub fn delta(old: &str, new: &str, composing: bool) -> (Vec<KbEvent>, bool) {
     let mut out = Vec::new();
     let old_body: Vec<char> = old.strip_prefix(ANCHOR).unwrap_or(old).chars().collect();
@@ -49,7 +53,55 @@ pub fn delta(old: &str, new: &str, composing: bool) -> (Vec<KbEvent>, bool) {
     let common = old_body.iter().zip(&new_body).take_while(|(a, b)| a == b).count();
     out.extend((common..old_body.len()).map(|_| KbEvent::Backspace));
     push_text(&mut out, &new_body[common..].iter().collect::<String>());
-    (out, !composing && new_body.len() > KEEP)
+    let sent = out.contains(&KbEvent::Enter);
+    (out, sent || (!composing && new_body.len() > KEEP))
+}
+
+/// IME の文字列の読み手。
+///
+/// 見せ直し ([`ANCHOR`] だけに戻す) は Java の UI スレッドで**後から**行われ、
+/// 頼んでもすぐには文字列が変わらない。届く前に読んだ文字列を「見せ直したあと」
+/// と比べると、見せ直す前の文字列をまるごと新しい入力と読んでしまう (送った
+/// 1 行がもう一度送られ、起動直後には消すキーが何十回も押された)。なので頼んだ
+/// ときの文字列を覚えておき、そこから変わるまでは、まだ届いていないと読む。
+#[derive(Debug)]
+pub struct Reader {
+    /// 前回読んだ文字列。
+    last: String,
+    /// 見せ直しを頼んで、まだ届いていない: 頼んだときの文字列。
+    pending: Option<String>,
+}
+
+impl Reader {
+    /// 見せ直しを頼んだところから読み始める。`now` はそのときの文字列。
+    pub fn after_reset(now: &str) -> Self {
+        Reader { last: now.to_string(), pending: Some(now.to_string()) }
+    }
+
+    /// 文字列が `now` (`composing`: 変換中) になっていた。打鍵に直したものと、
+    /// 見せ直しを頼むべきかどうか。頼むなら、届くまで次は頼まない。
+    pub fn read(&mut self, now: &str, composing: bool) -> (Vec<KbEvent>, bool) {
+        if now == self.last {
+            return (Vec::new(), false);
+        }
+        if let Some(stale) = &self.pending {
+            // 届く前に IME が書き足しただけなら、頼んだときの文字列が頭に残っている。
+            // 先頭の 1 文字だけ・それが消えた文字列 (空など) は、見せ直したあとの
+            // 文字列にも頭に付くので当てない。
+            let not_yet = stale != ANCHOR && stale.starts_with(ANCHOR) && now.starts_with(stale.as_str());
+            if !not_yet {
+                self.pending = None;
+                self.last = ANCHOR.to_string();
+            }
+        }
+        let (events, again) = delta(&self.last, now, composing);
+        self.last = now.to_string();
+        let ask = again && self.pending.is_none();
+        if ask {
+            self.pending = Some(now.to_string());
+        }
+        (events, ask)
+    }
 }
 
 /// `text` を、改行のところで切って足す。
@@ -77,11 +129,11 @@ mod live {
     use sabitori_window::android::AndroidApp;
     use winit::platform::android::activity::input::{ImeOptions, InputType, TextInputAction, TextInputState, TextSpan};
 
-    use super::{ANCHOR, KbEvent, delta};
+    use super::{ANCHOR, KbEvent, Reader};
 
     thread_local! {
-        /// 前回見た文字列。`None`: キーボードを出していない。
-        static LAST: RefCell<Option<String>> = const { RefCell::new(None) };
+        /// `None`: キーボードを出していない。
+        static READER: RefCell<Option<Reader>> = const { RefCell::new(None) };
     }
 
     fn reset(app: &AndroidApp) {
@@ -96,9 +148,9 @@ mod live {
     /// キーボードを出す / しまうのに合わせて呼ぶ。出すときに、改行キーが改行を
     /// 入れる・全画面の入力欄を出さない、と IME に伝える。
     pub fn set_active(app: &AndroidApp, active: bool) {
-        LAST.with(|last| {
-            let mut last = last.borrow_mut();
-            if active == last.is_some() {
+        READER.with(|reader| {
+            let mut reader = reader.borrow_mut();
+            if active == reader.is_some() {
                 return;
             }
             if active {
@@ -108,28 +160,22 @@ mod live {
                     ImeOptions::IME_FLAG_NO_FULLSCREEN,
                 );
                 reset(app);
-                *last = Some(ANCHOR.to_string());
+                *reader = Some(Reader::after_reset(&app.text_input_state().text));
             } else {
-                *last = None;
+                *reader = None;
             }
         });
     }
 
     /// 前回からの入力。
     pub fn drain(app: &AndroidApp) -> Vec<KbEvent> {
-        LAST.with(|last| {
-            let mut last = last.borrow_mut();
-            let Some(old) = last.as_mut() else { return Vec::new() };
+        READER.with(|reader| {
+            let mut reader = reader.borrow_mut();
+            let Some(reader) = reader.as_mut() else { return Vec::new() };
             let state = app.text_input_state();
-            if state.text == *old {
-                return Vec::new();
-            }
-            let (events, again) = delta(old, &state.text, state.compose_region.is_some());
-            if again {
+            let (events, ask) = reader.read(&state.text, state.compose_region.is_some());
+            if ask {
                 reset(app);
-                *old = ANCHOR.to_string();
-            } else {
-                *old = state.text;
             }
             events
         })
@@ -175,8 +221,58 @@ mod tests {
 
     #[test]
     fn a_newline_is_the_enter_key() {
-        assert_eq!(delta(" ls", " ls\n", false), (vec![KbEvent::Enter], false));
-        assert_eq!(delta(" ", " a\nb", false), (vec![text("a"), KbEvent::Enter, text("b")], false));
+        assert_eq!(delta(" ls", " ls\n", false), (vec![KbEvent::Enter], true));
+        assert_eq!(delta(" ", " a\nb", false), (vec![text("a"), KbEvent::Enter, text("b")], true));
+    }
+
+    /// 送った 1 行は IME に見せたままにしない。変換中の印が付いていても。
+    #[test]
+    fn a_sent_line_is_taken_back_from_the_ime_even_mid_conversion() {
+        assert_eq!(delta(" 送る", " 送る\n", true), (vec![KbEvent::Enter], true));
+    }
+
+    /// 送った 1 行は、見せ直しが IME に届くまで読み直しても、もう一度は送らない
+    /// (実機で `echo Q7` が 2 回実行された)。
+    #[test]
+    fn a_sent_line_is_sent_once_while_the_reset_is_on_its_way() {
+        let mut r = Reader::after_reset(" ");
+        assert_eq!(r.read(" ", false), (vec![], false));
+        assert_eq!(r.read(" ls", false), (vec![text("ls")], false));
+        assert_eq!(r.read(" ls\n", false), (vec![KbEvent::Enter], true));
+        // まだ届いていない。
+        assert_eq!(r.read(" ls\n", false), (vec![], false));
+        // 届いた。
+        assert_eq!(r.read(" ", false), (vec![], false));
+        assert_eq!(r.read(" a", false), (vec![text("a")], false));
+    }
+
+    /// 起動直後の空の文字列は、見せ直しが届くまで「消すキー」と読まない
+    /// (実機で起動のたびに 31 回押されていた)。
+    #[test]
+    fn the_empty_text_before_the_first_reset_lands_is_not_a_backspace() {
+        let mut r = Reader::after_reset("");
+        assert_eq!(r.read("", false), (vec![], false));
+        assert_eq!(r.read(" ", false), (vec![], false));
+        assert_eq!(r.read(" a", false), (vec![text("a")], false));
+    }
+
+    /// 届いた直後に打たれていても、見せ直したあとの文字列として読む。
+    #[test]
+    fn typing_right_after_the_reset_lands_is_read_from_the_anchor() {
+        let mut r = Reader::after_reset(" ");
+        r.read(" ls\n", false);
+        assert_eq!(r.read(" a", false), (vec![text("a")], false));
+    }
+
+    /// 届く前に IME が書き足したぶんは、その分だけ打つ。2 行目を送っても
+    /// 見せ直しは重ねて頼まない (後から届いた 2 回目が、打ったばかりの字を消す)。
+    #[test]
+    fn what_the_ime_adds_before_the_reset_lands_is_typed_once() {
+        let mut r = Reader::after_reset(" ");
+        assert_eq!(r.read(" ls\n", false), (vec![text("ls"), KbEvent::Enter], true));
+        assert_eq!(r.read(" ls\npwd\n", false), (vec![text("pwd"), KbEvent::Enter], false));
+        assert_eq!(r.read(" ", false), (vec![], false));
+        assert_eq!(r.read(" b", false), (vec![text("b")], false));
     }
 
     #[test]

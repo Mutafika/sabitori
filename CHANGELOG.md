@@ -21,12 +21,16 @@
   `run_declarative` / `run_scene` / `run`。feature `android-native-activity` か `android-game-activity` の
   **どちらか 1 つ**を立てる (winit の要求)。日本語を打つなら GameActivity (IME の文字列が取れる)。
   - 入口とログ: `sabitori::android` (`init` / `app` / `AndroidApp`)。ログと panic は logcat に出る。
-  - 描画面: 裏に回ると描くのをやめ、戻ると新しい面に張り替える (`GpuRenderer::recreate_surface`)。裏にいる
-    あいだはループを寝かせる。
+  - 描画面: 裏に回ると描くのをやめて面を手放し (`GpuRenderer::release_surface`)、戻ると新しい面に張り替える
+    (`GpuRenderer::recreate_surface`)。裏にいるあいだはループを寝かせる。古い面を残したまま張り替えると、
+    Android の窓には面を 1 つしかつなげないので新しい面が「失われた」扱いになり、`configure` が panic した。
   - ソフトキーボード: 何かに焦点があるあいだだけ出せる。実際に出すのは、焦点を受ける要素 (その中の子も) を
     タップしたとき ── 利用者の操作に結び付かない表示の頼み (起動時など) は Android に黙って無視される。
-    ポップアップの上のタップでは出さない。GameActivity では IME の文字列の差分を打鍵に直して流す
-    (`android_keyboard`、iOS と同じ方式で preedit は無い)。
+    焦点が移っただけでは出さない (しまうのは焦点が外れたとき)。ポップアップの上のタップでは出さない。GameActivity では IME の文字列の差分を打鍵に直して流す
+    (`android_keyboard`、iOS と同じ方式で preedit は無い)。改行で 1 行を送ったら、変換中でも IME の文字列を
+    空に戻す。空に戻す頼みは Java の UI スレッドで後から行われるので、届くまでに読んだ文字列は前の続きとして
+    読む (`Reader`)。届いたものとして読んでいたため、送った 1 行がもう一度送られ、起動直後には消すキーが
+    数十回押されていた。
   - 鍵: Android は Enter・Tab・Esc を制御文字の `Character` (`"\n"` `"\t"` `"\x1b"`) で送るので、
     `Key::Enter` / `Tab` / `Escape` に直す。
   - 戻るボタン / ジェスチャは `on_navigate_back` に届く。
@@ -35,8 +39,23 @@
     面ごと縮める (GameTextInput が窓を帯の下まで広げるため)。
   - クリップボードは JNI で `ClipboardManager` を呼ぶ。フォントは `/system/fonts` を読む。
   - 別窓 (`extra_windows`) は開かない (Activity の面は 1 枚)。
-  - 実機 (Galaxy Tab S8 / Android 14、GameActivity) で打鍵・ソフトキーボード・日本語の変換を確認。裏から
-    戻ったときの描き直しとクリップボードは未確認。
+  - 実機 (Galaxy Tab S8 / Android 14、GameActivity) で打鍵・ソフトキーボード・日本語の変換・裏から戻ったときの
+    描き直しを確認。クリップボードと、外部キーボードでの日本語は未確認。
+- `DragManager::start_active`: 動かすのを待たずにつかむ。
+
+### Changed
+
+- **`GpuRenderer::surface` は `Option<wgpu::Surface>`** (破壊的)。Android で裏に回っているあいだは無い。
+- **スクロールする欄の中のつかめる要素 (`.draggable()`) は、指では長押ししてからつかむ** (iOS / Android の
+  決まり)。なぞればスクロールする。前は動かした瞬間にドラッグになり、つかめる行が並ぶ欄を指でスクロール
+  できなかった。マウスと、スクロールしない所の要素は今までどおり。
+
+### Fixed
+
+- 指でスクロールする欄を、中身が収まっている向きにも引っぱれていた。縦にしか流れない一覧を横に引くと、
+  ゴムのように伸びて左右にぐらついた。収まっている向きは動かさない (iOS の既定と同じ)。
+- ドラッグを 5 秒以上続けると取り消されていた。離しを取りこぼしたときの保険が、動かしている最中にも効いて
+  いた。動いているあいだは数え直す。
 
 ## [0.61.0] - 2026-11-12
 

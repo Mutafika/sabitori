@@ -369,6 +369,10 @@ fn scrollbar_metrics(scroll: f32, content: f32, viewport: f32) -> (f32, f32) {
 }
 
 /// Apply a drag delta along one axis, with rubber-band resistance past bounds.
+///
+/// 中身が収まっている向き (`max_scroll` が 0) は動かさない。縦にしか流れない
+/// 一覧を指で横に引くと、ゴムで伸びて左右にぐらついていた (iOS も既定では
+/// 収まっている向きに弾まない)。
 fn drag_axis(
     anim: &mut Animated<f32>,
     velocity: &mut f32,
@@ -377,7 +381,7 @@ fn drag_axis(
     max_scroll: f32,
     viewport: f32,
 ) {
-    if delta == 0.0 {
+    if delta == 0.0 || max_scroll <= 0.0 {
         return;
     }
     let cur = anim.target();
@@ -485,6 +489,19 @@ mod wheel_room_tests {
         sv.on_scroll_xy(0.0, -100_000.0);
         assert!(!sv.can_consume_wheel(0.0, -20.0), "右端では縦ホイールも消費しない");
         assert!(sv.can_consume_wheel(0.0, 20.0), "戻る向きなら動ける");
+    }
+
+    /// 縦にしか流れない一覧を指で斜めに引いても、横には動かない (ゴムでも伸びない)。
+    /// 中身が収まっている縦も同じ。
+    #[test]
+    fn a_finger_does_not_stretch_an_axis_whose_content_fits() {
+        let mut sv = vertical();
+        sv.drag_by(-40.0, -30.0, 0.016);
+        assert_eq!(sv.scroll_x.target(), 0.0, "横は動かない");
+        assert!(sv.scroll_y.target() > 0.0, "縦は動く");
+        let mut short = ScrollView::new(300.0, 200.0);
+        short.drag_by(0.0, 50.0, 0.016);
+        assert_eq!(short.scroll_y.target(), 0.0, "収まっている縦も伸びない");
     }
 
     /// 中身が窓に収まっていれば、どの向きにも動けない。
