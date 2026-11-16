@@ -18,6 +18,9 @@ use winit::event_loop::EventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
+/// Android の入口 (`android_main` から `init`) と logcat への出力。
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod background;
 pub mod keymap;
 pub mod safe_area;
@@ -622,12 +625,7 @@ impl<A: SabitoriApp> AppState<A> {
 pub fn run<A: SabitoriApp + 'static>(app: A) {
     // ホスト側が既に subscriber を張っていることがある (ファイルログ等)。`init()`
     // はその場合 panic して起動不能になるので、譲る。
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
+    background::init_logging();
 
     let event_loop = background::build_event_loop();
     let mut state = AppState {

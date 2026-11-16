@@ -86,6 +86,12 @@ mod macos_open;
 mod macos_quit;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
+/// Android のソフトキーボードから文字を受け取る (GameActivity)。差分の計算は
+/// どこでも試せるように、gate の外に置いてある。
+pub mod android_keyboard;
+/// Android の入口: `android_main` で `android::init(app)` を呼んでから `run_*`。
+#[cfg(target_os = "android")]
+pub use sabitori_window::android;
 /// web の打鍵の仕分け (DOM を触らない部分)。wasm でしか動かない `web_ime` から
 /// 切り出してあるのは、**CI のテストが走る場所に置く**ため (#81)。
 mod web_keys;

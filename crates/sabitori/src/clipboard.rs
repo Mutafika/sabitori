@@ -19,7 +19,11 @@ pub fn read_text() -> Option<String> {
     {
         TEST_CLIPBOARD.with(|c| c.borrow().clone())
     }
-    #[cfg(all(not(test), not(target_arch = "wasm32")))]
+    #[cfg(all(not(test), target_os = "android"))]
+    {
+        android::read_text().filter(|t| !t.is_empty())
+    }
+    #[cfg(all(not(test), not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         let mut cb = arboard::Clipboard::new().ok()?;
         let text = cb.get_text().ok()?;
@@ -53,7 +57,11 @@ pub fn write_text(text: &str) -> bool {
         TEST_CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
         true
     }
-    #[cfg(all(not(test), not(target_arch = "wasm32")))]
+    #[cfg(all(not(test), target_os = "android"))]
+    {
+        android::write_text(text)
+    }
+    #[cfg(all(not(test), not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         match arboard::Clipboard::new() {
             Ok(mut cb) => cb.set_text(text.to_string()).is_ok(),
@@ -166,5 +174,75 @@ mod tests {
         };
         assert!(!is_paste_shortcut(Key::V, other));
         assert!(!is_cut_shortcut(Key::X, other));
+    }
+}
+
+/// Android のクリップボード: Activity から `ClipboardManager` を JNI で呼ぶ。
+#[cfg(all(not(test), target_os = "android"))]
+mod android {
+    use jni::JNIEnv;
+    use jni::objects::{JObject, JString, JValue};
+
+    type R<T> = jni::errors::Result<T>;
+
+    /// この (ネイティブの) スレッドを JVM につないで `f` を回す。Java 側の
+    /// 例外は握りつぶす ── 読めない・書けないだけで、落とす理由にならない。
+    fn with_manager<T>(f: impl FnOnce(&mut JNIEnv, &JObject, &JObject) -> R<T>) -> Option<T> {
+        let ctx = ndk_context::android_context();
+        // SAFETY: android-activity が、プロセスの生きている間有効な JavaVM と
+        // Activity の参照を ndk-context に登録している。
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+        let mut env = vm.attach_current_thread().ok()?;
+        // SAFETY: 同上。グローバル参照なので、ここで解放してはいけない
+        // (`JObject` は drop しても参照を消さない)。
+        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+        let out = (|| {
+            let name = env.new_string("clipboard")?;
+            let manager = env
+                .call_method(&activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&name)])?
+                .l()?;
+            f(&mut env, &activity, &manager)
+        })();
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        out.ok()
+    }
+
+    pub(super) fn read_text() -> Option<String> {
+        with_manager(|env, activity, manager| {
+            let clip = env.call_method(manager, "getPrimaryClip", "()Landroid/content/ClipData;", &[])?.l()?;
+            if clip.is_null() {
+                return Ok(String::new());
+            }
+            let item = env.call_method(&clip, "getItemAt", "(I)Landroid/content/ClipData$Item;", &[JValue::Int(0)])?.l()?;
+            let chars = env
+                .call_method(&item, "coerceToText", "(Landroid/content/Context;)Ljava/lang/CharSequence;", &[JValue::Object(activity)])?
+                .l()?;
+            if chars.is_null() {
+                return Ok(String::new());
+            }
+            let s = env.call_method(&chars, "toString", "()Ljava/lang/String;", &[])?.l()?;
+            let s = JString::from(s);
+            Ok(env.get_string(&s)?.into())
+        })
+    }
+
+    pub(super) fn write_text(text: &str) -> bool {
+        with_manager(|env, _, manager| {
+            let label = env.new_string("text")?;
+            let text = env.new_string(text)?;
+            let clip = env
+                .call_static_method(
+                    "android/content/ClipData",
+                    "newPlainText",
+                    "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                    &[JValue::Object(&label), JValue::Object(&text)],
+                )?
+                .l()?;
+            env.call_method(manager, "setPrimaryClip", "(Landroid/content/ClipData;)V", &[JValue::Object(&clip)])?;
+            Ok(())
+        })
+        .is_some()
     }
 }

@@ -1583,7 +1583,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() { return; }
+        if self.window.is_some() {
+            // Android: 裏から戻った。描画面は新しいものに替わっている。
+            #[cfg(target_os = "android")]
+            self.resume_surface();
+            return;
+        }
         let mut attrs = WindowAttributes::default().with_title(self.app.title());
         self.window_title = self.app.title().to_string();
         // iOS は `size()` / `min_size()` を渡さない。winit は iOS で要求サイズを**そのまま
@@ -1669,7 +1674,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Enable IME so Japanese (and other) input methods receive preedit/commit events.
         // On iOS `set_ime_allowed` shows/hides the software keyboard, so there it is
         // toggled per focus in the redraw loop instead of forced on at startup.
-        #[cfg(not(target_os = "ios"))]
+        // Android も同じ: 起動と同時にキーボードがせり上がってしまう。
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         crate::runtime_shared::enable_ime(&window);
         #[allow(unused_mut)]
         let mut gpu = GpuRenderer::new_with_alpha(window.clone(), self.app.transparent());
@@ -2020,6 +2026,17 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     meta: state.super_key(),
                 });
             }
+            // Android の「戻る」(ボタン / ジェスチャ) は鍵として届く。マウスの
+            // 戻るボタンと同じ口に流す。
+            #[cfg(target_os = "android")]
+            WindowEvent::KeyboardInput { event, .. }
+                if event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::BrowserBack) =>
+            {
+                if event.state == winit::event::ElementState::Pressed {
+                    self.app.on_navigate_back();
+                    self.dirty = true;
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 // winit → Key の変換は sabitori_window::keymap に集約している
                 // （3 ランタイム共通）。対応が無い名前付きキーは Other として
@@ -2338,6 +2355,9 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             self.closed = true;
             return;
         }
+        // IME の文字列は描画と無関係に変わるので、間引きより前に汲む。
+        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+        self.poll_android_keyboard();
         let elapsed = self.last_frame.elapsed();
         // Default 8ms (~120Hz). App can override via `target_frame_interval`.
         let target = self.app.target_frame_interval();
@@ -2410,7 +2430,13 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // doesn't leave an orphaned candidate window.
         // 伏字の欄に焦点があるあいだは IME を切る。変換中の文字列は preedit と
         // して**平文のまま**欄に出るので、伏字の意味が無くなる (#61)。
+        #[cfg(not(target_os = "android"))]
         let ime_allowed = self.app.ime_allowed() && !self.focused_field_is_secure();
+        // Android では「IME を許す」がソフトキーボードを出すことなので、何かに
+        // 焦点があるあいだだけにする (iOS の `set_active` と同じ条件)。伏字の欄
+        // でもキーボードは要る。
+        #[cfg(target_os = "android")]
+        let ime_allowed = self.app.ime_allowed() && self.focused_id.is_some();
         if ime_allowed != self.last_ime_allowed {
             self.last_ime_allowed = ime_allowed;
             if let Some(w) = self.window.as_ref() {
@@ -2519,10 +2545,64 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         } else {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
+        // Android: 裏にいるあいだは描く先が無い。起こされるまで寝る (電池)。
+        #[cfg(target_os = "android")]
+        if self.occluded {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            return;
+        }
         #[cfg(not(target_os = "ios"))]
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             self.last_frame + target,
         ));
+    }
+
+    /// Android: アプリが裏に回り、窓の描画面が取り上げられた。戻るまで描かない
+    /// (隠れた窓と同じ扱い)。ほかの OS では来ない。
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        if !self.occluded {
+            self.occluded = true;
+            self.app.on_visibility_changed(false);
+        }
+    }
+}
+
+impl<A: DeclarativeApp> AppState<A> {
+    /// Android: 裏から戻った。新しい描画面に張り替えて描き直す。
+    #[cfg(target_os = "android")]
+    fn resume_surface(&mut self) {
+        let (Some(window), Some(renderer)) = (self.window.clone(), self.renderer.as_mut()) else { return };
+        if renderer.recreate_surface(window.clone()) {
+            let size = window.inner_size();
+            renderer.resize(size.width, size.height, window.scale_factor());
+        }
+        if self.occluded {
+            self.occluded = false;
+            self.app.on_visibility_changed(true);
+        }
+        self.dirty = true;
+        window.request_redraw();
+    }
+
+    /// Android (GameActivity): IME の文字列の変化を打鍵に直して流す。キーボードの
+    /// 出し入れ (`last_ime_allowed`) に合わせて、読み始め・読み終わりも伝える。
+    #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+    fn poll_android_keyboard(&mut self) {
+        use crate::android_keyboard::KbEvent;
+        let Some(app) = sabitori_window::android::app() else { return };
+        crate::android_keyboard::set_active(app, self.last_ime_allowed);
+        for ev in crate::android_keyboard::drain(app) {
+            match ev {
+                KbEvent::Text(s) => {
+                    for ch in s.chars().filter(|c| !c.is_control()) {
+                        self.dispatch_text_event(&InputEvent::CharInput(ch));
+                    }
+                }
+                KbEvent::Backspace => self.handle_key_input(Key::Backspace, true, Vec::new()),
+                KbEvent::Enter => self.handle_key_input(Key::Enter, true, Vec::new()),
+            }
+        }
     }
 }
 
@@ -2681,6 +2761,12 @@ impl<A: DeclarativeApp> AppState<A> {
     /// set of extras is derived from them.
     #[cfg(not(target_arch = "wasm32"))]
     fn spawn_extra(&mut self, event_loop: &ActiveEventLoop, spec: ExtraWindow) {
+        // Android の窓は Activity に 1 枚だけ。2 枚目は同じ面を取り合って落ちる。
+        if cfg!(target_os = "android") {
+            let _ = (event_loop, &spec);
+            tracing::warn!("Android では別窓を開けない: {}", spec.title);
+            return;
+        }
         let mut attrs = WindowAttributes::default()
             .with_title(&spec.title)
             .with_inner_size(winit::dpi::LogicalSize::new(spec.size.0, spec.size.1))
@@ -2938,7 +3024,8 @@ impl<A: DeclarativeApp> AppState<A> {
             pressed_id: None,
             last_cursor: None,
             last_ime_area: None,
-            last_ime_allowed: true,
+            // Android は出していない状態から始める (起動時に出さないので)。
+            last_ime_allowed: !cfg!(target_os = "android"),
             focused_id: None,
             warned_unrouted_input: std::collections::HashSet::new(),
             managed: Vec::new(),
@@ -4328,6 +4415,20 @@ impl<A: DeclarativeApp> AppState<A> {
                                 self.selection = None;
                                 self.selection_handles = false;
                                 self.dirty = true;
+                            }
+                            // Android: 焦点を受ける所をタップしたらキーボードを出す。
+                            // `set_ime_allowed(true)` の表示要求は「暗黙」で、利用者の
+                            // 操作に結び付かない (起動時の 1 回など) と黙って無視される。
+                            // 焦点が最初から決まっているアプリ (端末) では、それきり
+                            // 出す機会が無かった。タップへの応答なら明示の要求で通る
+                            #[cfg(target_os = "android")]
+                            if self.app.ime_allowed()
+                                && let Some(app) = sabitori_window::android::app()
+                                && self.last_build.as_ref().is_some_and(|b| {
+                                    crate::runtime_shared::tap_wants_keyboard(b, sabitori_core::Point::new(sx, sy))
+                                })
+                            {
+                                app.show_soft_input(false);
                             }
                         }
                     }
@@ -5752,12 +5853,7 @@ pub(crate) fn run_with<A: DeclarativeApp + 'static>(
     app: A,
     scene: Option<std::rc::Rc<dyn crate::scene_app::SceneDriver<A>>>,
 ) {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
+    sabitori_window::background::init_logging();
 
     let event_loop = sabitori_window::background::build_event_loop();
 

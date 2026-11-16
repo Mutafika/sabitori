@@ -204,6 +204,9 @@ pub struct GpuRenderer {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub surface: wgpu::Surface<'static>,
+    /// 描画面を作り直すための口 ([`GpuRenderer::recreate_surface`])。外から渡された
+    /// device で組んだレンダラには無い。
+    instance: Option<wgpu::Instance>,
     pub surface_config: wgpu::SurfaceConfiguration,
     pub rect_pipeline: wgpu::RenderPipeline,
     pub globals_buffer: wgpu::Buffer,
@@ -553,6 +556,7 @@ impl GpuRenderer {
             device,
             queue,
             surface,
+            instance: Some(instance),
             surface_config,
             rect_pipeline,
             globals_buffer,
@@ -760,6 +764,7 @@ impl GpuRenderer {
             device,
             queue,
             surface,
+            instance: None,
             surface_config,
             rect_pipeline,
             globals_buffer,
@@ -963,6 +968,25 @@ impl GpuRenderer {
         buffer.unmap();
 
         Some(CapturedFrame { width, height, rgba })
+    }
+
+    /// 窓の描画面を作り直す。**Android** は、アプリが裏に回ると窓の描画面
+    /// (`ANativeWindow`) を取り上げ、戻ると新しいものを渡す。古い面に描くと失敗
+    /// するので、`resumed` のたびにこれで張り替える。device・パイプライン・
+    /// アトラスはそのまま残る。張り替えられたら `true`。
+    pub fn recreate_surface(&mut self, window: Arc<winit::window::Window>) -> bool {
+        let Some(instance) = self.instance.as_ref() else { return false };
+        match instance.create_surface(window) {
+            Ok(surface) => {
+                self.surface = surface;
+                self.surface.configure(&self.device, &self.surface_config);
+                true
+            }
+            Err(e) => {
+                tracing::error!("描画面を作り直せない: {e}");
+                false
+            }
+        }
     }
 
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {

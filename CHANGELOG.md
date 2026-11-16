@@ -15,6 +15,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Android で動く** (`aarch64-linux-android`)。`android_main` で `sabitori::android::init(app)` を呼んでから
+  `run_declarative` / `run_scene` / `run`。feature `android-native-activity` か `android-game-activity` の
+  **どちらか 1 つ**を立てる (winit の要求)。日本語を打つなら GameActivity (IME の文字列が取れる)。
+  - 入口とログ: `sabitori::android` (`init` / `app` / `AndroidApp`)。ログと panic は logcat に出る。
+  - 描画面: 裏に回ると描くのをやめ、戻ると新しい面に張り替える (`GpuRenderer::recreate_surface`)。裏にいる
+    あいだはループを寝かせる。
+  - ソフトキーボード: 何かに焦点があるあいだだけ出せる。実際に出すのは、焦点を受ける要素 (その中の子も) を
+    タップしたとき ── 利用者の操作に結び付かない表示の頼み (起動時など) は Android に黙って無視される。
+    ポップアップの上のタップでは出さない。GameActivity では IME の文字列の差分を打鍵に直して流す
+    (`android_keyboard`、iOS と同じ方式で preedit は無い)。
+  - 鍵: Android は Enter・Tab・Esc を制御文字の `Character` (`"\n"` `"\t"` `"\x1b"`) で送るので、
+    `Key::Enter` / `Tab` / `Escape` に直す。
+  - 戻るボタン / ジェスチャは `on_navigate_back` に届く。
+  - セーフエリア (`ctx.safe_area`) は content rect から出す。ただし GameActivity では content rect が面全体で
+    0 になる。システムの帯とキーボードを避けるには、アプリの Activity で content に inset の余白を付けて
+    面ごと縮める (GameTextInput が窓を帯の下まで広げるため)。
+  - クリップボードは JNI で `ClipboardManager` を呼ぶ。フォントは `/system/fonts` を読む。
+  - 別窓 (`extra_windows`) は開かない (Activity の面は 1 枚)。
+  - 実機 (Galaxy Tab S8 / Android 14、GameActivity) で打鍵・ソフトキーボード・日本語の変換を確認。裏から
+    戻ったときの描き直しとクリップボードは未確認。
+
 ## [0.61.0] - 2026-11-12
 
 ### Fixed
