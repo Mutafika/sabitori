@@ -42,6 +42,8 @@
   - 実機 (Galaxy Tab S8 / Android 14、GameActivity) で打鍵・ソフトキーボード・日本語の変換・裏から戻ったときの
     描き直しを確認。クリップボードと、外部キーボードでの日本語は未確認。
 - `DragManager::start_active`: 動かすのを待たずにつかむ。
+- `DeclarativeApp::on_window_focus(focused)`: 窓が前に出た / 外れた (Android ではアプリが前に戻った / 裏に回った)
+  ときに呼ばれる。利用者がこの端末に向き直った合図に使える。既定は何もしない。
 
 ### Changed
 

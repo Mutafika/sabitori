@@ -972,6 +972,11 @@ pub trait DeclarativeApp: 'static {
     /// 描き直す**ので、アプリから再描画を要求する必要はない。
     fn on_visibility_changed(&mut self, _visible: bool) {}
 
+    /// 窓が**前に出た / 前から外れた** (キー入力を受ける窓になった / でなくなった)
+    /// ときに呼ばれる。Android ではアプリが前に戻った / 裏に回ったとき。
+    /// 利用者がこの窓 (この端末) に向き直った合図として使える。
+    fn on_window_focus(&mut self, _focused: bool) {}
+
     /// 毎 tick の最後に問われる。`tick` が絵を変えたなら `true`。
     ///
     /// **一度きりの変化**のための口。連続して動き続けるものは
@@ -1744,6 +1749,7 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             }
             // 最小化 / 完全に覆われた (#79)。**描くのを止めるだけ**で、溜まった
             // `dirty` は消さない — 見えた瞬間に 1 枚描き直して追いつく。
+            WindowEvent::Focused(focused) => self.app.on_window_focus(focused),
             WindowEvent::Occluded(occluded) => {
                 if self.occluded != occluded {
                     self.occluded = occluded;
