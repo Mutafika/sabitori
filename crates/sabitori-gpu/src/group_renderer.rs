@@ -113,13 +113,13 @@ impl GroupRenderer {
         });
         let plain_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("group_pipeline_layout"),
-            bind_group_layouts: &[globals_bind_group_layout, &texture_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(globals_bind_group_layout), Some(&texture_layout)],
+            immediate_size: 0,
         });
         let masked_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("group_masked_pipeline_layout"),
-            bind_group_layouts: &[globals_bind_group_layout, &texture_layout, &texture_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(globals_bind_group_layout), Some(&texture_layout), Some(&texture_layout)],
+            immediate_size: 0,
         });
         let make = |blend: wgpu::BlendState, masked: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -128,7 +128,7 @@ impl GroupRenderer {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[GroupInstance::layout()],
+                    buffers: &[Some(GroupInstance::layout())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -144,7 +144,7 @@ impl GroupRenderer {
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -179,8 +179,8 @@ impl GroupRenderer {
         });
         let blur_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("group_blur_pipeline_layout"),
-            bind_group_layouts: &[&blur_params_layout, &texture_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blur_params_layout), Some(&texture_layout)],
+            immediate_size: 0,
         });
         let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("group_blur_pipeline"),
@@ -205,7 +205,7 @@ impl GroupRenderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let blur_params_capacity = 4;
@@ -363,6 +363,7 @@ impl GroupRenderer {
                 label: Some("group_blur_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &dst.view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -372,6 +373,7 @@ impl GroupRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             let offset = ((slot * 2 + k) as u64 * BLUR_STRIDE) as u32;
             pass.set_pipeline(&self.blur_pipeline);

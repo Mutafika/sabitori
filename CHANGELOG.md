@@ -15,6 +15,32 @@
 
 ## [Unreleased]
 
+### Changed（破壊的）
+
+- **wgpu を 24 から 30 に上げた**。macOS の描画の層が古い `block` (0.1.6) を引いていて、ビルドのたびに
+  「将来の Rust で通らなくなる」と警告が出ていた。wgpu 30 で Metal の層が `objc2-metal` に替わり、普通の
+  ビルドからこの警告が消えた。
+  - **`SceneApp` で自分で描くアプリ** (`SceneRenderContext` の `device` / `encoder` を使う所) は wgpu 30 の
+    書き方に直す。よく出るのは:
+    - `RenderPassColorAttachment` に `depth_slice: None`、`RenderPassDescriptor` に `multiview_mask: None`
+    - `RenderPipelineDescriptor` の `multiview` → `multiview_mask`
+    - `PipelineLayoutDescriptor` の `push_constant_ranges: &[]` → `immediate_size: 0`
+    - `bind_group_layouts: &[&a]` → `&[Some(&a)]`、頂点の `buffers: &[L]` → `&[Some(L)]`
+    - `device.poll(wgpu::Maintain::Wait)` → `device.poll(wgpu::PollType::wait_indefinitely())` (`Result` を返す)
+    - `slice.get_mapped_range()` が `Result` を返す
+    - `wgpu::Instance::new` は記述子を値で受け、`InstanceDescriptor` に `Default` は無い
+      (`..wgpu::InstanceDescriptor::new_without_display_handle()`)。`request_adapter` は `Result` を返し、
+      `request_device` は引数 1 つ
+  - **`GpuRenderer::render` / `render_frame` などは `sabitori::SurfaceError` を返す** (前は
+    `wgpu::SurfaceError`)。wgpu 30 で描き先の 1 枚を取る口がエラー型を持たなくなったため。`Timeout` /
+    `Occluded` (窓が隠れている、新設) / `Outdated` / `Lost` / `Validation`。`OutOfMemory` は無くなった。
+  - **`sabitori-reel` の `three-d` は、`seimei` が wgpu 30 に上がるまで使えない** (seimei v0.4.1 は wgpu 24 で、
+    型を混ぜられない)。付けると理由を書いたコンパイルエラーになる。`three-d` で動画を作るなら v0.61.0 以前の
+    タグで。
+  - GPU に求める下限のうち、段の間で渡す値の数は単位が変わった (wgpu 30 は `@location` の数で数える)。
+    `rect.wgsl` の 15 個で、WebGL2 の既定 15 にちょうど収まる。足りない環境では
+    `max_inter_stage_shader_variables` の名前で知らせる。
+
 ## [0.61.0] - 2026-11-12
 
 ### Fixed

@@ -110,8 +110,8 @@ impl UiOverlayRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sabitori_ui_overlay_pipeline_layout"),
-            bind_group_layouts: &[&globals_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&globals_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -120,7 +120,7 @@ impl UiOverlayRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[RectInstance::layout()],
+                buffers: &[Some(RectInstance::layout())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -144,7 +144,7 @@ impl UiOverlayRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -270,21 +270,21 @@ mod tests {
 
     /// surface なしの headless device を作る。GPU が無い環境では None。
     fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))?;
+            apply_limit_buckets: false,
+        })).ok()?;
         pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("ui_overlay_test_device"),
                 ..Default::default()
-            },
-            None,
+            }
         ))
         .ok()
     }
@@ -332,6 +332,7 @@ mod tests {
                 label: Some("base_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -341,6 +342,7 @@ mod tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             ui.draw_base(&mut pass);
         }
@@ -353,6 +355,7 @@ mod tests {
                 label: Some("overlay_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -362,11 +365,12 @@ mod tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             ui.draw_overlay(&mut pass);
         }
         queue.submit(std::iter::once(encoder.finish()));
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
     }
 
     /// instance buffer が base + overlay 合計で成長すること。
@@ -414,6 +418,7 @@ mod tests {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -423,12 +428,13 @@ mod tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             ui.draw_base(&mut pass);
             ui.draw_overlay(&mut pass);
         }
         queue.submit(std::iter::once(encoder.finish()));
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
     }
 
     /// GPU に実際に描かせて、ピル (`radius > 箱の半分`) が塗られることを見る。
@@ -510,6 +516,7 @@ mod tests {
                 label: Some("readback_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -519,6 +526,7 @@ mod tests {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             draw(&mut pass);
         }
@@ -552,8 +560,8 @@ mod tests {
 
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range().to_vec();
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = slice.get_mapped_range().expect("map").to_vec();
         drop(buf);
         data
     }

@@ -410,4 +410,4 @@ WASM 固有の要件（`wgpu` の `webgl` feature、フォントの同梱、WebG
 ## 動作要件
 
 - Rust 1.88+（edition 2024）
-- wgpu 24 対応の GPU バックエンド（Vulkan / Metal / DX12 / WebGPU / WebGL2）
+- wgpu 30 対応の GPU バックエンド（Vulkan / Metal / DX12 / WebGPU / WebGL2）

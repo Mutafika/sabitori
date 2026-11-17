@@ -1,5 +1,5 @@
 pub use sabitori_core::*;
-pub use sabitori_gpu::{GpuRenderer, ImageInstance, ImageRenderer, OrbitCamera, RectInstance};
+pub use sabitori_gpu::{GpuRenderer, ImageInstance, ImageRenderer, OrbitCamera, RectInstance, SurfaceError};
 // sabitori-input の公開項目は全部ここに出す。 部分的に出すと「型は見えるのに、 その型の
 // フィールドや戻り値の型が名前で書けない」状態になり、 下流はファサード越しにイベントを
 // 構築できなくなる (実際 PointerKind の欠落で下流のビルドが落ちた)。 項目を足したら
