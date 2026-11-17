@@ -171,18 +171,18 @@ impl std::error::Error for RenderError {}
 
 /// 画面外の device。窓 (surface) を持たない。
 fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
-    }))?;
+        apply_limit_buckets: false,
+    })).ok()?;
     pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor { label: Some("sabitori_offscreen"), ..Default::default() },
-        None,
+        &wgpu::DeviceDescriptor { label: Some("sabitori_offscreen"), ..Default::default() }
     ))
     .ok()
 }
@@ -268,6 +268,7 @@ fn render_with(view: &Element, sheet: Sheet, smoothing: bool) -> Result<Rendered
             label: Some("sabitori_offscreen"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view_tex,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(clear),
@@ -277,6 +278,7 @@ fn render_with(view: &Element, sheet: Sheet, smoothing: bool) -> Result<Rendered
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         frame.draw(&ui, &r, &mut pass);
     }
@@ -332,15 +334,16 @@ fn read_back(
     slice.map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    if device.poll(wgpu::Maintain::Wait).is_queue_empty() {
-        // 走り切っている。
-    }
+    // 待ちきれなかった・失われたは、下の `rx` が `Ok(Ok(()))` にならないので分かる。
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     match rx.recv() {
         Ok(Ok(())) => {}
         _ => return Err(RenderError::Readback),
     }
 
-    let mapped = slice.get_mapped_range();
+    let Ok(mapped) = slice.get_mapped_range() else {
+        return Err(RenderError::Readback);
+    };
     let mut rgba = Vec::with_capacity((unpadded * height) as usize);
     for row in 0..height {
         let start = (row * padded) as usize;

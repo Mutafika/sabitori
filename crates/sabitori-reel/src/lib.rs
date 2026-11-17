@@ -30,6 +30,16 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
+// sabitori は wgpu 30 に上がったが、`seimei` (v0.4.1) はまだ wgpu 24 のまま。2 つの
+// wgpu の型は混ぜられないので、seimei が追いつくまで `three-d` は組めない。型の食い違い
+// のエラーが並ぶ前に、理由をここで言う。
+#[cfg(feature = "three-d")]
+compile_error!(
+    "sabitori-reel の `three-d` は今は使えない: sabitori は wgpu 30、seimei v0.4.1 は wgpu 24 で、\
+     型を混ぜられない。seimei を wgpu 30 に上げるまでは、`three-d` を使う動画は sabitori v0.61.0 \
+     以前のタグで作る。"
+);
+
 use sabitori::bridge::{MeasureCache, OrderedFrame, TextRendererMeasurer, UiRenderers};
 use sabitori::{DeclarativeApp, InputEvent, Key};
 #[cfg(not(feature = "three-d"))]
@@ -764,22 +774,22 @@ impl Gpu {
         family: Option<String>,
         mono_family: Option<String>,
     ) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("sabitori-reel: no GPU adapter available");
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("sabitori-reel"),
                 ..Default::default()
-            },
-            None,
+            }
         ))
         .expect("sabitori-reel: failed to create device");
         let (device, queue) = (Arc::new(device), Arc::new(queue));
@@ -960,6 +970,7 @@ impl Gpu {
                 label: Some("reel_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: if drew_3d {
@@ -978,6 +989,7 @@ impl Gpu {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             frame.draw(&self.ui, &r, &mut pass);
         }
@@ -1007,13 +1019,15 @@ impl Gpu {
 
         let slice = self.readback.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("sabitori-reel: GPU を待てなかった");
 
         let unpadded = self.unpadded_bpr as usize;
         let padded = self.padded_bpr as usize;
         let mut out = Vec::with_capacity(unpadded * self.height as usize);
         {
-            let data = slice.get_mapped_range();
+            let data = slice.get_mapped_range().expect("sabitori-reel: 読み戻しの写し先を開けない");
             for row in 0..self.height as usize {
                 let start = row * padded;
                 out.extend_from_slice(&data[start..start + unpadded]);
@@ -1381,6 +1395,7 @@ impl<S: Scene + 'static> SceneApp for PreviewApp<S> {
                     label: Some("reel_preview_clear"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: ctx.surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(clear),
@@ -1390,6 +1405,7 @@ impl<S: Scene + 'static> SceneApp for PreviewApp<S> {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
             }
         }
@@ -1402,16 +1418,17 @@ mod tests {
 
     /// GPU が取れない環境 (CI の runner) では描く試験を飛ばす。
     fn gpu_available() -> bool {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let ok = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
-        .is_some();
+        .is_ok();
         if !ok {
             eprintln!("skip: GPU が無い");
         }

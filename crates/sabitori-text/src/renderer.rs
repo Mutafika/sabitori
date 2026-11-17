@@ -733,8 +733,8 @@ impl TextRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("glyph_pipeline_layout"),
-            bind_group_layouts: &[globals_bind_group_layout, &atlas_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(globals_bind_group_layout), Some(&atlas_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -743,7 +743,7 @@ impl TextRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[GlyphInstance::layout()],
+                buffers: &[Some(GlyphInstance::layout())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -762,7 +762,7 @@ impl TextRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

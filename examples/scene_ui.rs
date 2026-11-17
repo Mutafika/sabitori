@@ -213,6 +213,7 @@ impl SceneApp for SceneUiApp {
             label: Some("scene-clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: ctx.surface_view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -234,6 +235,7 @@ impl SceneApp for SceneUiApp {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
     }
 }

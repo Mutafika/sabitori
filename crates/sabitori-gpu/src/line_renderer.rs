@@ -33,8 +33,8 @@ impl LineRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("line_pipeline_layout"),
-            bind_group_layouts: &[globals_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(globals_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -43,7 +43,7 @@ impl LineRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[LineInstance::layout()],
+                buffers: &[Some(LineInstance::layout())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -67,7 +67,7 @@ impl LineRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -143,18 +143,18 @@ mod verify {
     use crate::instance::LineInstance;
 
     fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))?;
+            apply_limit_buckets: false,
+        })).ok()?;
         pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor { label: Some("line_test"), ..Default::default() },
-            None,
+            &wgpu::DeviceDescriptor { label: Some("line_test"), ..Default::default() }
         ))
         .ok()
     }
@@ -239,6 +239,7 @@ mod verify {
                 label: Some("line_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.10, g: 0.10, b: 0.17, a: 1.0 }),
@@ -248,6 +249,7 @@ mod verify {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             lr.render_lines(&device, &queue, &instances, &mut pass, &globals_bg);
         }
@@ -280,8 +282,8 @@ mod verify {
 
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = slice.get_mapped_range().expect("map");
         let out = std::env::temp_dir().join("polyline_verify.png");
         image::save_buffer(&out, &data[..], w, h, image::ExtendedColorType::Rgba8).unwrap();
         eprintln!("WROTE {}", out.display());
@@ -354,6 +356,7 @@ mod verify {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -363,6 +366,7 @@ mod verify {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             lr.draw(&mut pass, &globals_bg, 1..2);
             lr.draw(&mut pass, &globals_bg, 0..1);
@@ -394,8 +398,8 @@ mod verify {
         queue.submit(std::iter::once(encoder.finish()));
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = slice.get_mapped_range().expect("map");
         let px = |x: u32, y: u32| {
             let i = ((y * w + x) * 4) as usize;
             [data[i], data[i + 1], data[i + 2]]

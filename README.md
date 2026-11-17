@@ -410,4 +410,4 @@ Notable open items:
 ## Requirements
 
 - Rust 1.88+ (edition 2024)
-- A wgpu 24-compatible GPU backend (Vulkan / Metal / DX12 / WebGPU / WebGL2)
+- A wgpu 30-compatible GPU backend (Vulkan / Metal / DX12 / WebGPU / WebGL2)

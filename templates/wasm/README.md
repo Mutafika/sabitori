@@ -33,7 +33,7 @@ trunk build --release
 
 ```toml
 # Cargo.toml (ワークスペース or 直接依存)
-wgpu = { version = "24", features = ["webgl"] }
+wgpu = { version = "30", features = ["webgl"] }   # sabitori と同じ版に揃える
 ```
 
 これがないと WebGPU バックエンドしかビルドされず、

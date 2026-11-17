@@ -1781,6 +1781,7 @@ impl OrderedFrame {
             label: Some("sabitori_group_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1790,6 +1791,7 @@ impl OrderedFrame {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         self.draw_runs(runs, rt, r, &mut pass);
     }
@@ -2152,18 +2154,18 @@ mod fullpath_verify {
     use sabitori_gpu::LineRenderer;
 
     fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))?;
+            apply_limit_buckets: false,
+        })).ok()?;
         pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor { label: Some("fullpath"), ..Default::default() },
-            None,
+            &wgpu::DeviceDescriptor { label: Some("fullpath"), ..Default::default() }
         ))
         .ok()
     }
@@ -2245,6 +2247,7 @@ mod fullpath_verify {
                 label: Some("pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.09, g: 0.10, b: 0.15, a: 1.0 }),
@@ -2254,6 +2257,7 @@ mod fullpath_verify {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             lr.render_lines(&device, &queue, &lines, &mut pass, &globals_bg);
         }
@@ -2284,8 +2288,8 @@ mod fullpath_verify {
         queue.submit(std::iter::once(encoder.finish()));
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = slice.get_mapped_range().expect("map");
         let out = std::env::temp_dir().join("polyline_fullpath.png");
         image::save_buffer(&out, &data[..], w, h, image::ExtendedColorType::Rgba8).unwrap();
         eprintln!("WROTE {}", out.display());
