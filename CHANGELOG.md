@@ -15,6 +15,8 @@
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-11-17
+
 ### Changed（破壊的）
 
 - **wgpu を 24 から 30 に上げた**。macOS の描画の層が古い `block` (0.1.6) を引いていて、ビルドのたびに
@@ -5370,7 +5372,8 @@ GPU レンダリングの GUI として表現する Rust フレームワーク�
 - cargo-deny（AGPL/GPL 系を排除）/ cargo-about / NOTICE / 第三者ライセンス html
 - README / ROADMAP（英語版 + 日本語版 + 言語切替リンク）
 
-[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.61.0...HEAD
+[Unreleased]: https://github.com/Mutafika/sabitori/compare/v0.62.0...HEAD
+[0.62.0]: https://github.com/Mutafika/sabitori/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/Mutafika/sabitori/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/Mutafika/sabitori/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/Mutafika/sabitori/compare/v0.58.0...v0.59.0
