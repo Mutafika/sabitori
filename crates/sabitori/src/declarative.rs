@@ -2448,10 +2448,15 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
             if let Some(w) = self.window.as_ref() {
                 // Android: 焦点が移っただけではキーボードをせり上げない (設定から端末へ
                 // 戻っただけで出ていた)。出すのは焦点を受ける所のタップ (`handle_touch`)、
-                // ここはしまう側だけ。
+                // ここはしまう側だけ。タップで出したキーボードは明示の要求で出ている
+                // ので、しまうのも明示で頼む — winit の `set_ime_allowed(false)` は
+                // 「暗黙に出した物だけ」(HIDE_IMPLICIT_ONLY) で、それには効かない。
                 #[cfg(target_os = "android")]
                 if !ime_allowed {
-                    w.set_ime_allowed(false);
+                    let _ = w;
+                    if let Some(app) = sabitori_window::android::app() {
+                        app.hide_soft_input(false);
+                    }
                 }
                 #[cfg(not(target_os = "android"))]
                 w.set_ime_allowed(ime_allowed);
