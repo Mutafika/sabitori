@@ -1,3 +1,9 @@
+// Android 向けの clippy は、`const { .. }` で初期化している `thread_local!` にも
+// 「`const` にできる」(missing_const_for_thread_local) と言う。Android の TLS は
+// pthread のキーで実装されていて、そちらの展開を clippy が見誤る誤検知 (macOS / Linux /
+// wasm では出ない)。書き方は直せないので Android でだけ黙らせる。
+#![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
+
 pub use sabitori_core::*;
 pub use sabitori_gpu::{GpuRenderer, ImageInstance, ImageRenderer, OrbitCamera, RectInstance, SurfaceError};
 // sabitori-input の公開項目は全部ここに出す。 部分的に出すと「型は見えるのに、 その型の
