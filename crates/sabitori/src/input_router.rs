@@ -30,6 +30,10 @@ pub(crate) struct TouchDrag {
     /// 指で文字を選んでいる最中なら、その状態 (#108)。この間はスクロールも
     /// タップもしない。
     pub select: Option<crate::touch_select::TouchSelect>,
+    /// スクロールする欄の中のつかめる要素を押した指の、まだ始めていないドラッグ
+    /// (`(data, source_id)`)。指はまずスクロールで、つかむのは長押ししてから
+    /// (iOS / Android の決まり)。長押しの前に動いたら捨てる。
+    pub held_drag: Option<(String, Option<String>)>,
 }
 
 /// winit のホイール delta を、配る単位 (論理 px) と精度フラグに直す。

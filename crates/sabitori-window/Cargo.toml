@@ -8,6 +8,17 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Android: どちらの Activity に載せるか。winit (android-activity) は**ちょうど
+# 1 つ**を要求する (0 でも 2 でもコンパイルエラー)。
+#
+#   android-native-activity  Java のコードが要らない。ソフトキーボードは英数の
+#                            キー入力としてしか届かない (かな漢字変換は不可)。
+#   android-game-activity    Gradle で `androidx.games:games-activity` を入れる。
+#                            IME の文字列が取れるので日本語が打てる。
+android-native-activity = ["winit/android-native-activity"]
+android-game-activity = ["winit/android-game-activity"]
+
 [dependencies]
 sabitori-core.workspace = true
 sabitori-gpu.workspace = true

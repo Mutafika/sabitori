@@ -66,7 +66,32 @@ pub fn build_event_loop() -> EventLoop<()> {
             .with_activation_policy(ActivationPolicy::Accessory)
             .with_activate_ignoring_other_apps(false);
     }
+    // Android は OS から渡された `AndroidApp` が無いとループを作れない。
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        let app = crate::android::app()
+            .expect("sabitori: Android では run の前に sabitori::android::init(app) を呼ぶ")
+            .clone();
+        builder.with_android_app(app);
+    }
     builder.build().expect("Failed to create event loop")
+}
+
+/// ログの出し先を決める (既に誰かが決めていれば譲る)。Android は stdout を
+/// 捨てるので logcat に出す。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    #[cfg(not(target_os = "android"))]
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    #[cfg(target_os = "android")]
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_writer(crate::android::Logcat)
+        .try_init();
 }
 
 /// 窓の生成属性にバックグラウンド起動ぶんを足す。macOS では非表示で生成し、

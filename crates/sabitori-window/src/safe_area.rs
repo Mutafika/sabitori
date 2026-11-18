@@ -11,6 +11,8 @@ use sabitori_core::Edges;
 use winit::window::Window;
 
 /// 窓の四辺のセーフエリアの余白（論理 px）。
+// OS ごとの塊のうち残るのは 1 つだけで、それが末尾になる。`return` はほかの OS 用。
+#[allow(clippy::needless_return)]
 pub fn safe_area(window: &Window) -> Edges<f32> {
     #[cfg(target_os = "ios")]
     {
@@ -25,7 +27,24 @@ pub fn safe_area(window: &Window) -> Edges<f32> {
             scale,
         );
     }
-    #[cfg(not(target_os = "ios"))]
+    // Android: 窓は画面全体で、システムの帯やソフトキーボードを除いた部分が
+    // content rect。キーボードが出ると下の余白が増える。
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::WindowExtAndroid;
+        let size = window.inner_size();
+        let r = window.content_rect();
+        // 起動直後はまだ決まっていない (全部 0)。
+        if r.right <= r.left || r.bottom <= r.top {
+            return Edges::default();
+        }
+        return insets(
+            (0.0, 0.0, size.width as f64, size.height as f64),
+            (r.left as f64, r.top as f64, (r.right - r.left) as f64, (r.bottom - r.top) as f64),
+            window.scale_factor(),
+        );
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let _ = window;
         Edges::default()
@@ -34,7 +53,7 @@ pub fn safe_area(window: &Window) -> Edges<f32> {
 
 /// 窓全体とセーフエリアの矩形（物理 px・`(x, y, w, h)`）から四辺の余白（論理 px）を出す。
 /// 端数や負値（回転の途中で矩形が食い違う瞬間）は 0 に寄せる。
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 fn insets(outer: (f64, f64, f64, f64), inner: (f64, f64, f64, f64), scale: f64) -> Edges<f32> {
     let s = if scale > 0.0 { scale } else { 1.0 };
     let top = (inner.1 - outer.1).max(0.0);

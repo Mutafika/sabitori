@@ -240,6 +240,23 @@ fn load_builtin_font(_db: &mut cosmic_text::fontdb::Database) {
     _db.load_font_data(BUILTIN_FONT.to_vec());
 }
 
+/// OS に入っているフォントを DB に積む。wasm には無いので何もしない。
+///
+/// fontdb は Android のフォントの場所を知らない (`load_system_fonts` は何も
+/// 積まずに返る) ので、`/system/fonts` を自分で読む。総称も Android の実在の
+/// 書体に向け直す ── 既定の "Arial" / "Courier New" は入っていない。
+fn load_system_fonts(_db: &mut cosmic_text::fontdb::Database) {
+    #[cfg(not(target_arch = "wasm32"))]
+    _db.load_system_fonts();
+    #[cfg(target_os = "android")]
+    {
+        _db.load_fonts_dir("/system/fonts");
+        _db.set_sans_serif_family("Roboto");
+        _db.set_serif_family("Noto Serif");
+        _db.set_monospace_family("Droid Sans Mono");
+    }
+}
+
 /// The font stack, and everything that can be answered without a GPU.
 ///
 /// [`crate::TextRenderer`] owns one of these and delegates to it, so on-screen
@@ -285,8 +302,7 @@ impl TextShaper {
     pub fn with_locale(locale: &str) -> Self {
         let locale = normalize_han_locale(locale.to_string());
         let mut db = cosmic_text::fontdb::Database::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        db.load_system_fonts();
+        load_system_fonts(&mut db);
         // wasm には system fonts が無い。 [`BUILTIN_FONT`] を参照。
         load_builtin_font(&mut db);
         Self {
@@ -316,8 +332,7 @@ impl TextShaper {
         for data in user_fonts {
             db.load_font_data(data.clone());
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        db.load_system_fonts();
+        load_system_fonts(&mut db);
         // user fonts の**後ろ**。 挿入順が優先順なので、 アプリが渡した face
         // が常に勝ち、 組み込みは穴埋めにしか使われない。
         load_builtin_font(&mut db);

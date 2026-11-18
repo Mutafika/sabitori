@@ -156,6 +156,12 @@ impl<A: DeclarativeApp> ApplicationHandler for Host<A> {
         self.deliver_from_os();
     }
 
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        for w in &mut self.windows {
+            w.suspended(event_loop);
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(w) = self.windows.iter_mut().find(|w| w.owns(id)) else {
             return;

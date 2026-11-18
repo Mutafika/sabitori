@@ -97,6 +97,17 @@ pub(crate) fn press_hit(build: &BuildResult, pt: Point) -> Option<PressHit> {
     })
 }
 
+/// Android: このタップでソフトキーボードを出すか。押した所を含む、焦点を受ける
+/// 要素があれば出す。一番手前が焦点を受けない子 (端末の本体など) でも、それを包む
+/// 欄が受けるなら出す。ポップアップの上では、ポップアップの中だけを見る
+/// (メニューの項目を押して、下の欄のキーボードが出ないように)。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn tap_wants_keyboard(build: &BuildResult, pt: Point) -> bool {
+    let mut hits = build.hit_regions.iter().filter(|r| r.is_interactive() && r.rect.contains(pt));
+    let Some(top) = hits.next() else { return false };
+    top.focusable || hits.any(|r| r.overlay == top.overlay && r.focusable)
+}
+
 /// 座標の下にある、 id を持つ最前面の hit region の id。 押下対象の解決に使う。
 ///
 /// ホバーと違って `hoverable` では絞らない — `.active()` だけを書いた要素
@@ -367,6 +378,28 @@ mod tests {
         ));
         let hit = press_hit(&b, Point::new(10.0, 10.0)).expect("下の行を押す");
         assert_eq!(hit.click.as_deref(), Some("row"), "label だけの領域は透過する");
+    }
+
+    /// タップでキーボードを出すのは、焦点を受ける欄 (またはその中の子) を押したとき。
+    /// 欄の上に開いたポップアップの項目では出さない。
+    #[test]
+    fn a_tap_inside_a_focusable_field_wants_the_keyboard() {
+        let field = || {
+            div().w(Px(400.0)).h(Px(300.0)).id("pane").focusable().child(
+                div().w(Px(400.0)).h(Px(200.0)).id("grid").on_click(|| {}),
+            )
+        };
+        let b = build(&field());
+        assert!(tap_wants_keyboard(&b, Point::new(10.0, 10.0)), "欄の中の子を押した");
+        assert!(tap_wants_keyboard(&b, Point::new(10.0, 250.0)), "欄そのものを押した");
+
+        let b = build(&div().w(Px(400.0)).h(Px(300.0)).id("button").on_click(|| {}));
+        assert!(!tap_wants_keyboard(&b, Point::new(10.0, 10.0)), "ただのボタン");
+
+        let b = build(&div().w(Px(400.0)).h(Px(300.0)).child(field()).child(
+            div().w(Px(100.0)).h(Px(40.0)).id("menu-item").on_click(|| {}).overlay(),
+        ));
+        assert!(!tap_wants_keyboard(&b, Point::new(10.0, 10.0)), "欄の上のメニュー");
     }
 
     /// 外付けの上掛けの木で層を上げた中身 ([`sabitori_core::Element::layer`]) と、
@@ -765,7 +798,9 @@ fn slide(states: &mut HashMap<String, ScrollView>, id: &str, to: f32) {
 /// IME を有効にする (native)。macOS では入力モード切替の取りこぼし対策
 /// ([`crate::macos_ime`]) もここで仕込むので、`set_ime_allowed(true)` を直接呼ばずにこれを使う。
 /// web の IME は隠し textarea の橋渡し (`web_ime`) が受けるので使わない。
-#[cfg(not(target_arch = "wasm32"))]
+/// Android は「IME を許す」がソフトキーボードを出すことなので、焦点に合わせて
+/// 出し入れする側 (`about_to_wait`) に任せる。
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(crate) fn enable_ime(window: &winit::window::Window) {
     window.set_ime_allowed(true);
     #[cfg(target_os = "macos")]

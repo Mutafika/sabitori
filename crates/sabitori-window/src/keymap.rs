@@ -113,6 +113,11 @@ fn named_key(named: &NamedKey) -> Option<Key> {
 
 fn character_key(c: &str) -> Key {
     match c.to_ascii_lowercase().as_str() {
+        // Android は KeyCharacterMap に文字のあるキーを Character で送る。
+        // Enter は "\n"、Tab は "\t"、Esc は "\x1b" で届き、名前付きにならない
+        "\n" | "\r" => Key::Enter,
+        "\t" => Key::Tab,
+        "\u{1b}" => Key::Escape,
         " " => Key::Space,
         "a" => Key::A,
         "b" => Key::B,
@@ -380,6 +385,15 @@ mod tests {
     fn uppercase_characters_map_to_the_same_key() {
         assert_eq!(key_from_winit(&WinitKey::Character("A".into())), Some(Key::A));
         assert_eq!(key_from_winit(&WinitKey::Character("Z".into())), Some(Key::Z));
+    }
+
+    /// Android は Enter・Tab・Esc を制御文字の Character で送る。名前付きと同じキーになること。
+    #[test]
+    fn control_characters_are_the_keys_android_means() {
+        assert_eq!(key_from_winit(&WinitKey::Character("\n".into())), Some(Key::Enter));
+        assert_eq!(key_from_winit(&WinitKey::Character("\r".into())), Some(Key::Enter));
+        assert_eq!(key_from_winit(&WinitKey::Character("\t".into())), Some(Key::Tab));
+        assert_eq!(key_from_winit(&WinitKey::Character("\u{1b}".into())), Some(Key::Escape));
     }
 
     /// 未知の名前付きキーは `None`（＝イベントを出さない選択肢を呼び出し側に残す）、

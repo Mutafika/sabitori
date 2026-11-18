@@ -255,7 +255,11 @@ pub struct GpuRenderer {
     pub last_acquire_ms: f32,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
-    pub surface: wgpu::Surface<'static>,
+    /// 描く先の面。Android で裏に回っているあいだは無い ([`GpuRenderer::release_surface`])。
+    pub surface: Option<wgpu::Surface<'static>>,
+    /// 描画面を作り直すための口 ([`GpuRenderer::recreate_surface`])。外から渡された
+    /// device で組んだレンダラには無い。
+    instance: Option<wgpu::Instance>,
     pub surface_config: wgpu::SurfaceConfiguration,
     pub rect_pipeline: wgpu::RenderPipeline,
     pub globals_buffer: wgpu::Buffer,
@@ -605,7 +609,8 @@ impl GpuRenderer {
             last_acquire_ms: 0.0,
             device,
             queue,
-            surface,
+            surface: Some(surface),
+            instance: Some(instance),
             surface_config,
             rect_pipeline,
             globals_buffer,
@@ -813,7 +818,8 @@ impl GpuRenderer {
             last_acquire_ms: 0.0,
             device,
             queue,
-            surface,
+            surface: Some(surface),
+            instance: None,
             surface_config,
             rect_pipeline,
             globals_buffer,
@@ -848,7 +854,9 @@ impl GpuRenderer {
         self.scale_factor = scale_factor as f32;
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
 
         let logical_size = [
             width as f32 / self.scale_factor,
@@ -1024,15 +1032,46 @@ impl GpuRenderer {
         Some(CapturedFrame { width, height, rgba })
     }
 
+    /// 窓の描画面を作り直す。**Android** は、アプリが裏に回ると窓の描画面
+    /// (`ANativeWindow`) を取り上げ、戻ると新しいものを渡す。古い面に描くと失敗
+    /// するので、`resumed` のたびにこれで張り替える。device・パイプライン・
+    /// アトラスはそのまま残る。張り替えられたら `true`。
+    pub fn recreate_surface(&mut self, window: Arc<winit::window::Window>) -> bool {
+        let Some(instance) = self.instance.as_ref() else { return false };
+        // 古い面 (とそのスワップチェーン) を先に手放す。Android の窓には面を
+        // 1 つしかつなげず、残っていると新しい面は「失われた」と言われて、
+        // `configure` が panic する (裏から戻ると固まっていた)。
+        self.surface = None;
+        match instance.create_surface(window) {
+            Ok(surface) => {
+                surface.configure(&self.device, &self.surface_config);
+                self.surface = Some(surface);
+                true
+            }
+            Err(e) => {
+                tracing::error!("描画面を作り直せない: {e}");
+                false
+            }
+        }
+    }
+
+    /// 描く先の面を手放す。Android で裏に回ったとき (窓が取り上げられる前に)。
+    /// 戻ったら [`Self::recreate_surface`]。そのあいだのフレームは描かない。
+    pub fn release_surface(&mut self) {
+        self.surface = None;
+    }
+
     fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, SurfaceError> {
         // wasm には std の Instant が無いので計らない (0 のまま)
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
-        let output = match surface_texture(self.surface.get_current_texture()) {
+        // Android で裏に回っているあいだは面が無い ([`Self::release_surface`])。
+        let Some(surface) = self.surface.as_ref() else { return Err(SurfaceError::Lost) };
+        let output = match surface_texture(surface.get_current_texture()) {
             Ok(tex) => tex,
             Err(SurfaceError::Outdated | SurfaceError::Lost) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                surface_texture(self.surface.get_current_texture())?
+                surface.configure(&self.device, &self.surface_config);
+                surface_texture(surface.get_current_texture())?
             }
             Err(e) => return Err(e),
         };
