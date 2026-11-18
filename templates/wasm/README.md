@@ -33,7 +33,7 @@ trunk build --release
 
 ```toml
 # Cargo.toml (ワークスペース or 直接依存)
-wgpu = { version = "24", features = ["webgl"] }
+wgpu = { version = "30", features = ["webgl"] }   # sabitori と同じ版に揃える
 ```
 
 これがないと WebGPU バックエンドしかビルドされず、
@@ -55,13 +55,13 @@ WASM 環境にはシステムフォントが無い。`0.6.0` から、sabitori �
 | `builtin-font-latin` | Hack | 302KB | **144KB** | 豆腐 |
 
 ```toml
-sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.61.0" }   # HackGen（日本語込み）
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.62.0" }   # HackGen（日本語込み）
 
-sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.61.0",
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.62.0",
              default-features = false,
              features = ["builtin-font-latin"] }   # Hack（軽い・日本語は豆腐）
 
-sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.61.0",
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.62.0",
              default-features = false }            # 組み込み無し
 ```
 

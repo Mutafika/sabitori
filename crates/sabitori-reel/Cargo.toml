@@ -23,7 +23,9 @@ wgpu.workspace = true
 bytemuck = { workspace = true }
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Same wgpu 24 / glam 0.29 as Sabitori, and its `Renderer::new` takes
+# Must share Sabitori's wgpu and glam 0.29 — v0.4.1 is still on wgpu 24 while
+# Sabitori is on 30, so `three-d` is a compile error until seimei catches up
+# (see the `compile_error!` in lib.rs). Its `Renderer::new` takes
 # `Arc<Device>`/`Arc<Queue>` with no surface, so it runs on the reel's own
 # offscreen device. `gltf` off: reel builds meshes itself. Pinned to a tag like
 # consumers pin sabitori, so CI resolves it without a sibling checkout.

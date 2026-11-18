@@ -454,13 +454,10 @@ impl<A: SabitoriApp> ApplicationHandler for AppState<A> {
                     let rects = self.app.render(&self.tree);
                     match renderer.render(&rects) {
                         Ok(()) => {}
-                        Err(wgpu::SurfaceError::Lost) => {
+                        Err(sabitori_gpu::SurfaceError::Lost) => {
                             let config = renderer.surface_config.clone();
                             renderer
                                 .resize(config.width, config.height, renderer.scale_factor as f64);
-                        }
-                        Err(wgpu::SurfaceError::OutOfMemory) => {
-                            event_loop.exit();
                         }
                         Err(e) => {
                             tracing::warn!("Surface error: {e:?}");
@@ -960,7 +957,7 @@ impl<A: SabitoriApp> EmbeddedRunner<A> {
         let rects = self.app.render(&self.tree);
         match self.renderer.render(&rects) {
             Ok(()) => {}
-            Err(wgpu::SurfaceError::Lost) => {
+            Err(sabitori_gpu::SurfaceError::Lost) => {
                 let config = self.renderer.surface_config.clone();
                 self.renderer
                     .resize(config.width, config.height, self.renderer.scale_factor as f64);

@@ -41,12 +41,15 @@ type LimitOf = fn(&wgpu::Limits) -> u32;
 /// baseline says.
 ///
 /// * 2048² is the glyph atlas ([`sabitori_text`]).
-/// * rect.wgsl passes 34 inter-stage components — above the WebGL2 baseline's
-///   own default of 31, so this one has to be asked for explicitly.
+/// * rect.wgsl passes 15 inter-stage variables (`@location`s in its
+///   `VertexOutput`) — exactly the WebGL2 baseline's 15, so an adapter that
+///   reports fewer can't build `rect_pipeline`. wgpu 24 counted this in scalar
+///   components (34 of a default 31, which had to be raised); wgpu 30 counts
+///   `@location`s.
 const MINIMUM_LIMITS: &[(&str, u32, LimitOf)] = &[
     ("max_texture_dimension_2d", 2048, |l| l.max_texture_dimension_2d),
-    ("max_inter_stage_shader_components", 34, |l| {
-        l.max_inter_stage_shader_components
+    ("max_inter_stage_shader_variables", 15, |l| {
+        l.max_inter_stage_shader_variables
     }),
 ];
 
@@ -142,6 +145,55 @@ impl std::fmt::Display for GpuInitError {
 }
 
 impl std::error::Error for GpuInitError {}
+
+/// 描き先 (surface) の 1 枚を取れなかった理由。[`GpuRenderer::render_frame`] などが返す。
+///
+/// wgpu 24 の `wgpu::SurfaceError` に当たる。wgpu 30 で `get_current_texture` は
+/// 取れた / 取れなかったを 1 つの列挙 (`wgpu::CurrentSurfaceTexture`) で返すように
+/// なりエラー型が無くなったので、取れなかった方だけをここに持つ。どれもこのフレームを
+/// 飛ばせば済む (ランタイムは次のフレームでまた描く)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceError {
+    /// 次の 1 枚を待ちきれなかった。
+    Timeout,
+    /// 窓が隠れている (最小化・他の窓の裏)。見えたらまた描く。
+    Occluded,
+    /// 描き先の設定が古い (設定し直しても合わなかった)。
+    Outdated,
+    /// 描き先が失われた (設定し直しても戻らなかった)。
+    Lost,
+    /// wgpu の検証エラー。
+    Validation,
+}
+
+impl std::fmt::Display for SurfaceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Timeout => "描き先の 1 枚を待ちきれなかった",
+            Self::Occluded => "窓が隠れている",
+            Self::Outdated => "描き先の設定が古い",
+            Self::Lost => "描き先が失われた",
+            Self::Validation => "描き先の 1 枚を取るときに検証エラー",
+        })
+    }
+}
+
+impl std::error::Error for SurfaceError {}
+
+/// `get_current_texture` の答えを、取れた 1 枚かその理由に分ける。合わなくなった
+/// (`Suboptimal`) だけの 1 枚は描く — 大きさは [`GpuRenderer::sync_to_drawable`] が
+/// 合わせる (wgpu 24 でも `Ok` で `suboptimal` が立つだけだった)。
+fn surface_texture(got: wgpu::CurrentSurfaceTexture) -> Result<wgpu::SurfaceTexture, SurfaceError> {
+    use wgpu::CurrentSurfaceTexture as C;
+    match got {
+        C::Success(tex) | C::Suboptimal(tex) => Ok(tex),
+        C::Timeout => Err(SurfaceError::Timeout),
+        C::Occluded => Err(SurfaceError::Occluded),
+        C::Outdated => Err(SurfaceError::Outdated),
+        C::Lost => Err(SurfaceError::Lost),
+        C::Validation => Err(SurfaceError::Validation),
+    }
+}
 
 pub(crate) fn first_unmet_minimum(available: &wgpu::Limits) -> Option<UnmetLimit> {
     MINIMUM_LIMITS.iter().find_map(|(name, needed, get)| {
@@ -344,9 +396,9 @@ impl GpuRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         let backends = wgpu::Backends::all();
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let surface = instance
@@ -358,9 +410,10 @@ impl GpuRenderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
-            .ok_or(GpuInitError::NoAdapter)?;
+            .map_err(|_| GpuInitError::NoAdapter)?;
 
         tracing::info!("GPU: {}", adapter.get_info().name);
 
@@ -369,12 +422,12 @@ impl GpuRenderer {
         let baseline = {
             let mut l = wgpu::Limits::downlevel_webgl2_defaults()
                 .using_resolution(adapter.limits());
-            // rect.wgsl passes 34 inter-stage components; the conservative
-            // webgl2 default caps this at 31, which fails rect_pipeline
-            // validation. Raise to what the adapter actually reports
-            // (desktop WebGL2 gives >= 60).
-            l.max_inter_stage_shader_components =
-                adapter.limits().max_inter_stage_shader_components;
+            // rect.wgsl passes 15 inter-stage variables, the webgl2 default
+            // exactly. Ask for what the adapter actually reports so a shader
+            // that grows by one `@location` doesn't fail validation on the web
+            // only (desktop WebGL2 reports more).
+            l.max_inter_stage_shader_variables =
+                adapter.limits().max_inter_stage_shader_variables;
             l
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -388,8 +441,7 @@ impl GpuRenderer {
                     required_features: wgpu::Features::empty(),
                     required_limits,
                     ..Default::default()
-                },
-                None,
+                }
             )
             .await
             .map_err(|e| GpuInitError::DeviceRejected {
@@ -449,6 +501,7 @@ impl GpuRenderer {
             desired_maximum_frame_latency: frame_latency,
             alpha_mode: choose_alpha_mode(&surface_caps.alpha_modes, transparent),
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
 
@@ -502,8 +555,8 @@ impl GpuRenderer {
         // Pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rect_pipeline_layout"),
-            bind_group_layouts: &[&globals_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&globals_bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Rect pipeline
@@ -513,7 +566,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[RectInstance::layout()],
+                buffers: &[Some(RectInstance::layout())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -537,7 +590,7 @@ impl GpuRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -599,9 +652,9 @@ impl GpuRenderer {
         scale_factor: f32,
     ) -> Self {
         let backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         // SAFETY: 呼び出し元が有効なウィンドウハンドルを保証する
@@ -616,6 +669,7 @@ impl GpuRenderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("Failed to find a suitable GPU adapter");
@@ -629,8 +683,7 @@ impl GpuRenderer {
                     required_features: wgpu::Features::empty(),
                     required_limits,
                     ..Default::default()
-                },
-                None,
+                }
             )
             .await
             .expect("Failed to create device");
@@ -662,6 +715,7 @@ impl GpuRenderer {
             // transparent raw surface is ever needed.
             alpha_mode: choose_alpha_mode(&surface_caps.alpha_modes, false),
             view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
 
@@ -712,8 +766,8 @@ impl GpuRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rect_pipeline_layout"),
-            bind_group_layouts: &[&globals_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&globals_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -722,7 +776,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[RectInstance::layout()],
+                buffers: &[Some(RectInstance::layout())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -746,7 +800,7 @@ impl GpuRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -886,6 +940,7 @@ impl GpuRenderer {
                 label: Some("sabitori_offscreen_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -895,6 +950,7 @@ impl GpuRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             draw(&mut pass, self);
         }
@@ -944,7 +1000,7 @@ impl GpuRenderer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        let _ = self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         if !matches!(rx.recv(), Ok(Ok(()))) {
             tracing::warn!("フレームを読み戻せなかった");
             return None;
@@ -954,7 +1010,10 @@ impl GpuRenderer {
             self.surface_config.format,
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
         );
-        let mapped = slice.get_mapped_range();
+        let Ok(mapped) = slice.get_mapped_range() else {
+            tracing::warn!("フレームを読み戻せなかった (写し先を開けない)");
+            return None;
+        };
         let mut rgba = Vec::with_capacity((unpadded * height) as usize);
         for row in 0..height {
             let start = (row * padded) as usize;
@@ -1002,16 +1061,17 @@ impl GpuRenderer {
         self.surface = None;
     }
 
-    fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+    fn acquire_drawable(&mut self) -> Result<wgpu::SurfaceTexture, SurfaceError> {
         // wasm には std の Instant が無いので計らない (0 のまま)
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
-        let Some(surface) = self.surface.as_ref() else { return Err(wgpu::SurfaceError::Lost) };
-        let output = match surface.get_current_texture() {
+        // Android で裏に回っているあいだは面が無い ([`Self::release_surface`])。
+        let Some(surface) = self.surface.as_ref() else { return Err(SurfaceError::Lost) };
+        let output = match surface_texture(surface.get_current_texture()) {
             Ok(tex) => tex,
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+            Err(SurfaceError::Outdated | SurfaceError::Lost) => {
                 surface.configure(&self.device, &self.surface_config);
-                surface.get_current_texture()?
+                surface_texture(surface.get_current_texture())?
             }
             Err(e) => return Err(e),
         };
@@ -1104,7 +1164,7 @@ impl GpuRenderer {
         pass.draw(0..6, range);
     }
 
-    pub fn render(&mut self, rects: &[RectInstance]) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, rects: &[RectInstance]) -> Result<(), SurfaceError> {
         self.render_with(rects, |_, _| {})
     }
     /// 1 枚を 1 つのパスで描く。画面を消してから `draw` を呼び、出して見せる。
@@ -1115,7 +1175,7 @@ impl GpuRenderer {
     pub fn render_frame(
         &mut self,
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let output = self.acquire_drawable()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1126,6 +1186,7 @@ impl GpuRenderer {
                 label: Some("sabitori_frame_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
@@ -1135,12 +1196,13 @@ impl GpuRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             draw(&mut pass, self);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 
@@ -1150,7 +1212,7 @@ impl GpuRenderer {
         &mut self,
         rects: &[RectInstance],
         extra_draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let count = rects.len();
 
         // Grow instance buffer if needed
@@ -1188,6 +1250,7 @@ impl GpuRenderer {
                 label: Some("sabitori_render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -1202,6 +1265,7 @@ impl GpuRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             // Draw rects
@@ -1213,7 +1277,7 @@ impl GpuRenderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
 
         Ok(())
     }
@@ -1227,7 +1291,7 @@ impl GpuRenderer {
         &mut self,
         layers: &[(&[RectInstance], bool)],
         mut draw_fn: impl FnMut(usize, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let total: usize = layers.iter().map(|(r, _)| r.len()).sum();
         if total > self.instance_capacity {
             self.instance_capacity = total.max(1).next_power_of_two();
@@ -1267,12 +1331,14 @@ impl GpuRenderer {
                     label: Some("sabitori_layer_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 let s = starts[i] as u32;
                 self.draw_rects(&mut pass, s..s + rects.len() as u32, goo);
@@ -1281,7 +1347,7 @@ impl GpuRenderer {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 
@@ -1316,7 +1382,7 @@ impl GpuRenderer {
         overlay_rects: &[RectInstance],
         overlay_has_content: bool,
         mut draw_fn: impl FnMut(RenderPhase, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let base_count = base_rects.len();
         let overlay_count = overlay_rects.len();
         let total_count = base_count + overlay_count;
@@ -1361,6 +1427,7 @@ impl GpuRenderer {
                     label: Some("sabitori_base_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -1372,6 +1439,7 @@ impl GpuRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
 
                 self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
@@ -1391,6 +1459,7 @@ impl GpuRenderer {
                     label: Some("sabitori_overlay_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
@@ -1400,6 +1469,7 @@ impl GpuRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
 
                 self.draw_rects(&mut pass, base_count as u32..(base_count + overlay_count) as u32, &goo_overlay);
@@ -1410,7 +1480,7 @@ impl GpuRenderer {
         }
 
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
 
         Ok(())
     }
@@ -1455,7 +1525,7 @@ impl GpuRenderer {
         &mut self,
         scene_fn: impl FnOnce(&mut SceneRenderContext),
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &Self),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let output = self.acquire_drawable()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         {
@@ -1488,19 +1558,21 @@ impl GpuRenderer {
                     label: Some("sabitori_scene_ui_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 draw(&mut pass, self);
             }
             self.queue.submit(std::iter::once(encoder.finish()));
         }
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 
@@ -1517,7 +1589,7 @@ impl GpuRenderer {
         scene_fn: impl FnOnce(&mut SceneRenderContext),
         ui_rects: &[RectInstance],
         ui_draw: impl FnOnce(&mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         // Single-layer path: there is no overlay layer to put overlay goo in.
         let (goo_base, _) = self.upload_goo(0);
         let output = self.acquire_drawable()?;
@@ -1581,6 +1653,7 @@ impl GpuRenderer {
                     label: Some("sabitori_ui_overlay_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
@@ -1590,6 +1663,7 @@ impl GpuRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
 
                 self.draw_rects(&mut pass, 0..count as u32, &goo_base);
@@ -1601,7 +1675,7 @@ impl GpuRenderer {
         }
 
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 
@@ -1631,7 +1705,7 @@ impl GpuRenderer {
         overlay_rects: &[RectInstance],
         overlay_has_content: bool,
         mut draw_fn: impl FnMut(RenderPhase, &mut wgpu::RenderPass<'_>, &wgpu::BindGroup),
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<(), SurfaceError> {
         let base_count = base_rects.len();
         let overlay_count = overlay_rects.len();
         let total_count = base_count + overlay_count;
@@ -1700,6 +1774,7 @@ impl GpuRenderer {
                     label: Some("sabitori_scene_ui_base_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
@@ -1709,6 +1784,7 @@ impl GpuRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 self.draw_rects(&mut pass, 0..base_count as u32, &goo_base);
                 draw_fn(RenderPhase::BaseText, &mut pass, &self.globals_bind_group);
@@ -1728,6 +1804,7 @@ impl GpuRenderer {
                     label: Some("sabitori_scene_ui_overlay_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
@@ -1737,6 +1814,7 @@ impl GpuRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 self.draw_rects(&mut pass, base_count as u32..(base_count + overlay_count) as u32, &goo_overlay);
                 draw_fn(RenderPhase::OverlayText, &mut pass, &self.globals_bind_group);
@@ -1745,7 +1823,7 @@ impl GpuRenderer {
         }
 
         self.capture_if_requested(&output.texture);
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 }
@@ -1872,14 +1950,17 @@ mod tests {
     #[test]
     fn a_weak_adapter_gets_its_own_limits_instead_of_the_baseline() {
         let baseline = wgpu::Limits::downlevel_webgl2_defaults();
-        // 実測値: SwiftShader は max_color_attachments = 6、baseline は 8。
+        // #72 の実測は SwiftShader の max_color_attachments = 6 で、wgpu 24 の
+        // baseline は 8 だった。wgpu 30 の baseline は 4 なので SwiftShader は
+        // 足りるようになったが、仕組みは同じ — baseline より 1 つ少ない環境で確かめる。
+        let short = baseline.max_color_attachments - 1;
         let available = wgpu::Limits {
-            max_color_attachments: 6,
+            max_color_attachments: short,
             ..wgpu::Limits::downlevel_webgl2_defaults()
         };
 
         let picked = pick_limits(baseline.clone(), available.clone());
-        assert_eq!(picked.max_color_attachments, 6);
+        assert_eq!(picked.max_color_attachments, short);
         assert!(
             picked.check_limits(&available),
             "要求がアダプタの上限を超えていたら request_device が失敗する"
@@ -1891,7 +1972,7 @@ mod tests {
     fn a_capable_adapter_keeps_the_baseline() {
         let baseline = wgpu::Limits::downlevel_webgl2_defaults();
         let available = wgpu::Limits {
-            max_inter_stage_shader_components: 60,
+            max_inter_stage_shader_variables: 16,
             ..wgpu::Limits::default()
         };
 
@@ -1914,12 +1995,17 @@ mod tests {
         assert_eq!(first_unmet_minimum(&wgpu::Limits::default()), None);
         assert_eq!(
             first_unmet_minimum(&wgpu::Limits::downlevel_webgl2_defaults()),
-            Some(UnmetLimit {
-                name: "max_inter_stage_shader_components",
-                needed: 34,
-                have: wgpu::Limits::downlevel_webgl2_defaults().max_inter_stage_shader_components,
-            }),
-            "webgl2 の既定 31 は rect.wgsl の 34 に足りない"
+            None,
+            "webgl2 の既定 15 で rect.wgsl の 15 が足りる"
+        );
+        let narrow = wgpu::Limits {
+            max_inter_stage_shader_variables: 14,
+            ..wgpu::Limits::default()
+        };
+        assert_eq!(
+            first_unmet_minimum(&narrow),
+            Some(UnmetLimit { name: "max_inter_stage_shader_variables", needed: 15, have: 14 }),
+            "rect.wgsl の @location 15 個に足りない"
         );
 
         let tiny = wgpu::Limits {

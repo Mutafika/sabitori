@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.61.0"
+version = "0.62.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"
@@ -31,7 +31,7 @@ too_many_arguments = "allow"
 
 [workspace.dependencies]
 # GPU
-wgpu = { version = "24", features = ["webgl"] }
+wgpu = { version = "30", features = ["webgl"] }
 winit = "0.30"
 # 支援技術 (VoiceOver / NVDA / Orca) へツリーを渡す (#25)。native だけ。
 #

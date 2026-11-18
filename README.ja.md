@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 
-**ステータス**: pre-release (`0.61.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。利用側は **git タグ依存**が前提です（クレート間が path 依存で、シェーダーをクレート外から `include_str!` しているため）。各版の内容は [CHANGELOG.md](CHANGELOG.md)、この先の予定は [ROADMAP.ja.md](ROADMAP.ja.md) を参照。
+**ステータス**: pre-release (`0.62.0`)。コア機能は実装済み、`templates/wasm/` の手順で WASM ビルド可能。利用側は **git タグ依存**が前提です（クレート間が path 依存で、シェーダーをクレート外から `include_str!` しているため）。各版の内容は [CHANGELOG.md](CHANGELOG.md)、この先の予定は [ROADMAP.ja.md](ROADMAP.ja.md) を参照。
 
 ## 特徴
 
@@ -325,7 +325,7 @@ cargo run --example hot_reload    # ホットリロードのデモ（下記）
 
 ```toml
 [dependencies]
-sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.61.0", features = ["hot-reload"] }
+sabitori = { git = "https://github.com/Mutafika/sabitori", tag = "v0.62.0", features = ["hot-reload"] }
 ```
 
 ```bash
@@ -410,4 +410,4 @@ WASM 固有の要件（`wgpu` の `webgl` feature、フォントの同梱、WebG
 ## 動作要件
 
 - Rust 1.88+（edition 2024）
-- wgpu 24 対応の GPU バックエンド（Vulkan / Metal / DX12 / WebGPU / WebGL2）
+- wgpu 30 対応の GPU バックエンド（Vulkan / Metal / DX12 / WebGPU / WebGL2）
