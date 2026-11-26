@@ -2399,8 +2399,25 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         let target = if self.parked && !self.dirty && !crate::wake::pending() { MOBILE_IDLE_POLL } else { target };
 
+        // iOS: 画面の書き換えの合図 (`ios_frame_clock`) が回っている間は、フレーム
+        // はその合図で始める (書き換え 1 回に 1 枚、等間隔)。タイマーで始めて
+        // いたときは、画面に出ている時間が 12.5ms と 20.8ms で交互になっていた。
+        // 合図より短い間隔をアプリが求めていなければ (60Hz を頼んだのに画面が
+        // 120Hz) 1 つおきに。
+        // 合図の揺れで 1 枚落とさないよう、間隔は少し甘く見る。
+        #[cfg(target_os = "ios")]
+        let ticked = crate::ios_frame_clock::running();
+        #[cfg(not(target_os = "ios"))]
+        let ticked = false;
+        if ticked {
+            #[cfg(target_os = "ios")]
+            if !(crate::ios_frame_clock::take_due() && elapsed + std::time::Duration::from_millis(2) >= target) {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                return;
+            }
+        }
         // Park the loop until the next 16ms boundary if we're early.
-        if elapsed < target {
+        else if elapsed < target {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                 Instant::now() + (target - elapsed),
             ));
@@ -2609,6 +2626,17 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             self.parked = !(must_draw || self.long_press_pending());
+            // iOS: 描くものがある間は画面の合図で回る (次の周回はその合図が起こす)。
+            // 寝るときは止める — 回したままだと書き換えのたびに起こされる。
+            #[cfg(target_os = "ios")]
+            {
+                let rate = crate::ios_frame_clock::rate_for(self.app.target_frame_interval());
+                crate::ios_frame_clock::run((!self.parked).then_some(rate));
+                if !self.parked {
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                    return;
+                }
+            }
             let next = if self.parked { MOBILE_IDLE_POLL } else { target };
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.last_frame + next));
         }

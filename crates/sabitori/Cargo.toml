@@ -141,8 +141,10 @@ objc2-app-kit = { workspace = true }
 objc2.workspace = true
 # The hidden text field (`ios_keyboard`): hardware keys (UIPress/UIKey), the
 # input mode it follows (UITextInput + its notification), its traits.
-objc2-foundation = { workspace = true, features = ["NSSet", "NSNotification"] }
+objc2-foundation = { workspace = true, features = ["NSSet", "NSNotification", "NSRunLoop"] }
 objc2-core-foundation = "0.3"
+# The frame clock (`ios_frame_clock`): CADisplayLink at the screen's rate.
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CADisplayLink", "CAFrameRateRange"] }
 objc2-ui-kit = { workspace = true, features = ["UIPress", "UIPressesEvent", "UIEvent", "UIKey", "UIKeyConstants", "UICommand", "UITextInput", "UITextInputTraits"] }
 
 # wgpu is only needed by SceneApp examples (custom render_scene passes).

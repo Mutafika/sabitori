@@ -92,6 +92,9 @@ mod macos_open;
 mod macos_quit;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
+/// iOS: フレームを画面の書き換えの合図 (CADisplayLink) で始め、120Hz を頼む。
+#[cfg(target_os = "ios")]
+mod ios_frame_clock;
 /// Android のソフトキーボードから文字を受け取る (GameActivity)。差分の計算は
 /// どこでも試せるように、gate の外に置いてある。
 pub mod android_keyboard;
