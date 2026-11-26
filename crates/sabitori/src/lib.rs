@@ -111,6 +111,9 @@ pub mod web_ime;
 /// Web の URL と戻るボタン (History) の橋渡し (issue #74)。
 #[cfg(target_arch = "wasm32")]
 pub mod web_history;
+/// よそのスレッドからランタイムを起こす (携帯は描くものが無いと寝るので)。
+mod wake;
+pub use wake::wake;
 /// DOM 起点の出来事でランタイムを起こす口。lazy_render が既定 true なので、
 /// これが無いと積んだ入力が誰にも汲まれない (issue #73 / #74)。
 #[cfg(target_arch = "wasm32")]

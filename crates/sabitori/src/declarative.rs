@@ -1374,6 +1374,9 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) relayout_pending: bool,
     /// 食い違いで続けて描き直した回数。[`crate::scroll_sync::MAX_RELAYOUT_STREAK`] で止める。
     relayout_streak: u8,
+    /// 携帯: 前の周回に描くものが無く、ループを寝かせている ([`MOBILE_IDLE_POLL`])。
+    #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
+    parked: bool,
     /// 親からはみ出した子を debug ビルドで知らせる (#95)。
     overflow_debug: crate::overflow_debug::OverflowDebug,
     /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
@@ -1571,6 +1574,10 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 }
 
+/// 携帯で、描くものが無いときに `poll_dirty` を見回る間隔 (起こされなかった変化を拾う)。
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const MOBILE_IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
     /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
@@ -1578,6 +1585,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// 全ウィンドウを描き直させる。OS から渡されたパスもこの道で起こすが、
     /// 届け先の窓を選ぶのは [`Host`]。
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // `sabitori::wake` から: 描くかどうかは、この後の周回が `poll_dirty` を
+        // たずねて決める。
+        if crate::wake::pending() {
+            return;
+        }
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -2381,6 +2393,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         let elapsed = self.last_frame.elapsed();
         // Default 8ms (~120Hz). App can override via `target_frame_interval`.
         let target = self.app.target_frame_interval();
+        // 携帯: 寝ている間は、起こされる (入力・`sabitori::wake`) まで周回しない。
+        // ほかの理由で起きても (iPad では周回のすぐ後に毎回起こされていた)、次の
+        // 見回りの時刻を予約し直すだけにする。
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let target = if self.parked && !self.dirty && !crate::wake::pending() { MOBILE_IDLE_POLL } else { target };
 
         // Park the loop until the next 16ms boundary if we're early.
         if elapsed < target {
@@ -2392,6 +2409,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
         let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = Instant::now();
+        // この周回で `poll_dirty` をたずねる。これより後の `wake` はまた起こす。
+        crate::wake::taken();
 
         // 支援技術からの操作 (押す / 焦点を移す) を、ふつうの操作と同じ道へ。
         #[cfg(not(target_arch = "wasm32"))]
@@ -2573,27 +2592,27 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Schedule the next wakeup at the 16ms boundary. Without this the
         // loop would either spin (Poll) or sleep forever (Wait).
         //
-        // iOS: when idle (nothing to draw), park fully with `Wait` instead of a
-        // 16ms timer. The constant timer wakeups re-enter winit's iOS redraw
-        // phase every frame and starve UIKit's text-input run-loop sources, so
-        // the software keyboard shows but `insertText:` is never delivered.
-        // Parking when idle lets the keyboard session be serviced; real input
-        // (a keystroke, an animation) wakes the loop and restores the timer.
-        #[cfg(target_os = "ios")]
-        if must_draw || self.long_press_pending() {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                self.last_frame + target,
-            ));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-        }
         // Android: 裏にいるあいだは描く先が無い。起こされるまで寝る (電池)。
         #[cfg(target_os = "android")]
         if self.occluded {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
             return;
         }
-        #[cfg(not(target_os = "ios"))]
+        // 携帯 (iOS / Android): 描くものが無ければ寝る。次に周回するのは、起こ
+        // されたとき (入力・`sabitori::wake`) か、[`MOBILE_IDLE_POLL`] 後の見回り。
+        // デスクトップのように 16ms ごとに `poll_dirty` をたずね続けると、描か
+        // なくても iPad で CPU 6% を使い続け、電池が減っていた。見回りは、
+        // `wake` を呼ばない変化 (別スレッドの結果など) を取りこぼさないため。
+        // 長押しを数えている間は、指が止まっていてもイベントが来ないので回し続ける。
+        // (iOS で 16ms の予約を回し続けると、ソフトキーボードの入力が届かなく
+        // なったことがある。寝ている間の予約は 0.25 秒なので、その形にはならない。)
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        {
+            self.parked = !(must_draw || self.long_press_pending());
+            let next = if self.parked { MOBILE_IDLE_POLL } else { target };
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.last_frame + next));
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             self.last_frame + target,
         ));
@@ -3103,6 +3122,7 @@ impl<A: DeclarativeApp> AppState<A> {
             atlas_recover_pending: false,
             relayout_pending: false,
             relayout_streak: 0,
+            parked: false,
             overflow_debug: crate::overflow_debug::OverflowDebug::from_env(),
             fonts_applied: 0,
             occluded: false,
@@ -5943,6 +5963,8 @@ pub(crate) fn run_with<A: DeclarativeApp + 'static>(
     crate::hot_reload::init(move || {
         let _ = proxy.send_event(());
     });
+    // `sabitori::wake` の届け先。
+    crate::wake::install(event_loop.create_proxy());
 
     // Finder / `open -a` から渡されたパスと、開き直されたことの受け口。delegate が張られた後
     // (= event loop を作った後) で、起動処理が走る前 (= run_app の前) に仕込む。
