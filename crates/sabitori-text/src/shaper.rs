@@ -255,6 +255,15 @@ fn load_system_fonts(_db: &mut cosmic_text::fontdb::Database) {
         _db.set_serif_family("Noto Serif");
         _db.set_monospace_family("Droid Sans Mono");
     }
+    // fontdb 0.16 の macOS の分岐は macOS だけで、iOS では何も積まない。
+    // iOS のフォントも `/System/Library/Fonts` (の下の Core/ ほか) にある。
+    #[cfg(target_os = "ios")]
+    {
+        _db.load_fonts_dir("/System/Library/Fonts");
+        _db.set_sans_serif_family("Hiragino Sans");
+        _db.set_serif_family("Hiragino Mincho ProN");
+        _db.set_monospace_family("Menlo");
+    }
 }
 
 /// The font stack, and everything that can be answered without a GPU.
