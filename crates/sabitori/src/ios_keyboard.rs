@@ -42,7 +42,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, ClassType, MainThreadMarker, MainThreadOnly};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSRange, NSSet, NSString};
+use objc2_foundation::{NSArray, NSAttributedString, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSRange, NSSet, NSString};
 use objc2_ui_kit::{
     UIControl, UIControlEvents, UIKey, UIKeyModifierFlags, UIPress, UIPressesEvent, UIResponder,
     UITextAutocorrectionType, UITextField, UITextInput, UITextInputCurrentInputModeDidChangeNotification,
@@ -106,6 +106,27 @@ thread_local! {
     /// it picks the candidate, and the delegate's Return that iOS still sends
     /// for it is not a line (`should_return` takes it).
     static RETURN_CONFIRMS: Cell<bool> = const { Cell::new(false) };
+    /// When the last hardware key went down, if it was a Return on a
+    /// composition (`None`: any other key) — see [`is_echo`].
+    static CONFIRMING_RETURN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    /// The composition that Return just confirmed, and when.
+    static CONFIRMED: RefCell<Option<(String, std::time::Instant)>> = const { RefCell::new(None) };
+}
+
+/// The IME putting back as a composition what a hardware Return has just
+/// confirmed. Now and then (1 confirm in 15 on an iPad, iOS 27, no pattern
+/// found in the timing or the keys) the Japanese IME, ~50 ms after it
+/// confirmed `X` with Return, marks `X` again: the text then shows as still
+/// being converted, the next Return confirms it a second time — doubled — and
+/// the one after sends the line. Told by: the same text, within half a second
+/// of that Return, no key pressed since, no composition open.
+fn is_echo(field: &UITextField, text: &str) -> bool {
+    // "No composition": none, or the empty one the IME sets just before.
+    !text.is_empty()
+        && split_marked(field).1.is_empty()
+        && CONFIRMED.with(|c| {
+            c.borrow().as_ref().is_some_and(|(s, at)| s == text && at.elapsed() < std::time::Duration::from_millis(500))
+        })
 }
 
 /// How long a claimed key is held before it repeats, then how often. UIKit's
@@ -135,7 +156,26 @@ fn request_redraw() {
 }
 
 fn push(ev: KbEvent) {
+    kb_trace(|| format!("out {ev:?}"));
     QUEUE.with(|q| q.borrow_mut().push_back(ev));
+}
+
+/// `SABITORI_KB_TRACE=1`: each call UIKit makes on the field and each event
+/// sent on, to stderr — which path a key took (and in what order) can't be
+/// told from the outside.
+fn kb_trace(line: impl FnOnce() -> String) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var("SABITORI_KB_TRACE").is_ok_and(|v| v != "0")) {
+        let ms = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0;
+        eprintln!("[kb] {ms:9.1} {}", line());
+    }
+}
+
+/// The field's text and composition, for [`kb_trace`].
+fn field_state(field: &UITextField) -> String {
+    let (committed, marked, _) = split_marked(field);
+    format!("text={committed:?} marked={marked:?}")
 }
 
 /// Diff `new` against the last committed text and enqueue the change as
@@ -320,9 +360,13 @@ fn take_presses(field: &KbField, presses: &NSSet<UIPress>, began: bool) -> Optio
         let mine = press.key(mtm).is_some_and(|k| {
             let code = k.keyCode().0;
             if began {
-                if code == HID_RETURN || code == HID_KEYPAD_ENTER {
+                kb_trace(|| format!("pressesBegan code=0x{code:x} composing={composing}"));
+                let ret = code == HID_RETURN || code == HID_KEYPAD_ENTER;
+                if ret {
                     RETURN_CONFIRMS.set(composing);
                 }
+                CONFIRMING_RETURN.set((ret && composing).then(std::time::Instant::now));
+                CONFIRMED.with(|c| c.borrow_mut().take());
                 let Some((key, modifiers, chars)) = claim(&k, composing) else {
                     return false;
                 };
@@ -334,6 +378,7 @@ fn take_presses(field: &KbField, presses: &NSSet<UIPress>, began: bool) -> Optio
                 start_repeat(Held { code, key, modifiers, chars });
                 true
             } else {
+                kb_trace(|| format!("pressesEnded code=0x{code:x}"));
                 let Some(held) = CLAIMED.with(|c| {
                     let mut c = c.borrow_mut();
                     let i = c.iter().position(|h| h.code == code)?;
@@ -397,6 +442,7 @@ define_class!(
         // changes (including on IME commit), giving us the full current value.
         #[unsafe(method(textChanged:))]
         fn text_changed(&self, sender: &UITextField) {
+            kb_trace(|| format!("editingChanged ({})", field_state(sender)));
             on_edit(sender);
             request_redraw();
         }
@@ -412,6 +458,7 @@ define_class!(
         // IME ended it within this same keystroke).
         #[unsafe(method(textFieldShouldReturn:))]
         fn should_return(&self, field: &UITextField) -> bool {
+            kb_trace(|| format!("textFieldShouldReturn {} return_confirms={}", field_state(field), RETURN_CONFIRMS.get()));
             if field.markedTextRange().is_some() {
                 field.unmarkText();
             }
@@ -474,6 +521,19 @@ impl KbTarget {
 }
 
 impl KbField {
+    /// Take back the echo [`is_echo`] found, just put in: empty the
+    /// composition and end it, through the field so the keyboard hears that
+    /// it is over. The app never saw it (no `after_input` in between).
+    fn drop_echo(&self) {
+        kb_trace(|| format!("dropped the IME's echo ({})", field_state(self)));
+        CONFIRMED.with(|c| c.borrow_mut().take());
+        unsafe {
+            let _: () = msg_send![super(self), setMarkedText: Some(&*NSString::from_str("")), selectedRange: NSRange::new(0, 0)];
+            let _: () = msg_send![super(self), unmarkText];
+        }
+        self.after_input();
+    }
+
     fn after_input(&self) {
         on_edit(self);
         request_redraw();
@@ -529,19 +589,46 @@ define_class!(
         // sends nothing.
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
+            kb_trace(|| format!("insertText {:?} ({})", text.to_string(), field_state(self)));
             unsafe { msg_send![super(self), insertText: text] }
             self.after_input();
         }
 
         #[unsafe(method(setMarkedText:selectedRange:))]
         fn set_marked_text(&self, text: Option<&NSString>, range: NSRange) {
+            kb_trace(|| format!("setMarkedText {:?} ({})", text.map(|t| t.to_string()), field_state(self)));
+            if is_echo(self, &text.map(|t| t.to_string()).unwrap_or_default()) {
+                unsafe { msg_send![super(self), setMarkedText: text, selectedRange: range] }
+                self.drop_echo();
+                return;
+            }
             unsafe { msg_send![super(self), setMarkedText: text, selectedRange: range] }
+            self.after_input();
+        }
+
+        #[unsafe(method(setAttributedMarkedText:selectedRange:))]
+        fn set_attributed_marked_text(&self, text: Option<&NSAttributedString>, range: NSRange) {
+            kb_trace(|| format!("setAttributedMarkedText {:?} ({})", text.map(|t| t.string().to_string()), field_state(self)));
+            if is_echo(self, &text.map(|t| t.string().to_string()).unwrap_or_default()) {
+                unsafe { msg_send![super(self), setAttributedMarkedText: text, selectedRange: range] }
+                self.drop_echo();
+                return;
+            }
+            unsafe { msg_send![super(self), setAttributedMarkedText: text, selectedRange: range] }
             self.after_input();
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
+            kb_trace(|| format!("unmarkText ({})", field_state(self)));
+            let (_, marked, _) = split_marked(self);
             unsafe { msg_send![super(self), unmarkText] }
+            // What a Return confirms, so its echo (`is_echo`) can be told.
+            if !marked.is_empty()
+                && CONFIRMING_RETURN.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300))
+            {
+                CONFIRMED.with(|c| *c.borrow_mut() = Some((marked, std::time::Instant::now())));
+            }
             self.after_input();
         }
 
@@ -643,6 +730,10 @@ pub fn set_caret_area(x: f32, y: f32, height: f32) {
 }
 
 fn place(field: &UITextField, (x, y, h): (f32, f32, f32)) {
+    let old = field.frame();
+    if (old.origin.x - x as f64).abs() > 0.5 || (old.origin.y - y as f64).abs() > 0.5 {
+        kb_trace(|| format!("place caret ({:.0},{:.0}) -> ({x:.0},{y:.0})", old.origin.x, old.origin.y));
+    }
     field.setFrame(CGRect::new(CGPoint::new(x.into(), y.into()), CGSize::new(0.0, h.max(1.0).into())));
 }
 
