@@ -139,8 +139,11 @@ objc2-app-kit = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2.workspace = true
-objc2-foundation = { workspace = true }
-objc2-ui-kit = { workspace = true }
+# The hidden text field (`ios_keyboard`): hardware keys (UIPress/UIKey), the
+# input mode it follows (UITextInput + its notification), its traits.
+objc2-foundation = { workspace = true, features = ["NSSet", "NSNotification"] }
+objc2-core-foundation = "0.3"
+objc2-ui-kit = { workspace = true, features = ["UIPress", "UIPressesEvent", "UIEvent", "UIKey", "UIKeyConstants", "UICommand", "UITextInput", "UITextInputTraits"] }
 
 # wgpu is only needed by SceneApp examples (custom render_scene passes).
 # sabitori-markdown drives the live-render demo in the sabitori_home example.

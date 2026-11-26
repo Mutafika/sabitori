@@ -2081,28 +2081,42 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     if let Some(w) = self.window.as_ref() {
                         crate::ios_keyboard::ensure_attached(w);
                     }
-                    crate::ios_keyboard::set_active(self.focused_id.is_some());
-                    let mut events: Vec<InputEvent> = Vec::new();
+                    // 出すのはタップ (`handle_touch`)、ここはしまう側だけ (Android と同じ)。
+                    // 焦点を見て出していたので、焦点が最初から決まっている端末では
+                    // 起動と同時にキーボードがせり上がっていた。
+                    if !(self.app.ime_allowed() && self.focused_id.is_some()) {
+                        crate::ios_keyboard::set_active(false);
+                    }
                     for ev in crate::ios_keyboard::drain() {
                         match ev {
                             crate::ios_keyboard::KbEvent::Text(s) => {
-                                for ch in s.chars() {
-                                    if !ch.is_control() {
-                                        events.push(InputEvent::CharInput(ch));
-                                    }
+                                for ch in s.chars().filter(|c| !c.is_control()) {
+                                    self.dispatch_text_event(&InputEvent::CharInput(ch));
                                 }
                             }
                             crate::ios_keyboard::KbEvent::Backspace => {
-                                events.push(InputEvent::KeyInput {
-                                    key: Key::Backspace,
-                                    pressed: true,
-                                    modifiers: self.modifiers,
-                                });
+                                let e = InputEvent::KeyInput { key: Key::Backspace, pressed: true, modifiers: self.modifiers };
+                                self.dispatch_text_event(&e);
+                            }
+                            // Android と同じく、キーの道 (アプリが先、既定動作があと)。
+                            crate::ios_keyboard::KbEvent::Enter => self.handle_key_input(Key::Enter, true, Vec::new()),
+                            // 変換中の文字はデスクトップの IME と同じく preedit で、確定した
+                            // 文字は commit で渡す。打った文字として送ると、確定前の文字が
+                            // 確定したものと見分けられない。
+                            crate::ios_keyboard::KbEvent::Preedit { text, cursor } => {
+                                self.dispatch_text_event(&InputEvent::ImePreedit { text, cursor });
+                            }
+                            crate::ios_keyboard::KbEvent::Commit(text) => {
+                                self.dispatch_text_event(&InputEvent::ImeCommit { text });
+                            }
+                            // ハードウェアのキー (Esc・矢印・Ctrl+…)。winit が修飾キーを
+                            // 知らせてこないので、そのキーの分だけ差し替えて配る。
+                            crate::ios_keyboard::KbEvent::Key { key, modifiers, chars, pressed } => {
+                                let held = std::mem::replace(&mut self.modifiers, modifiers);
+                                self.handle_key_input(key, pressed, chars);
+                                self.modifiers = held;
                             }
                         }
-                    }
-                    for e in events {
-                        self.dispatch_text_event(&e);
                     }
                 }
 
@@ -2429,6 +2443,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     winit::dpi::LogicalPosition::new(x, y),
                     winit::dpi::LogicalSize::new(cw, ch),
                 );
+                // iOS: winit は何もしない。キーボードを持つ隠しの入力欄をそこへ動かす
+                // (変換候補と、入力ソースを切り替えたときの a / あ がそこに出る)。
+                #[cfg(target_os = "ios")]
+                crate::ios_keyboard::set_caret_area(x, y, ch);
             }
         }
         // Enable/disable the platform IME per app policy (deduped). Disabling
@@ -2458,7 +2476,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         app.hide_soft_input(false);
                     }
                 }
-                #[cfg(not(target_os = "android"))]
+                // iOS: キーボードは隠しの UITextField (`ios_keyboard`) が持つ。winit の
+                // `set_ime_allowed(true)` は winit の view を first responder にして、
+                // 変換のできない (UIKeyInput だけの) キーボードを出してしまう。
+                #[cfg(target_os = "ios")]
+                let _ = w;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 w.set_ime_allowed(ime_allowed);
             }
         }
@@ -4463,6 +4486,14 @@ impl<A: DeclarativeApp> AppState<A> {
                             {
                                 app.show_soft_input(false);
                             }
+                            #[cfg(target_os = "ios")]
+                            if self.app.ime_allowed()
+                                && self.last_build.as_ref().is_some_and(|b| {
+                                    crate::runtime_shared::tap_wants_keyboard(b, sabitori_core::Point::new(sx, sy))
+                                })
+                            {
+                                crate::ios_keyboard::set_active(true);
+                            }
                         }
                     }
                     if is_cancel {
@@ -4661,7 +4692,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 長押しを待っている (指が止まったまま、まだ選んでいない)。iOS は何も
     /// 描かない間ループを寝かせるので、これが立っている間は起こし続ける —
     /// 動かない指からはイベントが来ず、時間を数えられない。
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
     fn long_press_pending(&self) -> bool {
         self.touch_drag.as_ref().is_some_and(|t| {
             t.select.is_none() && !t.moved_beyond_slop && t.held < crate::touch_select::LONG_PRESS_SECS
