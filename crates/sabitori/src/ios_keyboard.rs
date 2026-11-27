@@ -46,7 +46,7 @@ use objc2_foundation::{NSArray, NSAttributedString, NSNotification, NSNotificati
 use objc2_ui_kit::{
     UIControl, UIControlEvents, UIKey, UIKeyModifierFlags, UIPress, UIPressesEvent, UIResponder,
     UITextAutocorrectionType, UITextField, UITextInput, UITextInputCurrentInputModeDidChangeNotification,
-    UITextInputTraits, UITextPosition, UIView,
+    UITextPosition, UIView,
 };
 use sabitori_input::{Key, Modifiers};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -409,6 +409,37 @@ fn take_presses(field: &KbField, presses: &NSSet<UIPress>, began: bool) -> Optio
     }
 }
 
+/// Set one of the field's `UITextInputTraits` (an `NSInteger` enum), by
+/// `objc_msgSend` rather than `msg_send!`.
+///
+/// `UITextField` has no methods of these names: it hands them on to an inner
+/// traits object by message forwarding. It answers them, but objc2 checks every
+/// message send in a debug build, finds no such method on the class, and aborts
+/// ("invalid message send to -[SabitoriKbField setAutocapitalizationType:]:
+/// method not found") — at launch, in a debug simulator build. Release builds
+/// don't check, so the device never showed it.
+fn set_trait(field: &UITextField, sel: objc2::runtime::Sel, value: isize) {
+    // SAFETY: the setter takes one NSInteger and returns nothing; the field
+    // responds to it (by forwarding). `objc_msgSend` is called with that exact
+    // signature, which is how every Objective-C message is sent on Apple's arm64.
+    unsafe {
+        let send: unsafe extern "C-unwind" fn(*const UITextField, objc2::runtime::Sel, isize) =
+            std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+        send(field, sel, value);
+    }
+}
+
+/// Read one of the field's `UITextInputTraits` (an `NSInteger` enum). Not by
+/// `msg_send!`, for the reason in [`set_trait`].
+fn trait_of(field: &UITextField, sel: objc2::runtime::Sel) -> isize {
+    // SAFETY: as in `set_trait` — the getter takes nothing and returns an NSInteger.
+    unsafe {
+        let send: unsafe extern "C-unwind" fn(*const UITextField, objc2::runtime::Sel) -> isize =
+            std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+        send(field, sel)
+    }
+}
+
 /// Predictions only while the keyboard is Japanese. iOS ties the prediction
 /// bar to autocorrection, and autocorrection rewrites English as it's typed
 /// (`ls` → `Is`, already sent to a terminal) — so it stays off for every
@@ -421,8 +452,8 @@ fn fit_to_input_mode(field: &UITextField) {
         .and_then(|m| m.primaryLanguage())
         .is_some_and(|l| l.to_string().starts_with("ja"));
     let want = if japanese { UITextAutocorrectionType::Default } else { UITextAutocorrectionType::No };
-    if field.autocorrectionType() != want {
-        field.setAutocorrectionType(want);
+    if trait_of(field, sel!(autocorrectionType)) != want.0 {
+        set_trait(field, sel!(setAutocorrectionType:), want.0);
         if field.isFirstResponder() {
             field.reloadInputViews();
         }
@@ -679,12 +710,12 @@ pub fn ensure_attached(window: &Arc<Window>) {
             // UITextInputTraits values: autocapitalization None = 0; the
             // others' No = 1. Autocorrection follows the input mode from here
             // on (`fit_to_input_mode`).
-            let _: () = msg_send![&*field, setAutocapitalizationType: 0isize];
-            let _: () = msg_send![&*field, setAutocorrectionType: 1isize];
-            let _: () = msg_send![&*field, setSpellCheckingType: 1isize];
-            let _: () = msg_send![&*field, setSmartQuotesType: 1isize];
-            let _: () = msg_send![&*field, setSmartDashesType: 1isize];
-            let _: () = msg_send![&*field, setSmartInsertDeleteType: 1isize];
+            set_trait(&field, sel!(setAutocapitalizationType:), 0);
+            set_trait(&field, sel!(setAutocorrectionType:), 1);
+            set_trait(&field, sel!(setSpellCheckingType:), 1);
+            set_trait(&field, sel!(setSmartQuotesType:), 1);
+            set_trait(&field, sel!(setSmartDashesType:), 1);
+            set_trait(&field, sel!(setSmartInsertDeleteType:), 1);
             // No buttons in the bar iPadOS shows over a hardware keyboard
             // (undo / redo / paste): a terminal has its own, and with nothing
             // to show the bar gets out of the way.
@@ -744,6 +775,12 @@ fn place(field: &UITextField, (x, y, h): (f32, f32, f32)) {
 /// what to do, not a remembered flag: the keyboard's own dismiss key resigns
 /// the field behind our back, and the next tap must raise it again.
 pub fn set_active(active: bool) {
+    set_active_for(active, String::new);
+}
+
+/// [`set_active`] と同じ。`why` は `SABITORI_KB_TRACE` の記録に添える理由
+/// (出す・しまうが実際に動いたときだけ作る)。
+pub(crate) fn set_active_for(active: bool, why: impl FnOnce() -> String) {
     let field = SHIM.with(|slot| slot.borrow().as_ref().map(|s| s.field.clone()));
     let Some(field) = field else {
         return;
@@ -751,19 +788,37 @@ pub fn set_active(active: bool) {
     if field.isFirstResponder() == active {
         return;
     }
+    kb_trace(|| format!("set_active({active}) {} ({})", why(), field_state(&field)));
     if active {
         let _: bool = field.becomeFirstResponder();
         fit_to_input_mode(&field);
     } else {
+        let queued = QUEUE.with(|q| q.borrow().len());
+        // 変換中だったか。resign の中で UIKit が確定すると、ここの記録も消える。
+        let composing = LAST_MARKED.with(|m| !m.borrow().0.is_empty());
         let _: bool = field.resignFirstResponder();
+        // Resigning with a composition open makes UIKit commit it, and the
+        // commit lands in the queue — to be handed, next frame, to whatever has
+        // focus by then (the app has already moved focus away: another field,
+        // another pane). It belongs to the field just left, whose composition
+        // the app dropped with its focus. Drop it here too.
+        QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            if q.len() > queued {
+                kb_trace(|| format!("resign dropped {:?}", q.iter().skip(queued).collect::<Vec<_>>()));
+            }
+            q.truncate(queued);
+        });
         stop_repeat();
         CLAIMED.with(|c| c.borrow_mut().clear());
         RETURN_CONFIRMS.set(false);
         // Reset the field + diff baseline so the next focus starts clean; a
-        // composition left open is gone with it.
+        // composition left open is gone with it — tell the app, which may be
+        // drawing it (what UIKit queued for that was dropped above with the commit).
         field.setText(None);
         LAST_TEXT.with(|lt| lt.borrow_mut().clear());
-        if LAST_MARKED.with(|m| !std::mem::take(&mut *m.borrow_mut()).0.is_empty()) {
+        let marked_left = LAST_MARKED.with(|m| !std::mem::take(&mut *m.borrow_mut()).0.is_empty());
+        if composing || marked_left {
             push(KbEvent::Preedit { text: String::new(), cursor: None });
         }
     }
