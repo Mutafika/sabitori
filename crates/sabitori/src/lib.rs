@@ -50,6 +50,8 @@ pub mod slider_sync;
 pub mod image_runtime;
 pub mod hot_reload;
 pub(crate) mod input_router;
+/// 携帯のソフトキーボードを出す・しまうの判断 (cfg の無い型。CI で試せるように)。
+pub(crate) mod keyboard_gate;
 pub(crate) mod touch_select;
 pub mod scene_app;
 /// システムクリップボードの読み書き (issue #20)。
