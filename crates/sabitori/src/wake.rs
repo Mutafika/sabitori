@@ -31,11 +31,13 @@ static PROXY: std::sync::OnceLock<std::sync::Mutex<winit::event_loop::EventLoopP
 ///
 /// [`DeclarativeApp::poll_dirty`]: crate::DeclarativeApp::poll_dirty
 pub fn wake() {
-    if PENDING.swap(true, Ordering::AcqRel) {
-        return;
-    }
+    // 起こしてまだ汲まれていなければ、もう 1 度は起こさない。(`if … { return; }`
+    // で書くと、下が cfg で消える wasm で clippy の needless_return になる。)
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    let already = PENDING.swap(true, Ordering::AcqRel);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(proxy) = PROXY.get()
+    if !already
+        && let Some(proxy) = PROXY.get()
         && let Ok(proxy) = proxy.lock()
     {
         let _ = proxy.send_event(());
