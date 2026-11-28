@@ -255,6 +255,20 @@ fn load_system_fonts(_db: &mut cosmic_text::fontdb::Database) {
         _db.set_serif_family("Noto Serif");
         _db.set_monospace_family("Droid Sans Mono");
     }
+    // fontdb 0.16 の macOS の分岐は macOS だけで、iOS では何も積まない。
+    // iOS のフォントも `/System/Library/Fonts` (の下の Core/ ほか) にある。
+    // シミュレータではその道は Mac 本体のフォントを指すので、iOS の物は
+    // `IPHONE_SIMULATOR_ROOT` の下から (実機と同じ字形で見るため)。
+    #[cfg(target_os = "ios")]
+    {
+        let root = std::env::var_os("IPHONE_SIMULATOR_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        _db.load_fonts_dir(root.join("System/Library/Fonts"));
+        _db.set_sans_serif_family("Hiragino Sans");
+        _db.set_serif_family("Hiragino Mincho ProN");
+        _db.set_monospace_family("Menlo");
+    }
 }
 
 /// The font stack, and everything that can be answered without a GPU.

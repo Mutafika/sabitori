@@ -800,7 +800,7 @@ fn slide(states: &mut HashMap<String, ScrollView>, id: &str, to: f32) {
 /// web の IME は隠し textarea の橋渡し (`web_ime`) が受けるので使わない。
 /// Android は「IME を許す」がソフトキーボードを出すことなので、焦点に合わせて
 /// 出し入れする側 (`about_to_wait`) に任せる。
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 pub(crate) fn enable_ime(window: &winit::window::Window) {
     window.set_ime_allowed(true);
     #[cfg(target_os = "macos")]

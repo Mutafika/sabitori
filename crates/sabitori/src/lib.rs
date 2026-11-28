@@ -50,6 +50,8 @@ pub mod slider_sync;
 pub mod image_runtime;
 pub mod hot_reload;
 pub(crate) mod input_router;
+/// 携帯のソフトキーボードを出す・しまうの判断 (cfg の無い型。CI で試せるように)。
+pub(crate) mod keyboard_gate;
 pub(crate) mod touch_select;
 pub mod scene_app;
 /// システムクリップボードの読み書き (issue #20)。
@@ -92,6 +94,9 @@ mod macos_open;
 mod macos_quit;
 #[cfg(target_os = "ios")]
 pub mod ios_keyboard;
+/// iOS: フレームを画面の書き換えの合図 (CADisplayLink) で始め、120Hz を頼む。
+#[cfg(target_os = "ios")]
+mod ios_frame_clock;
 /// Android のソフトキーボードから文字を受け取る (GameActivity)。差分の計算は
 /// どこでも試せるように、gate の外に置いてある。
 pub mod android_keyboard;
@@ -111,6 +116,9 @@ pub mod web_ime;
 /// Web の URL と戻るボタン (History) の橋渡し (issue #74)。
 #[cfg(target_arch = "wasm32")]
 pub mod web_history;
+/// よそのスレッドからランタイムを起こす (携帯は描くものが無いと寝るので)。
+mod wake;
+pub use wake::wake;
 /// DOM 起点の出来事でランタイムを起こす口。lazy_render が既定 true なので、
 /// これが無いと積んだ入力が誰にも汲まれない (issue #73 / #74)。
 #[cfg(target_arch = "wasm32")]

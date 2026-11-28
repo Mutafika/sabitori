@@ -34,6 +34,10 @@ pub(crate) struct TouchDrag {
     /// (`(data, source_id)`)。指はまずスクロールで、つかむのは長押ししてから
     /// (iOS / Android の決まり)。長押しの前に動いたら捨てる。
     pub held_drag: Option<(String, Option<String>)>,
+    /// 動かさずに長押しの時間を越えた (文字を選んだときは立てない)。そのまま
+    /// 離せば右クリック (`on_right_click`)。つかめる要素ならもうつかんで浮かせて
+    /// あり、動かせばドラッグになる。
+    pub long_pressed: bool,
 }
 
 /// winit のホイール delta を、配る単位 (論理 px) と精度フラグに直す。

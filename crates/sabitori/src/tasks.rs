@@ -146,6 +146,10 @@ impl<A: 'static> Tasks<A> {
         }
         #[cfg(target_arch = "wasm32")]
         crate::web_wake::wake();
+        // 携帯は描くものが無いと寝ている (見回りは 0.25 秒おき)。結果が届いたらすぐ
+        // 起こす — 待たせると、ファイラのプレビューが前のファイルのまま残って見える。
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        crate::wake::wake();
     }
 
     /// 溜まった結果を取り出す。ランタイムが毎フレーム呼ぶ。

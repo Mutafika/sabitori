@@ -351,6 +351,24 @@ pub trait DeclarativeApp: 'static {
     /// 開くのを止める合図 (#58)。
     fn on_right_click(&mut self, _id: &str, _x: f32, _y: f32) {}
 
+    /// 指で長押し (0.5 秒) して、動かさずに離した。`id` は指の下の要素の id
+    /// (右クリックと同じ解決。空白なら `""`)、`x`/`y` は論理座標。
+    ///
+    /// 長押しは挙動だけで、何にするかはアプリが決める。iPad / Android の長押しの
+    /// メニューなら、ここで右クリックのメニューを開いて `true` を返す。
+    ///
+    /// `true` を返すと「受けた」で、クリックにしない。`false` (既定) なら今までどおり、
+    /// 離したときのクリックになる ([`Self::on_input`] の `true` で `on_right_click` を
+    /// 止めるのと同じ作り)。
+    ///
+    /// 鳴らないのは、文字の上で語を選んだとき (#108) と、長押しの後で指を動かした
+    /// とき (つかめる要素ならドラッグ)。つかめる要素 (`.draggable()`) は長押しで浮き、
+    /// 動かさずに離すとここを聞く: `true` なら落とさずに放す、`false` なら今までどおり
+    /// 離した所に落とす。
+    fn on_long_press(&mut self, _id: &str, _x: f32, _y: f32) -> bool {
+        false
+    }
+
     /// Called when the mouse moves (logical coordinates).
     fn on_pointer_move(&mut self, _x: f32, _y: f32) {}
 
@@ -1374,6 +1392,12 @@ pub(crate) struct AppState<A: DeclarativeApp> {
     pub(crate) relayout_pending: bool,
     /// 食い違いで続けて描き直した回数。[`crate::scroll_sync::MAX_RELAYOUT_STREAK`] で止める。
     relayout_streak: u8,
+    /// 携帯: 前の周回に描くものが無く、ループを寝かせている ([`MOBILE_IDLE_POLL`])。
+    #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
+    parked: bool,
+    /// 携帯のソフトキーボードを出す・しまうの判断 (今は iOS が使う)。入力の
+    /// 直後に焦点が文字の欄へ移ったら出す、など ([`crate::keyboard_gate`])。
+    keyboard_gate: crate::keyboard_gate::KeyboardGate,
     /// 親からはみ出した子を debug ビルドで知らせる (#95)。
     overflow_debug: crate::overflow_debug::OverflowDebug,
     /// 実行時に積まれたフォントのうち、この窓が組版へ入れた本数 (#75 の 13)。
@@ -1571,6 +1595,10 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 }
 
+/// 携帯で、描くものが無いときに `poll_dirty` を見回る間隔 (起こされなかった変化を拾う)。
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const MOBILE_IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// ホットリロードのパッチが当たったとき、`run_declarative` が張った
     /// `EventLoopProxy` から届く。ループは待機中 `ControlFlow::Wait` で寝ている
@@ -1578,6 +1606,11 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
     /// 全ウィンドウを描き直させる。OS から渡されたパスもこの道で起こすが、
     /// 届け先の窓を選ぶのは [`Host`]。
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // `sabitori::wake` から: 描くかどうかは、この後の周回が `poll_dirty` を
+        // たずねて決める。
+        if crate::wake::pending() {
+            return;
+        }
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -2081,28 +2114,37 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     if let Some(w) = self.window.as_ref() {
                         crate::ios_keyboard::ensure_attached(w);
                     }
-                    crate::ios_keyboard::set_active(self.focused_id.is_some());
-                    let mut events: Vec<InputEvent> = Vec::new();
+                    // 出す・しまうは組み直した後で決める (`build_frame` の後ろ)。
                     for ev in crate::ios_keyboard::drain() {
                         match ev {
                             crate::ios_keyboard::KbEvent::Text(s) => {
-                                for ch in s.chars() {
-                                    if !ch.is_control() {
-                                        events.push(InputEvent::CharInput(ch));
-                                    }
+                                for ch in s.chars().filter(|c| !c.is_control()) {
+                                    self.dispatch_text_event(&InputEvent::CharInput(ch));
                                 }
                             }
                             crate::ios_keyboard::KbEvent::Backspace => {
-                                events.push(InputEvent::KeyInput {
-                                    key: Key::Backspace,
-                                    pressed: true,
-                                    modifiers: self.modifiers,
-                                });
+                                let e = InputEvent::KeyInput { key: Key::Backspace, pressed: true, modifiers: self.modifiers };
+                                self.dispatch_text_event(&e);
+                            }
+                            // Android と同じく、キーの道 (アプリが先、既定動作があと)。
+                            crate::ios_keyboard::KbEvent::Enter => self.handle_key_input(Key::Enter, true, Vec::new()),
+                            // 変換中の文字はデスクトップの IME と同じく preedit で、確定した
+                            // 文字は commit で渡す。打った文字として送ると、確定前の文字が
+                            // 確定したものと見分けられない。
+                            crate::ios_keyboard::KbEvent::Preedit { text, cursor } => {
+                                self.dispatch_text_event(&InputEvent::ImePreedit { text, cursor });
+                            }
+                            crate::ios_keyboard::KbEvent::Commit(text) => {
+                                self.dispatch_text_event(&InputEvent::ImeCommit { text });
+                            }
+                            // ハードウェアのキー (Esc・矢印・Ctrl+…)。winit が修飾キーを
+                            // 知らせてこないので、そのキーの分だけ差し替えて配る。
+                            crate::ios_keyboard::KbEvent::Key { key, modifiers, chars, pressed } => {
+                                let held = std::mem::replace(&mut self.modifiers, modifiers);
+                                self.handle_key_input(key, pressed, chars);
+                                self.modifiers = held;
                             }
                         }
-                    }
-                    for e in events {
-                        self.dispatch_text_event(&e);
                     }
                 }
 
@@ -2207,6 +2249,26 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     self.build_frame(w, h, &measurer)
                 };
                 let frame_built = Instant::now();
+
+                // iOS: ソフトキーボードを出す・しまう。決まりは `keyboard_gate` —
+                // 出すのはタップと、入力の直後に焦点が文字の欄へ移ったとき (ボタンで
+                // 開いた検索欄・メニューの「名前を変更」)。焦点だけを見て出すと、焦点が
+                // 最初から決まっている端末で起動と同時にせり上がる。
+                // **組み直した後**に決める: 焦点 (`focused_id`) と欄の「焦点がある」
+                // (アプリの `ime_allowed` が見る) がそろうのは `build_frame` の中
+                // (`adopt_managed`)。前で決めると 1 フレーム古い答えで出してしまい、
+                // 描くものが無ければそのまま寝て、しまう番が来なかった。
+                #[cfg(target_os = "ios")]
+                {
+                    let ime = self.app.ime_allowed();
+                    let action = self.keyboard_gate.on_frame(self.focused_id.as_deref(), ime, Instant::now());
+                    let why = || format!("gate: focus={:?} ime_allowed={ime}", self.focused_id);
+                    match action {
+                        crate::keyboard_gate::KeyboardAction::Show => crate::ios_keyboard::set_active_for(true, why),
+                        crate::keyboard_gate::KeyboardAction::Hide => crate::ios_keyboard::set_active_for(false, why),
+                        crate::keyboard_gate::KeyboardAction::Keep => {}
+                    }
+                }
 
                 // `tr` was taken out of `self`; every path from here on must put
                 // it back, or the next frame bails at the `take()` above and the
@@ -2367,9 +2429,31 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         let elapsed = self.last_frame.elapsed();
         // Default 8ms (~120Hz). App can override via `target_frame_interval`.
         let target = self.app.target_frame_interval();
+        // 携帯: 寝ている間は、起こされる (入力・`sabitori::wake`) まで周回しない。
+        // ほかの理由で起きても (iPad では周回のすぐ後に毎回起こされていた)、次の
+        // 見回りの時刻を予約し直すだけにする。
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let target = if self.parked && !self.dirty && !crate::wake::pending() { MOBILE_IDLE_POLL } else { target };
 
+        // iOS: 画面の書き換えの合図 (`ios_frame_clock`) が回っている間は、フレーム
+        // はその合図で始める (書き換え 1 回に 1 枚、等間隔)。タイマーで始めて
+        // いたときは、画面に出ている時間が 12.5ms と 20.8ms で交互になっていた。
+        // 合図より短い間隔をアプリが求めていなければ (60Hz を頼んだのに画面が
+        // 120Hz) 1 つおきに。
+        // 合図の揺れで 1 枚落とさないよう、間隔は少し甘く見る。
+        #[cfg(target_os = "ios")]
+        let ticked = crate::ios_frame_clock::running();
+        #[cfg(not(target_os = "ios"))]
+        let ticked = false;
+        if ticked {
+            #[cfg(target_os = "ios")]
+            if !(crate::ios_frame_clock::take_due() && elapsed + std::time::Duration::from_millis(2) >= target) {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                return;
+            }
+        }
         // Park the loop until the next 16ms boundary if we're early.
-        if elapsed < target {
+        else if elapsed < target {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                 Instant::now() + (target - elapsed),
             ));
@@ -2378,6 +2462,8 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
 
         let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = Instant::now();
+        // この周回で `poll_dirty` をたずねる。これより後の `wake` はまた起こす。
+        crate::wake::taken();
 
         // 支援技術からの操作 (押す / 焦点を移す) を、ふつうの操作と同じ道へ。
         #[cfg(not(target_arch = "wasm32"))]
@@ -2429,6 +2515,10 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                     winit::dpi::LogicalPosition::new(x, y),
                     winit::dpi::LogicalSize::new(cw, ch),
                 );
+                // iOS: winit は何もしない。キーボードを持つ隠しの入力欄をそこへ動かす
+                // (変換候補と、入力ソースを切り替えたときの a / あ がそこに出る)。
+                #[cfg(target_os = "ios")]
+                crate::ios_keyboard::set_caret_area(x, y, ch);
             }
         }
         // Enable/disable the platform IME per app policy (deduped). Disabling
@@ -2458,7 +2548,12 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
                         app.hide_soft_input(false);
                     }
                 }
-                #[cfg(not(target_os = "android"))]
+                // iOS: キーボードは隠しの UITextField (`ios_keyboard`) が持つ。winit の
+                // `set_ime_allowed(true)` は winit の view を first responder にして、
+                // 変換のできない (UIKeyInput だけの) キーボードを出してしまう。
+                #[cfg(target_os = "ios")]
+                let _ = w;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 w.set_ime_allowed(ime_allowed);
             }
         }
@@ -2550,27 +2645,38 @@ impl<A: DeclarativeApp> ApplicationHandler for AppState<A> {
         // Schedule the next wakeup at the 16ms boundary. Without this the
         // loop would either spin (Poll) or sleep forever (Wait).
         //
-        // iOS: when idle (nothing to draw), park fully with `Wait` instead of a
-        // 16ms timer. The constant timer wakeups re-enter winit's iOS redraw
-        // phase every frame and starve UIKit's text-input run-loop sources, so
-        // the software keyboard shows but `insertText:` is never delivered.
-        // Parking when idle lets the keyboard session be serviced; real input
-        // (a keystroke, an animation) wakes the loop and restores the timer.
-        #[cfg(target_os = "ios")]
-        if must_draw || self.long_press_pending() {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                self.last_frame + target,
-            ));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-        }
         // Android: 裏にいるあいだは描く先が無い。起こされるまで寝る (電池)。
         #[cfg(target_os = "android")]
         if self.occluded {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
             return;
         }
-        #[cfg(not(target_os = "ios"))]
+        // 携帯 (iOS / Android): 描くものが無ければ寝る。次に周回するのは、起こ
+        // されたとき (入力・`sabitori::wake`) か、[`MOBILE_IDLE_POLL`] 後の見回り。
+        // デスクトップのように 16ms ごとに `poll_dirty` をたずね続けると、描か
+        // なくても iPad で CPU 6% を使い続け、電池が減っていた。見回りは、
+        // `wake` を呼ばない変化 (別スレッドの結果など) を取りこぼさないため。
+        // 長押しを数えている間は、指が止まっていてもイベントが来ないので回し続ける。
+        // (iOS で 16ms の予約を回し続けると、ソフトキーボードの入力が届かなく
+        // なったことがある。寝ている間の予約は 0.25 秒なので、その形にはならない。)
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        {
+            self.parked = !(must_draw || self.long_press_pending());
+            // iOS: 描くものがある間は画面の合図で回る (次の周回はその合図が起こす)。
+            // 寝るときは止める — 回したままだと書き換えのたびに起こされる。
+            #[cfg(target_os = "ios")]
+            {
+                let rate = crate::ios_frame_clock::rate_for(self.app.target_frame_interval());
+                crate::ios_frame_clock::run((!self.parked).then_some(rate));
+                if !self.parked {
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                    return;
+                }
+            }
+            let next = if self.parked { MOBILE_IDLE_POLL } else { target };
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.last_frame + next));
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             self.last_frame + target,
         ));
@@ -3080,6 +3186,8 @@ impl<A: DeclarativeApp> AppState<A> {
             atlas_recover_pending: false,
             relayout_pending: false,
             relayout_streak: 0,
+            parked: false,
+            keyboard_gate: Default::default(),
             overflow_debug: crate::overflow_debug::OverflowDebug::from_env(),
             fonts_applied: 0,
             occluded: false,
@@ -3870,6 +3978,14 @@ impl<A: DeclarativeApp> AppState<A> {
         self.app.on_right_click(&id, self.mouse_x, self.mouse_y);
     }
 
+    /// 長押しして動かさずに離した指を、アプリに渡す ([`DeclarativeApp::on_long_press`])。
+    /// 宛先は右クリックと同じ解決 (空白なら `""`、メニューの幕は飛ばす)。受けたら `true`。
+    fn touch_long_press(&mut self, x: f32, y: f32) -> bool {
+        let Some(build) = self.last_build.as_ref() else { return false };
+        let id = crate::runtime_shared::right_click_target(build, x, y);
+        self.app.on_long_press(&id, x, y)
+    }
+
     /// 右ボタン解放。`on_input` へ転送するだけ (右クリックの意味づけは押下側)。
     pub(crate) fn release_secondary(&mut self) {
         self.app.on_input(&InputEvent::PointerReleased {
@@ -4242,6 +4358,7 @@ impl<A: DeclarativeApp> AppState<A> {
                             held: 0.0,
                             select: Some(select),
                             held_drag: None,
+                            long_pressed: false,
                         });
                         return;
                     }
@@ -4295,6 +4412,7 @@ impl<A: DeclarativeApp> AppState<A> {
                         held: 0.0,
                         select: None,
                         held_drag,
+                        long_pressed: false,
                     });
                 } else if count == 2 && self.pinch.is_none() {
                     // Second finger — promote to pinch. Cancel the
@@ -4379,6 +4497,9 @@ impl<A: DeclarativeApp> AppState<A> {
             }
             winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                 let is_cancel = matches!(phase, winit::event::TouchPhase::Cancelled);
+                if !is_cancel {
+                    self.keyboard_gate.note_input(Instant::now());
+                }
 
                 // End pinch if one of its fingers lifted.
                 if let Some(pinch) = self.pinch.as_ref() {
@@ -4401,6 +4522,15 @@ impl<A: DeclarativeApp> AppState<A> {
                     .unwrap_or(false)
                 {
                     let td = self.touch_drag.take();
+                    // 長押しして、動かさずに離した: 何にするかはアプリ (`on_long_press`)。
+                    // 受けたらクリックにしない。長押しでつかんでいた物は落とさずに放す
+                    // (浮かせたのは合図だけ)。受けなければ今までどおり。
+                    let long_press_taken = !is_cancel
+                        && td.as_ref().is_some_and(|t| t.long_pressed && !t.moved_beyond_slop)
+                        && self.touch_long_press(x, y);
+                    if long_press_taken {
+                        self.drag_manager.cancel();
+                    }
                     let drop_completed = self.drag_manager.on_release();
                     if let Some((data, _source_id)) = drop_completed {
                         if !is_cancel
@@ -4429,7 +4559,7 @@ impl<A: DeclarativeApp> AppState<A> {
                                     sv.end_drag();
                                 }
                             }
-                        if !is_cancel && !td.moved_beyond_slop && td.select.is_none() {
+                        if !long_press_taken && !is_cancel && !td.moved_beyond_slop && td.select.is_none() {
                             self.dispatch_click(
                                 td.click_target.as_deref(),
                                 td.click_count,
@@ -4462,6 +4592,17 @@ impl<A: DeclarativeApp> AppState<A> {
                                 })
                             {
                                 app.show_soft_input(false);
+                            }
+                            #[cfg(target_os = "ios")]
+                            {
+                                let wants = self.last_build.as_ref().is_some_and(|b| {
+                                    crate::runtime_shared::tap_wants_keyboard(b, sabitori_core::Point::new(sx, sy))
+                                });
+                                if self.keyboard_gate.on_tap(wants, self.app.ime_allowed())
+                                    == crate::keyboard_gate::KeyboardAction::Show
+                                {
+                                    crate::ios_keyboard::set_active_for(true, || "tap".to_string());
+                                }
                             }
                         }
                     }
@@ -4563,9 +4704,10 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     /// 長押しを数える。指を [`crate::touch_select::LONG_PRESS_SECS`] 秒止めたら、
-    /// その下の語を選ぶ (#108)。
+    /// その下の語を選ぶ (#108)。語を選ばない所では、離したときに右クリックにする
+    /// ([`TouchDrag::long_pressed`])。
     fn check_long_press(&mut self, dt: f32) {
-        use crate::touch_select::{word_range, TouchSelect, LONG_PRESS_SECS};
+        use crate::touch_select::LONG_PRESS_SECS;
         if self.pinch.is_some() || self.drag_manager.is_active() {
             return;
         }
@@ -4575,13 +4717,15 @@ impl<A: DeclarativeApp> AppState<A> {
         }
         let before = td.held;
         td.held += dt;
-        // 閾値をまたいだ 1 回だけ。文字の上でなければ何もしない (タップのまま)。
+        // 閾値をまたいだ 1 回だけ。
         if !(before < LONG_PRESS_SECS && td.held >= LONG_PRESS_SECS) {
             return;
         }
-        // 預かっていたドラッグを、ここでつかむ。この指はもうタップでもスクロールでもない。
+        // 預かっていたドラッグを、ここでつかむ (浮かせて、長押しが効いたと見せる)。
+        // 動かせばそのままドラッグ。動かさずに離したら `on_long_press` を聞く (解放の
+        // 側)。つかんでいる間はスクロールしない (`TouchPhase::Moved`)。
         if let Some((data, source_id)) = td.held_drag.take() {
-            td.moved_beyond_slop = true;
+            td.long_pressed = true;
             if let Some(sv) = td.scroll_target.clone().and_then(|sid| self.scroll_states.get_mut(&sid)) {
                 sv.cancel_fling();
             }
@@ -4589,10 +4733,22 @@ impl<A: DeclarativeApp> AppState<A> {
             self.dirty = true;
             return;
         }
-        if !self.app.text_selection_enabled() {
-            return;
+        if !self.select_word_by_long_press()
+            && let Some(td) = self.touch_drag.as_mut()
+        {
+            td.long_pressed = true;
         }
-        let (sx, sy) = td.start;
+    }
+
+    /// 長押しした指の下の語を選ぶ (#108)。選んだら `true`。
+    fn select_word_by_long_press(&mut self) -> bool {
+        use crate::touch_select::{word_range, TouchSelect};
+        if !self.app.text_selection_enabled() {
+            return false;
+        }
+        let Some((sx, sy)) = self.touch_drag.as_ref().map(|td| td.start) else {
+            return false;
+        };
         // つかんで動かせる要素 (かんばんのカード・並べ替えの行) は、押したまま
         // 動かすのがドラッグ。本文中のリンクは押すと移る。どちらも文字を選ばない
         // (マウスの側と同じ優先順)。
@@ -4604,12 +4760,12 @@ impl<A: DeclarativeApp> AppState<A> {
                 .is_some_and(|r| r.drag_data.is_some())
         });
         if draggable || self.link_at(sx, sy).is_some() {
-            return;
+            return false;
         }
         let Some((idx, byte)) = Self::hit_test_text_in(&self.text_layouts, sx, sy, true) else {
-            return;
+            return false;
         };
-        let Some(layout) = self.text_layouts.iter().find(|l| l.text_idx == idx) else { return };
+        let Some(layout) = self.text_layouts.iter().find(|l| l.text_idx == idx) else { return false };
         let content = layout.content.clone();
         // 当たり判定が返すのはキャレット (字の間) の位置で、字の右半分を押すと次の
         // 字の頭になる。語は**指の下の字**から決める。
@@ -4620,7 +4776,7 @@ impl<A: DeclarativeApp> AppState<A> {
             .map_or(byte, |h| h.byte_start);
         let (start, end) = word_range(&content, byte);
         if start == end {
-            return;
+            return false;
         }
         // 選んだら、この指はもうスクロールもタップもしない。
         let td = self.touch_drag.as_mut().expect("上で見た");
@@ -4638,6 +4794,7 @@ impl<A: DeclarativeApp> AppState<A> {
         self.selecting = false;
         self.selection_handles = true;
         self.dirty = true;
+        true
     }
 
     /// 指で作った選択の両端のつまみ (#108)。選択の色を不透明にして描く。
@@ -4661,7 +4818,7 @@ impl<A: DeclarativeApp> AppState<A> {
     /// 長押しを待っている (指が止まったまま、まだ選んでいない)。iOS は何も
     /// 描かない間ループを寝かせるので、これが立っている間は起こし続ける —
     /// 動かない指からはイベントが来ず、時間を数えられない。
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
     fn long_press_pending(&self) -> bool {
         self.touch_drag.as_ref().is_some_and(|t| {
             t.select.is_none() && !t.moved_beyond_slop && t.held < crate::touch_select::LONG_PRESS_SECS
@@ -4670,6 +4827,7 @@ impl<A: DeclarativeApp> AppState<A> {
 
     /// 主ボタン解放の処理本体。 [`Self::press_primary`] と同じ理由で切り出してある。
     pub(crate) fn release_primary(&mut self) {
+        self.keyboard_gate.note_input(Instant::now());
         // 掴んでいたなら、その離しは帯の物。**押しを食った以上、離しも食う**
         // （渡すと、掴んだ所の下に居る物が「押して離した」を受け取る）。
         if self.bars.release() {
@@ -4812,6 +4970,9 @@ impl<A: DeclarativeApp> AppState<A> {
     }
 
     pub(crate) fn handle_key_input(&mut self, key: Key, pressed: bool, chars: Vec<char>) {
+        if pressed {
+            self.keyboard_gate.note_input(Instant::now());
+        }
         // 窓の中に確かめのダイアログを出している間は、キーは全部そちらへ
         // (Return / Esc でボタンを押す)。下の画面の欄やアプリには渡さない。
         if self.ask_dialog.is_open() {
@@ -5912,6 +6073,8 @@ pub(crate) fn run_with<A: DeclarativeApp + 'static>(
     crate::hot_reload::init(move || {
         let _ = proxy.send_event(());
     });
+    // `sabitori::wake` の届け先。
+    crate::wake::install(event_loop.create_proxy());
 
     // Finder / `open -a` から渡されたパスと、開き直されたことの受け口。delegate が張られた後
     // (= event loop を作った後) で、起動処理が走る前 (= run_app の前) に仕込む。
@@ -7350,6 +7513,141 @@ mod highlight_tests {
         state.handle_touch(TouchPhase::Started, 1, 25.0, 8.0);
         held(&mut state, 0.6);
         assert!(state.selection.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // 長押しして動かさずに離す (`on_long_press`。iPad の長押しのメニュー)
+    // ---------------------------------------------------------------
+
+    #[derive(Default)]
+    struct Menus {
+        /// `on_long_press` が受けるか (返す値)。
+        takes_long_press: bool,
+        clicked: Vec<String>,
+        long_pressed: Vec<String>,
+        dropped: Vec<(String, String)>,
+    }
+    impl DeclarativeApp for Menus {
+        fn view(&self, _ctx: &ViewContext) -> Element {
+            sabitori_core::div()
+        }
+        fn on_click(&mut self, id: &str) {
+            self.clicked.push(id.to_string());
+        }
+        fn on_long_press(&mut self, id: &str, _x: f32, _y: f32) -> bool {
+            self.long_pressed.push(id.to_string());
+            self.takes_long_press
+        }
+        fn on_drop(&mut self, data: &str, target_id: &str) {
+            self.dropped.push((data.to_string(), target_id.to_string()));
+        }
+    }
+
+    /// スクロールする一覧 (y 0..300) に、押せてつかめる行 (y 0..40) と、落とし先 (y 200..240)。
+    /// 長押しを受ける (メニューを開く) アプリ。
+    fn menus() -> AppState<Menus> {
+        use sabitori_core::element::{div, Px};
+        let mut state = AppState::new(Menus { takes_long_press: true, ..Menus::default() });
+        state.scroll_states.insert("list".into(), sabitori_widgets::ScrollView::new(300.0, 1000.0));
+        state.last_build = Some(sabitori_core::build::build_tree(
+            &div().w(Px(400.0)).h(Px(300.0)).child(
+                div().id("list").scroll("list").w(Px(400.0)).h(Px(300.0)).children([
+                    div().id("row").on_click(|| {}).draggable("row-1").w(Px(400.0)).h(Px(40.0)),
+                    div().id("bin").droppable().absolute().pos(0.0, 200.0).w(Px(400.0)).h(Px(40.0)),
+                ]),
+            ),
+            400.0,
+            300.0,
+        ));
+        state
+    }
+
+    fn hold<A: DeclarativeApp>(state: &mut AppState<A>, secs: f32) {
+        let mut t = 0.0;
+        while t < secs {
+            state.advance(0.1);
+            t += 0.1;
+        }
+    }
+
+    /// 長押しで行が浮き (つかむ)、動かさずに離すとアプリに聞く。受けたらタップにも
+    /// ドロップにもならず、つかんだ物は放す。
+    #[test]
+    fn a_long_press_released_in_place_goes_to_the_app() {
+        let mut state = menus();
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 20.0);
+        hold(&mut state, 0.6);
+        assert!(state.drag_manager.is_active(), "長押しで浮く");
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 20.0);
+        assert_eq!(state.app.long_pressed, ["row"]);
+        assert!(state.app.clicked.is_empty(), "タップではない");
+        assert!(state.app.dropped.is_empty());
+        assert!(!state.drag_manager.is_active(), "放した");
+    }
+
+    /// 長押しして離さずに動かせば、これまでどおりドラッグ。`on_long_press` は鳴らない。
+    #[test]
+    fn a_long_press_then_a_move_drags() {
+        let mut state = menus();
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 20.0);
+        hold(&mut state, 0.6);
+        state.handle_touch(TouchPhase::Moved, 1, 20.0, 120.0);
+        state.handle_touch(TouchPhase::Moved, 1, 20.0, 220.0);
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 220.0);
+        assert_eq!(state.app.dropped, [("row-1".to_string(), "bin".to_string())]);
+        assert!(state.app.long_pressed.is_empty());
+        assert!(state.app.clicked.is_empty());
+    }
+
+    /// ボタン 1 つ (x 0..100, y 0..30) だけの画面。
+    fn button(takes_long_press: bool) -> AppState<Menus> {
+        use sabitori_core::element::{div, Px};
+        let mut state = AppState::new(Menus { takes_long_press, ..Menus::default() });
+        state.last_build = Some(sabitori_core::build::build_tree(
+            &div().w(Px(400.0)).h(Px(300.0)).child(div().id("btn").on_click(|| {}).w(Px(100.0)).h(Px(30.0))),
+            400.0,
+            300.0,
+        ));
+        state
+    }
+
+    /// 長押しを受けないアプリ (既定) では、ゆっくり押して離したボタンもクリック
+    /// (v0.63.0 までと同じ)。つかめる行は長押しで浮き、動かさずに離せば今までどおり
+    /// 離した所に落とす (ここは落とし先が無いので何も起きない)。
+    #[test]
+    fn a_long_press_the_app_does_not_take_is_still_a_click() {
+        let mut state = button(false);
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 10.0);
+        hold(&mut state, 0.6);
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 10.0);
+        assert_eq!(state.app.long_pressed, ["btn"], "聞きはする");
+        assert_eq!(state.app.clicked, ["btn"]);
+
+        let mut state = menus();
+        state.app.takes_long_press = false;
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 20.0);
+        hold(&mut state, 0.6);
+        assert!(state.drag_manager.is_active(), "長押しで浮く");
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 20.0);
+        assert!(state.app.clicked.is_empty(), "つかんだ物はクリックにしない (今までどおり)");
+        assert!(state.app.dropped.is_empty());
+        assert!(!state.drag_manager.is_active());
+    }
+
+    /// 長押しを受けるアプリでは、長押しして離したボタンはクリックせず `on_long_press`
+    /// だけ鳴る。短いタップはクリックのまま。
+    #[test]
+    fn a_long_press_the_app_takes_is_not_a_click() {
+        let mut state = button(true);
+        state.handle_touch(TouchPhase::Started, 1, 20.0, 10.0);
+        state.handle_touch(TouchPhase::Ended, 1, 20.0, 10.0);
+        assert_eq!(state.app.clicked, ["btn"]);
+        assert!(state.app.long_pressed.is_empty(), "短いタップでは鳴らない");
+        state.handle_touch(TouchPhase::Started, 2, 20.0, 10.0);
+        hold(&mut state, 0.6);
+        state.handle_touch(TouchPhase::Ended, 2, 20.0, 10.0);
+        assert_eq!(state.app.long_pressed, ["btn"]);
+        assert_eq!(state.app.clicked, ["btn"], "長押しはクリックしない");
     }
 
     // ---------------------------------------------------------------

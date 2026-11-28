@@ -481,9 +481,16 @@ impl GpuRenderer {
             Some("autovsync") => wgpu::PresentMode::AutoVsync,
             _ => present_mode,
         };
-        // 調査用の上書き: SABITORI_FRAME_LATENCY=n (同時に描きかけでいられるフレーム数)
-        let frame_latency: u32 =
-            std::env::var("SABITORI_FRAME_LATENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        // 同時に描きかけでいられるフレーム数。ふだんは 1 (入力から画面までが短い)。
+        // iOS は 2: 描いた 1 枚は合成を経て画面に出るので、描画先が 2 枚
+        // (= 1 + 1) だと 1 回おきの書き換えにしか間に合わない。120Hz の iPad でも
+        // 60fps で、1 枚ごとに描画先を 11ms 待っていた。3 枚で 115fps・待ち 0
+        // (2026-11-26 実測)。Apple の既定も 3 枚。
+        // 調査用の上書き: SABITORI_FRAME_LATENCY=n
+        let frame_latency: u32 = std::env::var("SABITORI_FRAME_LATENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(if cfg!(target_os = "ios") { 2 } else { 1 });
         tracing::info!("present_mode: {:?}, frame latency {}", present_mode, frame_latency);
         // 読み戻す予定があるときだけ COPY_SRC を足す (#69)。常に足さないのは、
         // WebGL2 のサーフェスがコピー元になれないため — wasm で無条件に付けると
